@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "framefit": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/absolute/path/to/framefit/mcp-server/dist/index.js"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "FIGMA_TOKEN": "figd_your_token_here"
+      }
+    }
+  }
+}

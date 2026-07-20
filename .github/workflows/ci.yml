@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']   # semver half of the image tag scheme only exists on v-tags
+  pull_request:
+  schedule:
+    - cron: '20 6 * * 1'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: mcp-server
+
+jobs:
+  unit:
+    name: unit + typecheck (no DB)
+    if: github.event_name != 'schedule'   # weekly cron runs only the secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: mcp-server/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  integration:
+    name: unit + Postgres-gated integration
+    if: github.event_name != 'schedule'   # weekly cron runs only the secrets scan
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: figma
+          POSTGRES_PASSWORD: figma
+          POSTGRES_DB: figma_mcp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U figma -d figma_mcp_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://figma:figma@localhost:5432/figma_mcp_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: mcp-server/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  stdio-smoke:
+    name: stdio smoke (${{ matrix.os }}, node ${{ matrix.node }})
+    if: github.event_name != 'schedule'   # weekly cron runs only the secrets scan
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: mcp-server/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: mcp-server/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: node scripts/stdio-smoke.mjs
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # the action comments on PRs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # base ref must be reachable for the PR/push diff scan
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The action's bundled default (8.24.3) predates [[allowlists]] (8.25+)
+          # and silently ignores .gitleaks.toml entries — pin to the version the
+          # project is validated against.
+          GITLEAKS_VERSION: "8.30.1"
+
+  publish-image:
+    name: publish image to GHCR
+    # Gate: only a green test run publishes. `needs` on the four jobs above means a
+    # red test — or a red gitleaks scan — blocks the push. On `schedule` the three
+    # test jobs skip, the skip propagates here, and no cron publication happens.
+    # NEVER add always()/!cancelled() to this if: — that would defeat the gate.
+    needs: [unit, integration, stdio-smoke, secrets-scan]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+    runs-on: ubuntu-latest
+    # The workflow-level default is `mcp-server` (the four jobs above need it); this
+    # job's run-steps and build context live at the repo root, so override locally.
+    # Do NOT change the workflow-level default.
+    defaults:
+      run:
+        working-directory: .
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHA cache export requires the docker-container buildx driver; the default `docker`
+      # driver fails with "Cache export is not supported for the docker driver".
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/zylomeara/framefit
+          # latest=false: `latest` is emitted ONLY by the explicit type=raw rule below,
+          # never by the action's default heuristic (same rule as the portal workflow).
+          flavor: |
+            latest=false
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

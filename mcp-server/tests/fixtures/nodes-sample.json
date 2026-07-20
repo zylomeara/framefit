@@ -1,0 +1,28 @@
+{
+  "name": "Test File",
+  "lastModified": "2026-05-18T12:00:00Z",
+  "nodes": {
+    "1:42": {
+      "document": {
+        "id": "1:42",
+        "name": "Button / Primary",
+        "type": "COMPONENT",
+        "absoluteBoundingBox": { "x": 0, "y": 0, "width": 120, "height": 40 }
+      },
+      "components": {},
+      "schemaVersion": 0,
+      "styles": {}
+    },
+    "1:55": {
+      "document": {
+        "id": "1:55",
+        "name": "Header",
+        "type": "FRAME",
+        "absoluteBoundingBox": { "x": 0, "y": 0, "width": 1440, "height": 80 }
+      },
+      "components": {},
+      "schemaVersion": 0,
+      "styles": {}
+    }
+  }
+}

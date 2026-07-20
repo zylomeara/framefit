@@ -1,0 +1,11 @@
+/.idea
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.DS_Store
+# Belt and braces: a bridge-token accidentally redirected into the checkout (docs pipe it instead).
+token*.txt

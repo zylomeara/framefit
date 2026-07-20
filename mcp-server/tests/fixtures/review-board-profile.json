@@ -1,0 +1,68 @@
+{
+  "id": "12:100",
+  "name": "Профиль",
+  "type": "SECTION",
+  "absoluteBoundingBox": { "x": 0, "y": 0, "width": 5273, "height": 1200 },
+  "children": [
+    {
+      "id": "12:101",
+      "name": "screenshot-1",
+      "type": "RECTANGLE",
+      "absoluteBoundingBox": { "x": 0, "y": 0, "width": 1526, "height": 877 },
+      "fills": [{ "type": "IMAGE", "imageRef": "abc" }]
+    },
+    {
+      "id": "12:102", "name": "профиль", "type": "FRAME",
+      "absoluteBoundingBox": { "x": 3353, "y": 0, "width": 1920, "height": 1108 },
+      "children": [{ "id": "12:103", "name": "header", "type": "FRAME", "absoluteBoundingBox": { "x": 3353, "y": 0, "width": 1920, "height": 960 } }]
+    },
+    {
+      "id": "12:104", "name": "Поле комментариев", "type": "FRAME",
+      "absoluteBoundingBox": { "x": 1584, "y": 0, "width": 601, "height": 200 },
+      "children": [
+        {
+          "id": "12:105", "name": "text", "type": "INSTANCE", "componentId": "1:859",
+          "absoluteBoundingBox": { "x": 1624, "y": 40, "width": 521, "height": 70 },
+          "children": [
+            { "id": "n1", "name": "number", "type": "FRAME", "absoluteBoundingBox": { "x": 1624, "y": 40, "width": 35, "height": 35 },
+              "children": [{ "id": "n1t", "name": "1", "type": "TEXT", "characters": "1" }] },
+            { "id": "c1", "name": "Контейнер", "type": "TEXT", "characters": "Кнопку выровнять по сетке: отступ и радиус из токенов", "absoluteBoundingBox": { "x": 1675, "y": 40, "width": 470, "height": 70 } }
+          ]
+        },
+        {
+          "id": "12:106", "name": "text", "type": "INSTANCE", "componentId": "1:859",
+          "absoluteBoundingBox": { "x": 1624, "y": 130, "width": 521, "height": 70 },
+          "children": [
+            { "id": "n2", "name": "number", "type": "FRAME", "absoluteBoundingBox": { "x": 1624, "y": 130, "width": 35, "height": 35 },
+              "children": [{ "id": "n2t", "name": "1", "type": "TEXT", "characters": "2" }] },
+            { "id": "c2", "name": "Контейнер", "type": "TEXT", "characters": "От нижней подписи в карточке давно отказывались", "absoluteBoundingBox": { "x": 1675, "y": 130, "width": 470, "height": 70 } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "12:107", "name": "Цифровой пин", "type": "INSTANCE", "componentId": "1:865",
+      "absoluteBoundingBox": { "x": 219, "y": 12, "width": 74, "height": 106 },
+      "children": [
+        { "id": "u1", "name": "Union", "type": "VECTOR", "absoluteBoundingBox": { "x": 219, "y": 12, "width": 74, "height": 106 } },
+        { "id": "p1t", "name": "1", "type": "TEXT", "characters": "1", "absoluteBoundingBox": { "x": 246, "y": 28, "width": 20, "height": 47 } }
+      ]
+    },
+    {
+      "id": "12:108", "name": "Цифровой пин", "type": "INSTANCE", "componentId": "1:865",
+      "absoluteBoundingBox": { "x": 689, "y": 0, "width": 74, "height": 106 },
+      "children": [
+        { "id": "u2", "name": "Union", "type": "VECTOR", "absoluteBoundingBox": { "x": 689, "y": 0, "width": 74, "height": 106 } },
+        { "id": "p2t", "name": "1", "type": "TEXT", "characters": "2", "absoluteBoundingBox": { "x": 716, "y": 16, "width": 20, "height": 47 } }
+      ]
+    },
+    {
+      "id": "12:109", "name": "Цифровой пин", "type": "INSTANCE", "componentId": "1:865",
+      "absoluteBoundingBox": { "x": 1000, "y": 400, "width": 74, "height": 106 },
+      "children": [
+        { "id": "u9", "name": "Union", "type": "VECTOR", "absoluteBoundingBox": { "x": 1000, "y": 400, "width": 74, "height": 106 } },
+        { "id": "p9t", "name": "1", "type": "TEXT", "characters": "9", "absoluteBoundingBox": { "x": 1027, "y": 416, "width": 20, "height": 47 } }
+      ]
+    }
+  ]
+}

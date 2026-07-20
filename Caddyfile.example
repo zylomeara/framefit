@@ -1,0 +1,15 @@
+# Snippet for the main Caddyfile on the VPS — replace the example host with
+# your own domain. Append (or `import`) into the global config, then `caddy reload`.
+
+framefit.example.com {
+    encode gzip
+
+    handle {
+        reverse_proxy 127.0.0.1:3846
+    }
+
+    log {
+        output file /var/log/caddy/framefit.log
+        format json
+    }
+}

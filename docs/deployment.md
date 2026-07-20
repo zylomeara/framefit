@@ -1,0 +1,141 @@
+# Deployment guide
+
+Four shapes, from a laptop to a VPS. Pick the row that matches where the server runs
+and who needs to reach it.
+
+| Shape | Where | Auth | Guide |
+|---|---|---|---|
+| stdio (recommended start) | your machine | none needed — process-local | [README Tier 1](../README.md#tier-1--local-stdio-the-10-minute-path) |
+| Docker, local | your machine | none — binds `127.0.0.1` only | [docker/README §1](../docker/README.md) |
+| **VPS, single-tenant** | a server you own | **you add it** (SSH tunnel or reverse proxy) | this page |
+| VPS, multi-tenant | a server you own | OIDC (external Keycloak) | [docker/README §2](../docker/README.md) + notes below |
+
+## VPS, single-tenant — one user, one token, reachable from anywhere
+
+The single-tenant server has **no authentication of its own** and holds your
+`FIGMA_TOKEN`. It deliberately binds `127.0.0.1`, so nothing is exposed by default.
+Anyone who can reach `/mcp` can read every Figma file your token can — so the whole
+question of a VPS deployment is *how you gate access*. Two safe answers:
+
+### Option A — SSH tunnel (no domain, no TLS setup, 5 minutes)
+
+Run the server on the VPS exactly like the local path:
+
+```bash
+git clone https://github.com/zylomeara/framefit.git && cd framefit/docker
+FIGMA_TOKEN=figd_your_token docker compose --profile local up -d --build
+curl -s http://127.0.0.1:3846/health   # -> {"status":"ok"}
+```
+
+On your workstation, forward the port over SSH:
+
+```bash
+ssh -N -L 3846:127.0.0.1:3846 you@your-vps
+```
+
+The server is now `http://127.0.0.1:3846` locally — connect the client exactly as in
+[examples/mcp-config — HTTP transport](../examples/mcp-config/README.md#http-transport):
+
+```bash
+claude mcp add --transport http framefit http://127.0.0.1:3846/mcp
+```
+
+Nothing is ever exposed publicly; the tunnel is the auth. This is the recommended VPS
+shape for a single user.
+
+### Option B — reverse proxy with TLS and basic auth (a real URL)
+
+Prerequisites: a domain pointed at the VPS, Caddy installed (it provisions TLS
+automatically). Start the server as in Option A, then front it:
+
+```bash
+caddy hash-password   # enter a password, copy the bcrypt hash
+```
+
+```caddyfile
+mcp.your-domain.com {
+    basic_auth {
+        you <bcrypt-hash-from-above>
+    }
+    reverse_proxy 127.0.0.1:3846
+}
+```
+
+(`Caddyfile.example` in the repo root shows the same shape as a snippet for an
+existing Caddyfile.) Two server-side settings to add in `docker/.env`:
+
+```dotenv
+# The origin browsers and clients actually reach — used in emitted URLs
+# (dom-snapshot upload_url, extractor loader). Without it they would point
+# at 127.0.0.1 and break for anything outside the VPS.
+PUBLIC_BASE_URL=https://mcp.your-domain.com
+```
+
+Restart (`docker compose --profile local up -d`), then connect the client with the
+auth header:
+
+```bash
+claude mcp add --transport http framefit https://mcp.your-domain.com/mcp \
+  --header "Authorization: Basic $(printf 'you:your-password' | base64)"
+```
+
+**Never skip the `basic_auth` block.** An unauthenticated `/mcp` behind a public
+domain is an open proxy to your Figma account.
+
+### Cross-library design tokens (optional)
+
+Files that reference variables from *other* published libraries need `DS_TEAM_IDS` —
+comma-separated team ids (or `figma.com/team/<id>` URLs) — set on the **server process**
+alongside `FIGMA_TOKEN`, so those teams' libraries sync into an in-memory graph and
+`get_variables` resolves the aliases headless (`resolved_via:"graph"`); unset, they stay
+honestly unresolved. The first graph-needing call (`get_variables`, `get_design_context`, or
+`compare_node_to_dom`) after startup blocks while those libraries sync — several minutes on a
+large design system (measured ~11 libraries / 7000+ variables), one-time per process; later
+calls are fast and the call is not hung.
+
+The `local` compose service passes `DS_TEAM_IDS` through to the container (the same bare
+pass-through as `FIGMA_TOKEN`), so just set it at startup — inline or in `docker/.env`:
+
+```bash
+FIGMA_TOKEN=figd_your_token DS_TEAM_IDS=1234567890,9876543210 \
+  docker compose --profile local up -d --build
+```
+
+To sanity-check a sync without a database or restarting the server, run the diagnostic inside
+the container (both `FIGMA_TOKEN` and `DS_TEAM_IDS` are already there from startup):
+
+```bash
+docker compose exec framefit-local framefit graph check
+# → teams / libraries / variables counts; exit 1 if 0 libraries synced
+```
+
+Do **not** set `DS_TEAM_IDS` under the multi-tenant (`full`) profile — there the graph is
+built per-user from the database; see [docker/README](../docker/README.md).
+
+## VPS, multi-tenant — teams, per-user tokens, OAuth
+
+The `full` compose profile runs the multi-tenant server (Postgres, encrypted per-user
+PAT storage, OAuth resource-server against an external OIDC IdP). It is how the
+author runs their own deployment, and the server side is fully in this repo — see
+[docker/README §2](../docker/README.md) for the env contract.
+
+Honest scope notes before you pick this shape:
+
+- **You bring the IdP.** The server validates JWTs against `KEYCLOAK_JWKS_URL`; realm
+  setup and client registration in your Keycloak (or other OIDC provider) are up to you.
+- **The admin portal UI is not in this repo** (it is part of the author's private
+  deployment). Team registration and token management are driven through the server's
+  `/accounts` HTTP API directly.
+- Expect assembly. If you just want *a server on a VPS for yourself*, single-tenant
+  above is the right shape.
+
+## Troubleshooting
+
+- `{"status":"ok"}` from `/health` but tools fail → the server runs, the token doesn't:
+  check `FIGMA_TOKEN` is set (see [README — Figma token](../README.md#figma-token) for
+  scopes) and not expired (Figma PATs expire after at most 90 days).
+- Container restart-loops on start → almost always an empty `FIGMA_TOKEN=` line in an
+  env file (empty string fails validation; either set a value or remove the line).
+- Snapshot upload / extractor URLs point at `127.0.0.1` from another machine → set
+  `PUBLIC_BASE_URL` (Option B above).
+- Port already taken → `MCP_PORT=4000 docker compose --profile local up -d`.

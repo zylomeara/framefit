@@ -1,0 +1,67 @@
+# Tool reference
+
+The server exposes **26 tools** over MCP. Every description below is taken from the live
+`tools/list` output — the same text an MCP client sees. Tools are grouped into four pages:
+
+- [Design QA](design-qa.md) — deterministic Figma ↔ DOM verification
+- [Navigation & content](navigation.md) — maps, search, typography, screenshots, code-oriented extraction
+- [Comments & review](comments-review.md) — comment threads and design-review boards
+- [Design system](design-system.md) — tokens, libraries, Code Connect, FigJam
+
+For an end-to-end walkthrough of the design-QA cycle (pairs → compare → verification receipt →
+fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
+
+## Design QA
+
+| Tool | Summary |
+| --- | --- |
+| [`get_layout_spec`](design-qa.md#get_layout_spec) | Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Also ships the canonical DOM extractor. |
+| [`suggest_pairs`](design-qa.md#suggest_pairs) | Propose Figma-node ↔ DOM-element pairs (by text/size/order/role) with confidence, ambiguous flags and honest unmatched lists. |
+| [`compare_node_to_dom`](design-qa.md#compare_node_to_dom) | Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, gaps, paddings, cross-axis offsets, typography, colors, component identity. |
+| [`find_breakpoint_variant`](design-qa.md#find_breakpoint_variant) | Resolve which breakpoint variant frame matches your rendered width, ranked by content-frame width. |
+| [`get_view`](design-qa.md#get_view) | Five pure lenses over one held frame (skeleton / branch / coverage / typography / spacing) sliced from a single deep fetch. |
+
+## Navigation & content
+
+| Tool | Summary |
+| --- | --- |
+| [`get_metadata`](navigation.md#get_metadata) | A sparse map of a Figma file: id/name/type/position/size per node, depth-limited — cheap navigation, call it first. |
+| [`find_nodes`](navigation.md#find_nodes) | Find nodes by name or text content (substring or fuzzy) inside a file or subtree, without knowing node ids. |
+| [`get_node_ancestry`](navigation.md#get_node_ancestry) | Breadcrumbs from a node up to its page, plus the direct children of every ancestor. |
+| [`get_text_styles`](navigation.md#get_text_styles) | Extract only the typography of a node's subtree — fast spec verification without the full design tree. |
+| [`compare_breakpoints`](navigation.md#compare_breakpoints) | Compare one element's typography across several breakpoint frames in a single call. |
+| [`get_screenshot`](navigation.md#get_screenshot) | Render a Figma node to an image: signed URL, inline, preview, or a zoomed focus crop with a reticle. |
+| [`export_assets`](navigation.md#export_assets) | Export Figma nodes as rendered images (PNG/SVG/JPG) and return signed URLs, optionally with original source images. |
+| [`get_design_context`](navigation.md#get_design_context) | Descriptive, code-oriented representation of a node: auto-layout, sizing, fills/strokes/effects, text + typography, component instances. |
+
+## Comments & review
+
+| Tool | Summary |
+| --- | --- |
+| [`get_comments`](comments-review.md#get_comments) | Fetch review comments from a file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. |
+| [`summarize_comments`](comments-review.md#summarize_comments) | Aggregate statistics for a file's comments — a compact ~1-2KB summary to scope large files first. |
+| [`find_threads`](comments-review.md#find_threads) | Search comment threads by text, ranked by relevance, with optional fuzzy matching. |
+| [`post_comment`](comments-review.md#post_comment) | Post a new root-level comment on a file. |
+| [`reply_to_comment`](comments-review.md#reply_to_comment) | Reply to an existing comment thread. |
+| [`resolve_comment`](comments-review.md#resolve_comment) | Resolve a comment thread (marks it resolved; it stays visible in the file). |
+| [`get_review_board`](comments-review.md#get_review_board) | Extract a design-review board in one call: pins ↔ notes ↔ targets, grouped by lane, with resolved reference nodes. |
+| [`get_pin_detail`](comments-review.md#get_pin_detail) | Inspect one review-board pin: a zoomed reticle-marked crop plus its resolved reference node — in a single call. |
+
+## Design system
+
+| Tool | Summary |
+| --- | --- |
+| [`get_variables`](design-system.md#get_variables) | List design tokens (Figma variables): name, type, value, collection — whole-file catalog or only the tokens a node references. |
+| [`search_design_system`](design-system.md#search_design_system) | Search published design-system libraries (components, component sets, styles) by name/description. |
+| [`get_libraries`](design-system.md#get_libraries) | List the design-system libraries a file publishes or consumes. |
+| [`get_code_connect_map`](design-system.md#get_code_connect_map) | Map Figma instance nodes to their Code Connect code snippets from CI-uploaded mappings. |
+| [`get_figjam`](design-system.md#get_figjam) | Structured content of a FigJam board: sticky notes, shapes-with-text, sections, connectors, tables. |
+
+## Conventions
+
+- `file` accepts a full Figma URL (`https://www.figma.com/design/<key>/...`) or the raw file key.
+- Node ids use Figma's `12:345` form; nested instance ids use the compound `I12:345;67:890` form.
+- `figma_token` overrides the Figma personal access token per call; otherwise the server-configured
+  token is used.
+- Sizes, depths and limits are capped server-side; responses that would exceed the transport budget
+  degrade honestly (truncation flags, `omitted_*` counters) instead of silently dropping data.

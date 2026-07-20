@@ -1,0 +1,15 @@
+title = "framefit"
+
+[extend]
+useDefault = true
+
+# Trade-off: test-fixture files are exempted from scanning entirely (not just
+# specific findings). They contain fake 40-hex API/library keys used to exercise
+# secret-detection/redaction logic in tests — legitimate fixture-only fakes, never
+# real credentials. A fingerprint-based .gitleaksignore was rejected: on push/PR
+# triggers the action only scans diff commits, so historical SHAs are never
+# re-touched and a green CI would prove nothing; and any edit to a fixture changes
+# its SHA/line, silently invalidating the fingerprint and going red for no reason.
+[[allowlists]]
+description = "Test fixtures use fake 40-hex API/library keys"
+paths = ['''mcp-server/tests/.*\.test\.ts$''']

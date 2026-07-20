@@ -1,0 +1,32 @@
+{
+  "document": {
+    "id": "0:0",
+    "name": "Document",
+    "type": "DOCUMENT",
+    "children": [
+      {
+        "id": "0:1",
+        "name": "Components",
+        "type": "CANVAS",
+        "children": [
+          { "id": "1:42", "name": "Button / Primary", "type": "COMPONENT", "children": [] }
+        ]
+      },
+      {
+        "id": "0:2",
+        "name": "Landing",
+        "type": "CANVAS",
+        "children": [
+          {
+            "id": "1:55",
+            "name": "Header",
+            "type": "FRAME",
+            "children": [
+              { "id": "1:56", "name": "Logo", "type": "INSTANCE", "children": [] }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

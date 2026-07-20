@@ -1,0 +1,407 @@
+import { describe, it, expect, vi } from 'vitest';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { registerSuggestPairsTool, InputSchema } from '../../src/adapters/driving/tools/suggest-pairs-tool.js';
+import { DOM_SNAPSHOT_SCHEMA_VERSION } from '../../src/adapters/driving/tools/dom-snapshot-schema.js';
+import { createLogger } from '../../src/infrastructure/logger.js';
+import type { FigmaApi } from '../../src/ports/figma-api.js';
+import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+
+const logger = createLogger({ level: 'silent' });
+function harness(api: Partial<FigmaApi>, depsOverrides: Partial<ToolDeps> = {}) {
+  const handlers: Record<string, (a: any) => Promise<any>> = {};
+  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const deps: ToolDeps = { buildApi: () => api as FigmaApi, defaultToken: 'figd_x', logger, ...depsOverrides };
+  registerSuggestPairsTool(server, deps);
+  return handlers.suggest_pairs;
+}
+
+// compound (nested-instance) id, colon form — Figma keys /nodes children this way for
+// instance-internal nodes (see get-code-connect-map-tool.test.ts).
+const COMPOUND_ID = 'I12:340;56:7890';
+
+const doc: RawSceneNode = {
+  id: '1:1', name: 'card', type: 'FRAME',
+  absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 100 },
+  layoutMode: 'VERTICAL', itemSpacing: 8,
+  children: [
+    {
+      id: '1:2', name: 'title', type: 'TEXT',
+      absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 24 },
+      characters: 'Buy now', style: { fontFamily: 'Inter', fontSize: 16 },
+    },
+    {
+      id: COMPOUND_ID, name: 'Button', type: 'INSTANCE',
+      absoluteBoundingBox: { x: 0, y: 32, width: 300, height: 40 },
+    },
+  ],
+};
+
+const okDomSnapshot = {
+  schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok' as const,
+  innerWidth: 300,
+  rect: { x: 0, y: 0, w: 300, h: 100 },
+  borders: { top: 0, right: 0, bottom: 0, left: 0 },
+  scroll: { top: 0, left: 0 },
+  children: [
+    { kind: 'element' as const, tag: 'span', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 300, h: 24 }, text: 'Buy now' },
+    { kind: 'element' as const, tag: 'button', path: '> :nth-child(2)', rect: { x: 0, y: 32, w: 300, h: 40 } },
+  ],
+};
+
+// A two-level tree (row → a/b) — to verify the pass-through of summary.depth_truncated (Thread 1).
+const nestedDoc: RawSceneNode = {
+  id: '2:1', name: 'group', type: 'FRAME',
+  absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 },
+  children: [
+    {
+      id: '2:2', name: 'row', type: 'FRAME',
+      absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 50 },
+      children: [
+        { id: '2:3', name: 'a', type: 'TEXT', absoluteBoundingBox: { x: 0, y: 0, width: 50, height: 50 }, characters: 'A', style: { fontFamily: 'Inter', fontSize: 12 } },
+        { id: '2:4', name: 'b', type: 'TEXT', absoluteBoundingBox: { x: 50, y: 0, width: 50, height: 50 }, characters: 'B', style: { fontFamily: 'Inter', fontSize: 12 } },
+      ],
+    },
+  ],
+};
+const nestedDomSnapshot = {
+  schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok' as const,
+  innerWidth: 100,
+  rect: { x: 0, y: 0, w: 100, h: 100 },
+  borders: { top: 0, right: 0, bottom: 0, left: 0 },
+  scroll: { top: 0, left: 0 },
+  children: [
+    { kind: 'element' as const, tag: 'div', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 100, h: 50 },
+      children: [
+        { kind: 'element' as const, tag: 'span', path: '> :nth-child(1) > :nth-child(1)', rect: { x: 0, y: 0, w: 50, h: 50 }, text: 'A' },
+        { kind: 'element' as const, tag: 'span', path: '> :nth-child(1) > :nth-child(2)', rect: { x: 50, y: 0, w: 50, h: 50 }, text: 'B' },
+      ] },
+  ],
+};
+
+describe('suggest_pairs tool', () => {
+  it('fetches the frame, matches pairs, and digs the compound node_id out of spec.children', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot });
+    expect(getNodesRaw).toHaveBeenCalledWith('abc', ['1:1'], 5); // FETCH_DEPTH 4→5 (peek headroom)
+
+    const out = JSON.parse(res.content[0].text);
+    expect(out.file).toBe('abc');
+    expect(out.frame).toEqual({ id: '1:1', name: 'card', type: 'FRAME' });
+    expect(out).toHaveProperty('pairs');
+    expect(out).toHaveProperty('unmatched_figma');
+    expect(out).toHaveProperty('unmatched_dom');
+    expect(out).toHaveProperty('summary');
+
+    const titlePair = out.pairs.find((p: any) => p.node_id === '1:2');
+    expect(titlePair).toMatchObject({ dom_path: '> :nth-child(1)', confidence: 'high' });
+
+    // Compound id (nested-instance path) is preserved as-is — it comes straight out of
+    // spec.children (projector copies raw.id verbatim), no extra unwrapping logic needed.
+    const buttonPair = out.pairs.find((p: any) => p.node_id === COMPOUND_ID);
+    expect(buttonPair).toBeDefined();
+    expect(buttonPair.dom_path).toBe('> :nth-child(2)');
+    expect(['high', 'medium', 'low']).toContain(buttonPair.confidence);
+
+    expect(out.unmatched_figma).toEqual([]);
+    expect(out.unmatched_dom).toEqual([]);
+    expect(out.summary).toEqual({ paired: 2, ambiguous: 0, unmatched_figma: 0, unmatched_dom: 0 });
+  });
+
+  // MUTATION LOCK on the meta-first path buildSetNames(api, entry, …) in suggest_pairs.
+  // setName is not serialized into the pairs output, so the lock rests on assert (a): getComponent NOT called.
+  // Fixture: components '5:1' with componentSetId+key (which would make legacy resolveSetNames(api,
+  // entry.components) call getComponent('pubkey')), BUT componentSets '4:1' covers the setId via the meta →
+  // meta-resolve, REST is not touched. The mutation "revert to resolveSetNames(api, entry.components, …)" →
+  // getComponent called → RED. The tool still runs without error (the meta covered the name).
+  it('setName from the componentSets meta → getComponent NOT called (meta-first buildSetNames)', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': {
+      document: doc,
+      components: { '5:1': { key: 'pubkey', name: 'Button', remote: true, componentSetId: '4:1' } },
+      componentSets: { '4:1': { key: 'sk1', name: 'listItem', remote: true } },
+    } } }));
+    const getComponent = vi.fn();
+    const run = harness({ getNodesRaw, getComponent });
+    const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot });
+    expect(res.isError).toBeFalsy();
+    expect(getComponent).not.toHaveBeenCalled(); // meta-resolve: zero /v1/components fetches
+  });
+
+  it('honest-errors on a failed dom_snapshot instead of crashing on missing .children (I5)', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: { status: 'not_found', selector: '.gone' } });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('not_found');
+  });
+
+  it('max_depth truncates a non-empty subtree → summary.depth_truncated:true (Thread 1)', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '2:1': { document: nestedDoc } } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({ file: 'abc', frame_node_id: '2-1', dom_snapshot: nestedDomSnapshot, max_depth: 0 });
+
+    const out = JSON.parse(res.content[0].text);
+    expect(out.pairs.some((p: any) => p.node_id === '2:2')).toBe(true); // 'row'
+    expect(out.pairs.some((p: any) => p.node_id === '2:3')).toBe(false); // 'a' — cut off by the guard
+    expect(out.summary.depth_truncated).toBe(true);
+  });
+
+  it('without max_depth — full recursion, summary.depth_truncated absent', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '2:1': { document: nestedDoc } } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({ file: 'abc', frame_node_id: '2-1', dom_snapshot: nestedDomSnapshot });
+
+    const out = JSON.parse(res.content[0].text);
+    expect(out.pairs.some((p: any) => p.node_id === '2:3')).toBe(true); // 'a' — now matches
+    expect('depth_truncated' in out.summary).toBe(false);
+  });
+
+  // summary.snapshot_truncated — an honest signal "the input DOM snapshot was truncated
+  // by the extractor somewhere in the tree; matching small nodes below the cut may be incomplete".
+  describe('summary.snapshot_truncated (#4 — honest signal on truncated DOM input)', () => {
+    it('childrenTruncated DEEP in the tree (not at the root, not on a direct child) → snapshot_truncated:true', async () => {
+      const deepTruncatedDomSnapshot = {
+        schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok' as const,
+        innerWidth: 300,
+        rect: { x: 0, y: 0, w: 300, h: 100 },
+        borders: { top: 0, right: 0, bottom: 0, left: 0 },
+        scroll: { top: 0, left: 0 },
+        children: [
+          {
+            kind: 'element' as const, tag: 'div', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 300, h: 100 },
+            children: [
+              {
+                kind: 'element' as const, tag: 'span', path: '> :nth-child(1) > :nth-child(1)', rect: { x: 0, y: 0, w: 150, h: 100 },
+                children: [
+                  { kind: 'element' as const, tag: 'b', path: '> :nth-child(1) > :nth-child(1) > :nth-child(1)', rect: { x: 0, y: 0, w: 50, h: 50 }, childrenTruncated: true },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+      const run = harness({ getNodesRaw });
+      const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: deepTruncatedDomSnapshot });
+      const out = JSON.parse(res.content[0].text);
+      expect(out.summary.snapshot_truncated).toBe(true);
+    });
+
+    it('I1 — childrenTruncated AT THE VERY ROOT of the snapshot (>30 direct children), nested ones not truncated → also snapshot_truncated:true', async () => {
+      const rootTruncatedDomSnapshot = {
+        schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok' as const,
+        innerWidth: 300,
+        rect: { x: 0, y: 0, w: 300, h: 100 },
+        borders: { top: 0, right: 0, bottom: 0, left: 0 },
+        scroll: { top: 0, left: 0 },
+        childrenTruncated: true, // root flag — dom-extractor.ts:131, >30 direct visible children
+        children: [
+          { kind: 'element' as const, tag: 'span', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 300, h: 24 }, text: 'Buy now' },
+          { kind: 'element' as const, tag: 'button', path: '> :nth-child(2)', rect: { x: 0, y: 32, w: 300, h: 40 } },
+        ],
+      };
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+      const run = harness({ getNodesRaw });
+      const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: rootTruncatedDomSnapshot });
+      const out = JSON.parse(res.content[0].text);
+      expect(out.summary.snapshot_truncated).toBe(true);
+    });
+
+    it('without a single childrenTruncated in the snapshot (neither root nor children) → the summary.snapshot_truncated field is absent', async () => {
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+      const run = harness({ getNodesRaw });
+      const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot });
+      const out = JSON.parse(res.content[0].text);
+      expect('snapshot_truncated' in out.summary).toBe(false);
+    });
+
+    // The DOM side was already folded in (tests above) — here it's the Figma side. The projector
+    // (buildLayoutSpec, honest depth-flag) sets childrenTruncated on a terminal
+    // node of the spec tree (deep, not at the frame root and not on a direct child) — the same honest signal
+    // as on the DOM side must fold into summary.snapshot_truncated, even when the DOM snapshot
+    // is entirely clean. The tree is built from a real RawSceneNode → buildLayoutSpec (not a mock), to
+    // verify the end-to-end path rather than an invariant detached from the projector.
+    it('Figma-side childrenTruncated (real projector, deep in spec.children) WITHOUT DOM truncation → summary.snapshot_truncated:true', async () => {
+      const l5: RawSceneNode = { id: '3:6', name: 'l5', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 10, height: 10 } };
+      const l4: RawSceneNode = { id: '3:5', name: 'l4', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 40, height: 40 }, children: [l5] };
+      const l3: RawSceneNode = { id: '3:4', name: 'l3', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 40, height: 40 }, children: [l4] };
+      const l2: RawSceneNode = { id: '3:3', name: 'l2', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 40, height: 40 }, children: [l3] };
+      const l1: RawSceneNode = { id: '3:2', name: 'l1', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 40, height: 40 }, children: [l2] };
+      const deepDoc: RawSceneNode = {
+        id: '3:1', name: 'card', type: 'FRAME',
+        absoluteBoundingBox: { x: 0, y: 0, width: 50, height: 50 },
+        children: [l1],
+      };
+      // Clean DOM side: neither the root nor the single child carries childrenTruncated —
+      // isolates the signal entirely on the Figma side (without this the dom-fold from the tests above would mask the regression).
+      const cleanDomSnapshot = {
+        schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok' as const,
+        innerWidth: 50,
+        rect: { x: 0, y: 0, w: 50, h: 50 },
+        borders: { top: 0, right: 0, bottom: 0, left: 0 },
+        scroll: { top: 0, left: 0 },
+        children: [
+          { kind: 'element' as const, tag: 'div', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 40, h: 40 } },
+        ],
+      };
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '3:1': { document: deepDoc } } }));
+      const run = harness({ getNodesRaw });
+      const res = await run({ file: 'abc', frame_node_id: '3-1', dom_snapshot: cleanDomSnapshot });
+      const out = JSON.parse(res.content[0].text);
+      expect(out.summary.snapshot_truncated).toBe(true);
+    });
+  });
+
+  // suggest_pairs is the SECOND input to the matcher (compare_node_to_dom
+  // is the first, gated at :338) — without an explicit version-gate, an old extractor silently slicing text at 40
+  // (no flag) is indistinguishable from a full snippet under the server's SNIPPET_CAP=120 threshold → canonical
+  // mis-anchor (a hidden tail could carry the disambiguating suffix). The Zod schema field accepts any int, so the
+  // gate must be explicit in the handler. Surface differs from compare's warn-row: suggest_pairs has no
+  // rows-structure, so a stale schema throws (isError) instead.
+  describe('dom_snapshot schema gate (second matcher input)', () => {
+    it('schema gate: a v3 snapshot (old extractor, 40-char cuts) → actionable rejection, matchPairs NOT called', async () => {
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+      const run = harness({ getNodesRaw });
+      const staleDomSnapshot = { ...okDomSnapshot, schema: 3 };
+      const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: staleDomSnapshot });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('schema');
+      expect(res.content[0].text).toContain('get_layout_spec');
+      // An actionable rejection, NOT a normal JSON matcher result — no pairs in the response.
+      expect(res.content[0].text).not.toContain('"pairs"');
+    });
+
+    // Positive bump regression: the canonical mis-anchor (a 51-60-char title, the old extractor cuts
+    // DOM text at 40 WITHOUT a flag — before the SNIPPET_CAP bump this was patched with a separate longtext guard at 40, below which
+    // 51-60-char text passed as "full"). Here the schema gate must cut the snapshot EARLIER than it even
+    // reaches anchoring — no matter which pair the old scan would have pulled the truncated text toward.
+    it('positive bump regression: a 51-60-char title truncated by the OLD extractor at 40 (schema:3) does NOT reach anchoring', async () => {
+      const title55 = 'Book Title Nr.'.padEnd(55, 'X'); // exactly 55 chars — in the 51-60 range
+      expect(title55.length).toBe(55);
+      const longTitleDoc: RawSceneNode = {
+        id: '4:1', name: 'card', type: 'FRAME',
+        absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 100 },
+        children: [
+          {
+            id: '4:2', name: 'title', type: 'TEXT',
+            absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 24 },
+            characters: title55, style: { fontFamily: 'Inter', fontSize: 16 },
+          },
+        ],
+      };
+      const staleDomSnapshotOldCut = {
+        schema: 3, status: 'ok' as const,
+        innerWidth: 300,
+        rect: { x: 0, y: 0, w: 300, h: 100 },
+        borders: { top: 0, right: 0, bottom: 0, left: 0 },
+        scroll: { top: 0, left: 0 },
+        children: [
+          // The old extractor (pre-bump) cut text.slice(0, 40) without a flag — this is that cut.
+          { kind: 'element' as const, tag: 'span', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 300, h: 24 }, text: title55.slice(0, 40) },
+        ],
+      };
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '4:1': { document: longTitleDoc } } }));
+      const run = harness({ getNodesRaw });
+      const res = await run({ file: 'abc', frame_node_id: '4-1', dom_snapshot: staleDomSnapshotOldCut });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('schema');
+      expect(res.content[0].text).not.toContain('"pairs"');
+    });
+
+    // Parity with compare_node_to_dom-tool.test.ts:1482 ('stale snapshot_schema resolved THROUGH
+    // dom_ref'): both tests above drive the stale schema through an inline dom_snapshot — this one drives it
+    // THROUGH dom_ref (snapshotStore.resolve), proving the gate sits on the shared `dom` AFTER the
+    // dom_snapshot|dom_ref fork, not only on the inline arm.
+    it('dom_ref arm: stale snapshot_schema resolved THROUGH dom_ref → the same actionable rejection as inline', async () => {
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+      const resolve = vi.fn(() => ({ ok: true as const, snapshot: { ...okDomSnapshot, schema: 3 } }));
+      const snapshotStore = { resolve } as unknown as ToolDeps['snapshotStore'];
+      const run = harness({ getNodesRaw }, { snapshotStore });
+      const res = await run({ file: 'abc', frame_node_id: '1-1', dom_ref: { ref: 'r1', selector: '.card' } });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('schema');
+      expect(res.content[0].text).toContain('get_layout_spec');
+      expect(res.content[0].text).not.toContain('"pairs"');
+    });
+  });
+
+  // Wire-contract guards. The handler tests above pass dom_snapshot as an object DIRECTLY, so they
+  // NEVER exercised the MCP inputSchema → connector coercion layer where the real blocker lived:
+  // z.unknown() advertised an untyped field, the claude_ai_Figma connector coerced the object to a
+  // string, and the server rejected every call. These pin the field's schema shape instead.
+  describe('dom_snapshot inputSchema contract (mirror of compare_node_to_dom.dom)', () => {
+    it('is a typed object schema — a stringified snapshot is REJECTED (connector must not coerce to string)', () => {
+      expect(InputSchema.dom_snapshot.safeParse(JSON.stringify(okDomSnapshot)).success).toBe(false);
+      expect(InputSchema.dom_snapshot.safeParse(okDomSnapshot).success).toBe(true);
+    });
+    // dom_snapshot is now OPTIONAL — dom_ref is the alternative (exactly-one enforced by
+    // the handler XOR guard, not the schema). Updated from the earlier "is required" contract
+    // test, which asserted the opposite (isOptional()===false); that assertion is now intentionally
+    // false, so it's rewritten rather than left to rot as a false-red guard.
+    it('is optional — isOptional()=true and undefined is accepted at the schema level (XOR enforced by the handler)', () => {
+      expect(InputSchema.dom_snapshot.isOptional()).toBe(true);
+      expect(InputSchema.dom_snapshot.safeParse(undefined).success).toBe(true);
+    });
+  });
+
+  it('frame not found in file → per-call error', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': null } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('not found');
+  });
+
+  describe('dom_ref', () => {
+    it('resolves via snapshotStore → identical pairs to inline dom_snapshot', async () => {
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+      const resolve = vi.fn(() => ({ ok: true, snapshot: okDomSnapshot }));
+      const snapshotStore = { resolve } as unknown as ToolDeps['snapshotStore'];
+      const inlineRun = harness({ getNodesRaw });
+      const refRun = harness({ getNodesRaw }, { snapshotStore, tenantId: 'u1' });
+      const inlineOut = JSON.parse((await inlineRun({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot })).content[0].text);
+      const refOut = JSON.parse((await refRun({ file: 'abc', frame_node_id: '1-1', dom_ref: { ref: 'r1', selector: '.card' } })).content[0].text);
+      expect(resolve).toHaveBeenCalledWith('r1', '.card', 'u1');
+      expect(refOut.pairs).toEqual(inlineOut.pairs);
+    });
+
+    // NOTE (deviation from brief): the brief's Step-1 snippet asserted these four cases via
+    // `.rejects.toThrow(...)`. This tool's handler body runs inside shared-error-handler.ts'
+    // runTool(), which try/catches every thrown Error and resolves { isError: true, content }
+    // instead of rejecting the promise (see the pre-existing I5 test above, "honest-errors on a
+    // failed dom_snapshot instead of crashing" — same isError:true pattern). A `.rejects` assertion
+    // here would never pass regardless of implementation correctness, so these check isError +
+    // content text instead, matching the file's existing convention.
+    it('throws on both dom_snapshot AND dom_ref', async () => {
+      const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: {} })) });
+      const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot, dom_ref: { ref: 'r', selector: '.card' } });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toMatch(/exactly one/);
+    });
+
+    it('throws on neither dom_snapshot NOR dom_ref', async () => {
+      const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: {} })) });
+      const res = await run({ file: 'abc', frame_node_id: '1-1' });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toMatch(/exactly one/);
+    });
+
+    it('throws a resolve failure as an honest note', async () => {
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+      const resolve = vi.fn(() => ({ ok: false, reason: 'expired' }));
+      const snapshotStore = { resolve } as unknown as ToolDeps['snapshotStore'];
+      const run = harness({ getNodesRaw }, { snapshotStore });
+      const res = await run({ file: 'abc', frame_node_id: '1-1', dom_ref: { ref: 'stale', selector: '.card' } });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toMatch(/expired\/unknown/);
+    });
+
+    it('throws when snapshotStore is absent', async () => {
+      const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: {} })) });
+      const res = await run({ file: 'abc', frame_node_id: '1-1', dom_ref: { ref: 'r', selector: '.card' } });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toMatch(/snapshot store unavailable/);
+    });
+  });
+});

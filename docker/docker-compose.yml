@@ -1,0 +1,123 @@
+# framefit compose — two shapes, selected by profile:
+#
+#   local  → framefit-local ONLY. Single-tenant, no auth, no database, binds
+#            127.0.0.1:${MCP_PORT:-3846}. `docker compose --profile local up`.
+#            A contributor's 10-minute "does it run" path; no owner secrets, no
+#            database, no Keycloak.
+#
+#   full   → the PRODUCTION service set: framefit (MULTI_TENANT) + figma-postgres,
+#            authenticating against an EXTERNAL Keycloak (or any OIDC IdP) via env vars
+#            (KEYCLOAK_JWKS_URL etc., set in docker/.env). This is what prod runs.
+#            `COMPOSE_PROFILES=full` in docker/.env makes prod's historical
+#            `docker compose up -d --build framefit` byte-for-byte unchanged — compose
+#            reads the var itself.
+#
+# The admin portal (team registration, PAT management UI) that the author's deployment uses
+# to drive the server's /accounts HTTP API is NOT part of this repository; the server's
+# MULTI_TENANT mode and the /accounts API it exposes are. Nothing starts without a profile —
+# there are no profile-less services — so a bare `docker compose up` is a no-op.
+
+services:
+  # ── local profile: single-tenant, standalone ───────────────────────────────
+  framefit-local:
+    profiles: ["local"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: framefit-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MCP_PORT:-3846}:3846"
+    environment:
+      # No MULTI_TENANT, no DATABASE_URL, no Keycloak: a bare single-tenant server.
+      # Health + MCP `initialize` work with no token; real Figma calls need one —
+      # pass it in docker/.env (FIGMA_TOKEN=...) or the shell env. Bare (no `=`)
+      # pass-through: when FIGMA_TOKEN is unset the var is OMITTED from the container
+      # (config treats it as absent → optional). `FIGMA_TOKEN=${FIGMA_TOKEN:-}` would
+      # instead inject an EMPTY string, which the schema rejects (min length 1).
+      # Bare-listing is safe HERE ONLY because this service has no env_file; on a
+      # service with env_file a bare entry would WIPE the env_file value when the
+      # host var is unset (see the rule on framefit's environment block).
+      - FIGMA_TOKEN
+      # Same bare pass-through: single-tenant cross-library graph teams (optional).
+      - DS_TEAM_IDS
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Browser-facing base for the extractor loader / dom-snapshot upload_url. The
+      # server would otherwise fall back to its in-container bound origin (also :3846);
+      # we pin the HOST-published port so an overridden MCP_PORT stays correct.
+      # Overridable for reverse-proxy deployments (see docs/deployment.md): the
+      # advertised base must be the origin the BROWSER reaches, not the bind address.
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://127.0.0.1:${MCP_PORT:-3846}}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── full (prod): the multi-tenant server ────────────────────────────────────
+  # Every former production-host literal is now ${VAR:-<localhost default>}: it comes up on
+  # localhost defaults, and prod overrides each in docker/.env (see docker/README.md § 2).
+  # ENCRYPTION_KEY is deliberately NOT here — it stays in mcp-server/.env (env_file) so
+  # prod's real key is never shadowed by a compose default.
+  framefit:
+    profiles: ["full"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: framefit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MCP_PORT:-3846}:3846"
+    env_file:
+      - ../mcp-server/.env
+    environment:
+      # RULE: never list a variable here (even bare, no `=`) that env_file is expected to
+      # supply. `environment` takes precedence over env_file, and a bare entry whose host
+      # var is unset does NOT fall through to env_file — it REMOVES the variable from the
+      # container (proven by runtime: alpine probe with env_file key + bare entry + unset
+      # host var → var absent). ENCRYPTION_KEY therefore rides ONLY mcp-server/.env (env_file).
+      - MULTI_TENANT=true
+      - DATABASE_URL=postgresql://mcp:${POSTGRES_PASSWORD:-devpassword}@figma-postgres:5432/figma_mcp
+      # Auth against an EXTERNAL Keycloak (or any OIDC IdP). Prod sets these in docker/.env;
+      # the localhost defaults only let compose render without "variable is not set" warnings.
+      - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-http://localhost:8080/realms/mcp/protocol/openid-connect/certs}
+      - OAUTH_AUTHORIZATION_SERVER=${OAUTH_AUTHORIZATION_SERVER:-http://localhost:8080/realms/mcp}
+      - MCP_HOST=${MCP_HOST:-localhost:3846}
+      # OAuth identity the MT server advertises. Defaults to localhost; prod MUST set its
+      # https origin here (see the PUBLIC_BASE_URL shadow note in docker/README.md § 2).
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:3846}
+      # Bound concurrent heavy Figma fetches to 1. A single whole-file fetch can be ~110MB;
+      # letting two run at once contends the network/event-loop and pushed whole-file find_nodes
+      # past the 90s timeout on this tight-memory single box (observed under load testing).
+      # Overrides the config default of 2. Raise on a well-resourced multi-tenant host.
+      - FIGMA_MAX_CONCURRENT_REQUESTS=1
+      # ENFORCE_AUDIENCE=true   # enable once Keycloak issues figma-scoped aud (currently soft; set in mcp-server/.env on prod)
+    depends_on:
+      figma-postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── full (prod): postgres ────────────────────────────────────────────────────
+  figma-postgres:
+    profiles: ["full"]
+    image: pgvector/pgvector:pg16
+    container_name: figma-postgres
+    environment:
+      - POSTGRES_DB=figma_mcp
+      - POSTGRES_USER=mcp
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-devpassword}
+    volumes:
+      - figma-pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcp -d figma_mcp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  figma-pgdata:
