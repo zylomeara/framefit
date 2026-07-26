@@ -83,7 +83,17 @@ export interface StatusReport {
   scope: { hostname: string; pid: number; env_source: 'process' };
   key_fingerprint: string | null;
   checks: ({ id: string } & CheckResult)[];
-  summary: { total: number; ok: number; skipped: number; failed: number; ok_overall: boolean };
+  summary: {
+    total: number; ok: number; skipped: number; failed: number;
+    /** False when fewer checks ran than the run asked for (the CLI's hard deadline fired mid-run).
+     *  `total` then describes the COMPLETED SUBSET, not the whole run, so a consumer that reads
+     *  counts without reading this field would treat an aborted run as a finished one. */
+    complete: boolean;
+    /** A VERDICT, not a count: it requires `complete` too. An aborted run never reached a verdict,
+     *  so it can never claim one - `ok_overall: true` with `complete: false` was the false green
+     *  this field pairing exists to make impossible. */
+    ok_overall: boolean;
+  };
 }
 
 import { createHash } from 'node:crypto';
@@ -112,10 +122,18 @@ export function keyFingerprint(raw: string | undefined): string | null {
 // are public identifiers and parseTeamIds' message must keep naming the bad one.
 const SECRET_VARS = ['ENCRYPTION_KEY', 'FIGMA_TOKEN'] as const;
 
+// The ONE credential mask for a DSN-shaped string. Exported because the CLI's pg pool-error logger
+// sits OUTSIDE this module's redactor - that callback fires independently of any check, so it cannot
+// go through makeRedactor - and a hand copy of this regex at that call site would be a second
+// implementation free to rot. Credentials only: the HOST of a DATABASE_URL is the diagnostic value.
+export function maskDsnCredentials(s: string): string {
+  return s.replace(/(postgres(?:ql)?:\/\/)[^@\s/]+@/gi, '$1<redacted>@');
+}
+
 // DATABASE_URL carries its password inline (scheme://user:pass@host/db). The credentials are the
 // only secret part of it - a bare password can also leak OUTSIDE the URL shape entirely (e.g. a
 // driver's own "password authentication failed for user ..." message), so the decoded password
-// gets its own substitution entry instead of relying on the URL-shaped regex below to catch it.
+// gets its own substitution entry instead of relying on the URL-shaped mask above to catch it.
 function extractUrlPassword(raw: string | undefined): string | null {
   if (!raw) return null;
   const m = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^:@/\s]*:([^@\s]*)@/.exec(raw.trim());
@@ -165,9 +183,7 @@ function makeRedactor(ctx: StatusCtx): (s: string) => string {
     // A check adds its decrypted PAT to ctx.secrets DURING its own run(), which happens after this
     // redactor already exists; capturing the set once up front would miss every such addition.
     for (const v of ctx.secrets) if (v.length >= 8) out = out.split(v).join('<redacted:secret>');
-    // Credentials only - the HOST of a DATABASE_URL is the diagnostic value, keep it.
-    out = out.replace(/(postgres(?:ql)?:\/\/)[^@\s/]+@/gi, '$1<redacted>@');
-    return foldToAscii(out);
+    return foldToAscii(maskDsnCredentials(out));
   };
 }
 
@@ -212,10 +228,23 @@ async function runOne(check: Check, ctx: StatusCtx, timeoutMs: number, redact: (
   }
 }
 
-export function buildReport(ctx: StatusCtx, results: ({ id: string } & CheckResult)[]): StatusReport {
+/**
+ * `expectedTotal` is how many checks the run ASKED for; fewer results than that means the run was cut
+ * short (the CLI's hard deadline) and the report is a partial one. It is a parameter rather than a
+ * `results.length < CHECK_IDS.length` comparison because a deliberate subset run - `collectStatus(ctx,
+ * [oneCheck])`, which every check's own tests use - is COMPLETE for what it asked, and marking it
+ * incomplete/not-ok would make both fields meaningless for anything but a full registry run.
+ * Defaults to the default registry, which is what the CLI runs.
+ */
+export function buildReport(
+  ctx: StatusCtx,
+  results: ({ id: string } & CheckResult)[],
+  expectedTotal: number = CHECKS.length,
+): StatusReport {
   const ok = results.filter((r) => r.state === 'ok').length;
   const skipped = results.filter((r) => r.state === 'skipped').length;
   const failed = results.filter((r) => r.state === 'fail').length;
+  const complete = results.length >= expectedTotal;
   return {
     schema: 1,
     generated_at: new Date(ctx.now()).toISOString(),
@@ -228,7 +257,9 @@ export function buildReport(ctx: StatusCtx, results: ({ id: string } & CheckResu
     scope: { hostname: ctx.hostname, pid: ctx.pid, env_source: 'process' },
     key_fingerprint: keyFingerprint(ctx.env.ENCRYPTION_KEY),
     checks: results,
-    summary: { total: results.length, ok, skipped, failed, ok_overall: failed === 0 },
+    // ok_overall requires `complete`: a run the deadline cut short never reached a verdict, and a
+    // consumer reading only `.summary.ok_overall` must not see "healthy" for it.
+    summary: { total: results.length, ok, skipped, failed, complete, ok_overall: complete && failed === 0 },
   };
 }
 
@@ -260,7 +291,10 @@ export async function collectStatus(
   // what completed.
   const results = opts.sink ?? [];
   for (const check of checks) results.push(await runOne(check, effectiveCtx, timeoutMs, redact));
-  return buildReport(effectiveCtx, results);
+  // The expectation is what THIS run asked for, not the registry: a subset run that finished its
+  // subset is complete. Only a caller that abandons this promise (withDeadline) renders a partial
+  // report, and it builds that one itself from the sink.
+  return buildReport(effectiveCtx, results, checks.length);
 }
 
 /** Resolves null if `work` outlives the deadline; the caller renders the sink and exits 2. This
@@ -316,7 +350,10 @@ export function renderText(report: StatusReport, width = 100): string {
   ];
   const lines = report.checks.map((c) => wrap(`${STATE_TAG[c.state]} ${c.id.padEnd(ID_COL)}`, detailLine(c), width));
   const s = report.summary;
-  return [...head, ...lines, '', `${s.ok} ok, ${s.skipped} skipped, ${s.failed} failed`, ''].join('\n');
+  // The human surface must not read as a finished run either: stdout is what gets pasted into a
+  // ticket, and the stderr line explaining the abort does not travel with it.
+  const cut = s.complete ? '' : ' - INCOMPLETE: the run was cut short, not every check ran';
+  return [...head, ...lines, '', `${s.ok} ok, ${s.skipped} skipped, ${s.failed} failed${cut}`, ''].join('\n');
 }
 
 export function renderJson(report: StatusReport): string { return `${JSON.stringify(report)}\n`; }

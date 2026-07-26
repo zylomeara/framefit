@@ -17,7 +17,7 @@ import { signBridgeToken } from '../multi-tenant/bridge-token.js';
 import { isEncryptionKeyHex, ENCRYPTION_KEY_HINT } from '../multi-tenant/env.js';
 import {
   collectStatus, buildReport, renderText, renderJson, withDeadline, HARD_DEADLINE_MS, effectiveMultiTenant,
-  type StatusCtx, type StatusDb, type TokenStats, type GraphStats, type CheckResult,
+  maskDsnCredentials, type StatusCtx, type StatusDb, type TokenStats, type GraphStats, type CheckResult,
 } from './status.js';
 
 /**
@@ -81,6 +81,9 @@ export interface CliDeps {
   pid: () => number;
   /** Optional; defaults to HARD_DEADLINE_MS. A dep, not a flag - testable without public surface. */
   deadlineMs?: number;
+  /** Optional; defaults to CLOSE_BUDGET_MS. Same reasoning as deadlineMs: a test must be able to
+   *  reach the "the pool will not close" path in milliseconds, not in seconds. */
+  closeBudgetMs?: number;
 }
 
 const USAGE = `usage: framefit <command>
@@ -378,10 +381,43 @@ async function cmdBridgeToken(args: string[], deps: CliDeps): Promise<number> {
 }
 
 // ── status ──────────────────────────────────────────────────────────────────────────────────────
+/** The complete flag vocabulary of `status`. An unknown flag is a usage error, never ignored:
+ *  `--no-prob` silently accepted would PERFORM the network probe the operator asked to suppress,
+ *  and `--jsom` would hand human text to a JSON consumer - both at exit 0, which is worse than a
+ *  refusal because the caller has no way to notice. */
+const STATUS_FLAGS = ['json', 'probe', 'no-probe'] as const;
+
+/** How long `status` waits for the pg pool to drain before giving up on it. pool.end() waits for
+ *  the clients an abandoned check left mid-query, and initDb builds the pool with no connect or
+ *  statement timeout, so an UNBOUNDED close turns "a dependency is not answering" into "status
+ *  never exits" - defeating the hard deadline in exactly the situation it exists for. Short on
+ *  purpose: the process is about to exit anyway, and the OS reclaims the sockets. */
+const CLOSE_BUDGET_MS = 2_000;
+
+/**
+ * Close the read-only pool without ever changing an exit code the report already earned. Both the
+ * timeout and a rejection are logged, not propagated: a verdict that was reached and printed must
+ * not be overwritten by a teardown problem (a rejecting closeDb used to turn a printed, complete
+ * report into exit 2). Bounded per CLOSE_BUDGET_MS above.
+ */
+async function closeStatusPool(deps: CliDeps): Promise<void> {
+  const budgetMs = deps.closeBudgetMs ?? CLOSE_BUDGET_MS;
+  try {
+    const closed = await withDeadline(deps.closeDb().then(() => true), budgetMs);
+    if (closed === null) {
+      deps.logger.warn({ budget_ms: budgetMs }, 'status.pool_close_timed_out');
+    }
+  } catch (e) {
+    // The pool's own error text can quote the DSN; same masker the checks' redactor uses.
+    deps.logger.warn({ err: maskDsnCredentials(e instanceof Error ? e.message : String(e)) }, 'status.pool_close_failed');
+  }
+}
+
 /**
  * `status [--json] [--probe|--no-probe]` — instance self-diagnosis. Unlike teams/sync/users this
  * does NOT run the DB bootstrap (makeDbRunner): a diagnostic that migrates the schema it inspects is
- * not a diagnostic. It opens the pool only to SELECT, and always closes it.
+ * not a diagnostic. It opens the pool only to SELECT, and always closes it — under a bounded budget
+ * (closeStatusPool), so the command remains bounded END TO END and not just up to the last check.
  *
  * Exit codes are the machine surface: 0 = nothing failed, 1 = a check failed, 2 = the command could
  * not run at all (usage error, internal throw, deadline). Nothing here calls `check.run()` directly:
@@ -392,10 +428,23 @@ async function cmdBridgeToken(args: string[], deps: CliDeps): Promise<number> {
 async function cmdStatus(args: string[], deps: CliDeps): Promise<number> {
   const { positionals, flags } = parseFlags(args);
   if (positionals.length > 0) return usageErr2(deps, `status takes no positional arguments (got "${positionals[0]}")`);
+  for (const name of Object.keys(flags)) {
+    if (!(STATUS_FLAGS as readonly string[]).includes(name)) {
+      return usageErr2(deps, `unknown flag --${name} (status accepts ${STATUS_FLAGS.map((f) => `--${f}`).join(', ')})`);
+    }
+  }
   // parseFlags assigns '' to a valueless flag (see parseFlags above), so truthiness is ALWAYS false
   // for --json/--probe/--no-probe. Presence (!== undefined) is the signal; a value is a usage error.
-  for (const name of ['json', 'probe', 'no-probe']) {
-    if (flags[name] !== undefined && flags[name] !== '') return usageErr2(deps, `--${name} takes no value`);
+  for (const name of STATUS_FLAGS) {
+    const value = flags[name];
+    if (value === undefined || value === '') continue;
+    // `--probe wat` and `--probe=wat` are DIFFERENT mistakes: in the first, parseFlags swallowed a
+    // bare argument as the flag's value, so "--probe takes no value" alone would name the wrong
+    // problem and leave the operator staring at an argument the message never mentions.
+    const attached = args.some((a) => a.startsWith(`--${name}=`));
+    return usageErr2(deps, attached
+      ? `--${name} takes no value (got "${value}")`
+      : `--${name} takes no value - "${value}" was read as its value, and status takes no positional arguments either`);
   }
   if (flags.probe !== undefined && flags['no-probe'] !== undefined) {
     return usageErr2(deps, '--probe and --no-probe are mutually exclusive');
@@ -413,14 +462,17 @@ async function cmdStatus(args: string[], deps: CliDeps): Promise<number> {
   const probe = flags['no-probe'] !== undefined ? false : flags.probe !== undefined ? true : !multiTenant;
 
   const hasDb = Boolean(deps.env.DATABASE_URL);
-  if (hasDb) {
-    deps.initDb(deps.env.DATABASE_URL as string, (e) => {
-      // pg puts the whole DSN (password included) in ECONNREFUSED; never log it raw. This logger is
-      // outside collectStatus's redactor, so the substitution has to happen at this call site.
-      deps.logger.error({ err: e.message.replace(/(postgres(?:ql)?:\/\/)[^@\s/]+@/gi, '$1<redacted>@') }, 'pg.pool_error');
-    });
-  }
   try {
+    // INSIDE the try: a throwing initDb (a malformed DSN) must still reach the close below - pg can
+    // have built the pool before throwing, and closeDb is a no-op when it did not.
+    if (hasDb) {
+      deps.initDb(deps.env.DATABASE_URL as string, (e) => {
+        // pg puts the whole DSN (password included) in ECONNREFUSED; never log it raw. This callback
+        // fires outside collectStatus's redactor, so the mask has to be applied at this call site -
+        // via the same exported masker the redactor itself uses.
+        deps.logger.error({ err: maskDsnCredentials(e.message) }, 'pg.pool_error');
+      });
+    }
     const db: StatusDb | undefined = hasDb ? {
       listUsers: deps.listUsers,
       listTeams: deps.listTeams,
@@ -442,7 +494,9 @@ async function cmdStatus(args: string[], deps: CliDeps): Promise<number> {
 
     if (!report) {
       // Print the PARTIAL report, not just an error line: the checks that did finish are exactly the
-      // evidence that narrows down which dependency is hanging.
+      // evidence that narrows down which dependency is hanging. buildReport's default expectation is
+      // the default registry - the very list collectStatus just ran - so a short sink is reported as
+      // summary.complete: false with ok_overall: false, and no consumer reads an aborted run as green.
       const partial = buildReport(ctx, sink);
       deps.out(json ? renderJson(partial) : renderText(partial));
       deps.err(`error: status did not finish within ${deadlineMs}ms - a dependency is not answering\n`);
@@ -454,7 +508,7 @@ async function cmdStatus(args: string[], deps: CliDeps): Promise<number> {
     deps.err('note: status reports what THIS process sees with this environment and database; it does not see a running server\'s memory.\n');
     return report.summary.failed > 0 ? 1 : 0;
   } finally {
-    if (hasDb) await deps.closeDb();
+    if (hasDb) await closeStatusPool(deps);
   }
 }
 

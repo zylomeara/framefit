@@ -61,9 +61,19 @@ describe('collectStatus', () => {
     const bad: Check = { id: 'db', run: async () => ({ state: 'fail', reason: 'unreachable' }) };
     const skip: Check = { id: 'figma', run: async () => ({ state: 'skipped', reason: 'off' }) };
     const green = await collectStatus(baseCtx(), [okCheck, skip]);
-    expect(green.summary).toEqual({ total: 2, ok: 1, skipped: 1, failed: 0, ok_overall: true });
+    expect(green.summary).toEqual({ total: 2, ok: 1, skipped: 1, failed: 0, complete: true, ok_overall: true });
     const red = await collectStatus(baseCtx(), [okCheck, bad, skip]);
-    expect(red.summary).toEqual({ total: 3, ok: 1, skipped: 1, failed: 1, ok_overall: false });
+    expect(red.summary).toEqual({ total: 3, ok: 1, skipped: 1, failed: 1, complete: true, ok_overall: false });
+  });
+
+  // A DELIBERATE subset run is complete for what it asked: collectStatus passes its own check count as
+  // the expectation, so `complete` cannot become a synonym for "fewer than the whole registry" - which
+  // would mark every single-check test in this file incomplete and not-ok.
+  it('marks a subset run complete - the expectation is what the run asked for, not the registry', async () => {
+    const r = await collectStatus(baseCtx(), [okCheck]);
+    expect(r.summary.complete).toBe(true);
+    expect(r.summary.ok_overall).toBe(true);
+    expect(CHECKS.length).toBeGreaterThan(1);   // sanity: this WAS a subset of the real registry
   });
 
   it('stamps generated_at from the injected clock, not the wall clock', async () => {
@@ -254,6 +264,32 @@ describe('renderJson', () => {
     expect(parsed.schema).toBe(1);
     expect(parsed.scope).toEqual({ hostname: 'box', pid: 7, env_source: 'process' });
     expect(parsed.summary.total).toBe(1);
+  });
+});
+
+// The machine surface of the exit-2 path. Every per-check field of a partial report is true, so the
+// ONLY thing that can tell a consumer the run was aborted is the summary: `total` describes the
+// completed subset, and without these two fields `.summary.ok_overall` reads healthy on an aborted
+// run - the exact false green a cron wrapper would swallow.
+describe('buildReport truncation', () => {
+  const partial = () => buildReport(baseCtx(), [{ id: 'config', state: 'ok', detail: {} }]);
+
+  it('marks a report that ran fewer checks than the registry incomplete and NOT ok_overall', () => {
+    const r = partial();
+    expect(r.summary).toEqual({ total: 1, ok: 1, skipped: 0, failed: 0, complete: false, ok_overall: false });
+    expect(JSON.parse(renderJson(r)).summary.ok_overall).toBe(false);
+  });
+
+  it('says INCOMPLETE on the human surface too, where stdout travels without the stderr line', () => {
+    expect(renderText(partial())).toMatch(/INCOMPLETE/);
+  });
+
+  it('a full-registry run is complete and can claim a verdict', () => {
+    const all = CHECK_IDS.map((id) => ({ id, state: 'ok' as const, detail: {} }));
+    const r = buildReport(baseCtx(), all);
+    expect(r.summary.complete).toBe(true);
+    expect(r.summary.ok_overall).toBe(true);
+    expect(renderText(r)).not.toMatch(/INCOMPLETE/);
   });
 });
 

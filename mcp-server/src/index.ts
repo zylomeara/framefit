@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import pino from 'pino';
 import { loadConfig } from './infrastructure/config.js';
-import { createLogger } from './infrastructure/logger.js';
+import { createLogger, type Logger } from './infrastructure/logger.js';
 import { startServer } from './infrastructure/server.js';
 import { isMultiTenant, loadMultiTenantEnv } from './multi-tenant/env.js';
 import { hostname } from 'node:os';
@@ -94,15 +94,29 @@ async function main(): Promise<void> {
   });
 }
 
+/**
+ * The CLI's own logger, which must NEVER be the thing that decides whether a command can run: pino
+ * throws for any level outside its enum — the same values loadConfig's zod schema rejects — so
+ * building it from a bad LOG_LEVEL used to kill the process with a pino stack trace before `status`
+ * could report that very misconfiguration (its headline example). Fall back to 'info' and let the
+ * config check name the offending value on stdout, where an operator can act on it.
+ */
+function buildCliLogger(): Logger {
+  const destination = pino.destination({ dest: 2, sync: true });
+  const level = process.env.LOG_LEVEL ?? 'info';
+  try {
+    return createLogger({ level, destination });
+  } catch {
+    return createLogger({ level: 'info', destination });
+  }
+}
+
 // Assemble the operator-CLI dependency surface from the real modules. The CLI logger is pinned to
 // fd 2 (stderr) so — like the stdio server path — a CLI invocation writes ZERO diagnostic bytes to
 // stdout; only genuine command RESULTS reach stdout via `out`. buildApi builds a bare (un-cached)
 // REST adapter: a one-shot CLI command has no cache to reuse.
 function buildCliDeps(): CliDeps {
-  const logger = createLogger({
-    level: process.env.LOG_LEVEL ?? 'info',
-    destination: pino.destination({ dest: 2, sync: true }),
-  });
+  const logger = buildCliLogger();
   return {
     env: process.env,
     out: (s) => { process.stdout.write(s); },
@@ -144,7 +158,12 @@ function buildCliDeps(): CliDeps {
 // transport owns it — the stdio-smoke gate). All CLI/boot-error output goes to stderr.
 const argv = process.argv.slice(2);
 if (isCliCommand(argv)) {
-  runCli(argv, buildCliDeps())
+  // buildCliDeps() is constructed INSIDE the chain, not as an argument evaluated outside it: any
+  // throw while assembling the deps (a pino/adapter constructor rejecting the environment) would
+  // otherwise escape the .catch() below and take Node's default exit 1 — the code reserved for "a
+  // check failed" — for something that never got to run a check at all.
+  Promise.resolve()
+    .then(() => runCli(argv, buildCliDeps()))
     .then((code) => process.exit(code))
     .catch((err) => {
       process.stderr.write(`fatal: ${(err as Error)?.stack ?? (err as Error)?.message ?? String(err)}\n`);
