@@ -1,6 +1,6 @@
 import { loadConfig } from './config.js';
 import { multiTenantEnvGraphConflict, parseTeamIds } from './env-graph.js';
-import { isMultiTenant, loadMultiTenantEnv } from '../multi-tenant/env.js';
+import { isMultiTenant, loadMultiTenantEnv, isEncryptionKeyHex, ENCRYPTION_KEY_HINT } from '../multi-tenant/env.js';
 
 export type CheckResult =
   | { state: 'ok'; detail: Record<string, unknown> }
@@ -374,6 +374,14 @@ export const keyCheck: Check = {
     const key = ctx.env.ENCRYPTION_KEY;
     if (!key) return { state: 'skipped', reason: 'ENCRYPTION_KEY is not set' };
 
+    // Shape first: aes-256-gcm rejects a key of the wrong length outright, but jose's HS256 (the
+    // bridge-token signer below) signs and verifies happily with a key of ANY byte length - so a
+    // short/malformed key would sail through Part 1's round-trip and, with no DATABASE_URL to
+    // reach Part 2, report ok for a key nothing else validates in single-tenant mode (configCheck's
+    // shape check only runs under multi-tenant, via loadMultiTenantEnv). Same predicate used
+    // everywhere else this key's shape is checked (env.ts:33), so this can never drift from it.
+    if (!isEncryptionKeyHex(key)) return { state: 'fail', reason: ENCRYPTION_KEY_HINT };
+
     // Part 1 - EVERY mode, no database. The incident this command exists for (a bare 403 from the
     // ingest endpoint) happened on exactly this path, where a DB-only check is skipped.
     try {
@@ -382,7 +390,8 @@ export const keyCheck: Check = {
         return { state: 'fail', reason: 'ENCRYPTION_KEY did not round-trip a bridge token (sign+verify) - tokens signed with it cannot be verified' };
       }
     } catch (e) {
-      return { state: 'fail', reason: `ENCRYPTION_KEY cannot sign a bridge token: ${(e as Error).message}` };
+      const message = e instanceof Error ? e.message : String(e);
+      return { state: 'fail', reason: `ENCRYPTION_KEY cannot sign a bridge token: ${message}` };
     }
 
     if (!ctx.db) return { state: 'ok', detail: { self_test: 'sign+verify round-trip passed', decrypt: 'not checked (no DATABASE_URL)' } };
@@ -393,23 +402,40 @@ export const keyCheck: Check = {
     if (users.length === 0) return { state: 'ok', detail: { self_test: 'sign+verify round-trip passed', decrypt: 'no users registered' } };
 
     let decrypted = 0;
+    // getDefaultPat returns null for a user who has tokens but none marked default (db.ts:183) -
+    // that is an ABSENCE of decrypt evidence, never a decrypt success, and must never be counted
+    // into `decrypted` or dressed up as an `ok` with nothing behind it.
+    let noDefault = 0;
     const mismatched: string[] = [];
     const other: string[] = [];
     for (const user of users) {
       try {
-        if (await ctx.db.getDefaultPat(user, key)) decrypted++;
+        const pat = await ctx.db.getDefaultPat(user, key);
+        if (pat) decrypted++; else noDefault++;
       } catch (e) {
-        const message = (e as Error).message ?? '';
+        const message = e instanceof Error ? e.message : String(e);
         if (DECRYPT_ERROR.test(message)) mismatched.push(user); else other.push(`${user}: ${message}`);
       }
     }
     if (mismatched.length > 0) {
+      // "cannot authenticate", not "does not match": a row encrypted under a different user's AAD
+      // (crypto.ts - decrypt() passes userId as AAD) throws this SAME GCM message even when the key
+      // itself is right, so "does not match the stored data" would over-claim what one failed GCM
+      // tag actually proves.
       return { state: 'fail',
-        reason: `ENCRYPTION_KEY (fingerprint ${keyFingerprint(key)}) does not match the stored data for ${mismatched.length} of ${users.length} users: ${mismatched.join(', ')}`,
-        detail: { decrypted, users: users.length } };
+        reason: `ENCRYPTION_KEY (fingerprint ${keyFingerprint(key)}) cannot authenticate the stored data for ${mismatched.length} of ${users.length} users: ${mismatched.join(', ')}`,
+        detail: { decrypted: `${decrypted} of ${users.length}`, users: users.length } };
     }
     if (other.length > 0) return { state: 'fail', reason: `could not read stored PATs: ${other.join('; ')}` };
-    return { state: 'ok', detail: { self_test: 'sign+verify round-trip passed', decrypted: `${decrypted} of ${users.length}` } };
+
+    const detail: Record<string, unknown> = { self_test: 'sign+verify round-trip passed', decrypted: `${decrypted} of ${users.length}` };
+    if (noDefault > 0) detail.no_default = noDefault;
+    // Zero of the attempts above are decrypt SUCCESSES: every user has tokens but none marked
+    // default, so this line is not silent success, it is an absence of evidence. The `tokens`
+    // check (later task) reports the users-without-a-default fact itself - this only has to say
+    // the decrypt count here proves nothing, not repeat that fact.
+    if (noDefault === users.length) detail.decrypt = 'no evidence - no user has a default PAT (the tokens check reports this)';
+    return { state: 'ok', detail };
   },
 };
 

@@ -5,6 +5,7 @@ import { collectStatus, buildReport, withDeadline, renderText, renderJson, keyFi
 import { baseCtx } from './status-fixtures.js';
 import { multiTenantEnvGraphConflict } from '../../src/infrastructure/env-graph.js';
 import { ENCRYPTION_KEY_HINT } from '../../src/multi-tenant/env.js';
+import { signBridgeToken, verifyBridgeToken } from '../../src/multi-tenant/bridge-token.js';
 
 const okCheck: Check = { id: 'config', run: async () => ({ state: 'ok', detail: { a: 1 } }) };
 
@@ -371,8 +372,50 @@ describe('key check', () => {
     expect((await run({})).state).toBe('skipped');
   });
 
+  it('fails on a hex key of the wrong length - jose (HS256) signs/verifies happily with any byte length, but aes-256-gcm needs exactly 32 bytes', async () => {
+    const r = await run({ env: { ENCRYPTION_KEY: 'deadbeef' } });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toBe(ENCRYPTION_KEY_HINT);
+  });
+
   it('fails WITHOUT any database when sign/verify does not round-trip', async () => {
     const r = await run({ env: { ENCRYPTION_KEY: KEY }, verifyBridgeToken: async () => null });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/round-trip/i);
+  });
+
+  it('fails when verify returns a DIFFERENT subject than was signed, not just falsy', async () => {
+    // A verifier that returns ANY truthy string (but not the one that was signed) must still fail -
+    // truthiness alone is not proof the token round-tripped to the SAME identity.
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, verifyBridgeToken: async () => 'someone-else' });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/round-trip/i);
+  });
+
+  it('round-trips a REAL bridge token end to end, not the fixture stub', async () => {
+    // status-fixtures.ts stubs both signBridgeToken and verifyBridgeToken to ignore their
+    // arguments entirely - wiring the REAL jose-backed pair here is the only thing that proves the
+    // check actually exercises sign+verify, not just calls two functions that always agree.
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, signBridgeToken, verifyBridgeToken });
+    expect(r.state).toBe('ok');
+  });
+
+  it('fails when the ctx signer signs with a DIFFERENT key than env.ENCRYPTION_KEY (real jose catches the drift)', async () => {
+    const OTHER_KEY = 'b'.repeat(64);
+    const r = await run({
+      env: { ENCRYPTION_KEY: KEY },
+      // Simulates a wiring bug: the injected signer ignores the secretHex it's handed and always
+      // signs with a stale/different key, while verify uses the real env key.
+      signBridgeToken: (userId: string, _key: string, ttl: number) => signBridgeToken(userId, OTHER_KEY, ttl),
+      verifyBridgeToken,
+    });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/round-trip/i);
+  });
+
+  it('still runs the sign/verify round-trip when a database IS present (Part 1 must not be skipped)', async () => {
+    const db = { listUsers: async () => [], getDefaultPat: async () => null } as unknown as StatusDb;
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, db, verifyBridgeToken: async () => null });
     expect(r.state).toBe('fail');
     expect((r as { reason: string }).reason).toMatch(/round-trip/i);
   });
@@ -388,7 +431,7 @@ describe('key check', () => {
     const r = await run({ env: { ENCRYPTION_KEY: KEY }, db });
     expect(r.state).toBe('fail');
     expect((r as { reason: string }).reason)
-      .toMatch(new RegExp(`fingerprint ${keyFingerprint(KEY)}.*1 of 2 users: u2`));
+      .toMatch(new RegExp(`fingerprint ${keyFingerprint(KEY)}.*cannot authenticate.*1 of 2 users: u2`));
   });
 
   it('does not blame the key for a pool error', async () => {
@@ -398,7 +441,7 @@ describe('key check', () => {
     } as unknown as StatusDb;
     const r = await run({ env: { ENCRYPTION_KEY: KEY }, db });
     expect(r.state).toBe('fail');
-    expect((r as { reason: string }).reason).not.toMatch(/does not match/);
+    expect((r as { reason: string }).reason).not.toMatch(/cannot authenticate/);
     expect((r as { reason: string }).reason).toMatch(/could not read/);
   });
 
@@ -409,6 +452,35 @@ describe('key check', () => {
     } as unknown as StatusDb;
     const r = await run({ env: { ENCRYPTION_KEY: KEY }, db });
     expect(r).toMatchObject({ state: 'ok', detail: { decrypted: '2 of 2' } });
+  });
+
+  it('does not dress up zero decrypt evidence as success when no user has a default PAT', async () => {
+    // getDefaultPat returns null (not a throw) for a user who has tokens but none marked default
+    // (db.ts:183/getDefaultPat). Counting that null as a decrypt success - or even just reporting
+    // "0 of 5" with no further comment - reads as a benign zero rather than what it is: NO decrypt
+    // attempt actually produced evidence the key works.
+    const db = {
+      listUsers: async () => ['u1', 'u2', 'u3', 'u4', 'u5'],
+      getDefaultPat: async () => null,
+    } as unknown as StatusDb;
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, db });
+    expect(r).toMatchObject({
+      state: 'ok',
+      detail: {
+        decrypted: '0 of 5',
+        no_default: 5,
+        decrypt: 'no evidence - no user has a default PAT (the tokens check reports this)',
+      },
+    });
+  });
+
+  it('reports both counts in a mixed case: one user decrypts, one has no default', async () => {
+    const db = {
+      listUsers: async () => ['u1', 'u2'],
+      getDefaultPat: async (u: string) => (u === 'u1' ? { pat: 'figd_x', label: 'l', status: 'active' } : null),
+    } as unknown as StatusDb;
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, db });
+    expect(r).toMatchObject({ state: 'ok', detail: { decrypted: '1 of 2', no_default: 1 } });
   });
 });
 
@@ -438,6 +510,13 @@ describe('CHECKS registry', () => {
     // comparison alone would leave a reverted `export const CHECKS = []` green. This must go red
     // whenever `config` is missing, regardless of what else CHECKS does or does not contain yet.
     expect(CHECKS.map((c) => c.id)).toContain('config');
+  });
+
+  it('registers the key check', () => {
+    // Same shape of pin as the config-check test above, and for the same reason: `toContain`
+    // survives later tasks appending more checks to CHECKS (tokens, library_graph, figma), unlike
+    // an exact-array-equality or CHECKS.length assertion would.
+    expect(CHECKS.map((c) => c.id)).toContain('key');
   });
 
   it('registers checks in CHECK_IDS order, with no duplicate ids', () => {
