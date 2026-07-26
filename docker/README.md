@@ -161,24 +161,32 @@ to **`ghcr.io/zylomeara/framefit`** — only after `unit`, `integration`, `stdio
 
 | Tag                       | When                                | Use it for                                    |
 |---------------------------|-------------------------------------|-----------------------------------------------|
-| `sha-<short>`             | every push to `main`                | pinning a deploy; immutable, the real identity|
+| `sha-<short>`             | every push to `main`                | naming a commit's build — stable, but see below|
 | `main`                    | every push to `main`                | moving pointer — convenience, not a pin       |
 | `<x.y.z>`, `<x.y>`, `latest` | **only** on a `v*` git tag       | releases                                      |
 
 The version numbers do **not** advance on every push — only a `v*` tag mints them. So a
 `main`/`sha-` image built after a release still reports the released version in its handshake;
-the truth about what is deployed is the `sha-…` tag plus the
+the truth about what is deployed is the image **digest** plus the
 `org.opencontainers.image.revision` OCI label (`docker inspect` the running container).
+
+**Pin the digest, not the tag** — including `sha-<short>`, which looks immutable because it
+names a commit. It is not: each publish of that commit builds a fresh image and the builds are
+not bit-reproducible. On commit `28df820` the push-to-`main` run and the `v0.11.0` tag run each
+pushed `sha-28df820` with a different digest, so the tag names whichever finished last.
+Re-running a workflow, or tagging an already-published commit, moves it the same way.
 
 The host then **pulls instead of building** — no compile on the box:
 
 ```bash
-docker pull ghcr.io/zylomeara/framefit:sha-<short>
-# then REPLACE the service's `build:` block with `image: ghcr.io/zylomeara/framefit:sha-<short>`
+# resolve the tag you want to its digest (downloads nothing), then pin that
+docker buildx imagetools inspect ghcr.io/zylomeara/framefit:v0.11.0 --format '{{.Manifest.Digest}}'
+docker pull ghcr.io/zylomeara/framefit@sha256:<digest>
+# then REPLACE the service's `build:` block with `image: ghcr.io/zylomeara/framefit@sha256:<digest>`
 # — never keep both: a service with `image:` AND `build:` silently builds when a pull fails,
-# which defeats the whole point of pinning an immutable tag. In this repo's compose the `full`
-# service is build-only by design; the image-consuming production compose lives in the
-# author's private deploy repo.
+# which defeats the whole point of pinning. In this repo's compose the `full` service is
+# build-only by design; the image-consuming production compose lives in the author's private
+# deploy repo.
 docker compose up -d --wait --wait-timeout 120 framefit
 ```
 
