@@ -2,7 +2,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { collectStatus, buildReport, withDeadline, renderText, renderJson, keyFingerprint,
          configCheck, keyCheck, dbCheck, tokensCheck, libraryGraphCheck, figmaCheck,
-         CHECKS, CHECK_IDS, type Check, type StatusDb, type TokenStats, type GraphStats } from '../../src/infrastructure/status.js';
+         CHECKS, CHECK_IDS, PER_CHECK_TIMEOUT_MS,
+         type Check, type StatusDb, type TokenStats, type GraphStats } from '../../src/infrastructure/status.js';
 import { baseCtx } from './status-fixtures.js';
 import { multiTenantEnvGraphConflict } from '../../src/infrastructure/env-graph.js';
 import { ENCRYPTION_KEY_HINT } from '../../src/multi-tenant/env.js';
@@ -516,7 +517,15 @@ const first = (c: Check, over: Parameters<typeof baseCtx>[0]) =>
 
 describe('db check', () => {
   it('is skipped without DATABASE_URL', async () => {
-    expect((await first(dbCheck, {})).state).toBe('skipped');
+    const r = await first(dbCheck, {});
+    expect(r.state).toBe('skipped');
+    // Pinned so rewriting the reason to false text goes red - not just the state.
+    expect((r as { reason: string }).reason).toMatch(/DATABASE_URL/);
+  });
+  it('is skipped when DATABASE_URL is set but no db handle was provided', async () => {
+    const r = await first(dbCheck, { env: { DATABASE_URL: 'postgres://x' } });
+    expect(r.state).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/database handle/);
   });
   it('fails with the Postgres relation name when a table is missing', async () => {
     const db = { listUsers: async () => { throw new Error('relation "figma_tokens" does not exist'); } } as unknown as StatusDb;
@@ -562,11 +571,25 @@ describe('tokens check', () => {
   it('fails when validation is older than twice the nightly interval', async () => {
     expect((await run({ validation_age_sec: 60 * 60 * 49 })).state).toBe('fail');
   });
-  it('does not judge validation age in single-tenant', async () => {
-    expect((await run({ last_validated_at: null, validation_age_sec: null }, false)).state).toBe('ok');
+  it('does not judge validation age in single-tenant, and says why the field is empty', async () => {
+    const r = await run({ last_validated_at: null, validation_age_sec: null }, false);
+    expect(r).toMatchObject({ state: 'ok' });
+    expect(JSON.stringify(r)).toMatch(/multi-tenant server process/);
   });
   it('is skipped when nothing is registered yet', async () => {
-    expect((await run({ stored: 0 })).state).toBe('skipped');
+    const r = await run({ stored: 0 });
+    expect(r.state).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/no PATs registered/i);
+  });
+  it('is skipped without DATABASE_URL', async () => {
+    const r = await first(tokensCheck, {});
+    expect(r.state).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/DATABASE_URL/);
+  });
+  it('is skipped when DATABASE_URL is set but no db handle was provided', async () => {
+    const r = await first(tokensCheck, { env: { DATABASE_URL: 'postgres://x' } });
+    expect(r.state).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/database handle/);
   });
 });
 
@@ -582,8 +605,19 @@ describe('library_graph check', () => {
     expect((r as { reason: string }).reason).toMatch(/minutes/);
   });
   it('is skipped in multi-tenant without DATABASE_URL', async () => {
-    const r = await first(libraryGraphCheck, { multiTenant: true, transport: 'http' });
+    // Multi-tenant must be expressed in env (see MT_MIN) - a bare `multiTenant: true`/`transport`
+    // with no MULTI_TENANT/MCP_TRANSPORT in env is overwritten back to single-tenant by
+    // collectStatus, so this would silently re-test the single-tenant guard above it instead of
+    // the DATABASE_URL guard it claims to. Confirmed by mutation: converting EITHER multi-tenant
+    // guard in libraryGraphCheck into a `fail` left this test (as originally written) green.
+    const r = await first(libraryGraphCheck, { env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http' }, multiTenant: true, transport: 'http' });
     expect(r.state).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/DATABASE_URL/);
+  });
+  it('is skipped in multi-tenant when DATABASE_URL is set but no db handle was provided', async () => {
+    const r = await first(libraryGraphCheck, { env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x' }, multiTenant: true, transport: 'http' });
+    expect(r.state).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/database handle/);
   });
   it('is ok on a fresh install with nothing registered', async () => {
     expect((await run({ libraries: 0, variables: 0, teams: 0 })).state).toBe('ok');
@@ -597,6 +631,15 @@ describe('library_graph check', () => {
     const r = await run({ users_with_teams_and_no_libraries: ['11111111-2222-3333-4444-555555555555'] });
     expect(r.state).toBe('fail');
     expect((r as { reason: string }).reason).toContain('framefit sync --user 11111111-2222-3333-4444-555555555555');
+  });
+  it('names the actual users even when libraries is GLOBALLY zero, instead of falling back to the generic <id> placeholder', async () => {
+    // users_with_teams_and_no_libraries can be populated in the SAME object as libraries===0 (every
+    // registered team's owner has nothing synced) - the libraries===0 branch must not shadow the
+    // named-user branch in that case.
+    const r = await run({ libraries: 0, variables: 0, users_with_teams_and_no_libraries: ['11111111-2222-3333-4444-555555555555'] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toContain('framefit sync --user 11111111-2222-3333-4444-555555555555');
+    expect((r as { reason: string }).reason).not.toContain('--user <id>');
   });
   it('reports staleness without judging it', async () => {
     expect((await run({ oldest_age_sec: 60 * 60 * 24 * 90 })).state).toBe('ok');
@@ -628,6 +671,33 @@ describe('figma check', () => {
     const db = { listUsers: async () => ['u1', 'u2'], getDefaultPat: async (u: string) => u === 'u1' ? { pat: 'p', label: 'l', status: 'active' } : null } as unknown as StatusDb;
     const r = await first(figmaCheck, { env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64) }, multiTenant: true, transport: 'http', probe: true, db });
     expect(r).toMatchObject({ state: 'ok', detail: { accepted: '1 of 1' } });
+  });
+  it('is SKIPPED, not a green "0 of 0", when users exist but none has a default PAT', async () => {
+    // Nothing was actually probed here - reporting `ok` would render a false [OK] line for a check
+    // that never reached Figma at all, and combined with `tokens` being `skipped` at stored===0,
+    // a fresh multi-tenant install with zero PATs registered would show ok_overall: true while it
+    // cannot call Figma at all.
+    const db = { listUsers: async () => ['u1', 'u2'], getDefaultPat: async () => null } as unknown as StatusDb;
+    const r = await first(figmaCheck, { env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64) }, multiTenant: true, transport: 'http', probe: true, db });
+    expect(r.state).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/tokens check/);
+  });
+  it('shares the per-check timeout budget across N users instead of handing each one the whole budget', async () => {
+    const users = ['u1', 'u2', 'u3', 'u4'];
+    const db = {
+      listUsers: async () => users,
+      getDefaultPat: async () => ({ pat: 'p', label: 'l', status: 'active' }),
+    } as unknown as StatusDb;
+    const seenTimeouts: (number | undefined)[] = [];
+    const validatePat = async (_pat: string, timeoutMs?: number) => { seenTimeouts.push(timeoutMs); return { ok: true as const, handle: 'h' }; };
+    await first(figmaCheck, {
+      env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64) },
+      multiTenant: true, transport: 'http', probe: true, db, validatePat,
+    });
+    const expectedShare = Math.max(1_000, Math.floor(PER_CHECK_TIMEOUT_MS / users.length));
+    expect(seenTimeouts).toHaveLength(users.length);
+    for (const t of seenTimeouts) expect(t).toBe(expectedShare);
+    expect(expectedShare).toBeLessThan(PER_CHECK_TIMEOUT_MS);   // sanity: this is actually a SHARE
   });
 });
 

@@ -71,7 +71,10 @@ export interface StatusReport {
 import { createHash } from 'node:crypto';
 import { VERSION } from './version.js';
 
-const PER_CHECK_TIMEOUT_MS = 10_000;
+// Exported so `figmaCheck` can derive a PER-USER share of the same budget the runner enforces
+// around the whole check (see figmaCheck's multi-tenant branch) - two independently maintained
+// constants with the same value would be free to drift apart silently.
+export const PER_CHECK_TIMEOUT_MS = 10_000;
 export const HARD_DEADLINE_MS = 30_000;
 
 export function keyFingerprint(raw: string | undefined): string | null {
@@ -440,16 +443,18 @@ export const keyCheck: Check = {
 };
 
 const NIGHTLY_INTERVAL_SEC = 24 * 60 * 60;
-const PROBE_TIMEOUT_MS = 10_000;
 
 export const dbCheck: Check = {
   id: 'db',
   async run(ctx) {
     if (!ctx.env.DATABASE_URL) return { state: 'skipped', reason: 'DATABASE_URL is not set' };
     if (!ctx.db) return { state: 'skipped', reason: 'no database handle was provided to status' };
-    // No catalog probe: these SELECTs ARE the presence test, and a missing relation arrives as a
-    // Postgres error naming it (the throw becomes `fail` in the runner). A hardcoded table list
-    // would be a second hand-maintained truth.
+    // No catalog probe: the calls below ARE the presence test, and a missing relation arrives as
+    // a Postgres error naming it (the throw becomes `fail` in the runner). A hardcoded table list
+    // would be a second hand-maintained truth. This only probes what it actually calls, though:
+    // with zero users, `listTeams` is never invoked, so exactly one relation (the users table) is
+    // exercised here - a missing `figma_tokens`-style relation that only `listTeams` touches would
+    // not surface until a user exists.
     const users = await ctx.db.listUsers();
     let teams = 0;
     for (const user of users) teams += (await ctx.db.listTeams(user)).length;
@@ -481,6 +486,10 @@ export const tokensCheck: Check = {
     }
     return { state: 'ok', detail: {
       stored: s.stored, invalid_non_default: s.invalid_total, validated_age_sec: s.validation_age_sec,
+      // Single-tenant never runs the nightly validator at all (it lives only in the multi-tenant
+      // server process, same as the comment above) - a bare `validated_age_sec=null` here reads
+      // like a gap in the data rather than what it is: a field this mode never populates.
+      ...(!ctx.multiTenant ? { validation_note: 'not checked here - nightly validation only runs inside the multi-tenant server process' } : {}),
       soonest_expiry: s.soonest_default_expiry
         ? `${s.soonest_default_expiry.user} in ${s.soonest_default_expiry.days}d (${s.soonest_default_expiry.expires_at})`
         : 'none set',
@@ -497,15 +506,24 @@ export const libraryGraphCheck: Check = {
     if (!ctx.env.DATABASE_URL) return { state: 'skipped', reason: 'DATABASE_URL is not set' };
     if (!ctx.db) return { state: 'skipped', reason: 'no database handle was provided to status' };
     const g = await ctx.db.graphStats();
-    if (g.libraries === 0) {
-      if (g.teams === 0) return { state: 'ok', detail: { libraries: 0, teams: 0, note: 'nothing registered yet - start with "framefit teams add <team-id> --user <id>"' } };
-      return { state: 'fail', reason: 'teams are registered but no libraries are synced - run "framefit sync --user <id>" for the affected user' };
+    if (g.teams === 0 && g.libraries === 0) {
+      return { state: 'ok', detail: { libraries: 0, teams: 0, note: 'nothing registered yet - start with "framefit teams add <team-id> --user <id>"' } };
     }
+    // Named-user branch BEFORE the generic libraries===0 branch: `users_with_teams_and_no_libraries`
+    // can be populated even when `libraries` is globally zero (every registered team's owner has
+    // nothing synced), and that is the MORE specific fact - checking libraries===0 first would make
+    // this branch unreachable exactly in that case, silently downgrading a named list to a generic
+    // "<id>" placeholder.
     if (g.users_with_teams_and_no_libraries.length > 0) {
       const who = g.users_with_teams_and_no_libraries;
       return { state: 'fail',
         reason: `these users have registered teams but zero synced libraries (their tokens resolve nothing): ${who.join(', ')} - run "framefit sync --user ${who[0]}"`,
         detail: { libraries: g.libraries, variables: g.variables } };
+    }
+    if (g.libraries === 0) {
+      // teams > 0 but no individual user is named (a data-model gap upstream, not this check's) -
+      // fall back to the generic placeholder guidance.
+      return { state: 'fail', reason: 'teams are registered but no libraries are synced - run "framefit sync --user <id>" for the affected user' };
     }
     // Staleness is REPORTED, not judged: a design system that never changes is not broken.
     return { state: 'ok', detail: { libraries: g.libraries, variables: g.variables, teams: g.teams,
@@ -524,13 +542,25 @@ export const figmaCheck: Check = {
     if (!ctx.multiTenant) {
       const token = ctx.env.FIGMA_TOKEN;
       if (!token) return { state: 'skipped', reason: 'no FIGMA_TOKEN to probe (callers may pass a per-call figma_token)' };
-      const result = await ctx.validatePat(token, PROBE_TIMEOUT_MS);
+      // Single probe, so it gets the WHOLE per-check budget - there is no second user to share it with.
+      const result = await ctx.validatePat(token, PER_CHECK_TIMEOUT_MS);
       if (!result.ok) return { state: 'fail', reason: `Figma refused the token (HTTP ${result.status})` };
       return { state: 'ok', detail: { handle: result.handle } };
     }
-    if (!ctx.db || !ctx.env.ENCRYPTION_KEY) return { state: 'skipped', reason: 'multi-tenant probe needs DATABASE_URL and ENCRYPTION_KEY' };
+    // Named separately, the way dbCheck does: a combined "needs X and Y" reason forces an operator
+    // to go check both even when only one is actually missing.
+    if (!ctx.env.DATABASE_URL) return { state: 'skipped', reason: 'DATABASE_URL is not set' };
+    if (!ctx.db) return { state: 'skipped', reason: 'no database handle was provided to status' };
+    if (!ctx.env.ENCRYPTION_KEY) return { state: 'skipped', reason: 'ENCRYPTION_KEY is not set' };
     const users = await ctx.db.listUsers();
     if (users.length === 0) return { state: 'skipped', reason: 'no users registered' };
+    // Share the runner's per-check budget across N per-user probes: the multi-tenant branch below
+    // makes ONE network call per user inside that single budget, so letting every probe claim the
+    // full PER_CHECK_TIMEOUT_MS (as a fixed constant would) means a healthy multi-user install, or
+    // just one hanging user, drives the WHOLE check to `fail: timed out after <budget>ms` and throws
+    // away the per-user attribution this loop exists to produce. Floored at 1s so a very large user
+    // count still gets an actionable window per probe rather than one too small to ever succeed.
+    const perUserTimeoutMs = Math.max(1_000, Math.floor(PER_CHECK_TIMEOUT_MS / Math.max(1, users.length)));
     let probed = 0; let accepted = 0;
     const bad: string[] = [];
     for (const user of users) {
@@ -540,9 +570,15 @@ export const figmaCheck: Check = {
       // redactor knows about a value that never appears in the environment.
       ctx.secrets.add(row.pat);
       probed++;
-      const result = await ctx.validatePat(row.pat, PROBE_TIMEOUT_MS);
+      const result = await ctx.validatePat(row.pat, perUserTimeoutMs);
       if (result.ok) accepted++; else bad.push(`${user} (HTTP ${result.status})`);
     }
+    // Nobody has a default PAT to probe: `probed` stayed 0, so NOTHING was actually called. Reporting
+    // `ok` here (accepted: "0 of 0", as this used to) renders a green [OK] line for a check that never
+    // reached Figma at all - `skipped` is correct because the precondition (a default PAT to probe) is
+    // absent, exactly like the `users.length === 0` guard above. The `tokens` check is where "nobody
+    // has a default" becomes a hard `fail`; this check only probes what tokens says is usable.
+    if (probed === 0) return { state: 'skipped', reason: 'no user has a default PAT to probe - see the tokens check' };
     if (bad.length > 0) return { state: 'fail', reason: `Figma refused the stored PAT of: ${bad.join(', ')}`, detail: { accepted: `${accepted} of ${probed}` } };
     return { state: 'ok', detail: { accepted: `${accepted} of ${probed}` } };
   },
