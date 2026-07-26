@@ -45,10 +45,23 @@ export interface TokenStats {
   stored: number;
   invalid_total: number;
   users_without_default: string[];
+  // Distinct from users_without_default: a user can register a Figma team and never add a token at
+  // all, which a query scoped to figma_tokens rows alone can never see (there is no row to find).
+  users_without_any_token: string[];
   bad_defaults: { user: string; label: string; problem: 'invalid' | 'expired'; expires_at: string | null }[];
   soonest_default_expiry: { user: string; expires_at: string; days: number } | null;
+  // The OLDEST last_validated_at across all stored tokens (MIN), not the most recent (MAX): one
+  // freshly re-validated token (e.g. a manual portal action) must never mask every other token
+  // going stale behind a single healthy-looking timestamp.
   last_validated_at: string | null;
+  // Age (SQL clock) of the timestamp above, clamped to >= 0.
   validation_age_sec: number | null;
+  // Tokens never validated (last_validated_at IS NULL) or last validated more than 48h ago. MIN()
+  // above silently ignores NULLs, so this count exists specifically to not ignore them.
+  stale_or_unvalidated_total: number;
+  // True if any stored token's last_validated_at is later than the database's own now() - a
+  // visible sign the database clock is skewed, instead of a silently negative age.
+  future_validation_detected: boolean;
 }
 
 export interface GraphStats {
@@ -468,6 +481,14 @@ export const tokensCheck: Check = {
     if (!ctx.env.DATABASE_URL) return { state: 'skipped', reason: 'DATABASE_URL is not set' };
     if (!ctx.db) return { state: 'skipped', reason: 'no database handle was provided to status' };
     const s = await ctx.db.tokenStats();
+
+    // Checked BEFORE the stored===0 skip below: a user can register a Figma team and never add a
+    // token at all, which leaves `stored` at 0 for the whole install while that user's every
+    // request still fails. Skipping "nothing registered yet" in that case would hide a real problem
+    // behind the message reserved for a truly untouched fresh install.
+    if (s.users_without_any_token.length > 0) {
+      return { state: 'fail', reason: `these users have a registered Figma team but hold no PAT at all, so every request of theirs fails: ${s.users_without_any_token.join(', ')}` };
+    }
     if (s.stored === 0) return { state: 'skipped', reason: 'no PATs registered yet' };
 
     if (s.users_without_default.length > 0) {
@@ -483,6 +504,18 @@ export const tokensCheck: Check = {
     if (ctx.multiTenant) {
       if (s.validation_age_sec === null) return { state: 'fail', reason: 'token validation has never run - nightly validation runs only inside the multi-tenant server process' };
       if (s.validation_age_sec > 2 * NIGHTLY_INTERVAL_SEC) return { state: 'fail', reason: `token validation last ran ${Math.round(s.validation_age_sec / 3600)}h ago (expected daily)` };
+      // validation_age_sec is the OLDEST validation, and MIN() ignores NULLs - a token added and
+      // never validated even once can hide behind an older-but-non-null row elsewhere.
+      // stale_or_unvalidated_total counts NULLs explicitly and catches exactly that gap.
+      if (s.stale_or_unvalidated_total > 0) {
+        return { state: 'fail', reason: `${s.stale_or_unvalidated_total} token(s) have never been validated or were last checked more than 48h ago - the nightly validator is not covering every token` };
+      }
+    }
+    // A last_validated_at later than the database's own now() means the clock is skewed relative to
+    // wherever that timestamp was written - every age computation above is then unreliable, so
+    // surface the skew itself rather than silently clamping it into a healthy-looking number.
+    if (s.future_validation_detected) {
+      return { state: 'fail', reason: 'a token has a validation timestamp in the future - the database clock is skewed, so age-based checks here cannot be trusted until it is fixed' };
     }
     return { state: 'ok', detail: {
       stored: s.stored, invalid_non_default: s.invalid_total, validated_age_sec: s.validation_age_sec,

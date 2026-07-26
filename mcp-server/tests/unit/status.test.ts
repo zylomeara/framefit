@@ -505,8 +505,9 @@ describe('effective mode consistency (header vs. config check)', () => {
   });
 });
 
-const TOKENS: TokenStats = { stored: 1, invalid_total: 0, users_without_default: [], bad_defaults: [],
-  soonest_default_expiry: null, last_validated_at: '2026-07-26T00:00:00.000Z', validation_age_sec: 3600 };
+const TOKENS: TokenStats = { stored: 1, invalid_total: 0, users_without_default: [], users_without_any_token: [],
+  bad_defaults: [], soonest_default_expiry: null, last_validated_at: '2026-07-26T00:00:00.000Z', validation_age_sec: 3600,
+  stale_or_unvalidated_total: 0, future_validation_detected: false };
 const GRAPH: GraphStats = { libraries: 2, variables: 100, teams: 1, users_with_teams_and_no_libraries: [],
   oldest_synced_at: '2026-07-26T00:00:00.000Z', oldest_age_sec: 3600, newest_synced_at: '2026-07-26T01:00:00.000Z' };
 // Multi-tenant must be expressed in the ENV: the runner derives the effective mode and ignores a
@@ -549,6 +550,18 @@ describe('tokens check', () => {
     expect(r.state).toBe('fail');
     expect((r as { reason: string }).reason).toContain('u1');
   });
+  it('fails when a user has a registered team but holds no token at all', async () => {
+    const r = await run({ users_without_any_token: ['u9'] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toContain('u9');
+  });
+  it('fails (not skips) when the only registered user has a team but zero tokens anywhere', async () => {
+    // stored===0 alone means "nothing registered yet" (skip); but a NAMED user with a team and no
+    // token is a real, visible problem that must not hide behind that same skip message.
+    const r = await run({ stored: 0, users_without_any_token: ['solo-user'] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toContain('solo-user');
+  });
   it('fails on an INVALID default PAT', async () => {
     const r = await run({ bad_defaults: [{ user: 'u1', label: 'ci', problem: 'invalid', expires_at: null }] });
     expect(r.state).toBe('fail');
@@ -570,6 +583,18 @@ describe('tokens check', () => {
   });
   it('fails when validation is older than twice the nightly interval', async () => {
     expect((await run({ validation_age_sec: 60 * 60 * 49 })).state).toBe('fail');
+  });
+  it('fails in multi-tenant when tokens exist that were never validated or are stale, even if the reported age looks fine', async () => {
+    // validation_age_sec is the OLDEST validation (MIN), which ignores NULLs; stale_or_unvalidated_total
+    // is the independent count that catches never-validated rows MIN() alone would hide.
+    const r = await run({ stale_or_unvalidated_total: 2 });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/2 token/);
+  });
+  it('fails when a future validation timestamp indicates a skewed database clock', async () => {
+    const r = await run({ future_validation_detected: true });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/clock/i);
   });
   it('does not judge validation age in single-tenant, and says why the field is empty', async () => {
     const r = await run({ last_validated_at: null, validation_age_sec: null }, false);

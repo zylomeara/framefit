@@ -125,15 +125,24 @@ export async function graphStats(): Promise<GraphStats> {
            EXTRACT(EPOCH FROM now() - MIN(last_synced_at))::int AS oldest_age_sec
     FROM library_files`);
   const { rows: [v] } = await getSharedPool().query('SELECT COUNT(*)::int AS variables FROM library_variables');
-  const { rows: [t] } = await getSharedPool().query('SELECT COUNT(*)::int AS teams FROM registered_teams');
+  // DISTINCT team_id, not a bare row count: two users registering the SAME team_id is one team, not
+  // two - COUNT(*) over registered_teams counts (user, team) registrations, which overstates it.
+  const { rows: [t] } = await getSharedPool().query('SELECT COUNT(DISTINCT team_id)::int AS teams FROM registered_teams');
   // Global counts can look healthy on the orphan rows of a departed user while the only ACTIVE
   // account resolves nothing: nothing deletes library_files on user deletion (library-registry-db.ts:59).
+  // Joined on (user, team), not user alone: a user who synced only SOME of several registered teams
+  // still has a per-team gap for the rest, invisible to a join that only checks "does this user have
+  // *a* library anywhere" (their one synced team would mask every other team's gap).
   const { rows: empty } = await getSharedPool().query(`
-    SELECT t.keycloak_user_id
-    FROM (SELECT DISTINCT keycloak_user_id FROM registered_teams) t
-    LEFT JOIN library_files l ON l.keycloak_user_id = t.keycloak_user_id
-    GROUP BY t.keycloak_user_id HAVING COUNT(l.file_key) = 0
-    ORDER BY t.keycloak_user_id`);
+    SELECT DISTINCT keycloak_user_id FROM (
+      SELECT rt.keycloak_user_id, rt.team_id
+      FROM registered_teams rt
+      LEFT JOIN library_files lf
+        ON lf.keycloak_user_id = rt.keycloak_user_id AND lf.team_id = rt.team_id
+      GROUP BY rt.keycloak_user_id, rt.team_id
+      HAVING COUNT(lf.file_key) = 0
+    ) gaps
+    ORDER BY keycloak_user_id`);
   return {
     libraries: f.libraries, variables: v.variables, teams: t.teams,
     users_with_teams_and_no_libraries: empty.map((r) => r.keycloak_user_id),

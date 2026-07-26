@@ -240,13 +240,26 @@ export async function tokenStats(): Promise<TokenStats> {
   const { rows: [agg] } = await getPool().query(`
     SELECT COUNT(*)::int AS stored,
            COUNT(*) FILTER (WHERE status = 'invalid')::int AS invalid_total,
-           MAX(last_validated_at) AS last_validated_at,
-           EXTRACT(EPOCH FROM now() - MAX(last_validated_at))::int AS validation_age_sec
+           MIN(last_validated_at) AS oldest_validated_at,
+           CASE WHEN MIN(last_validated_at) IS NULL THEN NULL
+                ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - MIN(last_validated_at)))::int END AS validation_age_sec,
+           COUNT(*) FILTER (WHERE last_validated_at IS NULL OR last_validated_at < now() - interval '48 hours')::int AS stale_or_unvalidated_total,
+           bool_or(last_validated_at > now()) AS future_validation_detected
     FROM figma_tokens`);
   const { rows: withoutDefault } = await getPool().query(`
     SELECT keycloak_user_id FROM figma_tokens
     GROUP BY keycloak_user_id HAVING COUNT(*) FILTER (WHERE is_default) = 0
     ORDER BY keycloak_user_id`);
+  // A user can register a Figma team and never add a token at all - invisible to the query above,
+  // which only sees rows that already exist in figma_tokens. registered_teams belongs to
+  // library-registry-db.ts, but this is a plain read of its table (same pattern graphStats() already
+  // uses to read registered_teams from this sibling module), so no import is needed for it.
+  const { rows: withoutAnyToken } = await getPool().query(`
+    SELECT DISTINCT rt.keycloak_user_id
+    FROM registered_teams rt
+    LEFT JOIN figma_tokens ft ON ft.keycloak_user_id = rt.keycloak_user_id
+    WHERE ft.keycloak_user_id IS NULL
+    ORDER BY rt.keycloak_user_id`);
   // expires_at is DATE: node-pg parses it at LOCAL midnight, so ::text is required or the day
   // shifts (same reason db.ts:99 already does this).
   const { rows: bad } = await getPool().query(`
@@ -255,17 +268,27 @@ export async function tokenStats(): Promise<TokenStats> {
     FROM figma_tokens
     WHERE is_default AND (status = 'invalid' OR (expires_at IS NOT NULL AND expires_at < CURRENT_DATE))
     ORDER BY keycloak_user_id`);
+  // Tie-broken by keycloak_user_id: without it, two defaults sharing the same expires_at resolve in
+  // whatever order Postgres happens to scan them, making the winner nondeterministic.
   const { rows: [soonest] } = await getPool().query(`
     SELECT keycloak_user_id, expires_at::text AS expires_at, (expires_at - CURRENT_DATE)::int AS days
     FROM figma_tokens
     WHERE is_default AND expires_at IS NOT NULL AND expires_at >= CURRENT_DATE
-    ORDER BY expires_at ASC LIMIT 1`);
+    ORDER BY expires_at ASC, keycloak_user_id ASC LIMIT 1`);
   return {
     stored: agg.stored, invalid_total: agg.invalid_total,
     users_without_default: withoutDefault.map((r) => r.keycloak_user_id),
+    users_without_any_token: withoutAnyToken.map((r) => r.keycloak_user_id),
     bad_defaults: bad.map((r) => ({ user: r.keycloak_user_id, label: r.label, problem: r.problem, expires_at: r.expires_at ?? null })),
     soonest_default_expiry: soonest ? { user: soonest.keycloak_user_id, expires_at: soonest.expires_at, days: soonest.days } : null,
-    last_validated_at: agg.last_validated_at ? new Date(agg.last_validated_at).toISOString() : null,
+    // The OLDEST validation, not the most recent: MAX() let one freshly re-validated token (e.g. a
+    // manual portal action) mask every other stale row and report a dead nightly validator as
+    // healthy (five defaults 30 days stale + one revalidated a minute ago used to read as "60s ago,
+    // all healthy"). MIN() ignores NULLs (never-validated rows), which is exactly why
+    // stale_or_unvalidated_total exists as an independent count that does not ignore them.
+    last_validated_at: agg.oldest_validated_at ? new Date(agg.oldest_validated_at).toISOString() : null,
     validation_age_sec: agg.validation_age_sec ?? null,
+    stale_or_unvalidated_total: agg.stale_or_unvalidated_total,
+    future_validation_detected: agg.future_validation_detected ?? false,
   };
 }
