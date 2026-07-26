@@ -71,7 +71,11 @@ describe('collectStatus', () => {
   it('reports the effective mode and where the transport came from', async () => {
     const unset = await collectStatus(baseCtx(), [okCheck]);
     expect(unset.mode).toEqual({ multi_tenant: false, transport: null, transport_source: 'unset' });
-    const mt = await collectStatus(baseCtx({ multiTenant: true, transport: 'http' }), [okCheck]);
+    // multi_tenant is now DERIVED from env (collectStatus overwrites ctx.multiTenant), so the mode
+    // must be expressed through the environment, not just the ctx.multiTenant/transport fields -
+    // a caller passing multiTenant: true with no MULTI_TENANT in env would no longer see it reflected.
+    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http' };
+    const mt = await collectStatus(baseCtx({ env, multiTenant: true, transport: 'http' }), [okCheck]);
     expect(mt.mode).toEqual({ multi_tenant: true, transport: 'http', transport_source: 'env' });
   });
 
@@ -358,11 +362,41 @@ describe('config check', () => {
   });
 });
 
+describe('effective mode consistency (header vs. config check)', () => {
+  it('reports multi-tenant in BOTH the report header and the config check detail, even when the caller passes multiTenant: false', async () => {
+    // Before effectiveMultiTenant() centralised the derivation, buildReport read the caller's
+    // ctx.multiTenant while configCheck read ctx.env directly - a caller passing a stale/wrong
+    // flag could make these two disagree in one report (header says single-tenant, the config
+    // line says multi-tenant, or vice versa). Deriving the mode once in collectStatus and
+    // overwriting ctx.multiTenant before either runs makes that divergence structurally
+    // impossible; this test pins the observable guarantee end to end, through renderText too.
+    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64),
+                  KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com' };
+    const report = await collectStatus(baseCtx({ env, multiTenant: false, transport: 'http' }), [configCheck]);
+    expect(report.mode.multi_tenant).toBe(true);
+    expect(report.checks[0]).toMatchObject({ state: 'ok', detail: { mode: 'multi-tenant' } });
+    const text = renderText(report);
+    expect(text).toMatch(/^framefit \S+ {2}multi-tenant {2}/m);
+    expect(text).toMatch(/mode=multi-tenant/);
+  });
+});
+
 describe('CHECKS registry', () => {
-  it('registers every implemented check, in CHECK_IDS order', () => {
-    // Reverting the registry line to [] (while every test above passes [configCheck] explicitly)
-    // would otherwise leave the whole suite green while the shipped `status` command prints no
-    // `config` line at all.
-    expect(CHECKS.map((c) => c.id)).toEqual(CHECK_IDS.slice(0, CHECKS.length));
+  it('registers the config check', () => {
+    // Anchored to a fixed id, NOT to CHECKS.length: `CHECKS.map(c=>c.id)` equals
+    // `CHECK_IDS.slice(0, CHECKS.length)` trivially when CHECKS is [] (both sides are []), so that
+    // comparison alone would leave a reverted `export const CHECKS = []` green. This must go red
+    // whenever `config` is missing, regardless of what else CHECKS does or does not contain yet.
+    expect(CHECKS.map((c) => c.id)).toContain('config');
+  });
+
+  it('registers checks in CHECK_IDS order, with no duplicate ids', () => {
+    const ids = CHECKS.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const knownIds: readonly string[] = CHECK_IDS;
+    const positions = ids.map((id) => knownIds.indexOf(id));
+    expect(positions).not.toContain(-1);   // every registered id is a known CHECK_ID
+    const sorted = [...positions].sort((a, b) => a - b);
+    expect(positions).toEqual(sorted);     // and they appear in CHECK_IDS order
   });
 });

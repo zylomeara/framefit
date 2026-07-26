@@ -20,7 +20,11 @@ export interface StatusDb {
 export interface StatusCtx {
   env: NodeJS.ProcessEnv;
   now: () => number;
-  multiTenant: boolean;            // EFFECTIVE mode, decided by the caller
+  /** EFFECTIVE mode. `collectStatus` derives this from `env` via `effectiveMultiTenant` and
+   *  OVERWRITES whatever value is set here before running any check or building the report - a
+   *  value supplied here is never a second source of truth, so it can never disagree with what
+   *  the checks themselves see when they look at `env` directly. */
+  multiTenant: boolean;
   transport: string | undefined;   // raw MCP_TRANSPORT (undefined when unset)
   probe: boolean;
   db?: StatusDb;
@@ -207,19 +211,35 @@ export function buildReport(ctx: StatusCtx, results: ({ id: string } & CheckResu
   };
 }
 
+// The ONE derivation of "is this process multi-tenant" - env alone, never a caller-supplied flag.
+// Compares the DEFAULTED transport, exactly as index.ts:47 does via config.MCP_TRANSPORT (zod
+// default 'http', config.ts) - comparing the raw MCP_TRANSPORT value would treat every box that
+// simply does not set it (the compose default) as if it had chosen stdio.
+export function effectiveMultiTenant(env: NodeJS.ProcessEnv): boolean {
+  return isMultiTenant(env) && (env.MCP_TRANSPORT ?? 'http') === 'http';
+}
+
 export async function collectStatus(
   ctx: StatusCtx,
   checks: Check[] = CHECKS,
   opts: { perCheckTimeoutMs?: number; sink?: ({ id: string } & CheckResult)[] } = {},
 ): Promise<StatusReport> {
+  // Derive the effective mode ONCE, here, from `env` alone, and run every check plus buildReport
+  // against a context carrying that derived value - never whatever `ctx.multiTenant` the caller
+  // passed in. Before this, a check that reads `ctx.env` directly (like configCheck) and
+  // `buildReport` (which reads `ctx.multiTenant`) could compute DIFFERENT effective modes from a
+  // caller's stale/wrong flag, so the header and a check's own detail could disagree about which
+  // mode the box is actually in. Deriving once and overwriting makes that divergence structurally
+  // impossible rather than a thing every caller and test has to get right on its own.
+  const effectiveCtx: StatusCtx = { ...ctx, multiTenant: effectiveMultiTenant(ctx.env) };
   const timeoutMs = opts.perCheckTimeoutMs ?? PER_CHECK_TIMEOUT_MS;
-  const redact = makeRedactor(ctx);
+  const redact = makeRedactor(effectiveCtx);
   // SEQUENTIAL on purpose: the checks share one pg pool and the probe makes one network call per
   // user. `sink` is filled as results arrive so a caller whose deadline fires can still render
   // what completed.
   const results = opts.sink ?? [];
-  for (const check of checks) results.push(await runOne(check, ctx, timeoutMs, redact));
-  return buildReport(ctx, results);
+  for (const check of checks) results.push(await runOne(check, effectiveCtx, timeoutMs, redact));
+  return buildReport(effectiveCtx, results);
 }
 
 /** Resolves null if `work` outlives the deadline; the caller renders the sink and exits 2. This
@@ -304,11 +324,13 @@ export const configCheck: Check = {
       return { state: 'fail', reason: `MULTI_TENANT is set but MCP_TRANSPORT is "${transport}" - the server would boot single-tenant with no auth layer; multi-tenant requires the http transport` };
     }
 
-    // 4. Effective mode, not the caller-supplied ctx.multiTenant: after the transport guard above,
-    // isMultiTenant(ctx.env) provably equals the formula (isMultiTenant && defaulted-transport ===
-    // 'http') that decides what index.ts actually boots. Branching on ctx.multiTenant instead would
-    // let a caller's stale/wrong value report green on a box that cannot boot.
-    if (isMultiTenant(ctx.env)) {
+    // 4. `ctx.multiTenant` here is `effectiveMultiTenant(ctx.env)` - collectStatus derives it from
+    // `env` and overwrites whatever the caller passed before this check ever runs (see
+    // collectStatus), so it is trustworthy by construction and provably equals isMultiTenant(env)
+    // at this point (the transport guard above already returned fail on any mismatch). Reading it
+    // here instead of recomputing isMultiTenant(ctx.env) is what keeps this check and the report
+    // header (buildReport, which reads the SAME field) structurally unable to disagree.
+    if (ctx.multiTenant) {
       // Delegate the required list AND the ENCRYPTION_KEY shape check (env.ts:41-53).
       try { loadMultiTenantEnv(ctx.env); }
       catch (e) {
