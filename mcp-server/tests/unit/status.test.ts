@@ -1,5 +1,5 @@
 // tests/unit/status.test.ts
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { collectStatus, buildReport, withDeadline, renderText, renderJson, keyFingerprint,
          type Check } from '../../src/infrastructure/status.js';
 import { baseCtx } from './status-fixtures.js';
@@ -88,6 +88,21 @@ describe('withDeadline', () => {
   it('passes the value through otherwise', async () => {
     expect(await withDeadline(Promise.resolve('x'), 1_000)).toBe('x');
   });
+
+  it('propagates a rejection promptly and clears its own timer, leaving nothing pending', async () => {
+    // A `.then()`-only implementation clears the timer on the fulfilled path but not the rejected
+    // one - the returned promise still rejects promptly (Promise.race rejects as soon as any
+    // input does), but the now ref'd deadline timer is left dangling for the full `ms`, which
+    // would keep a real process alive well past when `work` already settled.
+    vi.useFakeTimers();
+    try {
+      const result = withDeadline(Promise.reject(new Error('boom')), 5_000);
+      await expect(result).rejects.toThrow('boom');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('keyFingerprint', () => {
@@ -133,6 +148,16 @@ describe('redaction', () => {
     const reason = (r.checks[0] as { reason: string }).reason;
     expect(reason).not.toContain('SENTINEL_PASS');
     expect(reason).toContain('<redacted:DATABASE_URL>');
+  });
+
+  it('does not corrupt unrelated text when the DATABASE_URL password is too short to safely substring-replace', async () => {
+    // A short dev password (e.g. "ab") gated in like every other secret would still get pushed
+    // into the substitution list without a length check, and blind `.split(needle).join(mask)`
+    // then clobbers any unrelated occurrence of that 2-character substring anywhere in the text.
+    const env = { DATABASE_URL: 'postgres://appuser:ab@db.internal:5432/framefit' };
+    const leaky: Check = { id: 'db', run: async () => ({ state: 'fail', reason: 'table "users" does not exist' }) };
+    const r = await collectStatus(baseCtx({ env }), [leaky]);
+    expect((r.checks[0] as { reason: string }).reason).toBe('table "users" does not exist');
   });
 
   it('does NOT redact DS_TEAM_IDS - team ids are not secrets and the message must stay actionable', async () => {

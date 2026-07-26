@@ -124,7 +124,11 @@ function makeRedactor(ctx: StatusCtx): (s: string) => string {
     if (v && v.length >= 8) envValues.push([v, `<redacted:${name}>`]);
   }
   const dbPassword = extractUrlPassword(ctx.env.DATABASE_URL);
-  if (dbPassword) envValues.push([dbPassword, '<redacted:DATABASE_URL>']);
+  // Same >= 8 gate as every other entry: a value shorter than this is NOT redacted by substring
+  // substitution, because blind substring replacement of a very short string mangles unrelated
+  // text (e.g. a 2-char password could clobber the middle of "table"). The postgres URL regex
+  // below still masks a short password when it appears in its URL form, regardless of length.
+  if (dbPassword && dbPassword.length >= 8) envValues.push([dbPassword, '<redacted:DATABASE_URL>']);
   return (s) => {
     let out = s;
     for (const [needle, mask] of envValues) out = out.split(needle).join(mask);
@@ -216,13 +220,17 @@ export async function collectStatus(
 
 /** Resolves null if `work` outlives the deadline; the caller renders the sink and exits 2. This
  *  timer is the guard of LAST resort, so unlike the per-check timer it stays ref'd: it is always
- *  cleared on the success path (so it can never delay a normal exit), but if every check-level
- *  timeout somehow failed to fire, this is what still forces the process to observe a deadline
- *  instead of a silent, un-terminated hang. */
+ *  cleared - on EITHER settlement path of `work`, fulfilled or rejected, via `.finally()` rather
+ *  than `.then()` - so it can never delay a normal exit or outlive `work` itself. But if every
+ *  check-level timeout somehow failed to fire, this is what still forces the process to observe a
+ *  deadline instead of a silent, un-terminated hang. */
 export function withDeadline<T>(work: Promise<T>, ms = HARD_DEADLINE_MS): Promise<T | null> {
   let timer: NodeJS.Timeout;
+  // `.finally()`, not `.then()`: a REJECTING `work` must clear this timer too, or the now ref'd
+  // deadline timer stays pending for the full `ms` even though `work` already settled.
+  const guarded = work.finally(() => clearTimeout(timer));
   return Promise.race([
-    work.then((v) => { clearTimeout(timer); return v; }),
+    guarded,
     new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); }),
   ]);
 }
