@@ -1,7 +1,7 @@
 // tests/unit/status.test.ts
 import { describe, it, expect, vi } from 'vitest';
 import { collectStatus, buildReport, withDeadline, renderText, renderJson, keyFingerprint,
-         type Check } from '../../src/infrastructure/status.js';
+         configCheck, type Check } from '../../src/infrastructure/status.js';
 import { baseCtx } from './status-fixtures.js';
 
 const okCheck: Check = { id: 'config', run: async () => ({ state: 'ok', detail: { a: 1 } }) };
@@ -245,5 +245,67 @@ describe('renderJson', () => {
     expect(parsed.schema).toBe(1);
     expect(parsed.scope).toEqual({ hostname: 'box', pid: 7, env_source: 'process' });
     expect(parsed.summary.total).toBe(1);
+  });
+});
+
+describe('config check', () => {
+  // Route through collectStatus, not check.run: redaction and throw->fail live in the runner, and
+  // the shipped behaviour is what these must pin.
+  const run = (over: Parameters<typeof baseCtx>[0]) =>
+    collectStatus(baseCtx(over), [configCheck]).then((r) => r.checks[0]);
+
+  it('fails on the DS_TEAM_IDS + MULTI_TENANT boot conflict', async () => {
+    const r = await run({ env: { MULTI_TENANT: 'true', DS_TEAM_IDS: '123', MCP_TRANSPORT: 'http' }, multiTenant: true, transport: 'http' });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/DS_TEAM_IDS/);
+  });
+
+  it("fails with loadConfig's own message on an invalid enum", async () => {
+    const r = await run({ env: { LOG_LEVEL: 'verbose' } });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/LOG_LEVEL/);
+  });
+
+  it('accepts multi-tenant with MCP_TRANSPORT unset (http is the zod default)', async () => {
+    const env = { MULTI_TENANT: 'true', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64),
+                  KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com' };
+    const r = await run({ env, multiTenant: true, transport: undefined });
+    expect(r.state).toBe('ok');
+  });
+
+  it('fails when multi-tenant is declared with a non-http transport', async () => {
+    const r = await run({ env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'stdio' }, multiTenant: false, transport: 'stdio' });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/stdio/);
+  });
+
+  it("fails with loadMultiTenantEnv's message when MCP_HOST is missing", async () => {
+    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64), KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x' };
+    const r = await run({ env, multiTenant: true, transport: 'http' });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/MCP_HOST/);
+  });
+
+  it('does NOT require PUBLIC_BASE_URL', async () => {
+    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64), KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com' };
+    expect((await run({ env, multiTenant: true, transport: 'http' })).state).toBe('ok');
+  });
+
+  it('treats an absent FIGMA_TOKEN in single-tenant as ok with the per-call nuance', async () => {
+    const r = await run({ env: {} });
+    expect(r.state).toBe('ok');
+    expect(JSON.stringify(r)).toMatch(/per-call/);
+  });
+
+  it('fails when DS_TEAM_IDS is set without FIGMA_TOKEN', async () => {
+    const r = await run({ env: { DS_TEAM_IDS: '1234567890123456789' } });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/FIGMA_TOKEN/);
+  });
+
+  it("fails with parseTeamIds' message, naming the bad id (not redacted)", async () => {
+    const r = await run({ env: { FIGMA_TOKEN: 'figd_x', DS_TEAM_IDS: 'not-a-team' } });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toContain('not-a-team');
   });
 });

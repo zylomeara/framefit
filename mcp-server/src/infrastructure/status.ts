@@ -1,3 +1,7 @@
+import { loadConfig } from './config.js';
+import { multiTenantEnvGraphConflict, parseTeamIds } from './env-graph.js';
+import { isMultiTenant, loadMultiTenantEnv } from '../multi-tenant/env.js';
+
 export type CheckResult =
   | { state: 'ok'; detail: Record<string, unknown> }
   | { state: 'fail'; reason: string; detail?: Record<string, unknown> }
@@ -276,8 +280,54 @@ export function renderText(report: StatusReport, width = 100): string {
 
 export function renderJson(report: StatusReport): string { return `${JSON.stringify(report)}\n`; }
 
+export const configCheck: Check = {
+  id: 'config',
+  async run(ctx) {
+    // 1. Hard boot abort (index.ts:26-30): the container restart-loops and /health is unreachable,
+    // so `status` under docker exec is the only thing that can still answer. Checked first.
+    const conflict = multiTenantEnvGraphConflict(ctx.env);
+    if (conflict) return { state: 'fail', reason: conflict };
+
+    // 2. The real zod schema - enums, coercions, cross-field refinements. A name list cannot catch
+    // LOG_LEVEL=verbose or a limits relationship, and both crash-loop the box.
+    try { loadConfig(ctx.env); }
+    catch (e) { return { state: 'fail', reason: `loadConfig rejected the environment: ${(e as Error).message}` }; }
+
+    // 3. Declared vs effective mode. Compare the DEFAULTED transport, exactly as index.ts:47 does
+    // via config.MCP_TRANSPORT (zod default 'http') - comparing the raw value would fail every box
+    // that simply does not set MCP_TRANSPORT, which is the compose default.
+    const transport = ctx.env.MCP_TRANSPORT ?? 'http';
+    if (isMultiTenant(ctx.env) && transport !== 'http') {
+      return { state: 'fail', reason: `MULTI_TENANT is set but MCP_TRANSPORT is "${transport}" - the server would boot single-tenant with no auth layer; multi-tenant requires the http transport` };
+    }
+
+    if (ctx.multiTenant) {
+      // 4. Delegate the required list AND the ENCRYPTION_KEY shape check (env.ts:41-53).
+      try { loadMultiTenantEnv(ctx.env); }
+      catch (e) { return { state: 'fail', reason: (e as Error).message }; }
+      return { state: 'ok', detail: { mode: 'multi-tenant', loaders: 'loadConfig+loadMultiTenantEnv' } };
+    }
+
+    // 5. Single-tenant. FIGMA_TOKEN is optional BY DESIGN (config.ts:6-11) and stdio-smoke proves a
+    // healthy handshake without it. But DS_TEAM_IDS without a token cannot sync (cli.ts:258-273).
+    const token = ctx.env.FIGMA_TOKEN;
+    const raw = ctx.env.DS_TEAM_IDS;
+    let teamCount = 0;
+    if (raw) {
+      try { teamCount = parseTeamIds(raw).length; }
+      catch (e) { return { state: 'fail', reason: (e as Error).message }; }
+      if (!token) return { state: 'fail', reason: 'DS_TEAM_IDS is set but FIGMA_TOKEN is not - the env graph cannot sync without a token' };
+    }
+    return { state: 'ok', detail: {
+      mode: 'single-tenant',
+      figma_token: token ? 'set' : 'not set (fine: callers may pass a per-call figma_token)',
+      ds_team_ids: teamCount,
+    } };
+  },
+};
+
 // MUST stay the last statement: `collectStatus`'s default parameter references CHECKS, and any
 // check const declared BELOW this line throws ReferenceError at module load (TDZ) - hidden until
 // the first real invocation.
 export const CHECK_IDS = ['config', 'db', 'key', 'tokens', 'library_graph', 'figma'] as const;
-export const CHECKS: Check[] = [];   // Tasks 3, 4 and 5a fill this, in CHECK_IDS order
+export const CHECKS: Check[] = [configCheck];
