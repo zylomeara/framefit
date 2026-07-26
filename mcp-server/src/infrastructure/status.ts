@@ -439,8 +439,117 @@ export const keyCheck: Check = {
   },
 };
 
+const NIGHTLY_INTERVAL_SEC = 24 * 60 * 60;
+const PROBE_TIMEOUT_MS = 10_000;
+
+export const dbCheck: Check = {
+  id: 'db',
+  async run(ctx) {
+    if (!ctx.env.DATABASE_URL) return { state: 'skipped', reason: 'DATABASE_URL is not set' };
+    if (!ctx.db) return { state: 'skipped', reason: 'no database handle was provided to status' };
+    // No catalog probe: these SELECTs ARE the presence test, and a missing relation arrives as a
+    // Postgres error naming it (the throw becomes `fail` in the runner). A hardcoded table list
+    // would be a second hand-maintained truth.
+    const users = await ctx.db.listUsers();
+    let teams = 0;
+    for (const user of users) teams += (await ctx.db.listTeams(user)).length;
+    return { state: 'ok', detail: { users: users.length, teams, hint: 'framefit users lists them' } };
+  },
+};
+
+export const tokensCheck: Check = {
+  id: 'tokens',
+  async run(ctx) {
+    if (!ctx.env.DATABASE_URL) return { state: 'skipped', reason: 'DATABASE_URL is not set' };
+    if (!ctx.db) return { state: 'skipped', reason: 'no database handle was provided to status' };
+    const s = await ctx.db.tokenStats();
+    if (s.stored === 0) return { state: 'skipped', reason: 'no PATs registered yet' };
+
+    if (s.users_without_default.length > 0) {
+      return { state: 'fail', reason: `these users hold tokens but no DEFAULT token, so every request of theirs fails: ${s.users_without_default.join(', ')}` };
+    }
+    if (s.bad_defaults.length > 0) {
+      return { state: 'fail', reason: `default PAT unusable for: ${s.bad_defaults.map((b) => `${b.user} (${b.problem})`).join(', ')}`,
+        detail: { invalid_non_default: s.invalid_total } };
+    }
+    // "0 invalid" means nothing if the validator is dead: nightly runs only inside the multi-tenant
+    // server process and swallows per-row failures (nightly-validation.ts:37-39), so a key rotation
+    // silences it entirely.
+    if (ctx.multiTenant) {
+      if (s.validation_age_sec === null) return { state: 'fail', reason: 'token validation has never run - nightly validation runs only inside the multi-tenant server process' };
+      if (s.validation_age_sec > 2 * NIGHTLY_INTERVAL_SEC) return { state: 'fail', reason: `token validation last ran ${Math.round(s.validation_age_sec / 3600)}h ago (expected daily)` };
+    }
+    return { state: 'ok', detail: {
+      stored: s.stored, invalid_non_default: s.invalid_total, validated_age_sec: s.validation_age_sec,
+      soonest_expiry: s.soonest_default_expiry
+        ? `${s.soonest_default_expiry.user} in ${s.soonest_default_expiry.days}d (${s.soonest_default_expiry.expires_at})`
+        : 'none set',
+    } };
+  },
+};
+
+export const libraryGraphCheck: Check = {
+  id: 'library_graph',
+  async run(ctx) {
+    if (!ctx.multiTenant) {
+      return { state: 'skipped', reason: 'single-tenant: the graph lives in the server process and this CLI cannot see it - "framefit graph check" REBUILDS it instead (minutes on a large design system)' };
+    }
+    if (!ctx.env.DATABASE_URL) return { state: 'skipped', reason: 'DATABASE_URL is not set' };
+    if (!ctx.db) return { state: 'skipped', reason: 'no database handle was provided to status' };
+    const g = await ctx.db.graphStats();
+    if (g.libraries === 0) {
+      if (g.teams === 0) return { state: 'ok', detail: { libraries: 0, teams: 0, note: 'nothing registered yet - start with "framefit teams add <team-id> --user <id>"' } };
+      return { state: 'fail', reason: 'teams are registered but no libraries are synced - run "framefit sync --user <id>" for the affected user' };
+    }
+    if (g.users_with_teams_and_no_libraries.length > 0) {
+      const who = g.users_with_teams_and_no_libraries;
+      return { state: 'fail',
+        reason: `these users have registered teams but zero synced libraries (their tokens resolve nothing): ${who.join(', ')} - run "framefit sync --user ${who[0]}"`,
+        detail: { libraries: g.libraries, variables: g.variables } };
+    }
+    // Staleness is REPORTED, not judged: a design system that never changes is not broken.
+    return { state: 'ok', detail: { libraries: g.libraries, variables: g.variables, teams: g.teams,
+      oldest_synced_at: g.oldest_synced_at, oldest_age_sec: g.oldest_age_sec } };
+  },
+};
+
+export const figmaCheck: Check = {
+  id: 'figma',
+  async run(ctx) {
+    if (!ctx.probe) {
+      return { state: 'skipped', reason: ctx.multiTenant
+        ? 'network probe is off by default in multi-tenant (one call per user) - pass --probe'
+        : 'network probe turned off with --no-probe' };
+    }
+    if (!ctx.multiTenant) {
+      const token = ctx.env.FIGMA_TOKEN;
+      if (!token) return { state: 'skipped', reason: 'no FIGMA_TOKEN to probe (callers may pass a per-call figma_token)' };
+      const result = await ctx.validatePat(token, PROBE_TIMEOUT_MS);
+      if (!result.ok) return { state: 'fail', reason: `Figma refused the token (HTTP ${result.status})` };
+      return { state: 'ok', detail: { handle: result.handle } };
+    }
+    if (!ctx.db || !ctx.env.ENCRYPTION_KEY) return { state: 'skipped', reason: 'multi-tenant probe needs DATABASE_URL and ENCRYPTION_KEY' };
+    const users = await ctx.db.listUsers();
+    if (users.length === 0) return { state: 'skipped', reason: 'no users registered' };
+    let probed = 0; let accepted = 0;
+    const bad: string[] = [];
+    for (const user of users) {
+      const row = await ctx.db.getDefaultPat(user, ctx.env.ENCRYPTION_KEY);
+      if (!row) continue;   // reported by the tokens check, not here
+      // The decrypted PAT can be quoted by a failing HTTP client; register it so the runner's
+      // redactor knows about a value that never appears in the environment.
+      ctx.secrets.add(row.pat);
+      probed++;
+      const result = await ctx.validatePat(row.pat, PROBE_TIMEOUT_MS);
+      if (result.ok) accepted++; else bad.push(`${user} (HTTP ${result.status})`);
+    }
+    if (bad.length > 0) return { state: 'fail', reason: `Figma refused the stored PAT of: ${bad.join(', ')}`, detail: { accepted: `${accepted} of ${probed}` } };
+    return { state: 'ok', detail: { accepted: `${accepted} of ${probed}` } };
+  },
+};
+
 // MUST stay the last statement: `collectStatus`'s default parameter references CHECKS, and any
 // check const declared BELOW this line throws ReferenceError at module load (TDZ) - hidden until
 // the first real invocation.
 export const CHECK_IDS = ['config', 'db', 'key', 'tokens', 'library_graph', 'figma'] as const;
-export const CHECKS: Check[] = [configCheck, keyCheck];
+export const CHECKS: Check[] = [configCheck, dbCheck, keyCheck, tokensCheck, libraryGraphCheck, figmaCheck];

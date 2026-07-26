@@ -1,7 +1,8 @@
 // tests/unit/status.test.ts
 import { describe, it, expect, vi } from 'vitest';
 import { collectStatus, buildReport, withDeadline, renderText, renderJson, keyFingerprint,
-         configCheck, keyCheck, CHECKS, CHECK_IDS, type Check, type StatusDb } from '../../src/infrastructure/status.js';
+         configCheck, keyCheck, dbCheck, tokensCheck, libraryGraphCheck, figmaCheck,
+         CHECKS, CHECK_IDS, type Check, type StatusDb, type TokenStats, type GraphStats } from '../../src/infrastructure/status.js';
 import { baseCtx } from './status-fixtures.js';
 import { multiTenantEnvGraphConflict } from '../../src/infrastructure/env-graph.js';
 import { ENCRYPTION_KEY_HINT } from '../../src/multi-tenant/env.js';
@@ -503,6 +504,133 @@ describe('effective mode consistency (header vs. config check)', () => {
   });
 });
 
+const TOKENS: TokenStats = { stored: 1, invalid_total: 0, users_without_default: [], bad_defaults: [],
+  soonest_default_expiry: null, last_validated_at: '2026-07-26T00:00:00.000Z', validation_age_sec: 3600 };
+const GRAPH: GraphStats = { libraries: 2, variables: 100, teams: 1, users_with_teams_and_no_libraries: [],
+  oldest_synced_at: '2026-07-26T00:00:00.000Z', oldest_age_sec: 3600, newest_synced_at: '2026-07-26T01:00:00.000Z' };
+// Multi-tenant must be expressed in the ENV: the runner derives the effective mode and ignores a
+// caller-supplied `multiTenant` (see the AMENDMENT near the top of this plan).
+const MT_MIN = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x' };
+const first = (c: Check, over: Parameters<typeof baseCtx>[0]) =>
+  collectStatus(baseCtx(over), [c]).then((r) => r.checks[0]);
+
+describe('db check', () => {
+  it('is skipped without DATABASE_URL', async () => {
+    expect((await first(dbCheck, {})).state).toBe('skipped');
+  });
+  it('fails with the Postgres relation name when a table is missing', async () => {
+    const db = { listUsers: async () => { throw new Error('relation "figma_tokens" does not exist'); } } as unknown as StatusDb;
+    const r = await first(dbCheck, { env: { DATABASE_URL: 'postgres://x' }, db });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/figma_tokens/);
+  });
+  it('counts users and teams when reachable', async () => {
+    const db = { listUsers: async () => ['u1'], listTeams: async () => ['t1', 't2'] } as unknown as StatusDb;
+    expect(await first(dbCheck, { env: { DATABASE_URL: 'postgres://x' }, db })).toMatchObject({ state: 'ok', detail: { users: 1, teams: 2 } });
+  });
+});
+
+describe('tokens check', () => {
+  const run = (over: Partial<TokenStats>, multiTenant = true) =>
+    first(tokensCheck, { env: multiTenant ? MT_MIN : { DATABASE_URL: 'postgres://x' }, multiTenant, transport: 'http',
+      db: { tokenStats: async () => ({ ...TOKENS, ...over }) } as unknown as StatusDb });
+
+  it('fails when a user holds tokens but no default', async () => {
+    const r = await run({ users_without_default: ['u1'] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toContain('u1');
+  });
+  it('fails on an INVALID default PAT', async () => {
+    const r = await run({ bad_defaults: [{ user: 'u1', label: 'ci', problem: 'invalid', expires_at: null }] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/u1 \(invalid\)/);
+  });
+  it('fails on an EXPIRED default PAT', async () => {
+    const r = await run({ bad_defaults: [{ user: 'u2', label: 'ci', problem: 'expired', expires_at: '2026-01-01' }] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/u2 \(expired\)/);
+  });
+  it('does NOT fail on non-default invalid rows, but reports the count', async () => {
+    const r = await run({ invalid_total: 3 });
+    expect(r).toMatchObject({ state: 'ok', detail: { invalid_non_default: 3 } });
+  });
+  it('fails in multi-tenant when validation never ran', async () => {
+    const r = await run({ last_validated_at: null, validation_age_sec: null });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/never run/i);
+  });
+  it('fails when validation is older than twice the nightly interval', async () => {
+    expect((await run({ validation_age_sec: 60 * 60 * 49 })).state).toBe('fail');
+  });
+  it('does not judge validation age in single-tenant', async () => {
+    expect((await run({ last_validated_at: null, validation_age_sec: null }, false)).state).toBe('ok');
+  });
+  it('is skipped when nothing is registered yet', async () => {
+    expect((await run({ stored: 0 })).state).toBe('skipped');
+  });
+});
+
+describe('library_graph check', () => {
+  const run = (over: Partial<GraphStats>) =>
+    first(libraryGraphCheck, { env: MT_MIN, multiTenant: true, transport: 'http',
+      db: { graphStats: async () => ({ ...GRAPH, ...over }) } as unknown as StatusDb });
+
+  it('is skipped in single-tenant and names the cost of the alternative', async () => {
+    const r = await first(libraryGraphCheck, {});
+    expect(r.state).toBe('skipped');
+    expect((r as { reason: string }).reason).toMatch(/graph check/);
+    expect((r as { reason: string }).reason).toMatch(/minutes/);
+  });
+  it('is skipped in multi-tenant without DATABASE_URL', async () => {
+    const r = await first(libraryGraphCheck, { multiTenant: true, transport: 'http' });
+    expect(r.state).toBe('skipped');
+  });
+  it('is ok on a fresh install with nothing registered', async () => {
+    expect((await run({ libraries: 0, variables: 0, teams: 0 })).state).toBe('ok');
+  });
+  it('fails when teams are registered but nothing synced', async () => {
+    const r = await run({ libraries: 0, variables: 0, teams: 2 });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/framefit sync/);
+  });
+  it('names the actual user when one has teams but zero libraries', async () => {
+    const r = await run({ users_with_teams_and_no_libraries: ['11111111-2222-3333-4444-555555555555'] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toContain('framefit sync --user 11111111-2222-3333-4444-555555555555');
+  });
+  it('reports staleness without judging it', async () => {
+    expect((await run({ oldest_age_sec: 60 * 60 * 24 * 90 })).state).toBe('ok');
+  });
+});
+
+describe('figma check', () => {
+  it('is skipped with a mode-specific reason when the probe is off', async () => {
+    const single = await first(figmaCheck, { env: { FIGMA_TOKEN: 'figd_x' }, probe: false });
+    expect((single as { reason: string }).reason).toMatch(/--no-probe/);
+    // Multi-tenant must be expressed in env (see MT_MIN above) - a bare `multiTenant: true` with no
+    // MULTI_TENANT/MCP_TRANSPORT in env is overwritten back to single-tenant by collectStatus and
+    // would silently test the single-tenant branch instead of the multi-tenant one it claims to.
+    const mt = await first(figmaCheck, { env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http' }, multiTenant: true, transport: 'http', probe: false });
+    expect((mt as { reason: string }).reason).toMatch(/pass --probe/);
+  });
+  it('reports the HTTP status rather than calling a 429 a rejection', async () => {
+    const r = await first(figmaCheck, { env: { FIGMA_TOKEN: 'figd_x' }, probe: true, validatePat: async () => ({ ok: false, status: 429 }) });
+    expect((r as { reason: string }).reason).toMatch(/HTTP 429/);
+  });
+  it('registers the stored PAT as a runtime secret before probing it', async () => {
+    const db = { listUsers: async () => ['u1'], getDefaultPat: async () => ({ pat: 'SENTINEL_PAT', label: 'l', status: 'active' }) } as unknown as StatusDb;
+    const r = await collectStatus(baseCtx({ env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64) },
+      multiTenant: true, transport: 'http', probe: true, db,
+      validatePat: async (p) => { throw new Error(`upstream said ${p}`); } }), [figmaCheck]);
+    expect(JSON.stringify(r)).not.toContain('SENTINEL_PAT');
+  });
+  it('counts only users who actually have a default PAT', async () => {
+    const db = { listUsers: async () => ['u1', 'u2'], getDefaultPat: async (u: string) => u === 'u1' ? { pat: 'p', label: 'l', status: 'active' } : null } as unknown as StatusDb;
+    const r = await first(figmaCheck, { env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64) }, multiTenant: true, transport: 'http', probe: true, db });
+    expect(r).toMatchObject({ state: 'ok', detail: { accepted: '1 of 1' } });
+  });
+});
+
 describe('CHECKS registry', () => {
   it('registers the config check', () => {
     // Anchored to a fixed id, NOT to CHECKS.length: `CHECKS.map(c=>c.id)` equals
@@ -517,6 +645,14 @@ describe('CHECKS registry', () => {
     // survives later tasks appending more checks to CHECKS (tokens, library_graph, figma), unlike
     // an exact-array-equality or CHECKS.length assertion would.
     expect(CHECKS.map((c) => c.id)).toContain('key');
+  });
+
+  it('registers all six ids, going red if any one is left unregistered', () => {
+    // CHECK_IDS is the full intended roster; asserting CHECKS against ITSELF (e.g. a slice of its
+    // own ids) is tautological and stays green even if a check is missing from CHECKS entirely.
+    // Comparing against the independent CHECK_IDS constant is what makes an unregistered check
+    // (e.g. forgetting to add figmaCheck to the CHECKS array literal) go red here.
+    expect(CHECKS.map((c) => c.id)).toEqual([...CHECK_IDS]);
   });
 
   it('registers checks in CHECK_IDS order, with no duplicate ids', () => {
