@@ -364,8 +364,57 @@ export const configCheck: Check = {
   },
 };
 
+// A wrong key throws a node crypto GCM message; a pool failure throws something else entirely.
+// Blaming the key for a dead pool sends an operator to rotate secrets over a network problem.
+const DECRYPT_ERROR = /unable to authenticate data|unsupported state|bad decrypt/i;
+
+export const keyCheck: Check = {
+  id: 'key',
+  async run(ctx) {
+    const key = ctx.env.ENCRYPTION_KEY;
+    if (!key) return { state: 'skipped', reason: 'ENCRYPTION_KEY is not set' };
+
+    // Part 1 - EVERY mode, no database. The incident this command exists for (a bare 403 from the
+    // ingest endpoint) happened on exactly this path, where a DB-only check is skipped.
+    try {
+      const token = await ctx.signBridgeToken('status-selftest', key, 60);
+      if (await ctx.verifyBridgeToken(token, key, 'variables:snapshot') !== 'status-selftest') {
+        return { state: 'fail', reason: 'ENCRYPTION_KEY did not round-trip a bridge token (sign+verify) - tokens signed with it cannot be verified' };
+      }
+    } catch (e) {
+      return { state: 'fail', reason: `ENCRYPTION_KEY cannot sign a bridge token: ${(e as Error).message}` };
+    }
+
+    if (!ctx.db) return { state: 'ok', detail: { self_test: 'sign+verify round-trip passed', decrypt: 'not checked (no DATABASE_URL)' } };
+
+    // Part 2 - EVERY user, not a sample: listUsers is ORDER BY keycloak_user_id (db.ts:104), so a
+    // capped sample makes the verdict an alphabetical accident after a key rotation.
+    const users = await ctx.db.listUsers();
+    if (users.length === 0) return { state: 'ok', detail: { self_test: 'sign+verify round-trip passed', decrypt: 'no users registered' } };
+
+    let decrypted = 0;
+    const mismatched: string[] = [];
+    const other: string[] = [];
+    for (const user of users) {
+      try {
+        if (await ctx.db.getDefaultPat(user, key)) decrypted++;
+      } catch (e) {
+        const message = (e as Error).message ?? '';
+        if (DECRYPT_ERROR.test(message)) mismatched.push(user); else other.push(`${user}: ${message}`);
+      }
+    }
+    if (mismatched.length > 0) {
+      return { state: 'fail',
+        reason: `ENCRYPTION_KEY (fingerprint ${keyFingerprint(key)}) does not match the stored data for ${mismatched.length} of ${users.length} users: ${mismatched.join(', ')}`,
+        detail: { decrypted, users: users.length } };
+    }
+    if (other.length > 0) return { state: 'fail', reason: `could not read stored PATs: ${other.join('; ')}` };
+    return { state: 'ok', detail: { self_test: 'sign+verify round-trip passed', decrypted: `${decrypted} of ${users.length}` } };
+  },
+};
+
 // MUST stay the last statement: `collectStatus`'s default parameter references CHECKS, and any
 // check const declared BELOW this line throws ReferenceError at module load (TDZ) - hidden until
 // the first real invocation.
 export const CHECK_IDS = ['config', 'db', 'key', 'tokens', 'library_graph', 'figma'] as const;
-export const CHECKS: Check[] = [configCheck];
+export const CHECKS: Check[] = [configCheck, keyCheck];

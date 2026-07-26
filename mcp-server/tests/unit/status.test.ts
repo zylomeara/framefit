@@ -1,7 +1,7 @@
 // tests/unit/status.test.ts
 import { describe, it, expect, vi } from 'vitest';
 import { collectStatus, buildReport, withDeadline, renderText, renderJson, keyFingerprint,
-         configCheck, CHECKS, CHECK_IDS, type Check } from '../../src/infrastructure/status.js';
+         configCheck, keyCheck, CHECKS, CHECK_IDS, type Check, type StatusDb } from '../../src/infrastructure/status.js';
 import { baseCtx } from './status-fixtures.js';
 import { multiTenantEnvGraphConflict } from '../../src/infrastructure/env-graph.js';
 import { ENCRYPTION_KEY_HINT } from '../../src/multi-tenant/env.js';
@@ -359,6 +359,56 @@ describe('config check', () => {
   it('treats a blank DS_TEAM_IDS (whitespace only) as unset, matching the production trim gate', async () => {
     const r = await run({ env: { DS_TEAM_IDS: '   ' } });
     expect(r.state).toBe('ok');
+  });
+});
+
+describe('key check', () => {
+  const KEY = 'a'.repeat(64);
+  const run = (over: Parameters<typeof baseCtx>[0]) =>
+    collectStatus(baseCtx(over), [keyCheck]).then((r) => r.checks[0]);
+
+  it('is skipped when no ENCRYPTION_KEY is set', async () => {
+    expect((await run({})).state).toBe('skipped');
+  });
+
+  it('fails WITHOUT any database when sign/verify does not round-trip', async () => {
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, verifyBridgeToken: async () => null });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/round-trip/i);
+  });
+
+  it('names the fingerprint and the failing users on a decrypt mismatch', async () => {
+    const db = {
+      listUsers: async () => ['u1', 'u2'],
+      getDefaultPat: async (u: string) => {
+        if (u === 'u2') throw new Error('Unsupported state or unable to authenticate data');
+        return { pat: 'figd_x', label: 'l', status: 'active' };
+      },
+    } as unknown as StatusDb;
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, db });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason)
+      .toMatch(new RegExp(`fingerprint ${keyFingerprint(KEY)}.*1 of 2 users: u2`));
+  });
+
+  it('does not blame the key for a pool error', async () => {
+    const db = {
+      listUsers: async () => ['u1'],
+      getDefaultPat: async () => { throw new Error('Database not initialized. Call initDb() first.'); },
+    } as unknown as StatusDb;
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, db });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).not.toMatch(/does not match/);
+    expect((r as { reason: string }).reason).toMatch(/could not read/);
+  });
+
+  it('reports k of n when every stored default PAT decrypts', async () => {
+    const db = {
+      listUsers: async () => ['u1', 'u2'],
+      getDefaultPat: async () => ({ pat: 'figd_x', label: 'l', status: 'active' }),
+    } as unknown as StatusDb;
+    const r = await run({ env: { ENCRYPTION_KEY: KEY }, db });
+    expect(r).toMatchObject({ state: 'ok', detail: { decrypted: '2 of 2' } });
   });
 });
 
