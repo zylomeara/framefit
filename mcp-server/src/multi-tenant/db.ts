@@ -3,6 +3,7 @@
 // *WithPat/DefaultPat return safe rows (no encrypted_pat).
 import pg from 'pg';
 import { encrypt, decrypt } from './crypto.js';
+import type { TokenStats } from '../infrastructure/status.js';
 
 const { Pool } = pg;
 
@@ -231,4 +232,40 @@ export async function setReadOnly(userId: string, readOnly: boolean): Promise<vo
      ON CONFLICT (keycloak_user_id) DO UPDATE SET read_only = EXCLUDED.read_only, updated_at = NOW()`,
     [userId, readOnly],
   );
+}
+
+/** Global (no user filter, by design) read-only aggregate of PAT health, for `framefit status`.
+ *  READS ONLY - a missing relation must surface as a Postgres error naming it, not be repaired. */
+export async function tokenStats(): Promise<TokenStats> {
+  const { rows: [agg] } = await getPool().query(`
+    SELECT COUNT(*)::int AS stored,
+           COUNT(*) FILTER (WHERE status = 'invalid')::int AS invalid_total,
+           MAX(last_validated_at) AS last_validated_at,
+           EXTRACT(EPOCH FROM now() - MAX(last_validated_at))::int AS validation_age_sec
+    FROM figma_tokens`);
+  const { rows: withoutDefault } = await getPool().query(`
+    SELECT keycloak_user_id FROM figma_tokens
+    GROUP BY keycloak_user_id HAVING COUNT(*) FILTER (WHERE is_default) = 0
+    ORDER BY keycloak_user_id`);
+  // expires_at is DATE: node-pg parses it at LOCAL midnight, so ::text is required or the day
+  // shifts (same reason db.ts:99 already does this).
+  const { rows: bad } = await getPool().query(`
+    SELECT keycloak_user_id, label, expires_at::text AS expires_at,
+           CASE WHEN status = 'invalid' THEN 'invalid' ELSE 'expired' END AS problem
+    FROM figma_tokens
+    WHERE is_default AND (status = 'invalid' OR (expires_at IS NOT NULL AND expires_at < CURRENT_DATE))
+    ORDER BY keycloak_user_id`);
+  const { rows: [soonest] } = await getPool().query(`
+    SELECT keycloak_user_id, expires_at::text AS expires_at, (expires_at - CURRENT_DATE)::int AS days
+    FROM figma_tokens
+    WHERE is_default AND expires_at IS NOT NULL AND expires_at >= CURRENT_DATE
+    ORDER BY expires_at ASC LIMIT 1`);
+  return {
+    stored: agg.stored, invalid_total: agg.invalid_total,
+    users_without_default: withoutDefault.map((r) => r.keycloak_user_id),
+    bad_defaults: bad.map((r) => ({ user: r.keycloak_user_id, label: r.label, problem: r.problem, expires_at: r.expires_at ?? null })),
+    soonest_default_expiry: soonest ? { user: soonest.keycloak_user_id, expires_at: soonest.expires_at, days: soonest.days } : null,
+    last_validated_at: agg.last_validated_at ? new Date(agg.last_validated_at).toISOString() : null,
+    validation_age_sec: agg.validation_age_sec ?? null,
+  };
 }

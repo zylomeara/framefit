@@ -3,6 +3,7 @@
 // collections' default modes. loadGraph() materialises in-memory maps for the resolver.
 import { getSharedPool } from './db.js';
 import { buildGraphMaps } from '../domain/variable-graph.js';
+import type { GraphStats } from '../infrastructure/status.js';
 
 export interface GraphVar { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; resolved_type: string }
 export interface GraphColl { collection_id: string; default_mode: string; modes: unknown; name?: string; key?: string }
@@ -114,4 +115,30 @@ export async function loadGraph(userId: string): Promise<LoadedGraph> {
   const cr = await p.query('SELECT file_key, collection_id, default_mode, modes, name, key FROM library_collections WHERE keycloak_user_id=$1 ORDER BY file_key, collection_id', [userId]);
   const { vars, colls } = rowsToGraphInput(vr.rows, cr.rows);
   return buildGraphMaps(vars, colls);
+}
+
+/** Global (no user filter, by design) read-only aggregate of the library graph, for
+ *  `framefit status`. READS ONLY - a missing relation must surface as a Postgres error naming it. */
+export async function graphStats(): Promise<GraphStats> {
+  const { rows: [f] } = await getSharedPool().query(`
+    SELECT COUNT(*)::int AS libraries, MIN(last_synced_at) AS oldest, MAX(last_synced_at) AS newest,
+           EXTRACT(EPOCH FROM now() - MIN(last_synced_at))::int AS oldest_age_sec
+    FROM library_files`);
+  const { rows: [v] } = await getSharedPool().query('SELECT COUNT(*)::int AS variables FROM library_variables');
+  const { rows: [t] } = await getSharedPool().query('SELECT COUNT(*)::int AS teams FROM registered_teams');
+  // Global counts can look healthy on the orphan rows of a departed user while the only ACTIVE
+  // account resolves nothing: nothing deletes library_files on user deletion (library-registry-db.ts:59).
+  const { rows: empty } = await getSharedPool().query(`
+    SELECT t.keycloak_user_id
+    FROM (SELECT DISTINCT keycloak_user_id FROM registered_teams) t
+    LEFT JOIN library_files l ON l.keycloak_user_id = t.keycloak_user_id
+    GROUP BY t.keycloak_user_id HAVING COUNT(l.file_key) = 0
+    ORDER BY t.keycloak_user_id`);
+  return {
+    libraries: f.libraries, variables: v.variables, teams: t.teams,
+    users_with_teams_and_no_libraries: empty.map((r) => r.keycloak_user_id),
+    oldest_synced_at: f.oldest ? new Date(f.oldest).toISOString() : null,
+    oldest_age_sec: f.oldest_age_sec ?? null,
+    newest_synced_at: f.newest ? new Date(f.newest).toISOString() : null,
+  };
 }
