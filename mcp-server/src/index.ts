@@ -4,15 +4,17 @@ import { loadConfig } from './infrastructure/config.js';
 import { createLogger } from './infrastructure/logger.js';
 import { startServer } from './infrastructure/server.js';
 import { isMultiTenant, loadMultiTenantEnv } from './multi-tenant/env.js';
-import { initDb, ensureSchema, closeDb, getDefaultPat, listUsers } from './multi-tenant/db.js';
+import { hostname } from 'node:os';
+import { initDb, ensureSchema, closeDb, getDefaultPat, listUsers, tokenStats } from './multi-tenant/db.js';
 import { ensureCodeConnectSchema } from './multi-tenant/code-connect-db.js';
 import { ensureVariableSnapshotSchema } from './multi-tenant/variable-snapshot-db.js';
 import { ensureLibraryRegistrySchema, addTeam, listTeams, removeTeam, setLibraries } from './multi-tenant/library-registry-db.js';
-import { ensureLibraryGraphSchema, replaceLibrary, type GraphVar, type GraphColl } from './multi-tenant/library-graph-db.js';
+import { ensureLibraryGraphSchema, replaceLibrary, graphStats, type GraphVar, type GraphColl } from './multi-tenant/library-graph-db.js';
 import { syncUser } from './multi-tenant/library-sync.js';
 import { FigmaRestAdapter } from './adapters/driven/figma-rest.js';
 import { initJwt } from './multi-tenant/jwt.js';
-import { signBridgeToken } from './multi-tenant/bridge-token.js';
+import { signBridgeToken, verifyBridgeToken } from './multi-tenant/bridge-token.js';
+import { validatePat } from './multi-tenant/validate-pat.js';
 import { startNightlyValidation } from './multi-tenant/nightly-validation.js';
 import { ensureAuditSchema, startAuditRetention } from './multi-tenant/audit-db.js';
 import { ensureUsageSchema, startUsageRetention } from './multi-tenant/usage-db.js';
@@ -124,10 +126,19 @@ function buildCliDeps(): CliDeps {
     // GraphColl[]. Same narrowing cast the MT server applies at its syncUser call site.
     replaceLibrary: (u, fk, vars, colls) => replaceLibrary(u, fk, vars as GraphVar[], colls as GraphColl[]),
     signBridgeToken,
+    // status only: read-only aggregates, the verify half of the key self-test, and the process facts
+    // the report's scope header names (so a reader can tell WHICH box answered).
+    tokenStats,
+    graphStats,
+    validatePat,
+    verifyBridgeToken,
+    now: () => Date.now(),
+    hostname: () => hostname(),
+    pid: () => process.pid,
   };
 }
 
-// argv dispatch. An allowlisted first arg ({teams,sync,users,graph,bridge-token}) runs a CLI command and exits —
+// argv dispatch. An allowlisted first arg ({status,teams,sync,users,graph,bridge-token}) runs a CLI command and exits —
 // it must NEVER fall through to main(), or the command would ALSO boot the MCP server. Any other
 // argv (the empty/normal case) is the server path: main() writes nothing to stdout (the stdio
 // transport owns it — the stdio-smoke gate). All CLI/boot-error output goes to stderr.
@@ -137,7 +148,10 @@ if (isCliCommand(argv)) {
     .then((code) => process.exit(code))
     .catch((err) => {
       process.stderr.write(`fatal: ${(err as Error)?.stack ?? (err as Error)?.message ?? String(err)}\n`);
-      process.exit(1);
+      // 2 = "could not run" for status ONLY (its documented contract: 0 nothing failed, 1 a check
+      // failed, 2 could not run). The other commands keep their historical 1 - widening this to every
+      // command would silently redefine their exit contract.
+      process.exit(argv[0] === 'status' ? 2 : 1);
     });
 } else {
   main().catch((err) => {

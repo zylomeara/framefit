@@ -15,15 +15,19 @@ import type { SyncDeps } from '../multi-tenant/library-sync.js';
 import { parseTeamIds, createEnvGraph } from './env-graph.js';
 import { signBridgeToken } from '../multi-tenant/bridge-token.js';
 import { isEncryptionKeyHex, ENCRYPTION_KEY_HINT } from '../multi-tenant/env.js';
+import {
+  collectStatus, buildReport, renderText, renderJson, withDeadline, HARD_DEADLINE_MS, effectiveMultiTenant,
+  type StatusCtx, type StatusDb, type TokenStats, type GraphStats, type CheckResult,
+} from './status.js';
 
 /**
  * The allowlist of first-arg CLI commands. Anything else → the server boot path (main()).
- * NOTE: {teams, sync, users, graph, bridge-token} are RESERVED argv barewords — a bare first arg
- * matching one of these routes to the CLI, never to the server. Any future server-side flag must stay
- * `--`-prefixed: isCliCommand only matches barewords in this set, so a `--foo` first arg always falls
- * through to main(). Never introduce a bareword server flag that could collide with these.
+ * NOTE: {status, teams, sync, users, graph, bridge-token} are RESERVED argv barewords — a bare first
+ * arg matching one of these routes to the CLI, never to the server. Any future server-side flag must
+ * stay `--`-prefixed: isCliCommand only matches barewords in this set, so a `--foo` first arg always
+ * falls through to main(). Never introduce a bareword server flag that could collide with these.
  */
-export const CLI_COMMANDS = new Set(['teams', 'sync', 'users', 'graph', 'bridge-token']);
+export const CLI_COMMANDS = new Set(['status', 'teams', 'sync', 'users', 'graph', 'bridge-token']);
 
 export function isCliCommand(argv: string[]): boolean {
   return argv.length > 0 && CLI_COMMANDS.has(argv[0]);
@@ -63,10 +67,25 @@ export interface CliDeps {
   // server's POST /accounts/bridge-token uses, so a CLI-minted token is interchangeable with a
   // portal-minted one.
   signBridgeToken: typeof signBridgeToken;
+  // ── status only ───────────────────────────────────────────────────────────────────────────────
+  // Read-only aggregates. The TYPES come from status.ts (never restated here): a field added there
+  // — a staleness counter, a clock-skew fact — must break every fixture that has not caught up,
+  // not be silently absent from what the CLI hands to the checks.
+  tokenStats: () => Promise<TokenStats>;
+  graphStats: () => Promise<GraphStats>;
+  validatePat: (pat: string, timeoutMs?: number) => Promise<{ ok: true; handle: string } | { ok: false; status: number }>;
+  // The verify half of the ENCRYPTION_KEY self-test; signBridgeToken above is the sign half.
+  verifyBridgeToken: (token: string, secretHex: string, scope: string) => Promise<string | null>;
+  now: () => number;
+  hostname: () => string;
+  pid: () => number;
+  /** Optional; defaults to HARD_DEADLINE_MS. A dep, not a flag - testable without public surface. */
+  deadlineMs?: number;
 }
 
 const USAGE = `usage: framefit <command>
 
+  status [--json] [--probe|--no-probe]                  diagnose this instance (no prerequisites)
   teams add <team-id|url> --user <keycloak-user-id>     register a DS team for a user
   teams remove <team-id> --user <keycloak-user-id>      unregister a team (+ its synced libs)
   teams list --user <keycloak-user-id>                  list a user's registered teams
@@ -75,6 +94,7 @@ const USAGE = `usage: framefit <command>
   graph check [<variable-key>]                          single-tenant env-graph diagnostics (no DB)
   bridge-token --user <keycloak-user-id> [--ttl <sec>]  mint a variable-snapshot upload token (no DB)
 
+status needs nothing - it uses whatever is configured and honestly reports the rest as skipped.
 Commands teams/sync/users need DATABASE_URL (+ ENCRYPTION_KEY for sync).
 graph check needs FIGMA_TOKEN + DS_TEAM_IDS and touches no database.
 bridge-token needs ENCRYPTION_KEY (it signs with the same key) and touches no database.
@@ -110,6 +130,13 @@ function parseFlags(args: string[]): { positionals: string[]; flags: Record<stri
 function usageErr(deps: CliDeps, line: string): number {
   deps.err(`error: ${line}\n\n${USAGE}`);
   return 1;
+}
+
+// 2 = "could not run" (usage, internal throw, deadline). 1 stays reserved for "a check failed", so
+// a cron wrapper can tell a typo from an unhealthy instance. Only `status` uses this.
+function usageErr2(deps: CliDeps, line: string): number {
+  deps.err(`error: ${line}\n\n${USAGE}`);
+  return 2;
 }
 
 /**
@@ -350,14 +377,97 @@ async function cmdBridgeToken(args: string[], deps: CliDeps): Promise<number> {
   return 0;
 }
 
+// ── status ──────────────────────────────────────────────────────────────────────────────────────
+/**
+ * `status [--json] [--probe|--no-probe]` — instance self-diagnosis. Unlike teams/sync/users this
+ * does NOT run the DB bootstrap (makeDbRunner): a diagnostic that migrates the schema it inspects is
+ * not a diagnostic. It opens the pool only to SELECT, and always closes it.
+ *
+ * Exit codes are the machine surface: 0 = nothing failed, 1 = a check failed, 2 = the command could
+ * not run at all (usage error, internal throw, deadline). Nothing here calls `check.run()` directly:
+ * every check goes through `collectStatus`, which owns BOTH the throw-to-fail conversion and secret
+ * redaction — bypassing it would hand back an unredacted reason and let this command's idea of the
+ * mode drift from the report header's.
+ */
+async function cmdStatus(args: string[], deps: CliDeps): Promise<number> {
+  const { positionals, flags } = parseFlags(args);
+  if (positionals.length > 0) return usageErr2(deps, `status takes no positional arguments (got "${positionals[0]}")`);
+  // parseFlags assigns '' to a valueless flag (see parseFlags above), so truthiness is ALWAYS false
+  // for --json/--probe/--no-probe. Presence (!== undefined) is the signal; a value is a usage error.
+  for (const name of ['json', 'probe', 'no-probe']) {
+    if (flags[name] !== undefined && flags[name] !== '') return usageErr2(deps, `--${name} takes no value`);
+  }
+  if (flags.probe !== undefined && flags['no-probe'] !== undefined) {
+    return usageErr2(deps, '--probe and --no-probe are mutually exclusive');
+  }
+  const json = flags.json !== undefined;
+  const transport = deps.env.MCP_TRANSPORT;
+  // effectiveMultiTenant(env) is the ONE derivation of the mode — the same function collectStatus
+  // uses to overwrite ctx.multiTenant before any check runs. Recomputing the expression inline here
+  // would give the probe default a second, independently maintained source of truth, free to drift
+  // from the mode the checks and the report header actually report.
+  const multiTenant = effectiveMultiTenant(deps.env);
+  // Single-tenant probes by default: without it a stdio run is one green line and five skips, i.e.
+  // no evidence about the token, which is the newcomer's actual question. Multi-tenant does not:
+  // there it is one network call per user.
+  const probe = flags['no-probe'] !== undefined ? false : flags.probe !== undefined ? true : !multiTenant;
+
+  const hasDb = Boolean(deps.env.DATABASE_URL);
+  if (hasDb) {
+    deps.initDb(deps.env.DATABASE_URL as string, (e) => {
+      // pg puts the whole DSN (password included) in ECONNREFUSED; never log it raw. This logger is
+      // outside collectStatus's redactor, so the substitution has to happen at this call site.
+      deps.logger.error({ err: e.message.replace(/(postgres(?:ql)?:\/\/)[^@\s/]+@/gi, '$1<redacted>@') }, 'pg.pool_error');
+    });
+  }
+  try {
+    const db: StatusDb | undefined = hasDb ? {
+      listUsers: deps.listUsers,
+      listTeams: deps.listTeams,
+      getDefaultPat: deps.getDefaultPat,
+      tokenStats: deps.tokenStats,
+      graphStats: deps.graphStats,
+    } : undefined;
+
+    const ctx: StatusCtx = {
+      env: deps.env, now: deps.now, multiTenant, transport, probe, db,
+      signBridgeToken: deps.signBridgeToken, verifyBridgeToken: deps.verifyBridgeToken,
+      validatePat: deps.validatePat, hostname: deps.hostname(), pid: deps.pid(),
+      secrets: new Set<string>(),
+    };
+    // The sink lets the deadline path print what completed instead of nothing.
+    const sink: ({ id: string } & CheckResult)[] = [];
+    const deadlineMs = deps.deadlineMs ?? HARD_DEADLINE_MS;
+    const report = await withDeadline(collectStatus(ctx, undefined, { sink }), deadlineMs);
+
+    if (!report) {
+      // Print the PARTIAL report, not just an error line: the checks that did finish are exactly the
+      // evidence that narrows down which dependency is hanging.
+      const partial = buildReport(ctx, sink);
+      deps.out(json ? renderJson(partial) : renderText(partial));
+      deps.err(`error: status did not finish within ${deadlineMs}ms - a dependency is not answering\n`);
+      return 2;
+    }
+    deps.out(json ? renderJson(report) : renderText(report));
+    // Scope caveat to stderr, ALWAYS: with --json, stdout must carry exactly one JSON document and
+    // nothing else, so a consumer can pipe it straight into a parser.
+    deps.err('note: status reports what THIS process sees with this environment and database; it does not see a running server\'s memory.\n');
+    return report.summary.failed > 0 ? 1 : 0;
+  } finally {
+    if (hasDb) await deps.closeDb();
+  }
+}
+
 /**
  * Dispatch one CLI invocation and return its exit code (index.ts calls process.exit with it). teams/
- * sync/users run inside a per-command DB bootstrap; graph check and bridge-token deliberately do not.
+ * sync/users run inside a per-command DB bootstrap; status, graph check and bridge-token deliberately
+ * do not (status opens the pool itself, read-only, and closes it).
  */
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [cmd, ...rest] = argv;
   const withDb = makeDbRunner(deps);
   switch (cmd) {
+    case 'status': return cmdStatus(rest, deps);
     case 'teams': return cmdTeams(rest, deps, withDb);
     case 'sync': return cmdSync(rest, deps, withDb);
     case 'users': return cmdUsers(rest, deps, withDb);
