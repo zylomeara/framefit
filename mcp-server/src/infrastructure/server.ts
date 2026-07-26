@@ -88,7 +88,7 @@ export interface MultiTenantContext {
   usage?: AccountsApiDeps['usage'];
 }
 
-const SERVER_INFO = { name: 'framefit', version: '0.10.0' } as const;
+const SERVER_INFO = { name: 'framefit', version: '0.11.0' } as const;
 
 // Sent to the host in the MCP `initialize` response. This is the only channel that reaches
 // agents on hosts WITHOUT a skills mechanism, so it carries the minimal design-QA contract:

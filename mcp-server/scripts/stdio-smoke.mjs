@@ -14,12 +14,15 @@
 // message per line (see @modelcontextprotocol/sdk shared/stdio.js).
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverEntry = path.join(__dirname, '..', 'dist', 'index.js');
+const pkgVersion = JSON.parse(
+  readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'),
+).version;
 const TIMEOUT_MS = 20_000;
 const MIN_TOOLS = 26; // current count is exactly 26; assert a floor, not the exact number
 
@@ -156,6 +159,18 @@ async function main() {
   // for hosts without a skills mechanism) — a live lock across every OS in the CI matrix.
   if (!initResult.instructions || !initResult.instructions.includes('verification.complete')) {
     throw new Error('initialize response is missing the design-QA instructions (done-gate contract)');
+  }
+
+  // The version lives in two places — package.json (what npm publishes, what the release
+  // tag claims) and SERVER_INFO in src/infrastructure/server.ts (what the handshake tells
+  // every host). A release bumps both by hand, so they can silently drift and the server
+  // would then misreport its own version to every connected agent. Lock them together
+  // against the BUILT artifact, so the check covers the shipped bundle, not the source.
+  if (initResult.serverInfo.version !== pkgVersion) {
+    throw new Error(
+      `version drift: handshake reports "${initResult.serverInfo.version}", package.json says "${pkgVersion}" ` +
+        '— bump both (package.json + SERVER_INFO in src/infrastructure/server.ts)',
+    );
   }
 
   notify('notifications/initialized', {});
