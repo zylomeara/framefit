@@ -132,20 +132,32 @@ export async function graphStats(): Promise<GraphStats> {
   // account resolves nothing: nothing deletes library_files on user deletion (library-registry-db.ts:59).
   // Joined on (user, team), not user alone: a user who synced only SOME of several registered teams
   // still has a per-team gap for the rest, invisible to a join that only checks "does this user have
-  // *a* library anywhere" (their one synced team would mask every other team's gap).
-  const { rows: empty } = await getSharedPool().query(`
-    SELECT DISTINCT keycloak_user_id FROM (
-      SELECT rt.keycloak_user_id, rt.team_id
+  // *a* library anywhere" (their one synced team would mask every other team's gap). Aggregated a
+  // second time PER USER (total teams vs. gapped teams) to tell apart a user who cannot resolve
+  // ANYTHING (every registered team is empty) from one with a legitimate partial gap (one team out
+  // of several has no library - a team can genuinely hold none) - the two are not the same severity
+  // and status.ts's library_graph check treats them differently.
+  const { rows: perUser } = await getSharedPool().query(`
+    SELECT keycloak_user_id, COUNT(*)::int AS total_teams, COUNT(*) FILTER (WHERE is_gap)::int AS gapped_teams
+    FROM (
+      SELECT rt.keycloak_user_id, rt.team_id, (COUNT(lf.file_key) = 0) AS is_gap
       FROM registered_teams rt
       LEFT JOIN library_files lf
         ON lf.keycloak_user_id = rt.keycloak_user_id AND lf.team_id = rt.team_id
       GROUP BY rt.keycloak_user_id, rt.team_id
-      HAVING COUNT(lf.file_key) = 0
-    ) gaps
+    ) pairs
+    GROUP BY keycloak_user_id
     ORDER BY keycloak_user_id`);
+  const allGapped: string[] = [];
+  const partialGap: string[] = [];
+  for (const r of perUser) {
+    if (r.gapped_teams === 0) continue;
+    (r.gapped_teams === r.total_teams ? allGapped : partialGap).push(r.keycloak_user_id);
+  }
   return {
     libraries: f.libraries, variables: v.variables, teams: t.teams,
-    users_with_teams_and_no_libraries: empty.map((r) => r.keycloak_user_id),
+    users_with_teams_and_no_libraries: allGapped,
+    users_with_partial_team_gaps: partialGap,
     oldest_synced_at: f.oldest ? new Date(f.oldest).toISOString() : null,
     oldest_age_sec: f.oldest_age_sec ?? null,
     newest_synced_at: f.newest ? new Date(f.newest).toISOString() : null,

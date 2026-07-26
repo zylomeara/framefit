@@ -509,6 +509,7 @@ const TOKENS: TokenStats = { stored: 1, invalid_total: 0, users_without_default:
   bad_defaults: [], soonest_default_expiry: null, last_validated_at: '2026-07-26T00:00:00.000Z', validation_age_sec: 3600,
   stale_or_unvalidated_total: 0, future_validation_detected: false };
 const GRAPH: GraphStats = { libraries: 2, variables: 100, teams: 1, users_with_teams_and_no_libraries: [],
+  users_with_partial_team_gaps: [],
   oldest_synced_at: '2026-07-26T00:00:00.000Z', oldest_age_sec: 3600, newest_synced_at: '2026-07-26T01:00:00.000Z' };
 // Multi-tenant must be expressed in the ENV: the runner derives the effective mode and ignores a
 // caller-supplied `multiTenant` (see the AMENDMENT near the top of this plan).
@@ -534,9 +535,12 @@ describe('db check', () => {
     expect(r.state).toBe('fail');
     expect((r as { reason: string }).reason).toMatch(/figma_tokens/);
   });
-  it('counts users and teams when reachable', async () => {
+  it('counts users and per-user team_registrations when reachable', async () => {
     const db = { listUsers: async () => ['u1'], listTeams: async () => ['t1', 't2'] } as unknown as StatusDb;
-    expect(await first(dbCheck, { env: { DATABASE_URL: 'postgres://x' }, db })).toMatchObject({ state: 'ok', detail: { users: 1, teams: 2 } });
+    // Named team_registrations, not teams: this sums registrations per token-holding user, which is
+    // a DIFFERENT measure than library_graph's distinct team count - the two must never share a key
+    // a reader could mistake for "the same number reported twice".
+    expect(await first(dbCheck, { env: { DATABASE_URL: 'postgres://x' }, db })).toMatchObject({ state: 'ok', detail: { users: 1, team_registrations: 2 } });
   });
 });
 
@@ -554,6 +558,13 @@ describe('tokens check', () => {
     const r = await run({ users_without_any_token: ['u9'] });
     expect(r.state).toBe('fail');
     expect((r as { reason: string }).reason).toContain('u9');
+  });
+  it('does NOT fail on users_without_any_token in single-tenant - registered_teams is a multi-tenant-only concept', async () => {
+    // A single-tenant box authenticates via FIGMA_TOKEN directly and never populates or reads
+    // registered_teams; a DATABASE_URL that happens to point at a database carrying old or shared
+    // rows there must not fail a condition this mode structurally cannot have.
+    const r = await run({ users_without_any_token: ['u9'] }, false);
+    expect(r.state).toBe('ok');
   });
   it('fails (not skips) when the only registered user has a team but zero tokens anywhere', async () => {
     // stored===0 alone means "nothing registered yet" (skip); but a NAMED user with a team and no
@@ -668,6 +679,24 @@ describe('library_graph check', () => {
   });
   it('reports staleness without judging it', async () => {
     expect((await run({ oldest_age_sec: 60 * 60 * 24 * 90 })).state).toBe('ok');
+  });
+  it('does NOT fail on a per-team gap when the user has OTHER teams with libraries - reports it as a fact instead', async () => {
+    // A registered team can legitimately hold no variable libraries (e.g. prototyping-only); the
+    // user can still resolve through their other, working team(s), so this must not go permanently
+    // red with advice the operator has no way to act on.
+    const r = await run({ users_with_partial_team_gaps: ['u3'] });
+    expect(r.state).toBe('ok');
+    expect(JSON.stringify(r)).toContain('u3');
+  });
+  it('still fails when a user cannot resolve anything: ALL of their teams have zero libraries', async () => {
+    const r = await run({ users_with_teams_and_no_libraries: ['u4'] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toContain('u4');
+  });
+  it('surfaces a partial gap as a fact even inside an otherwise-failing report (a different user is all-gapped)', async () => {
+    const r = await run({ users_with_teams_and_no_libraries: ['u4'], users_with_partial_team_gaps: ['u3'] });
+    expect(r.state).toBe('fail');
+    expect(JSON.stringify(r)).toContain('u3');
   });
 });
 

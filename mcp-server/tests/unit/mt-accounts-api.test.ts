@@ -67,9 +67,14 @@ describe('accounts api', () => {
     });
     expect(res.status).toBe(201);
     expect(calls.validatePat).toEqual(['figd_secret_token_value']);
-    const [userId, input] = calls.addToken as [string, { figmaHandle: string }];
+    const [userId, input] = calls.addToken as [string, { figmaHandle: string; validatedAt?: Date }];
     expect(userId).toBe('u1');
     expect(input.figmaHandle).toBe('testuser');
+    // We just validated this PAT (deps.validatePat resolved ok above) - that moment must be passed
+    // through to addToken, not thrown away. Without this, status's stale/never-validated count would
+    // treat every freshly added token as unvalidated until the next nightly sweep.
+    expect(input.validatedAt).toBeInstanceOf(Date);
+    expect(Date.now() - input.validatedAt!.getTime()).toBeLessThan(5000);
   });
 
   it('POST /accounts rejects a PAT Figma refuses', async () => {

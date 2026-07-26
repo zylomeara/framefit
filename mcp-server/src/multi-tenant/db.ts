@@ -3,7 +3,7 @@
 // *WithPat/DefaultPat return safe rows (no encrypted_pat).
 import pg from 'pg';
 import { encrypt, decrypt } from './crypto.js';
-import type { TokenStats } from '../infrastructure/status.js';
+import { NIGHTLY_INTERVAL_SEC, type TokenStats } from '../infrastructure/status.js';
 
 const { Pool } = pg;
 
@@ -28,6 +28,12 @@ export interface AddTokenInput {
   figmaHandle: string | null;
   scopes: string[];
   expiresAt: string | null; // 'YYYY-MM-DD'
+  // The moment the caller already confirmed this PAT is valid (e.g. the portal's add route calls
+  // validatePat() synchronously before addToken() - accounts-api.ts). Optional: a caller that has
+  // NOT just validated the PAT (or a raw insert path) omits it and last_validated_at stays NULL,
+  // same as before. Recording it here is not an invention - it is the validation that already
+  // happened, persisted instead of thrown away.
+  validatedAt?: Date;
 }
 
 let pool: pg.Pool | null = null;
@@ -131,10 +137,10 @@ export async function addToken(
   const isDefault = existing.rows[0].n === 0;
   const result = await p.query(
     `INSERT INTO figma_tokens
-       (keycloak_user_id, label, encrypted_pat, pat_suffix, figma_handle, scopes, expires_at, is_default)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (keycloak_user_id, label, encrypted_pat, pat_suffix, figma_handle, scopes, expires_at, is_default, last_validated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING ${SAFE_COLUMNS}`,
-    [userId, input.label, encrypted, suffix, input.figmaHandle, input.scopes, input.expiresAt, isDefault],
+    [userId, input.label, encrypted, suffix, input.figmaHandle, input.scopes, input.expiresAt, isDefault, input.validatedAt ?? null],
   );
   return result.rows[0];
 }
@@ -237,15 +243,28 @@ export async function setReadOnly(userId: string, readOnly: boolean): Promise<vo
 /** Global (no user filter, by design) read-only aggregate of PAT health, for `framefit status`.
  *  READS ONLY - a missing relation must surface as a Postgres error naming it, not be repaired. */
 export async function tokenStats(): Promise<TokenStats> {
-  const { rows: [agg] } = await getPool().query(`
-    SELECT COUNT(*)::int AS stored,
-           COUNT(*) FILTER (WHERE status = 'invalid')::int AS invalid_total,
-           MIN(last_validated_at) AS oldest_validated_at,
-           CASE WHEN MIN(last_validated_at) IS NULL THEN NULL
-                ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - MIN(last_validated_at)))::int END AS validation_age_sec,
-           COUNT(*) FILTER (WHERE last_validated_at IS NULL OR last_validated_at < now() - interval '48 hours')::int AS stale_or_unvalidated_total,
-           bool_or(last_validated_at > now()) AS future_validation_detected
-    FROM figma_tokens`);
+  // Both thresholds derive from the ONE constant the `tokens` check itself uses
+  // (2 * NIGHTLY_INTERVAL_SEC for "stale", NIGHTLY_INTERVAL_SEC for "too young to judge yet") -
+  // passed in as query parameters rather than hand-copied `interval` literals, so the SQL and the
+  // check can never drift apart on what "48 hours" or "24 hours" means.
+  const staleThresholdSec = 2 * NIGHTLY_INTERVAL_SEC;
+  const { rows: [agg] } = await getPool().query(
+    `SELECT COUNT(*)::int AS stored,
+            COUNT(*) FILTER (WHERE status = 'invalid')::int AS invalid_total,
+            MIN(last_validated_at) AS oldest_validated_at,
+            CASE WHEN MIN(last_validated_at) IS NULL THEN NULL
+                 ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - MIN(last_validated_at)))::int END AS validation_age_sec,
+            -- A row younger than one nightly interval is exempt: the validator has not had a chance
+            -- to see it yet, so a NULL (or old) last_validated_at on a brand-new row is not evidence
+            -- of a dead validator - only a genuinely OLD row still lacking recent validation is.
+            COUNT(*) FILTER (
+              WHERE created_at < now() - (interval '1 second' * $1::int)
+                AND (last_validated_at IS NULL OR last_validated_at < now() - (interval '1 second' * $2::int))
+            )::int AS stale_or_unvalidated_total,
+            bool_or(last_validated_at > now()) AS future_validation_detected
+     FROM figma_tokens`,
+    [NIGHTLY_INTERVAL_SEC, staleThresholdSec],
+  );
   const { rows: withoutDefault } = await getPool().query(`
     SELECT keycloak_user_id FROM figma_tokens
     GROUP BY keycloak_user_id HAVING COUNT(*) FILTER (WHERE is_default) = 0

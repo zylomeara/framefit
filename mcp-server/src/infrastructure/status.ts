@@ -66,7 +66,12 @@ export interface TokenStats {
 
 export interface GraphStats {
   libraries: number; variables: number; teams: number;
+  // ALL of this user's registered teams yield zero libraries - they cannot resolve anything at all.
   users_with_teams_and_no_libraries: string[];
+  // SOME but not all of this user's registered teams yield zero libraries. Not a failure: a team can
+  // legitimately hold no variable libraries (e.g. a prototyping-only team), and the user can still
+  // resolve variables through their other, working team(s).
+  users_with_partial_team_gaps: string[];
   oldest_synced_at: string | null; oldest_age_sec: number | null; newest_synced_at: string | null;
 }
 
@@ -455,7 +460,10 @@ export const keyCheck: Check = {
   },
 };
 
-const NIGHTLY_INTERVAL_SEC = 24 * 60 * 60;
+// Exported so db.ts's tokenStats() query can derive its own staleness/exemption thresholds from
+// this SAME value (passed in as a query parameter) - a second, hand-copied `interval '48 hours'`
+// literal in SQL would be free to drift from this constant silently.
+export const NIGHTLY_INTERVAL_SEC = 24 * 60 * 60;
 
 export const dbCheck: Check = {
   id: 'db',
@@ -471,7 +479,14 @@ export const dbCheck: Check = {
     const users = await ctx.db.listUsers();
     let teams = 0;
     for (const user of users) teams += (await ctx.db.listTeams(user)).length;
-    return { state: 'ok', detail: { users: users.length, teams, hint: 'framefit users lists them' } };
+    // Named `team_registrations`, not `teams`: this sums registrations PER token-holding user (a
+    // team shared by two users, or registered by a user with no token, counts differently here than
+    // in `library_graph`, which reports the DISTINCT team count across everyone). Two different
+    // measures under the same key would let a reader compare them as if they had to agree.
+    return { state: 'ok', detail: {
+      users: users.length, team_registrations: teams,
+      hint: 'framefit users lists them; team_registrations is a per-user sum (library_graph reports the distinct team count instead)',
+    } };
   },
 };
 
@@ -486,7 +501,11 @@ export const tokensCheck: Check = {
     // token at all, which leaves `stored` at 0 for the whole install while that user's every
     // request still fails. Skipping "nothing registered yet" in that case would hide a real problem
     // behind the message reserved for a truly untouched fresh install.
-    if (s.users_without_any_token.length > 0) {
+    // Gated on ctx.multiTenant: registered_teams is a multi-tenant-only concept - single-tenant
+    // authenticates via FIGMA_TOKEN directly and never populates or reads that table. Without this
+    // gate, a single-tenant box whose DATABASE_URL happens to point at a database carrying old or
+    // shared registered_teams rows would fail on a condition that mode structurally cannot have.
+    if (ctx.multiTenant && s.users_without_any_token.length > 0) {
       return { state: 'fail', reason: `these users have a registered Figma team but hold no PAT at all, so every request of theirs fails: ${s.users_without_any_token.join(', ')}` };
     }
     if (s.stored === 0) return { state: 'skipped', reason: 'no PATs registered yet' };
@@ -508,7 +527,7 @@ export const tokensCheck: Check = {
       // never validated even once can hide behind an older-but-non-null row elsewhere.
       // stale_or_unvalidated_total counts NULLs explicitly and catches exactly that gap.
       if (s.stale_or_unvalidated_total > 0) {
-        return { state: 'fail', reason: `${s.stale_or_unvalidated_total} token(s) have never been validated or were last checked more than 48h ago - the nightly validator is not covering every token` };
+        return { state: 'fail', reason: `${s.stale_or_unvalidated_total} token(s) have never been validated or were last checked more than ${2 * NIGHTLY_INTERVAL_SEC / 3600}h ago - the nightly validator is not covering every token` };
       }
     }
     // A last_validated_at later than the database's own now() means the clock is skewed relative to
@@ -550,17 +569,30 @@ export const libraryGraphCheck: Check = {
     if (g.users_with_teams_and_no_libraries.length > 0) {
       const who = g.users_with_teams_and_no_libraries;
       return { state: 'fail',
-        reason: `these users have registered teams but zero synced libraries (their tokens resolve nothing): ${who.join(', ')} - run "framefit sync --user ${who[0]}"`,
-        detail: { libraries: g.libraries, variables: g.variables } };
+        reason: `these users have registered teams but zero synced libraries across ALL of them (their tokens resolve nothing): ${who.join(', ')} - run "framefit sync --user ${who[0]}"`,
+        detail: {
+          libraries: g.libraries, variables: g.variables,
+          // A DIFFERENT user's partial gap does not make this fail any more failed - reported
+          // alongside, not folded into the same list, so a reader does not conflate "cannot resolve
+          // anything" with "one team out of several is legitimately empty".
+          ...(g.users_with_partial_team_gaps.length > 0 ? { partial_team_gaps: g.users_with_partial_team_gaps } : {}),
+        } };
     }
     if (g.libraries === 0) {
       // teams > 0 but no individual user is named (a data-model gap upstream, not this check's) -
       // fall back to the generic placeholder guidance.
       return { state: 'fail', reason: 'teams are registered but no libraries are synced - run "framefit sync --user <id>" for the affected user' };
     }
-    // Staleness is REPORTED, not judged: a design system that never changes is not broken.
-    return { state: 'ok', detail: { libraries: g.libraries, variables: g.variables, teams: g.teams,
-      oldest_synced_at: g.oldest_synced_at, oldest_age_sec: g.oldest_age_sec } };
+    // Staleness is REPORTED, not judged: a design system that never changes is not broken. Likewise
+    // a PARTIAL per-team gap (some but not all of a user's teams are empty) is reported as a fact,
+    // not failed: a team can legitimately hold no variable libraries, and the user can still resolve
+    // through their other team(s) - see users_with_teams_and_no_libraries above for the case that
+    // genuinely blocks them.
+    return { state: 'ok', detail: {
+      libraries: g.libraries, variables: g.variables, teams: g.teams,
+      oldest_synced_at: g.oldest_synced_at, oldest_age_sec: g.oldest_age_sec,
+      ...(g.users_with_partial_team_gaps.length > 0 ? { partial_team_gaps: g.users_with_partial_team_gaps } : {}),
+    } };
   },
 };
 
