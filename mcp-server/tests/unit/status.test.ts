@@ -22,6 +22,15 @@ describe('collectStatus', () => {
     expect((r.checks[0] as { reason: string }).reason).toMatch(/timed out/i);
   });
 
+  it('turns a check that rejects with a non-Error into fail, never a rejected collectStatus', async () => {
+    // `throw null` (or `throw undefined`) means `e instanceof Error` is false - `(e as Error).message`
+    // would itself throw here and take the whole report down with it.
+    const throwsNull: Check = { id: 'db', run: async () => { throw null; } };
+    const r = await collectStatus(baseCtx(), [okCheck, throwsNull]);
+    expect(r.checks.map((c) => c.id)).toEqual(['config', 'db']);
+    expect(r.checks[1]).toMatchObject({ state: 'fail', reason: 'null' });
+  });
+
   it('runs checks sequentially, never concurrently', async () => {
     let live = 0; let peak = 0;
     const slow = (id: string): Check => ({ id, run: async () => {
@@ -115,6 +124,17 @@ describe('redaction', () => {
     expect(reason).toContain('db.internal');   // the host is the diagnostic value
   });
 
+  it('redacts a DATABASE_URL password even when it appears bare, outside any URL shape', async () => {
+    // A driver reports "password authentication failed for user ...: <password>" with no URL
+    // in sight - the password must still be masked because it was decoded out of DATABASE_URL.
+    const env = { DATABASE_URL: 'postgres://user:SENTINEL_PASS@db.internal:5432/framefit' };
+    const leaky: Check = { id: 'db', run: async () => { throw new Error('password authentication failed for user "user": SENTINEL_PASS'); } };
+    const r = await collectStatus(baseCtx({ env }), [leaky]);
+    const reason = (r.checks[0] as { reason: string }).reason;
+    expect(reason).not.toContain('SENTINEL_PASS');
+    expect(reason).toContain('<redacted:DATABASE_URL>');
+  });
+
   it('does NOT redact DS_TEAM_IDS - team ids are not secrets and the message must stay actionable', async () => {
     const env = { DS_TEAM_IDS: '1234567890123456789' };
     const leaky: Check = { id: 'config', run: async () => ({ state: 'fail', reason: 'invalid team id: 1234567890123456789' }) };
@@ -122,14 +142,32 @@ describe('redaction', () => {
     expect((r.checks[0] as { reason: string }).reason).toContain('1234567890123456789');
   });
 
-  it('redacts runtime secrets and walks nested detail', async () => {
-    const ctx = baseCtx({ secrets: new Set(['SENTINEL_PAT']) });
-    const leaky: Check = { id: 'figma', run: async () => ({
-      state: 'fail', reason: 'call failed for SENTINEL_PAT',
-      detail: { nested: { token: 'SENTINEL_PAT' }, list: ['SENTINEL_PAT'] },
-    }) };
+  it('redacts a runtime secret the check adds to ctx.secrets DURING its own run(), and walks nested detail', async () => {
+    // The redactor must not be built from a snapshot of ctx.secrets taken before any check has
+    // run: a check adds its decrypted PAT to ctx.secrets mid-flight, then lets it near a call
+    // whose error can quote it. Pre-seeding ctx.secrets before collectStatus (the old version of
+    // this test) cannot catch a redactor that only reads the set once, up front.
+    const ctx = baseCtx();
+    const leaky: Check = { id: 'figma', run: async () => {
+      ctx.secrets.add('SENTINEL_PAT');
+      return {
+        state: 'fail' as const, reason: 'call failed for SENTINEL_PAT',
+        detail: { nested: { token: 'SENTINEL_PAT' }, list: ['SENTINEL_PAT'] },
+      };
+    } };
     const r = await collectStatus(ctx, [leaky]);
     expect(JSON.stringify(r.checks[0])).not.toContain('SENTINEL_PAT');
+  });
+
+  it('folds non-ASCII typographic characters in a reason down to ASCII', async () => {
+    // Real pg/undici/OS error text carries characters like these that no check author typed by
+    // hand; the ASCII-only global constraint has to hold for them too.
+    const reason = 'connection refused — retrying… “please wait”';
+    const leaky: Check = { id: 'db', run: async () => ({ state: 'fail', reason }) };
+    const r = await collectStatus(baseCtx(), [leaky]);
+    const got = (r.checks[0] as { reason: string }).reason;
+    expect(got).not.toMatch(/[^\x00-\x7F]/);
+    expect(got).toBe('connection refused - retrying... "please wait"');
   });
 });
 
@@ -156,6 +194,23 @@ describe('renderText', () => {
     const continuation = text.split('\n').filter((l) => /^\s{23}\S/.test(l));
     expect(continuation.length).toBeGreaterThan(0);                      // it did wrap
     expect(text).not.toContain('...');                                   // and did not truncate
+  });
+
+  it('actually wraps: no rendered check line exceeds the requested width, barring a single unsplittable token', async () => {
+    // A "wrap" that just prepends the indent without ever breaking the body (e.g. `prefix + '\n' +
+    // INDENT + body`) would still pass every other assertion in this file - nothing else checks
+    // that a line actually fits inside `width`. (The header/footer lines are never wrapped by
+    // design, so only the check lines - state-tagged or continuation-indented - are in scope.)
+    const long = 'lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua';
+    const bad: Check = { id: 'db', run: async () => ({ state: 'fail', reason: long }) };
+    const width = 60;
+    const text = renderText(await collectStatus(baseCtx(), [bad]), width);
+    const checkLines = text.split('\n').filter((l) => /^\[(OK|FAIL|SKIP)\]/.test(l) || /^ {23}\S/.test(l));
+    expect(checkLines.length).toBeGreaterThan(1);   // sanity: it actually wrapped into multiple lines
+    for (const line of checkLines) {
+      const hasUnsplittableOverlongToken = line.split(/\s+/).some((tok) => tok.length > width);
+      if (!hasUnsplittableOverlongToken) expect(line.length).toBeLessThanOrEqual(width);
+    }
   });
 });
 

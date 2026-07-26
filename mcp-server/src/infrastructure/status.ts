@@ -83,18 +83,58 @@ export function keyFingerprint(raw: string | undefined): string | null {
 // are public identifiers and parseTeamIds' message must keep naming the bad one.
 const SECRET_VARS = ['ENCRYPTION_KEY', 'FIGMA_TOKEN'] as const;
 
+// DATABASE_URL carries its password inline (scheme://user:pass@host/db). The credentials are the
+// only secret part of it - a bare password can also leak OUTSIDE the URL shape entirely (e.g. a
+// driver's own "password authentication failed for user ..." message), so the decoded password
+// gets its own substitution entry instead of relying on the URL-shaped regex below to catch it.
+function extractUrlPassword(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const m = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^:@/\s]*:([^@\s]*)@/.exec(raw.trim());
+  if (!m || !m[1]) return null;
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+}
+
+// Code points, not literal glyphs, so this source file stays ASCII-only too: em dash, en dash,
+// minus sign, ellipsis, curly single/double quotes (incl. low-9 variants), no-break space, bullet.
+const ASCII_FOLD_MAP: Record<string, string> = {
+  '—': '-', '–': '-', '−': '-',
+  '…': '...',
+  '‘': "'", '’': "'", '‚': "'",
+  '“': '"', '”': '"', '„': '"',
+  ' ': ' ',
+  '•': '*',
+};
+const ASCII_FOLD_RE = /[—–−…‘’‚“”„ •]/g;
+const COMBINING_DIACRITICS_RE = /[̀-ͯ]/g;
+
+// Global constraint: ASCII only in every user-visible string. Real pg/undici/OS error text carries
+// typographic characters (em dash, curly quotes, an actual ellipsis glyph) that a check author never
+// typed - fold them here, alongside redaction, so every present and future check inherits it too.
+function foldToAscii(s: string): string {
+  const mapped = s.replace(ASCII_FOLD_RE, (ch) => ASCII_FOLD_MAP[ch] ?? '');
+  // Strip diacritics NFKD can decompose (e.g. an accented e -> plain e), then drop whatever
+  // non-ASCII still survives so a user-visible string can never carry it.
+  return mapped.normalize('NFKD').replace(COMBINING_DIACRITICS_RE, '').replace(/[^\x00-\x7F]/g, '?');
+}
+
 function makeRedactor(ctx: StatusCtx): (s: string) => string {
-  const values: [string, string][] = [];
+  const envValues: [string, string][] = [];
   for (const name of SECRET_VARS) {
     const v = ctx.env[name];
-    if (v && v.length >= 8) values.push([v, `<redacted:${name}>`]);
+    if (v && v.length >= 8) envValues.push([v, `<redacted:${name}>`]);
   }
-  for (const v of ctx.secrets) if (v.length >= 8) values.push([v, '<redacted:secret>']);
+  const dbPassword = extractUrlPassword(ctx.env.DATABASE_URL);
+  if (dbPassword) envValues.push([dbPassword, '<redacted:DATABASE_URL>']);
   return (s) => {
     let out = s;
-    for (const [needle, mask] of values) out = out.split(needle).join(mask);
+    for (const [needle, mask] of envValues) out = out.split(needle).join(mask);
+    // ctx.secrets is read HERE, on every call - NOT snapshotted once when the closure is built.
+    // A check adds its decrypted PAT to ctx.secrets DURING its own run(), which happens after this
+    // redactor already exists; capturing the set once up front would miss every such addition.
+    for (const v of ctx.secrets) if (v.length >= 8) out = out.split(v).join('<redacted:secret>');
     // Credentials only - the HOST of a DATABASE_URL is the diagnostic value, keep it.
-    return out.replace(/(postgres(?:ql)?:\/\/)[^@\s/]+@/gi, '$1<redacted>@');
+    out = out.replace(/(postgres(?:ql)?:\/\/)[^@\s/]+@/gi, '$1<redacted>@');
+    return foldToAscii(out);
   };
 }
 
@@ -128,8 +168,12 @@ async function runOne(check: Check, ctx: StatusCtx, timeoutMs: number, redact: (
     ]);
     return { id: check.id, ...redactResult(result, redact) };
   } catch (e) {
-    // A swallowed error is a false green: surface it as a failure with its message.
-    return { id: check.id, ...redactResult({ state: 'fail', reason: (e as Error).message ?? String(e) }, redact) };
+    // A swallowed error is a false green: surface it as a failure with its message. `e` may not be
+    // an Error at all (a check can `throw null` or `throw "x"`) - `(e as Error).message` would
+    // itself throw in that case and take the whole collectStatus loop down with it, which is
+    // exactly the "missing line" this conversion exists to prevent.
+    const reason = e instanceof Error ? e.message : String(e);
+    return { id: check.id, ...redactResult({ state: 'fail', reason }, redact) };
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -170,12 +214,16 @@ export async function collectStatus(
   return buildReport(ctx, results);
 }
 
-/** Resolves null if `work` outlives the deadline; the caller renders the sink and exits 2. */
+/** Resolves null if `work` outlives the deadline; the caller renders the sink and exits 2. This
+ *  timer is the guard of LAST resort, so unlike the per-check timer it stays ref'd: it is always
+ *  cleared on the success path (so it can never delay a normal exit), but if every check-level
+ *  timeout somehow failed to fire, this is what still forces the process to observe a deadline
+ *  instead of a silent, un-terminated hang. */
 export function withDeadline<T>(work: Promise<T>, ms = HARD_DEADLINE_MS): Promise<T | null> {
   let timer: NodeJS.Timeout;
   return Promise.race([
     work.then((v) => { clearTimeout(timer); return v; }),
-    new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); timer.unref?.(); }),
+    new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); }),
   ]);
 }
 
