@@ -162,14 +162,14 @@ async function main() {
   }
 
   // The version lives in two places — package.json (what npm publishes, what the release
-  // tag claims) and SERVER_INFO in src/infrastructure/server.ts (what the handshake tells
+  // tag claims) and VERSION in src/infrastructure/version.ts (what the handshake tells
   // every host). A release bumps both by hand, so they can silently drift and the server
   // would then misreport its own version to every connected agent. Lock them together
   // against the BUILT artifact, so the check covers the shipped bundle, not the source.
   if (initResult.serverInfo.version !== pkgVersion) {
     throw new Error(
       `version drift: handshake reports "${initResult.serverInfo.version}", package.json says "${pkgVersion}" ` +
-        '— bump both (package.json + SERVER_INFO in src/infrastructure/server.ts)',
+        '— bump both (package.json + VERSION in src/infrastructure/version.ts)',
     );
   }
 
