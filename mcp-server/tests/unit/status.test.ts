@@ -1,8 +1,10 @@
 // tests/unit/status.test.ts
 import { describe, it, expect, vi } from 'vitest';
 import { collectStatus, buildReport, withDeadline, renderText, renderJson, keyFingerprint,
-         configCheck, type Check } from '../../src/infrastructure/status.js';
+         configCheck, CHECKS, CHECK_IDS, type Check } from '../../src/infrastructure/status.js';
 import { baseCtx } from './status-fixtures.js';
+import { multiTenantEnvGraphConflict } from '../../src/infrastructure/env-graph.js';
+import { ENCRYPTION_KEY_HINT } from '../../src/multi-tenant/env.js';
 
 const okCheck: Check = { id: 'config', run: async () => ({ state: 'ok', detail: { a: 1 } }) };
 
@@ -307,5 +309,60 @@ describe('config check', () => {
     const r = await run({ env: { FIGMA_TOKEN: 'figd_x', DS_TEAM_IDS: 'not-a-team' } });
     expect(r.state).toBe('fail');
     expect((r as { reason: string }).reason).toContain('not-a-team');
+  });
+
+  it('branches on the EFFECTIVE mode (isMultiTenant(ctx.env)), not the caller-supplied ctx.multiTenant', async () => {
+    // A stale/wrong ctx.multiTenant must not paper over an env that would actually crash-loop the
+    // box: index.ts decides multi-tenant purely from isMultiTenant(env), so the check must too.
+    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http' };
+    const r = await run({ env, multiTenant: false, transport: 'http' });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/Missing required multi-tenant env vars/);
+  });
+
+  it("fails with loadMultiTenantEnv's own wording on a non-hex ENCRYPTION_KEY", async () => {
+    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x',
+                  ENCRYPTION_KEY: 'not-hex-and-not-64-chars',
+                  KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com' };
+    const r = await run({ env, multiTenant: true, transport: 'http' });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toBe(ENCRYPTION_KEY_HINT);
+  });
+
+  it('treats MULTI_TENANT case-insensitively (isMultiTenant, not an exact string compare)', async () => {
+    const env = { MULTI_TENANT: 'TRUE', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64),
+                  KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com' };
+    const r = await run({ env, multiTenant: false, transport: 'http' });
+    expect(r.state).toBe('ok');
+    expect(JSON.stringify(r)).toMatch(/"mode":"multi-tenant"/);
+  });
+
+  it("accepts a figma.com/team/<id> URL in DS_TEAM_IDS, pinning the real parseTeamIds (not a bare digit/comma regex)", async () => {
+    const r = await run({ env: { FIGMA_TOKEN: 'figd_x', DS_TEAM_IDS: 'https://www.figma.com/team/123456789/My-Team' } });
+    expect(r.state).toBe('ok');
+    expect(JSON.stringify(r)).toMatch(/"ds_team_ids":1/);
+  });
+
+  it('fails on the boot conflict even with an otherwise-complete multi-tenant env, matching multiTenantEnvGraphConflict verbatim', async () => {
+    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DS_TEAM_IDS: '123',
+                  DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64),
+                  KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com' };
+    const r = await run({ env, multiTenant: true, transport: 'http' });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toBe(multiTenantEnvGraphConflict(env));
+  });
+
+  it('treats a blank DS_TEAM_IDS (whitespace only) as unset, matching the production trim gate', async () => {
+    const r = await run({ env: { DS_TEAM_IDS: '   ' } });
+    expect(r.state).toBe('ok');
+  });
+});
+
+describe('CHECKS registry', () => {
+  it('registers every implemented check, in CHECK_IDS order', () => {
+    // Reverting the registry line to [] (while every test above passes [configCheck] explicitly)
+    // would otherwise leave the whole suite green while the shipped `status` command prints no
+    // `config` line at all.
+    expect(CHECKS.map((c) => c.id)).toEqual(CHECK_IDS.slice(0, CHECKS.length));
   });
 });

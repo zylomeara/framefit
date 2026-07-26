@@ -291,7 +291,10 @@ export const configCheck: Check = {
     // 2. The real zod schema - enums, coercions, cross-field refinements. A name list cannot catch
     // LOG_LEVEL=verbose or a limits relationship, and both crash-loop the box.
     try { loadConfig(ctx.env); }
-    catch (e) { return { state: 'fail', reason: `loadConfig rejected the environment: ${(e as Error).message}` }; }
+    catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { state: 'fail', reason: `loadConfig rejected the environment: ${msg}` };
+    }
 
     // 3. Declared vs effective mode. Compare the DEFAULTED transport, exactly as index.ts:47 does
     // via config.MCP_TRANSPORT (zod default 'http') - comparing the raw value would fail every box
@@ -301,10 +304,17 @@ export const configCheck: Check = {
       return { state: 'fail', reason: `MULTI_TENANT is set but MCP_TRANSPORT is "${transport}" - the server would boot single-tenant with no auth layer; multi-tenant requires the http transport` };
     }
 
-    if (ctx.multiTenant) {
-      // 4. Delegate the required list AND the ENCRYPTION_KEY shape check (env.ts:41-53).
+    // 4. Effective mode, not the caller-supplied ctx.multiTenant: after the transport guard above,
+    // isMultiTenant(ctx.env) provably equals the formula (isMultiTenant && defaulted-transport ===
+    // 'http') that decides what index.ts actually boots. Branching on ctx.multiTenant instead would
+    // let a caller's stale/wrong value report green on a box that cannot boot.
+    if (isMultiTenant(ctx.env)) {
+      // Delegate the required list AND the ENCRYPTION_KEY shape check (env.ts:41-53).
       try { loadMultiTenantEnv(ctx.env); }
-      catch (e) { return { state: 'fail', reason: (e as Error).message }; }
+      catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { state: 'fail', reason: msg };
+      }
       return { state: 'ok', detail: { mode: 'multi-tenant', loaders: 'loadConfig+loadMultiTenantEnv' } };
     }
 
@@ -313,9 +323,15 @@ export const configCheck: Check = {
     const token = ctx.env.FIGMA_TOKEN;
     const raw = ctx.env.DS_TEAM_IDS;
     let teamCount = 0;
-    if (raw) {
+    // `raw?.trim()`, not raw truthiness: production gates DS_TEAM_IDS on trimmed length
+    // (env-graph.ts:206,233), so a whitespace-only value must be treated as unset, not as a
+    // misconfiguration.
+    if (raw?.trim()) {
       try { teamCount = parseTeamIds(raw).length; }
-      catch (e) { return { state: 'fail', reason: (e as Error).message }; }
+      catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { state: 'fail', reason: msg };
+      }
       if (!token) return { state: 'fail', reason: 'DS_TEAM_IDS is set but FIGMA_TOKEN is not - the env graph cannot sync without a token' };
     }
     return { state: 'ok', detail: {
