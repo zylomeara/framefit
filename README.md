@@ -23,11 +23,21 @@ not vibes — and it is built to **not lie**:
   per run. A profile never relaxes a verdict; `layout` even blocks a final green until you re-run
   full-scope.
 
-**Versus the official Figma Dev Mode MCP.** That server is *interactive* — it reads the file you
-have open in the Figma desktop app and returns design context for the model to act on. This one is
-**headless**: it talks to the Figma REST API with a personal access token, so an agent (or CI) can
-read any file it has access to with no app, no open document, no seat. On top of the read side it
-adds the deterministic verification loop above, which Dev Mode does not have.
+**Versus Figma's own MCP servers.** Figma ships two: a remote server its docs recommend for most
+users, which needs no desktop app, and a desktop server that runs inside the app for specific
+organization and enterprise needs. Both answer *what this design contains* — they return design
+context for a model to act on. framefit answers a different question: *does the UI you built
+actually match it*. It reads Figma over the REST API with a personal access token, so an agent or a
+CI job can pull any file that token can reach with no interactive client, and then measures a
+rendered DOM against the frame and returns a machine-checkable verdict with a done-gate. That
+verification loop is what neither Figma server does.
+
+Both paths are subject to Figma's per-seat rate limits. The MCP path additionally carries a daily
+tool-call cap — as of July 2026, 200/day on Professional and Organization plans, 600/day on
+Enterprise, and 6/month on View and Collab seats — invisible in interactive use, a wall in CI. Figma
+reserves the right to change these, so check
+[the current numbers](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/) before
+planning batch usage.
 
 > **Honest scope.** The verification layer is battle-tested against **one large production design
 > system**, not yet a broad matrix of them. It is deliberately conservative — it would rather say
@@ -143,10 +153,12 @@ the walkthrough is in [`docker/README.md`](docker/README.md).
 Two design-system capabilities build on the multi-tenant store and are inactive in
 single-tenant/stdio:
 
-- **Code Connect enrichment.** Figma exposes Code Connect only through Dev Mode and the
-  `figma connect` CLI — there is *no public REST endpoint*. So a headless server ingests CI-parsed
-  mappings: your design-system CI runs `figma connect parse` and POSTs the JSON, and
-  `get_design_context` / `get_code_connect_map` then enrich instances with code snippets.
+- **Code Connect enrichment.** Figma exposes Code Connect through Dev Mode, the `figma connect`
+  CLI and its own MCP tools — and the retrieval tool needs the *desktop* MCP server, because it
+  reads the desktop app's local Code Connect database. There is still *no public REST endpoint*, so
+  a headless server ingests CI-parsed mappings instead: your design-system CI runs
+  `figma connect parse` and POSTs the JSON, and `get_design_context` / `get_code_connect_map` then
+  enrich instances with code snippets.
 - **Cross-library token resolution.** Figma's REST API returns external-library variable aliases
   unresolved. The server closes that gap two ways — a **headless graph** built from your registered
   design-system teams' variable libraries, and a per-user **plugin snapshot** fallback (a Dev-Mode
