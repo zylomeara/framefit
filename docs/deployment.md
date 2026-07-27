@@ -131,11 +131,25 @@ Honest scope notes before you pick this shape:
 
 ## Troubleshooting
 
-- `{"status":"ok"}` from `/health` but tools fail → the server runs, the token doesn't:
-  check `FIGMA_TOKEN` is set (see [README — Figma token](../README.md#figma-token) for
-  scopes) and not expired (Figma PATs expire after at most 90 days).
-- Container restart-loops on start → almost always an empty `FIGMA_TOKEN=` line in an
-  env file (empty string fails validation; either set a value or remove the line).
-- Snapshot upload / extractor URLs point at `127.0.0.1` from another machine → set
-  `PUBLIC_BASE_URL` (Option B above).
-- Port already taken → `MCP_PORT=4000 docker compose --profile local up -d`.
+Run `framefit status` first — it names the failing subsystem instead of you guessing which of the
+checks below applies. See [docs/status.md](status.md) for what each check covers.
+
+```bash
+docker compose exec framefit framefit status   # deployed box
+node dist/index.js status                      # source checkout, from mcp-server/
+```
+
+- `[SKIP] figma` naming a missing `FIGMA_TOKEN`, or `[FAIL] figma` carrying the HTTP status Figma
+  returned → the server runs, the token doesn't: check `FIGMA_TOKEN` is set (see
+  [README — Figma token](../README.md#figma-token) for scopes) and not expired (Figma PATs expire
+  after at most 90 days).
+- `[FAIL] config` → the same validation failure that would abort boot and restart-loop the
+  container names itself in the check's `reason` (a broken `ENCRYPTION_KEY`, or `DS_TEAM_IDS` set
+  without `FIGMA_TOKEN`, are two examples) — no more matching the crash log by hand.
+- `status`'s `config` check only confirms the process would boot, not that `PUBLIC_BASE_URL` is
+  the value you meant — a wrong-but-valid URL still reports `[OK]`. If snapshot upload / extractor
+  URLs still point at `127.0.0.1` from another machine, set `PUBLIC_BASE_URL` yourself (Option B
+  above).
+- `status` can't run at all if the container never started. `docker compose exec` failing outright
+  (no running `framefit` service to exec into) usually means the port is already taken →
+  `MCP_PORT=4000 docker compose --profile local up -d`.
