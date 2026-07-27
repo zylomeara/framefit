@@ -36,7 +36,7 @@ function log(message) {
 }
 
 if (!existsSync(serverEntry)) {
-  fail(`${serverEntry} not found — run "pnpm build" first`);
+  fail(`${serverEntry} not found - run "pnpm build" first`);
   process.exit(1);
 }
 
@@ -142,6 +142,44 @@ function notify(method, params) {
   send({ jsonrpc: '2.0', method, params });
 }
 
+/**
+ * Run the packaged CLI's `status --json --no-probe` in its own process and collect both streams.
+ *
+ * An EXPLICIT minimal env, never childEnv: that object is `{...process.env}` minus FIGMA_TOKEN and
+ * MULTI_TENANT, so an inherited DATABASE_URL would make this spawn open a real connection pool.
+ */
+function runStatus(extraEnv = {}) {
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, MCP_TRANSPORT: 'stdio', ...extraEnv };
+  return new Promise((resolve, reject) => {
+    // `statusChild`, not `child`: the module-level `child` is the server this script is driving, and
+    // shadowing it here is one rename away from finish() killing the wrong process.
+    const statusChild = spawn(process.execPath, [serverEntry, 'status', '--json', '--no-probe'], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    });
+    const killer = setTimeout(() => statusChild.kill('SIGKILL'), 10_000);
+    let stdout = '';
+    let stderr = '';
+    statusChild.stdout.on('data', (c) => { stdout += c; });
+    // Drained, not ignored: an unread pipe can fill, and this text is the only diagnostic when the
+    // command printed no document at all.
+    statusChild.stderr.on('data', (c) => { stderr += c; });
+    statusChild.on('error', (e) => { clearTimeout(killer); reject(e); });
+    statusChild.on('close', (code) => { clearTimeout(killer); resolve({ stdout, stderr, code }); });
+  });
+}
+
+function parseStatusReport({ stdout, stderr }) {
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(
+      `status --json did not print one JSON document: stdout=${stdout.slice(0, 200) || '<empty>'} stderr=${stderr.slice(0, 200) || '<empty>'}`,
+    );
+  }
+}
+
 async function main() {
   const initResult = await request('initialize', {
     protocolVersion: '2025-06-18',
@@ -169,7 +207,7 @@ async function main() {
   if (initResult.serverInfo.version !== pkgVersion) {
     throw new Error(
       `version drift: handshake reports "${initResult.serverInfo.version}", package.json says "${pkgVersion}" ` +
-        '— bump both (package.json + VERSION in src/infrastructure/version.ts)',
+        '- bump both (package.json + VERSION in src/infrastructure/version.ts)',
     );
   }
 
@@ -183,39 +221,36 @@ async function main() {
 
   // The handshake version and the CLI's own report must agree, or `status` has grown a third
   // version literal and could name a version the server never reports.
-  //
-  // An EXPLICIT minimal env, not childEnv: that object is `{...process.env}` minus FIGMA_TOKEN and
-  // MULTI_TENANT, so an inherited DATABASE_URL would make this spawn open a real connection pool.
-  const statusEnv = { PATH: process.env.PATH, HOME: process.env.HOME, MCP_TRANSPORT: 'stdio' };
-  const statusOut = await new Promise((resolve, reject) => {
-    // `statusChild`, not `child`: the module-level `child` is the server this script is driving, and
-    // shadowing it inside this executor is one rename away from finish() killing the wrong process.
-    const statusChild = spawn(process.execPath, [serverEntry, 'status', '--json', '--no-probe'], {
-      env: statusEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
-    });
-    const killer = setTimeout(() => statusChild.kill('SIGKILL'), 10_000);
-    let stdout = '';
-    let stderr = '';
-    statusChild.stdout.on('data', (c) => { stdout += c; });
-    // Drained, not ignored: an unread pipe can fill, and the text is the only diagnostic if the
-    // command failed to print a document at all.
-    statusChild.stderr.on('data', (c) => { stderr += c; });
-    statusChild.on('error', (e) => { clearTimeout(killer); reject(e); });
-    statusChild.on('close', () => {
-      clearTimeout(killer);
-      resolve(stdout || `<no stdout; stderr: ${stderr.slice(0, 200)}>`);
-    });
-  });
-  let statusReport;
-  try { statusReport = JSON.parse(statusOut); }
-  catch { throw new Error(`status --json did not print one JSON document: ${statusOut.slice(0, 200)}`); }
+  const run1 = await runStatus();
+  const statusReport = parseStatusReport(run1);
   if (statusReport.version !== initResult.serverInfo.version) {
     throw new Error(`version drift: handshake says "${initResult.serverInfo.version}", status --json says "${statusReport.version}" - both must come from src/infrastructure/version.ts`);
   }
+  // Negative control for the notice asserted below: with a sane LOG_LEVEL nothing warns about one.
+  if (/LOG_LEVEL/.test(run1.stderr)) {
+    throw new Error(`status warned about LOG_LEVEL when none was set: ${run1.stderr.slice(0, 200)}`);
+  }
 
-  finish(true, `handshake ok — serverInfo.name="framefit", ${tools.length} tools (>= ${MIN_TOOLS}), status --json version="${statusReport.version}"`);
+  // An invalid LOG_LEVEL must be REPORTED, not silently downgraded. index.ts's CLI logger falls back
+  // to 'info' because pino throws on a bad level and a diagnostic command must survive the very
+  // misconfiguration it exists to name - but a fallback nobody is told about is a setting that
+  // vanished. buildCliLogger is private to a module whose scope dispatches argv, so this can only be
+  // gated from the outside, on the built artifact.
+  const run2 = await runStatus({ LOG_LEVEL: 'not-a-level' });
+  if (!/LOG_LEVEL/.test(run2.stderr) || !/falling back/.test(run2.stderr)) {
+    throw new Error(`an invalid LOG_LEVEL was accepted silently; stderr was: ${run2.stderr.slice(0, 300) || '<empty>'}`);
+  }
+  // And the command still has to DO its job: the notice goes to stderr, so stdout must still carry
+  // exactly one JSON document, and it must still name the same version.
+  const report2 = parseStatusReport(run2);
+  if (report2.version !== statusReport.version) {
+    throw new Error(`status reported version "${report2.version}" with a bad LOG_LEVEL, "${statusReport.version}" without it`);
+  }
+  if (report2.checks.length !== statusReport.checks.length) {
+    throw new Error(`status ran ${report2.checks.length} checks with a bad LOG_LEVEL, ${statusReport.checks.length} without it`);
+  }
+
+  finish(true, `handshake ok - serverInfo.name="framefit", ${tools.length} tools (>= ${MIN_TOOLS}), status --json version="${statusReport.version}", bad LOG_LEVEL reported and survived`);
 }
 
 main().catch((err) => {

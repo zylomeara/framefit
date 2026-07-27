@@ -65,25 +65,37 @@ const MT_DB: Partial<StatusCtx> = { env: MT, multiTenant: true, transport: 'http
 
 // Each id gets BOTH a green and a red fixture. Red alone is satisfiable by a check hardcoded to
 // fail; the pair proves the red is attributable to the fixture delta and to nothing else.
-const FIXTURES: Record<string, { green: Partial<StatusCtx>; red: Partial<StatusCtx> }> = {
-  config: { green: { env: {} }, red: { env: { LOG_LEVEL: 'verbose' } } },
+//
+// `mode` is a DECLARED expectation, not a description: the row below asserts the report's own
+// mode.multi_tenant against it for BOTH halves. The effective mode is derived from env and
+// overwrites ctx.multiTenant, so a fixture missing MULTI_TENANT or MCP_TRANSPORT=http silently runs
+// single-tenant while reading as multi-tenant - three earlier rounds shipped exactly that, and the
+// check then exercises a branch nobody meant to test.
+type Fixture = { mode: 'single-tenant' | 'multi-tenant'; green: Partial<StatusCtx>; red: Partial<StatusCtx> };
+const FIXTURES: Record<string, Fixture> = {
+  config: { mode: 'single-tenant', green: { env: {} }, red: { env: { LOG_LEVEL: 'verbose' } } },
   db: {
+    mode: 'multi-tenant',
     green: MT_DB,
     red: { ...MT_DB, db: { ...okDb, listUsers: async () => { throw new Error('relation "figma_tokens" does not exist'); } } },
   },
   key: {
+    mode: 'single-tenant',
     green: { env: { ENCRYPTION_KEY: 'a'.repeat(64) } },
     red: { env: { ENCRYPTION_KEY: 'a'.repeat(64) }, verifyBridgeToken: async () => null },
   },
   tokens: {
+    mode: 'multi-tenant',
     green: MT_DB,
     red: { ...MT_DB, db: { ...okDb, tokenStats: async () => ({ ...TOKENS_OK, users_without_default: ['u1'] }) } },
   },
   library_graph: {
+    mode: 'multi-tenant',
     green: MT_DB,
     red: { ...MT_DB, db: { ...okDb, graphStats: async () => ({ ...GRAPH_OK, libraries: 0, variables: 0, teams: 2 }) } },
   },
   figma: {
+    mode: 'single-tenant',
     green: { env: { FIGMA_TOKEN: 'figd_x' }, probe: true },
     red: { env: { FIGMA_TOKEN: 'figd_x' }, probe: true, validatePat: async () => ({ ok: false, status: 401 }) },
   },
@@ -99,12 +111,18 @@ const checkById = (id: string): Check => {
 // the checks themselves.
 const runCheckReport = (id: string, over: Partial<StatusCtx>) =>
   collectStatus(baseCtx(over), [checkById(id)]);
-const runCheck = async (id: string, over: Partial<StatusCtx>) => (await runCheckReport(id, over)).checks[0];
 
 describe.each(EXPECTED_IDS)('%s', (id) => {
-  it('has a red path attributable to its fixture', async () => {
-    expect((await runCheck(id, FIXTURES[id].red)).state).toBe('fail');
-    expect((await runCheck(id, FIXTURES[id].green)).state).not.toBe('fail');
+  it('has a red path attributable to its fixture, in the mode that fixture claims', async () => {
+    const wantMultiTenant = FIXTURES[id].mode === 'multi-tenant';
+    // The mode is asserted per HALF, not once for the pair: the two halves differ by a db/dep
+    // override, and nothing else stops a future edit from changing the env of only one of them.
+    const red = await runCheckReport(id, FIXTURES[id].red);
+    expect(red.mode.multi_tenant, `the RED fixture for "${id}" ran in the wrong mode`).toBe(wantMultiTenant);
+    expect(red.checks[0].state).toBe('fail');
+    const green = await runCheckReport(id, FIXTURES[id].green);
+    expect(green.mode.multi_tenant, `the GREEN fixture for "${id}" ran in the wrong mode`).toBe(wantMultiTenant);
+    expect(green.checks[0].state).not.toBe('fail');
   });
 });
 
@@ -177,7 +195,10 @@ describe('the verdict fields', () => {
 });
 
 describe('renderers and docs', () => {
-  const doc = readFileSync(new URL('../../../docs/status.md', import.meta.url), 'utf8');
+  // Read LAZILY, inside each test that needs it. At describe-body scope a missing or renamed
+  // docs/status.md throws during collection and fails all 21 tests with one ENOENT, hiding which
+  // gates actually broke - the two doc gates are the ones that should speak.
+  const readDoc = () => readFileSync(new URL('../../../docs/status.md', import.meta.url), 'utf8');
 
   it('renders every check with a non-empty body, in both formats', async () => {
     const report = await collectStatus(baseCtx({
@@ -192,14 +213,29 @@ describe('renderers and docs', () => {
       expect(text, `renderText emitted no body for the "${id}" check`)
         .toMatch(new RegExp(`^\\[(OK|FAIL|SKIP)\\] +${id} +\\S`, 'm'));
     }
-    expect(JSON.parse(renderJson(report)).checks.map((c: { id: string }) => c.id)).toEqual(EXPECTED_IDS);
+    const parsed = JSON.parse(renderJson(report)) as StatusReport;
+    expect(parsed.checks.map((c) => c.id)).toEqual(EXPECTED_IDS);
+    // CONTENT, not just ids and order: a renderJson that emitted `{id, state}` and dropped every
+    // reason and detail passed the id/order assertion above - and the entire suite, because nothing
+    // else anywhere reads a check's reason or detail through JSON. The machine surface would then
+    // carry six verdicts and not one word of why.
+    for (const c of parsed.checks) {
+      if (c.state === 'ok') {
+        expect(Object.keys(c.detail ?? {}), `the JSON ok row "${c.id}" carries no detail`).not.toHaveLength(0);
+      } else {
+        expect(c.reason ?? '', `the JSON ${c.state} row "${c.id}" carries no reason`).not.toBe('');
+      }
+    }
   });
 
-  it('documents every check id as its own heading, and documents no id that does not exist', () => {
-    // Structural, like docs-tools-sync.test.ts - `toContain('db')` would be satisfied by the word
-    // "database" anywhere in the prose, and `toContain('key')` by "ENCRYPTION_KEY".
-    const documented = [...doc.matchAll(/^###\s+([a-z_]+)\s*$/gm)].map((m) => m[1]);
-    expect(documented.sort()).toEqual([...EXPECTED_IDS].sort());
+  it('documents exactly the check ids, as its own headings, in registry order', () => {
+    // The RAW heading text, not an id-shaped capture: `^###\s+([a-z_]+)\s*$` cannot see `### Redis`
+    // (so an invented check stays green) and cannot even match `### redis-cache`. Whatever a stray
+    // `###` heading looks like, it has to show up here.
+    const documented = [...readDoc().matchAll(/^###[ \t]+(.+?)[ \t]*$/gm)].map((m) => m[1]);
+    // UNSORTED, so it pins order too: the doc presents the checks as the registry runs them, and
+    // sorting both sides let the `### config` and `### figma` sections be swapped silently.
+    expect(documented).toEqual(EXPECTED_IDS);
   });
 
   it('documents the fields of the JSON contract, including the ones a consumer must read to spot an aborted run', () => {
@@ -209,6 +245,7 @@ describe('renderers and docs', () => {
     // Each field must appear as a WHOLE WORD INSIDE A BACKTICKED SPAN, not merely as a substring of
     // the prose: bare `toContain('mode')` is satisfied by the word "mode" in a sentence, and
     // `toContain('complete')` by "completed" - so a doc that names three fields out of eleven passes.
+    const doc = readDoc();
     for (const field of ['schema', 'generated_at', 'version', 'mode', 'transport_source', 'scope',
                          'key_fingerprint', 'checks', 'summary', 'total', 'ok', 'skipped', 'failed',
                          'complete', 'ok_overall']) {
@@ -228,13 +265,15 @@ describe('renderers and docs', () => {
       })),
     ]);
     for (const r of reports) expect(renderText(r) + renderJson(r)).not.toMatch(/[^\x00-\x7F]/);
-    // The source itself, so a non-ASCII string added to a rarely-hit branch still goes red. Whole-line
-    // comments are stripped first (prose may use typography); everything else, code literals included,
-    // must be escapes rather than glyphs - which is what the ASCII fold map's own comment claims.
+    // status.ts's own SOURCE, so a non-ASCII string added to a branch none of the reports above reach
+    // still goes red. Comment LINES are stripped first - both `//` and the `*`-prefixed body of a
+    // block comment, so prose may keep its typography and a JSDoc em dash never fails under a message
+    // about output. What remains is code, where a typographic character must be a \u escape.
     const src = readFileSync(new URL('../../src/infrastructure/status.ts', import.meta.url), 'utf8');
-    expect(src.replace(/^\s*\/\/.*$/gm, '')).not.toMatch(/[^\x00-\x7F]/);
+    const code = src.replace(/^\s*(?:\/\/|\/?\*+\/?).*$/gm, '');
+    expect(code, 'a non-ASCII glyph in status.ts code (use a \\u escape)').not.toMatch(/[^\x00-\x7F]/);
     // The documentation is a user-visible string too, and it is the one artifact no renderer folds.
-    expect(doc).not.toMatch(/[^\x00-\x7F]/);
+    expect(readDoc()).not.toMatch(/[^\x00-\x7F]/);
   });
 });
 
@@ -276,5 +315,12 @@ describe('secrets', () => {
     const blob = out() + err() + seen.join('\n');
     expect(blob).not.toContain('SENTINEL_PASS');
     expect(blob).toContain('h/db');                                // the host survives, only creds go
+    // ASCII on BOTH streams of the real command, not just on what the renderers produce: the status
+    // path's own advisory text lives in cli.ts (the scope note, the deadline line, usage errors), which
+    // the status.ts source assertion cannot see. Without this, an em dash planted in that note passes
+    // every other gate and the whole suite.
+    expect(err(), 'the status path wrote a non-ASCII byte to stderr').not.toMatch(/[^\x00-\x7F]/);
+    expect(out(), 'the status path wrote a non-ASCII byte to stdout').not.toMatch(/[^\x00-\x7F]/);
+    expect(err(), 'nothing reached stderr, so the assertion above proved nothing').not.toBe('');
   });
 });
