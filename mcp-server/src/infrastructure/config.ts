@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 
 // The transport a process actually gets when MCP_TRANSPORT is unset - which is the PRODUCTION shape
 // (the compose full profile sets MULTI_TENANT=true and never sets MCP_TRANSPORT). Exported because
@@ -6,9 +7,34 @@ import { z } from 'zod';
 // a hand-copied 'http' over there would be free to drift from the schema default here.
 export const DEFAULT_MCP_TRANSPORT = 'http' as const;
 
+// The interface app.listen() binds when BIND_HOST is unset. Loopback, deliberately: the
+// single-tenant server has no authentication of its own and wires FIGMA_TOKEN into every call, so
+// an unset value must never mean "every interface". Exported so the literal has exactly one home
+// for any caller that needs to name the default rather than restate it.
+export const DEFAULT_BIND_HOST = '127.0.0.1' as const;
+
 const ConfigSchema = z.object({
   MCP_TRANSPORT: z.enum(['http', 'stdio']).default(DEFAULT_MCP_TRANSPORT),
   PORT: z.coerce.number().int().min(0).default(3846),
+  // BIND_HOST is the LOCAL INTERFACE this process listens on. It is NOT MCP_HOST, which is the
+  // PUBLIC hostname the multi-tenant server advertises itself at (multi-tenant/env.ts builds
+  // `https://${MCP_HOST}` from it). The two sit one prefix apart and mean opposite things, so the
+  // value is validated here rather than at bind time: a hostname would otherwise surface as an
+  // EADDRNOTAVAIL crash inside `restart: unless-stopped`, i.e. a restart loop instead of a named
+  // reason. Empty-string preprocess mirrors FIGMA_TOKEN: `BIND_HOST=` in a copied .env reaches the
+  // process as '' via docker env_file / dotenv, z.string().default() does NOT fire on '', and Node
+  // treats a falsy host as UNSPECIFIED - net.listen(0, '') binds '::'. Without the preprocess a
+  // blank assignment silently restores the wide bind this setting exists to close.
+  // The .default() sits INSIDE the preprocess, not outside it: an outer
+  // `z.preprocess(...).default()` is a ZodDefault wrapping a ZodEffects, and ZodDefault only
+  // substitutes when its OWN input is undefined - '' is not, so the default never fires and the
+  // blank assignment fails with "Required" instead of falling back to loopback.
+  BIND_HOST: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().refine((v) => v === 'localhost' || isIP(v) !== 0, {
+      message: 'BIND_HOST must be an IP literal or "localhost" - it is the bind interface, not the public hostname (that is MCP_HOST)',
+    }).default(DEFAULT_BIND_HOST),
+  ),
   // Empty string coerces to undefined BEFORE validation: `FIGMA_TOKEN=` (no value) in a
   // copied .env reaches the process as '' via docker env_file / dotenv, and for an
   // OPTIONAL credential an empty assignment must mean "not configured", never a crash

@@ -1,6 +1,7 @@
 import 'express-async-errors';
 import express from 'express';
 import type { Server } from 'node:http';
+import { isIP, type AddressInfo } from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -49,8 +50,84 @@ import { SERVER_INFO } from './version.js';
 
 export type ServerHandle = {
   port: number;
+  /**
+   * The address the socket ACTUALLY bound, read back from server.address(). Exposed because the
+   * only sound assertion about a bind is over this value: a config default is true with zero
+   * wiring, and this server has two listen sites.
+   */
+  address: string;
   close: () => Promise<void>;
 };
+
+/**
+ * The host a BROWSER can dial for a server bound to `bindHost`. A wildcard is not a dialable
+ * origin, so it maps to loopback; a concrete address is used as-is, which is what makes
+ * BIND_HOST=<lan-address> produce a working upload_url without PUBLIC_BASE_URL. IPv6 literals are
+ * bracketed for URL use.
+ */
+export function dialableHost(bindHost: string): string {
+  if (bindHost === '0.0.0.0' || bindHost === '::') return '127.0.0.1';
+  return isIP(bindHost) === 6 ? `[${bindHost}]` : bindHost;
+}
+
+/**
+ * Is this bind address a loopback address - one that answers ONLY inside its own network namespace?
+ * A container bound to loopback has a dead published port, which is exactly what the image
+ * healthcheck needs to know and cannot observe from outside.
+ *
+ * This lives in application code, and it NORMALISES before it classifies, because the alternative -
+ * pattern-matching the BIND_HOST string in shell - produced three separate false-green holes in
+ * review (`127.0.0.2`, then `0:0:0:0:0:0:0:1`, then the `::ffff:` family in four more spellings).
+ * A literal list reads complete and is not: `::1` alone has at least six spellings and the v4-mapped
+ * loopback block has both a dotted and a hex rendering.
+ *
+ * The WHATWG URL parser is a total, spec-defined IPv6 canonicaliser that ships with Node: every
+ * spelling of one address collapses to exactly one string (v4-mapped renders hex, so
+ * `::ffff:127.0.0.1` and `::ffff:7f00:1` both become `::ffff:7f00:1`). Over canonical values the
+ * loopback space is finite and provable - 127.0.0.0/8, `::1`, and that block mapped into IPv6 - so
+ * the classification below is complete rather than merely long.
+ *
+ * Unparseable input answers `true` (loopback), deliberately: the only caller is a health signal,
+ * where an unknown bind must degrade to a visible alarm and never to a silent pass.
+ */
+export function isLoopbackBind(address: string): boolean {
+  let host: string;
+  try {
+    host = new URL(isIP(address) === 6 ? `http://[${address}]/` : `http://${address}/`).hostname;
+  } catch {
+    return true;
+  }
+  if (host === 'localhost' || host.startsWith('127.') || host === '[::1]') return true;
+  // 127.0.0.0/8 mapped into IPv6, in the URL parser's hex rendering (::ffff:7f00:0 ..
+  // ::ffff:7fff:ffff). Anchored at the start of the host, so a global address that merely CONTAINS
+  // those bytes - 2001:db8::ffff:7f00:1, 7f00::1, 2001:7fab::5 - is not caught.
+  return /^\[::ffff:7f[0-9a-f]{2}:/.test(host);
+}
+
+/**
+ * The `bind` block of the /health payload: the CANONICAL address the socket bound (read back from
+ * server.address(), so the kernel has already normalised the operator's spelling) plus the loopback
+ * verdict computed here. The container healthcheck reads this instead of interpreting BIND_HOST,
+ * which is what keeps address classification out of shell patterns for good.
+ */
+function healthBind(address: string): { address: string; loopback: boolean } {
+  return { address, loopback: isLoopbackBind(address) };
+}
+
+/**
+ * The port/address the socket ACTUALLY bound. There is deliberately NO fallback to config.PORT /
+ * config.BIND_HOST: an else-branch that echoes configuration reintroduces the very false green the
+ * `address` field exists to close (a handle reporting the value we ASKED for, whatever the socket
+ * did). Unreachable for a TCP listener - inside the 'listening' callback address() is an
+ * AddressInfo - so the impossible branch fails loudly instead of degrading into a config echo.
+ */
+function boundAddressInfo(server: Server): AddressInfo {
+  const address = server.address();
+  if (typeof address !== 'object' || address === null) {
+    throw new Error(`server.address() is not an AddressInfo after listening: ${JSON.stringify(address)}`);
+  }
+  return address;
+}
 
 export interface MultiTenantContext {
   env: MultiTenantEnv;
@@ -214,6 +291,7 @@ async function startStdioServer(
 
   return {
     port: 0,
+    address: '', // stdio binds no socket; there is no address to report
     close: async () => {
       await transport.close();
       await mcp.close();
@@ -235,8 +313,18 @@ async function startHttpServer(
 
   const deps = buildToolDeps(config, logger, domSnapshotStore);
 
+  // Assigned in the listen callback below, before the socket accepts anything, so every request
+  // that can reach this handler sees the real bound address.
+  let boundAddress = '';
+
+  // `bind` reports the CANONICAL address this process bound and whether that address is loopback.
+  // It exists because the container healthcheck has no other honest way to know: it runs inside the
+  // container, cannot observe host-side port publication, and interpreting BIND_HOST in shell
+  // patterns produced repeated false greens (a loopback bind spelled 127.0.0.2 or
+  // 0:0:0:0:0:0:0:1 reported healthy while the published port was dead). The kernel normalises the
+  // spelling for us; the verdict is computed in isLoopbackBind, under unit test.
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', bind: healthBind(boundAddress) });
   });
 
   app.all('/mcp', async (req, res) => {
@@ -272,20 +360,31 @@ async function startHttpServer(
 
   return new Promise<ServerHandle>((resolve, reject) => {
     let server: Server;
-    server = app.listen(config.PORT, () => {
-      const address = server.address();
-      const port =
-        typeof address === 'object' && address ? address.port : config.PORT;
+    server = app.listen(config.PORT, config.BIND_HOST, () => {
+      let info: AddressInfo;
+      try {
+        info = boundAddressInfo(server);
+      } catch (err) {
+        reject(err as Error);
+        return;
+      }
+      const { port, address: bound } = info;
+      boundAddress = bound;
       // Single-tenant http chain: explicit PUBLIC_BASE_URL wins; otherwise the
-      // ACTUAL bound loopback origin — a real endpoint this same process serves, so the extractor
+      // ACTUAL bound origin — a real endpoint this same process serves, so the extractor
       // loader + browser-direct upload work on localhost out of the box. Resolved HERE, not in
       // the shared buildToolDeps: the fallback needs the bound port (PORT=0 → ephemeral), and
       // stdio shares buildToolDeps but must NOT inherit any fallback (dead-URL hazard). Assigning
       // before resolve() is race-free — connections are only accepted once 'listening' fired.
-      deps.publicBaseUrl = config.PUBLIC_BASE_URL ?? `http://127.0.0.1:${port}`;
-      logger.info({ port }, 'server.listening');
+      // dialableHost keeps a wildcard bind advertising loopback (0.0.0.0 is not an origin a
+      // browser can reach) while a concrete LAN bind advertises itself, so an operator who binds
+      // a LAN address no longer gets an upload_url pointing at the browser's own machine.
+      deps.publicBaseUrl =
+        config.PUBLIC_BASE_URL ?? `http://${dialableHost(config.BIND_HOST)}:${port}`;
+      logger.info({ port, bind_host: bound }, 'server.listening');
       resolve({
         port,
+        address: bound,
         close: () =>
           new Promise<void>((res, rej) => {
             server.close((err) => (err ? rej(err) : res()));
@@ -302,6 +401,8 @@ async function startMultiTenantHttpServer(
   mt: MultiTenantContext,
 ): Promise<ServerHandle> {
   const { env } = mt;
+  // Assigned in the listen callback below, before the socket accepts anything (see /health).
+  let boundAddress = '';
   const resolvePat = mt.resolvePat ?? ((userId: string) => getDefaultPat(userId, env.encryptionKey));
   const ping = mt.pingDb ?? defaultPingDb;
   const accountsDb: AccountsApiDeps['db'] = mt.accountsDb ?? {
@@ -507,12 +608,16 @@ async function startMultiTenantHttpServer(
   const requireJwtAccounts = makeRequireJwt(env.enforceAudience);
   const requireJwtMcp = makeRequireJwt(false);
 
+  // `bind` carries the same meaning as in the single-tenant server (see that handler): the canonical
+  // bound address plus the loopback verdict, for the container healthcheck. It rides BOTH branches -
+  // a degraded database does not change which interface the socket is on.
   app.get('/health', async (_req, res) => {
+    const bind = healthBind(boundAddress);
     try {
       await ping();
-      res.json({ status: 'ok' });
+      res.json({ status: 'ok', bind });
     } catch {
-      res.status(503).json({ status: 'degraded', db: 'unreachable' });
+      res.status(503).json({ status: 'degraded', db: 'unreachable', bind });
     }
   });
 
@@ -690,12 +795,20 @@ async function startMultiTenantHttpServer(
 
   return new Promise<ServerHandle>((resolve, reject) => {
     let server: Server;
-    server = app.listen(config.PORT, () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : config.PORT;
-      logger.info({ port, multi_tenant: true }, 'server.listening');
+    server = app.listen(config.PORT, config.BIND_HOST, () => {
+      let info: AddressInfo;
+      try {
+        info = boundAddressInfo(server);
+      } catch (err) {
+        reject(err as Error);
+        return;
+      }
+      const { port, address: bound } = info;
+      boundAddress = bound;
+      logger.info({ port, bind_host: bound, multi_tenant: true }, 'server.listening');
       resolve({
         port,
+        address: bound,
         close: () =>
           new Promise<void>((res2, rej2) => {
             server.close((err) => (err ? rej2(err) : res2()));

@@ -94,7 +94,7 @@ external Keycloak):
 ```bash
 cd docker
 docker compose --profile local up -d --build   # single-tenant HTTP on 127.0.0.1:3846
-curl -s http://127.0.0.1:3846/health            # -> {"status":"ok"}
+curl -s http://127.0.0.1:3846/health            # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
 
 The compose file is profile-driven (`local` / `full`); prerequisites and production notes are in

@@ -24,7 +24,7 @@ Run the server on the VPS exactly like the local path:
 ```bash
 git clone https://github.com/zylomeara/framefit.git && cd framefit/docker
 FIGMA_TOKEN=figd_your_token docker compose --profile local up -d --build
-curl -s http://127.0.0.1:3846/health   # -> {"status":"ok"}
+curl -s http://127.0.0.1:3846/health   # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
 
 On your workstation, forward the port over SSH:
