@@ -6,7 +6,7 @@
 // throw-to-fail conversion, the effective-mode derivation and secret redaction all live in the runner.
 //
 // Every gate in this file was confirmed red against a deliberately wrong implementation before being
-// committed (see .superpowers/sdd/2026-07-26-framefit-status/task-8-report.md for the table).
+// committed.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
@@ -49,15 +49,13 @@ const { MCP_TRANSPORT: _MT_TRANSPORT, ...MT_DEFAULT_TRANSPORT } = MT;
 // `undefined` and turn every green fixture into an accidental TypeError-shaped `fail`.
 const TOKENS_OK: TokenStats = {
   stored: 1, invalid_non_default: 0, users_without_default: [], users_without_any_token: [],
-  bad_defaults: [], soonest_default_expiry: null,
-  last_validated_at: '2026-07-26T00:00:00.000Z', validation_age_sec: 3600,
+  bad_defaults: [], soonest_default_expiry: null, validation_age_sec: 3600,
   stale_or_unvalidated_total: 0, future_validation_detected: false,
 };
 const GRAPH_OK: GraphStats = {
   libraries: 1, variables: 5, teams: 1,
   users_with_teams_and_no_libraries: [], users_with_partial_team_gaps: [],
   oldest_synced_at: '2026-07-26T00:00:00.000Z', oldest_age_sec: 3600,
-  newest_synced_at: '2026-07-26T00:00:00.000Z',
 };
 const okDb: StatusDb = {
   listUsers: async () => ['u1'],
@@ -75,8 +73,8 @@ const MT_DB: Partial<StatusCtx> = { env: MT, multiTenant: true, transport: 'http
 // `mode` is a DECLARED expectation, not a description: the row below asserts the report's own
 // mode.multi_tenant against it for BOTH halves. The effective mode is derived from env and
 // overwrites ctx.multiTenant, so a fixture missing MULTI_TENANT or MCP_TRANSPORT=http silently runs
-// single-tenant while reading as multi-tenant - three earlier rounds shipped exactly that, and the
-// check then exercises a branch nobody meant to test.
+// single-tenant while reading as multi-tenant, and the check then exercises a branch nobody meant
+// to test.
 type Fixture = { mode: 'single-tenant' | 'multi-tenant'; green: Partial<StatusCtx>; red: Partial<StatusCtx> };
 const FIXTURES: Record<string, Fixture> = {
   config: { mode: 'single-tenant', green: { env: {} }, red: { env: { LOG_LEVEL: 'verbose' } } },

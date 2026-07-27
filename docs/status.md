@@ -70,17 +70,26 @@ network calls.
 
 ### config
 
-Whether this environment would BOOT, and boot as the mode it claims.
+Whether this environment would BOOT, would boot as the MODE it claims, and would have the
+CAPABILITIES it declares. Not every failure here aborts boot: some of them are misconfigurations the
+server survives, and for those this check is the only place they ever surface.
 
 - **ok**: `loadConfig` (the real zod schema) accepts the environment, and in multi-tenant
   `loadMultiTenantEnv` accepts it too. `detail` names the effective mode and which loaders ran.
-- **fail**: `DS_TEAM_IDS` and `MULTI_TENANT` set together (this aborts boot outright, so the container
-  restart-loops); `loadConfig` rejects a value (`LOG_LEVEL=verbose`, a broken limits relationship);
-  `MULTI_TENANT` set while `MCP_TRANSPORT` is not `http` (the server would boot single-tenant with no
-  auth layer); a required multi-tenant variable missing; `ENCRYPTION_KEY` not 64 hex characters;
-  `DS_TEAM_IDS` set without `FIGMA_TOKEN`; an unparseable team id (the message names it - team ids are
-  public identifiers and are deliberately not redacted).
+- **fail, and boot aborts**: `DS_TEAM_IDS` and `MULTI_TENANT` set together (a hard boot guard, so the
+  container restart-loops); `loadConfig` rejects a value (`LOG_LEVEL=verbose`, a broken limits
+  relationship); in multi-tenant, a required variable missing or `ENCRYPTION_KEY` not 64 hex
+  characters.
+- **fail, and the server still boots**: `MULTI_TENANT` set while `MCP_TRANSPORT` is not `http` - it
+  boots, but single-tenant with no auth layer, which is not the mode the environment claims;
+  `DS_TEAM_IDS` set without `FIGMA_TOKEN` - it boots healthy and only logs
+  `env_graph.disabled_no_token`, leaving cross-library aliases silently unresolved; an unparseable
+  team id (the message names it - team ids are public identifiers and are deliberately not redacted).
 - **skipped**: never. It needs nothing but the environment.
+
+The `config` check answers questions about the environment's SHAPE. It cannot tell you that a
+well-formed value is the value you meant: a `PUBLIC_BASE_URL` pointing at the wrong host parses fine
+and reports `[OK]`.
 
 `FIGMA_TOKEN` is optional by design in single-tenant: callers may pass a per-call `figma_token`, and
 the stdio handshake needs no token at all.
@@ -106,11 +115,11 @@ Whether `ENCRYPTION_KEY` is the key this data was written with.
 
 - **ok**: the key signs a bridge token and verifies it back to the same subject; with a database, every
   user's default PAT decrypts. `detail` reports `decrypted: "k of n"`.
-- **fail**: the key is not 64 hex characters; sign+verify does not round-trip (the incident this
-  command exists for - a bare `403` from the ingest endpoint - happened on exactly this path, which a
-  database-only check skips entirely); AES-GCM cannot authenticate the stored data for some users (they
-  are named, alongside the key fingerprint); a stored PAT could not be read for any other reason (a
-  dead pool is reported as a read failure, never blamed on the key).
+- **fail**: the key is not 64 hex characters; sign+verify does not round-trip (a wrong key surfaces as
+  a bare `403` from the ingest endpoint, and that path is exactly the one a database-only check skips
+  entirely); AES-GCM cannot authenticate the stored data for some users (they are named, alongside the
+  key fingerprint); a stored PAT could not be read for any other reason (a dead pool is reported as a
+  read failure, never blamed on the key).
 - **skipped**: `ENCRYPTION_KEY` is not set.
 
 Every user is checked, not a sample: after a key rotation a capped sample makes the verdict an

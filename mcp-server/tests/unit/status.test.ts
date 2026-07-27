@@ -560,13 +560,13 @@ describe('effective mode consistency (header vs. config check)', () => {
 });
 
 const TOKENS: TokenStats = { stored: 1, invalid_non_default: 0, users_without_default: [], users_without_any_token: [],
-  bad_defaults: [], soonest_default_expiry: null, last_validated_at: '2026-07-26T00:00:00.000Z', validation_age_sec: 3600,
+  bad_defaults: [], soonest_default_expiry: null, validation_age_sec: 3600,
   stale_or_unvalidated_total: 0, future_validation_detected: false };
 const GRAPH: GraphStats = { libraries: 2, variables: 100, teams: 1, users_with_teams_and_no_libraries: [],
   users_with_partial_team_gaps: [],
-  oldest_synced_at: '2026-07-26T00:00:00.000Z', oldest_age_sec: 3600, newest_synced_at: '2026-07-26T01:00:00.000Z' };
+  oldest_synced_at: '2026-07-26T00:00:00.000Z', oldest_age_sec: 3600 };
 // Multi-tenant must be expressed in the ENV: the runner derives the effective mode and ignores a
-// caller-supplied `multiTenant` (see the AMENDMENT near the top of this plan).
+// caller-supplied `multiTenant` (see `effectiveMultiTenant` in status.ts).
 const MT_MIN = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x' };
 const first = (c: Check, over: Parameters<typeof baseCtx>[0]) =>
   collectStatus(baseCtx(over), [c]).then((r) => r.checks[0]);
@@ -660,7 +660,7 @@ describe('tokens check', () => {
     expect(r).toMatchObject({ state: 'fail', detail: { invalid_non_default: 2 } });
   });
   it('fails in multi-tenant when validation never ran', async () => {
-    const r = await run({ last_validated_at: null, validation_age_sec: null });
+    const r = await run({ validation_age_sec: null });
     expect(r.state).toBe('fail');
     expect((r as { reason: string }).reason).toMatch(/never run/i);
   });
@@ -680,7 +680,7 @@ describe('tokens check', () => {
     expect((r as { reason: string }).reason).toMatch(/clock/i);
   });
   it('does not judge validation age in single-tenant, and says why the field is empty', async () => {
-    const r = await run({ last_validated_at: null, validation_age_sec: null }, false);
+    const r = await run({ validation_age_sec: null }, false);
     expect(r).toMatchObject({ state: 'ok' });
     expect(JSON.stringify(r)).toMatch(/multi-tenant server process/);
   });

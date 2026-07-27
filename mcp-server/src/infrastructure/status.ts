@@ -10,7 +10,8 @@ export type CheckResult =
 export interface StatusDb {
   listUsers(): Promise<string[]>;
   listTeams(userId: string): Promise<string[]>;
-  // `status: string`, NOT a union - must match CliDeps.getDefaultPat (cli.ts:59) or Task 5b fails.
+  // `status: string`, NOT a union - must match CliDeps.getDefaultPat (cli.ts:59), or the CLI fails
+  // to typecheck against this interface.
   getDefaultPat(userId: string, encryptionKey: string):
     Promise<{ pat: string; label: string; status: string } | null>;
   tokenStats(): Promise<TokenStats>;
@@ -54,11 +55,9 @@ export interface TokenStats {
   users_without_any_token: string[];
   bad_defaults: { user: string; label: string; problem: 'invalid' | 'expired'; expires_at: string | null }[];
   soonest_default_expiry: { user: string; expires_at: string; days: number } | null;
-  // The OLDEST last_validated_at across all stored tokens (MIN), not the most recent (MAX): one
-  // freshly re-validated token (e.g. a manual portal action) must never mask every other token
-  // going stale behind a single healthy-looking timestamp.
-  last_validated_at: string | null;
-  // Age (SQL clock) of the timestamp above, clamped to >= 0.
+  // Age (SQL clock) of the OLDEST last_validated_at across all stored tokens (MIN), not of the most
+  // recent (MAX): one freshly re-validated token (e.g. a manual portal action) must never mask every
+  // other token going stale behind a single healthy-looking age. Clamped to >= 0.
   validation_age_sec: number | null;
   // Tokens never validated (last_validated_at IS NULL) or last validated more than 48h ago. MIN()
   // above silently ignores NULLs, so this count exists specifically to not ignore them.
@@ -76,7 +75,7 @@ export interface GraphStats {
   // legitimately hold no variable libraries (e.g. a prototyping-only team), and the user can still
   // resolve variables through their other, working team(s).
   users_with_partial_team_gaps: string[];
-  oldest_synced_at: string | null; oldest_age_sec: number | null; newest_synced_at: string | null;
+  oldest_synced_at: string | null; oldest_age_sec: number | null;
 }
 
 export interface StatusReport {
@@ -461,8 +460,8 @@ export const keyCheck: Check = {
     // everywhere else this key's shape is checked (env.ts:33), so this can never drift from it.
     if (!isEncryptionKeyHex(key)) return { state: 'fail', reason: ENCRYPTION_KEY_HINT };
 
-    // Part 1 - EVERY mode, no database. The incident this command exists for (a bare 403 from the
-    // ingest endpoint) happened on exactly this path, where a DB-only check is skipped.
+    // Part 1 - EVERY mode, no database. A wrong key surfaces as a bare 403 from the ingest
+    // endpoint, and that path is exactly the one a database-only check skips entirely.
     try {
       const token = await ctx.signBridgeToken('status-selftest', key, 60);
       if (await ctx.verifyBridgeToken(token, key, 'variables:snapshot') !== 'status-selftest') {
@@ -511,8 +510,8 @@ export const keyCheck: Check = {
     if (noDefault > 0) detail.no_default = noDefault;
     // Zero of the attempts above are decrypt SUCCESSES: every user has tokens but none marked
     // default, so this line is not silent success, it is an absence of evidence. The `tokens`
-    // check (later task) reports the users-without-a-default fact itself - this only has to say
-    // the decrypt count here proves nothing, not repeat that fact.
+    // check reports the users-without-a-default fact itself - this only has to say the decrypt
+    // count here proves nothing, not repeat that fact.
     if (noDefault === users.length) detail.decrypt = 'no evidence - no user has a default PAT (the tokens check reports this)';
     return { state: 'ok', detail };
   },

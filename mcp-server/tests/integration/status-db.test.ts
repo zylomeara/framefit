@@ -27,7 +27,7 @@ function withOptions(pgUrl: string, opts: string): string {
 // being asserted on mid-test). Resolving unqualified table names through a private search_path makes
 // every table this suite touches a completely different relation, so no other file's TRUNCATE can
 // ever see or touch them - and it also means assertions here can be EXACT, not just lower bounds.
-const SEED_SCHEMA = 'status_seed_5b';
+const SEED_SCHEMA = 'status_seed';
 
 describe.skipIf(!url)('status SQL helpers', () => {
   let todayStr = '';
@@ -46,10 +46,10 @@ describe.skipIf(!url)('status SQL helpers', () => {
     const { rows: [{ today }] } = await q('SELECT CURRENT_DATE::text AS today');
     todayStr = today;
 
-    // created_at is set EXPLICITLY on every row: the stale/unvalidated count now exempts rows
-    // younger than one nightly interval (finding A, half 2), so a "genuinely stale" row must have a
-    // created_at old enough to have already had a chance to be swept, while st-ok/ci is left at its
-    // default (created_at ~ now(), i.e. "just added") to prove the exemption fires.
+    // created_at is set EXPLICITLY on every row: the stale/unvalidated count exempts rows younger
+    // than one nightly interval, so a "genuinely stale" row must have a created_at old enough to
+    // have already had a chance to be swept, while st-ok/ci is left at its default (created_at ~
+    // now(), i.e. "just added") to prove the exemption fires.
     await q(`INSERT INTO figma_tokens (keycloak_user_id, label, encrypted_pat, pat_suffix, status, is_default, last_validated_at, expires_at, created_at) VALUES
       ('st-ok','default','x','abcd','active',true, now() - interval '1 hour', CURRENT_DATE + 30, now() - interval '40 days'),
       ('st-ok','ci','x','abc2','active',false, NULL, NULL, now()),
@@ -69,7 +69,7 @@ describe.skipIf(!url)('status SQL helpers', () => {
     // all (a user who set up a team but never added a PAT - or, for st-partial, one who somehow has
     // synced libraries with no token surviving to prove it, which is exactly the invisible case a
     // token-scoped-only query cannot see). st-allgap has TWO registered teams, both empty - the
-    // "cannot resolve anything at all" case finding C keeps as a failure.
+    // "cannot resolve anything at all" case, which stays a failure.
     await q(`INSERT INTO registered_teams (keycloak_user_id, team_id) VALUES
       ('st-ok','111'), ('st-empty','222'),
       ('st-partial','555'), ('st-partial','666'),
@@ -78,8 +78,8 @@ describe.skipIf(!url)('status SQL helpers', () => {
 
     // st-partial has TWO registered teams (555, 666) but only 555 has a synced library - a per-team
     // gap that a join keyed on keycloak_user_id alone cannot see (st-partial has *a* library, just
-    // not for team 666). Finding C: this must be a REPORTED FACT (partial gap), not a failure - the
-    // user can still resolve via team 555.
+    // not for team 666). This must be a REPORTED FACT (partial gap), not a failure - the user can
+    // still resolve via team 555.
     await q(`INSERT INTO library_files (keycloak_user_id, team_id, file_key, name, vars, last_synced_at) VALUES
       ('st-ok','111','st-fk1','DS',2, now() - interval '2 hours'),
       ('st-partial','555','st-fk2','Partial',1, now() - interval '10 minutes')`);
@@ -158,12 +158,12 @@ describe.skipIf(!url)('status SQL helpers', () => {
     // Counted (created_at > 1 nightly interval ago, AND null/stale): st-nodefault/ci (created 10
     // days ago, never validated), st-expired, st-bad, st-todayexp, st-tie1, st-tie2 = 6.
     // NOT counted: st-ok/ci - created_at ~ now() (inserted moments ago in this beforeAll), never
-    // validated. Finding A half 2: the validator has not had a chance to see a row this young, so a
-    // NULL there is not evidence of a dead validator.
+    // validated: the validator has not had a chance to see a row this young, so a NULL there is not
+    // evidence of a dead validator.
     expect(s.stale_or_unvalidated_total).toBe(6);
   });
 
-  it('IMPORTANT A half 1: a freshly added, already-validated token (the portal path) does not turn a healthy count red', async () => {
+  it('a freshly added, already-validated token (the portal path) does not turn a healthy count red', async () => {
     // Mirrors accounts-api.ts's add flow: the portal validates the PAT synchronously, then persists
     // that validation moment via addToken's validatedAt - it must not be counted as unvalidated.
     // This mutates the shared fixture (adds a row), but every OTHER tokenStats() assertion in this
@@ -198,7 +198,7 @@ describe.skipIf(!url)('status SQL helpers', () => {
     expect(g.teams).toBe(7);
   });
 
-  it('IMPORTANT C: a per-team gap with a WORKING other team is a reported fact, not a failure', async () => {
+  it('a per-team gap with a WORKING other team is a reported fact, not a failure', async () => {
     // st-partial registered teams 555 (synced) and 666 (not synced) - a join keyed on user alone
     // would see "st-partial has *a* library" and miss the 666 gap entirely. But st-partial CAN still
     // resolve through team 555, so this must land in the partial-gap fact list, not the failing one.
@@ -207,7 +207,7 @@ describe.skipIf(!url)('status SQL helpers', () => {
     expect(g.users_with_teams_and_no_libraries).not.toContain('st-partial');
   });
 
-  it('IMPORTANT C: a user whose registered teams are ALL empty stays in the failing list (they cannot resolve anything)', async () => {
+  it('a user whose registered teams are ALL empty stays in the failing list (they cannot resolve anything)', async () => {
     // st-empty: one team, zero libraries - ALL (one) of its teams is gapped.
     // st-allgap: TWO registered teams, NEITHER synced - ALL gapped, not partial.
     const g = await graphStats();

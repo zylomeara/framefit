@@ -255,7 +255,6 @@ export async function tokenStats(): Promise<TokenStats> {
             -- counting all invalid rows made one invalid default read as "u1 (invalid)" PLUS
             -- "invalid_non_default: 1", i.e. a second, non-existent problem to go hunt.
             COUNT(*) FILTER (WHERE status = 'invalid' AND NOT is_default)::int AS invalid_non_default,
-            MIN(last_validated_at) AS oldest_validated_at,
             CASE WHEN MIN(last_validated_at) IS NULL THEN NULL
                  ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - MIN(last_validated_at)))::int END AS validation_age_sec,
             -- A row younger than one nightly interval is exempt: the validator has not had a chance
@@ -304,12 +303,11 @@ export async function tokenStats(): Promise<TokenStats> {
     users_without_any_token: withoutAnyToken.map((r) => r.keycloak_user_id),
     bad_defaults: bad.map((r) => ({ user: r.keycloak_user_id, label: r.label, problem: r.problem, expires_at: r.expires_at ?? null })),
     soonest_default_expiry: soonest ? { user: soonest.keycloak_user_id, expires_at: soonest.expires_at, days: soonest.days } : null,
-    // The OLDEST validation, not the most recent: MAX() let one freshly re-validated token (e.g. a
-    // manual portal action) mask every other stale row and report a dead nightly validator as
-    // healthy (five defaults 30 days stale + one revalidated a minute ago used to read as "60s ago,
-    // all healthy"). MIN() ignores NULLs (never-validated rows), which is exactly why
+    // The age of the OLDEST validation, not of the most recent: MAX() let one freshly re-validated
+    // token (e.g. a manual portal action) mask every other stale row and report a dead nightly
+    // validator as healthy (five defaults 30 days stale + one revalidated a minute ago used to read
+    // as "60s ago, all healthy"). MIN() ignores NULLs (never-validated rows), which is exactly why
     // stale_or_unvalidated_total exists as an independent count that does not ignore them.
-    last_validated_at: agg.oldest_validated_at ? new Date(agg.oldest_validated_at).toISOString() : null,
     validation_age_sec: agg.validation_age_sec ?? null,
     stale_or_unvalidated_total: agg.stale_or_unvalidated_total,
     future_validation_detected: agg.future_validation_detected ?? false,

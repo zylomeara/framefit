@@ -156,8 +156,8 @@ node dist/index.js status                                # source checkout, from
 - `[FAIL] key` → `ENCRYPTION_KEY` is set but isn't a 64-char hex string. The `local` profile above
   never wires `ENCRYPTION_KEY` into the container at all, so you'd only see this from a source
   checkout or a hand-exported value; regenerate with `openssl rand -hex 32`.
-- `status`'s `config` check only confirms the process would boot, not that `PUBLIC_BASE_URL` is
-  the value you meant — a wrong-but-valid URL still reports `[OK]`. If snapshot upload / extractor
+- `status`'s `config` check only confirms the environment is well-formed, not that `PUBLIC_BASE_URL`
+  is the value you meant — a wrong-but-valid URL still reports `[OK]`. If snapshot upload / extractor
   URLs still point at `127.0.0.1` from another machine, set `PUBLIC_BASE_URL` yourself (Option B
   above).
 - `docker compose exec ... framefit status` failing with `Container <id> is restarting, wait until

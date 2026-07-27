@@ -121,7 +121,7 @@ export async function loadGraph(userId: string): Promise<LoadedGraph> {
  *  `framefit status`. READS ONLY - a missing relation must surface as a Postgres error naming it. */
 export async function graphStats(): Promise<GraphStats> {
   const { rows: [f] } = await getSharedPool().query(`
-    SELECT COUNT(*)::int AS libraries, MIN(last_synced_at) AS oldest, MAX(last_synced_at) AS newest,
+    SELECT COUNT(*)::int AS libraries, MIN(last_synced_at) AS oldest,
            EXTRACT(EPOCH FROM now() - MIN(last_synced_at))::int AS oldest_age_sec
     FROM library_files`);
   const { rows: [v] } = await getSharedPool().query('SELECT COUNT(*)::int AS variables FROM library_variables');
@@ -160,6 +160,5 @@ export async function graphStats(): Promise<GraphStats> {
     users_with_partial_team_gaps: partialGap,
     oldest_synced_at: f.oldest ? new Date(f.oldest).toISOString() : null,
     oldest_age_sec: f.oldest_age_sec ?? null,
-    newest_synced_at: f.newest ? new Date(f.newest).toISOString() : null,
   };
 }
