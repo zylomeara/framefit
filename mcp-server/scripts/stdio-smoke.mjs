@@ -181,7 +181,41 @@ async function main() {
     throw new Error(`tools/list returned ${tools.length} tools, expected >= ${MIN_TOOLS}`);
   }
 
-  finish(true, `handshake ok — serverInfo.name="framefit", ${tools.length} tools (>= ${MIN_TOOLS})`);
+  // The handshake version and the CLI's own report must agree, or `status` has grown a third
+  // version literal and could name a version the server never reports.
+  //
+  // An EXPLICIT minimal env, not childEnv: that object is `{...process.env}` minus FIGMA_TOKEN and
+  // MULTI_TENANT, so an inherited DATABASE_URL would make this spawn open a real connection pool.
+  const statusEnv = { PATH: process.env.PATH, HOME: process.env.HOME, MCP_TRANSPORT: 'stdio' };
+  const statusOut = await new Promise((resolve, reject) => {
+    // `statusChild`, not `child`: the module-level `child` is the server this script is driving, and
+    // shadowing it inside this executor is one rename away from finish() killing the wrong process.
+    const statusChild = spawn(process.execPath, [serverEntry, 'status', '--json', '--no-probe'], {
+      env: statusEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    });
+    const killer = setTimeout(() => statusChild.kill('SIGKILL'), 10_000);
+    let stdout = '';
+    let stderr = '';
+    statusChild.stdout.on('data', (c) => { stdout += c; });
+    // Drained, not ignored: an unread pipe can fill, and the text is the only diagnostic if the
+    // command failed to print a document at all.
+    statusChild.stderr.on('data', (c) => { stderr += c; });
+    statusChild.on('error', (e) => { clearTimeout(killer); reject(e); });
+    statusChild.on('close', () => {
+      clearTimeout(killer);
+      resolve(stdout || `<no stdout; stderr: ${stderr.slice(0, 200)}>`);
+    });
+  });
+  let statusReport;
+  try { statusReport = JSON.parse(statusOut); }
+  catch { throw new Error(`status --json did not print one JSON document: ${statusOut.slice(0, 200)}`); }
+  if (statusReport.version !== initResult.serverInfo.version) {
+    throw new Error(`version drift: handshake says "${initResult.serverInfo.version}", status --json says "${statusReport.version}" - both must come from src/infrastructure/version.ts`);
+  }
+
+  finish(true, `handshake ok — serverInfo.name="framefit", ${tools.length} tools (>= ${MIN_TOOLS}), status --json version="${statusReport.version}"`);
 }
 
 main().catch((err) => {

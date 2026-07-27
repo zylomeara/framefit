@@ -144,15 +144,15 @@ function extractUrlPassword(raw: string | undefined): string | null {
 // Code points, not literal glyphs, so this source file stays ASCII-only too: em dash, en dash,
 // minus sign, ellipsis, curly single/double quotes (incl. low-9 variants), no-break space, bullet.
 const ASCII_FOLD_MAP: Record<string, string> = {
-  '—': '-', '–': '-', '−': '-',
-  '…': '...',
-  '‘': "'", '’': "'", '‚': "'",
-  '“': '"', '”': '"', '„': '"',
-  ' ': ' ',
-  '•': '*',
+  '\u2014': '-', '\u2013': '-', '\u2212': '-',
+  '\u2026': '...',
+  '\u2018': "'", '\u2019': "'", '\u201a': "'",
+  '\u201c': '"', '\u201d': '"', '\u201e': '"',
+  '\u00a0': ' ',
+  '\u2022': '*',
 };
-const ASCII_FOLD_RE = /[—–−…‘’‚“”„ •]/g;
-const COMBINING_DIACRITICS_RE = /[̀-ͯ]/g;
+const ASCII_FOLD_RE = /[\u2014\u2013\u2212\u2026\u2018\u2019\u201a\u201c\u201d\u201e\u00a0\u2022]/g;
+const COMBINING_DIACRITICS_RE = /[\u0300-\u036f]/g;
 
 // Global constraint: ASCII only in every user-visible string. Real pg/undici/OS error text carries
 // typographic characters (em dash, curly quotes, an actual ellipsis glyph) that a check author never
@@ -235,6 +235,12 @@ async function runOne(check: Check, ctx: StatusCtx, timeoutMs: number, redact: (
  * [oneCheck])`, which every check's own tests use - is COMPLETE for what it asked, and marking it
  * incomplete/not-ok would make both fields meaningless for anything but a full registry run.
  * Defaults to the default registry, which is what the CLI runs.
+ *
+ * ZERO expected checks is never complete, no matter how the caller got there. `results.length >=
+ * expectedTotal` alone is vacuously TRUE for 0 >= 0, so a run over an empty check list used to report
+ * `complete: true, ok_overall: true` over no evidence at all - a green earned by asking nothing. The
+ * only honest verdict for a run that examined nothing is "no verdict", which is exactly what
+ * `complete: false` says.
  */
 export function buildReport(
   ctx: StatusCtx,
@@ -244,7 +250,7 @@ export function buildReport(
   const ok = results.filter((r) => r.state === 'ok').length;
   const skipped = results.filter((r) => r.state === 'skipped').length;
   const failed = results.filter((r) => r.state === 'fail').length;
-  const complete = results.length >= expectedTotal;
+  const complete = expectedTotal > 0 && results.length >= expectedTotal;
   return {
     schema: 1,
     generated_at: new Date(ctx.now()).toISOString(),

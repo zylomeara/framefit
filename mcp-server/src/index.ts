@@ -107,6 +107,11 @@ function buildCliLogger(): Logger {
   try {
     return createLogger({ level, destination });
   } catch {
+    // Say so, once, on stderr. `status` names the offending value on stdout via its config check, but
+    // the other five commands never look at LOG_LEVEL at all - for them this fallback used to be a
+    // silent downgrade of a setting the operator deliberately set (before it existed, pino crashed
+    // loudly instead). ASCII and stderr-only, so it cannot corrupt a `--json` stdout document.
+    process.stderr.write(`warning: LOG_LEVEL "${level}" is not a valid log level - falling back to "info" (run "framefit status" for the full config verdict)\n`);
     return createLogger({ level: 'info', destination });
   }
 }
