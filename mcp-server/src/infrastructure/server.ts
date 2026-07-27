@@ -45,6 +45,7 @@ import { syncUser } from '../multi-tenant/library-sync.js';
 import { createEnvGraphFromConfig } from './env-graph.js';
 import type { FigmaApi } from '../ports/figma-api.js';
 import type { Request, Response, NextFunction } from 'express';
+import { SERVER_INFO } from './version.js';
 
 export type ServerHandle = {
   port: number;
@@ -87,8 +88,6 @@ export interface MultiTenantContext {
   /** Overridable for tests; defaults to real usage-db functions. */
   usage?: AccountsApiDeps['usage'];
 }
-
-const SERVER_INFO = { name: 'framefit', version: '0.11.0' } as const;
 
 // Sent to the host in the MCP `initialize` response. This is the only channel that reaches
 // agents on hosts WITHOUT a skills mechanism, so it carries the minimal design-QA contract:

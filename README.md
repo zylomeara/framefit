@@ -45,7 +45,11 @@ Prerequisites: Node 20+ and [pnpm](https://pnpm.io/installation).
 git clone https://github.com/zylomeara/framefit.git && cd framefit/mcp-server
 pnpm install
 pnpm build
+node dist/index.js status   # sanity check: is this checkout able to do its job?
 ```
+
+That last line is [`framefit status`](docs/status.md) — a full diagnosis of the instance, worth
+knowing about before anything else here breaks.
 
 Register it with Claude Code — replace the path with your absolute checkout path and supply a
 [Figma token](#figma-token):
@@ -131,9 +135,10 @@ managed through the server's `/accounts` HTTP API (team registration, token mana
 variable snapshots). The `MULTI_TENANT` server and that `/accounts` API are **fully in this repo**.
 The **admin portal UI** and the **Dev-Mode variable-snapshot plugin** the author's deployment
 drives them with are **not** — those are part of the author's own private deployment, not a
-public service you can sign up for. You don't need the portal to run it: operators register teams
-and trigger library syncs with the bundled `framefit` operator CLI (`framefit teams add`,
-`framefit sync`) — the walkthrough is in [`docker/README.md`](docker/README.md).
+public service you can sign up for. You don't need the portal to run it: operators diagnose an
+instance with `framefit status` ([docs/status.md](docs/status.md)) and register teams / trigger
+library syncs with the bundled `framefit` operator CLI (`framefit teams add`, `framefit sync`) —
+the walkthrough is in [`docker/README.md`](docker/README.md).
 
 Two design-system capabilities build on the multi-tenant store and are inactive in
 single-tenant/stdio:

@@ -139,11 +139,16 @@ export function createAccountsRouter(deps: AccountsApiDeps): Router {
       res.status(400).json({ error: `Figma rejected the token (HTTP ${validation.status}). Check the PAT and its scopes.` });
       return;
     }
+    // We just validated this PAT against Figma - persist that moment as last_validated_at instead of
+    // throwing it away. Without this, the status tokens check's stale/never-validated count (SQL
+    // filters on last_validated_at) would count every freshly added token as "never validated" until
+    // the next nightly sweep, even though it was validated seconds ago right here.
+    const validatedAt = new Date();
 
     try {
       const row = await deps.db.addToken(
         userId(res),
-        { label, pat: pat.trim(), figmaHandle: validation.handle, scopes: [], expiresAt: expires_at ?? null },
+        { label, pat: pat.trim(), figmaHandle: validation.handle, scopes: [], expiresAt: expires_at ?? null, validatedAt },
         deps.encryptionKey,
       );
       res.locals.auditMeta = { figma_handle: validation.handle };

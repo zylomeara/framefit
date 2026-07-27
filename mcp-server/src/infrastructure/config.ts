@@ -1,7 +1,13 @@
 import { z } from 'zod';
 
+// The transport a process actually gets when MCP_TRANSPORT is unset - which is the PRODUCTION shape
+// (the compose full profile sets MULTI_TENANT=true and never sets MCP_TRANSPORT). Exported because
+// status.ts must reproduce this defaulting to derive the effective mode without booting the server;
+// a hand-copied 'http' over there would be free to drift from the schema default here.
+export const DEFAULT_MCP_TRANSPORT = 'http' as const;
+
 const ConfigSchema = z.object({
-  MCP_TRANSPORT: z.enum(['http', 'stdio']).default('http'),
+  MCP_TRANSPORT: z.enum(['http', 'stdio']).default(DEFAULT_MCP_TRANSPORT),
   PORT: z.coerce.number().int().min(0).default(3846),
   // Empty string coerces to undefined BEFORE validation: `FIGMA_TOKEN=` (no value) in a
   // copied .env reaches the process as '' via docker env_file / dotenv, and for an

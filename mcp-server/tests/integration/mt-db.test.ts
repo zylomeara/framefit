@@ -31,6 +31,18 @@ describe.skipIf(!url)('multi-tenant db', () => {
     expect(list[0].expires_at).toBe('2026-09-01');
   });
 
+  it('addToken stamps last_validated_at when the caller passes validatedAt (the portal already validated the PAT)', async () => {
+    const before = Date.now();
+    const row = await addToken('u1', { label: 'work', pat: 'figd_FRESH1234', figmaHandle: 'testuser', scopes: [], expiresAt: null, validatedAt: new Date() }, KEY);
+    expect(row.last_validated_at).not.toBeNull();
+    expect(new Date(row.last_validated_at!).getTime()).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  it('addToken leaves last_validated_at null when validatedAt is not provided (unchanged pre-existing behaviour)', async () => {
+    const row = await addToken('u1', { label: 'work', pat: 'figd_NOVALIDATE', figmaHandle: null, scopes: [], expiresAt: null }, KEY);
+    expect(row.last_validated_at).toBeNull();
+  });
+
   it('getDefaultPat decrypts; isolated per user', async () => {
     await addToken('u1', { label: 'work', pat: 'figd_USER1', figmaHandle: null, scopes: [], expiresAt: null }, KEY);
     await addToken('u2', { label: 'work', pat: 'figd_USER2', figmaHandle: null, scopes: [], expiresAt: null }, KEY);

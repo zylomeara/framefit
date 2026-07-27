@@ -3,6 +3,7 @@
 // collections' default modes. loadGraph() materialises in-memory maps for the resolver.
 import { getSharedPool } from './db.js';
 import { buildGraphMaps } from '../domain/variable-graph.js';
+import type { GraphStats } from '../infrastructure/status.js';
 
 export interface GraphVar { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; resolved_type: string }
 export interface GraphColl { collection_id: string; default_mode: string; modes: unknown; name?: string; key?: string }
@@ -114,4 +115,50 @@ export async function loadGraph(userId: string): Promise<LoadedGraph> {
   const cr = await p.query('SELECT file_key, collection_id, default_mode, modes, name, key FROM library_collections WHERE keycloak_user_id=$1 ORDER BY file_key, collection_id', [userId]);
   const { vars, colls } = rowsToGraphInput(vr.rows, cr.rows);
   return buildGraphMaps(vars, colls);
+}
+
+/** Global (no user filter, by design) read-only aggregate of the library graph, for
+ *  `framefit status`. READS ONLY - a missing relation must surface as a Postgres error naming it. */
+export async function graphStats(): Promise<GraphStats> {
+  const { rows: [f] } = await getSharedPool().query(`
+    SELECT COUNT(*)::int AS libraries, MIN(last_synced_at) AS oldest,
+           EXTRACT(EPOCH FROM now() - MIN(last_synced_at))::int AS oldest_age_sec
+    FROM library_files`);
+  const { rows: [v] } = await getSharedPool().query('SELECT COUNT(*)::int AS variables FROM library_variables');
+  // DISTINCT team_id, not a bare row count: two users registering the SAME team_id is one team, not
+  // two - COUNT(*) over registered_teams counts (user, team) registrations, which overstates it.
+  const { rows: [t] } = await getSharedPool().query('SELECT COUNT(DISTINCT team_id)::int AS teams FROM registered_teams');
+  // Global counts can look healthy on the orphan rows of a departed user while the only ACTIVE
+  // account resolves nothing: nothing deletes library_files on user deletion (library-registry-db.ts:59).
+  // Joined on (user, team), not user alone: a user who synced only SOME of several registered teams
+  // still has a per-team gap for the rest, invisible to a join that only checks "does this user have
+  // *a* library anywhere" (their one synced team would mask every other team's gap). Aggregated a
+  // second time PER USER (total teams vs. gapped teams) to tell apart a user who cannot resolve
+  // ANYTHING (every registered team is empty) from one with a legitimate partial gap (one team out
+  // of several has no library - a team can genuinely hold none) - the two are not the same severity
+  // and status.ts's library_graph check treats them differently.
+  const { rows: perUser } = await getSharedPool().query(`
+    SELECT keycloak_user_id, COUNT(*)::int AS total_teams, COUNT(*) FILTER (WHERE is_gap)::int AS gapped_teams
+    FROM (
+      SELECT rt.keycloak_user_id, rt.team_id, (COUNT(lf.file_key) = 0) AS is_gap
+      FROM registered_teams rt
+      LEFT JOIN library_files lf
+        ON lf.keycloak_user_id = rt.keycloak_user_id AND lf.team_id = rt.team_id
+      GROUP BY rt.keycloak_user_id, rt.team_id
+    ) pairs
+    GROUP BY keycloak_user_id
+    ORDER BY keycloak_user_id`);
+  const allGapped: string[] = [];
+  const partialGap: string[] = [];
+  for (const r of perUser) {
+    if (r.gapped_teams === 0) continue;
+    (r.gapped_teams === r.total_teams ? allGapped : partialGap).push(r.keycloak_user_id);
+  }
+  return {
+    libraries: f.libraries, variables: v.variables, teams: t.teams,
+    users_with_teams_and_no_libraries: allGapped,
+    users_with_partial_team_gaps: partialGap,
+    oldest_synced_at: f.oldest ? new Date(f.oldest).toISOString() : null,
+    oldest_age_sec: f.oldest_age_sec ?? null,
+  };
 }

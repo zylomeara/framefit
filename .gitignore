@@ -9,3 +9,5 @@ coverage/
 .DS_Store
 # Belt and braces: a bridge-token accidentally redirected into the checkout (docs pipe it instead).
 token*.txt
+
+.superpowers/

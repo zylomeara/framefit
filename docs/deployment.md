@@ -131,11 +131,48 @@ Honest scope notes before you pick this shape:
 
 ## Troubleshooting
 
-- `{"status":"ok"}` from `/health` but tools fail → the server runs, the token doesn't:
-  check `FIGMA_TOKEN` is set (see [README — Figma token](../README.md#figma-token) for
-  scopes) and not expired (Figma PATs expire after at most 90 days).
-- Container restart-loops on start → almost always an empty `FIGMA_TOKEN=` line in an
-  env file (empty string fails validation; either set a value or remove the line).
-- Snapshot upload / extractor URLs point at `127.0.0.1` from another machine → set
-  `PUBLIC_BASE_URL` (Option B above).
-- Port already taken → `MCP_PORT=4000 docker compose --profile local up -d`.
+Run `framefit status` first — it names the failing subsystem instead of you guessing which of the
+checks below applies. See [docs/status.md](status.md) for what each check covers.
+
+```bash
+docker compose exec framefit-local framefit status       # local profile (this page's Option A/B)
+docker compose exec framefit framefit status             # full profile (multi-tenant, below)
+docker compose run --rm framefit-local framefit status   # container NOT running (crash loop) — see last bullet
+node dist/index.js status                                # source checkout, from mcp-server/
+```
+
+- `[SKIP] figma` naming a missing `FIGMA_TOKEN`, or `[FAIL] figma` carrying the HTTP status Figma
+  returned → the server runs, the token doesn't: check `FIGMA_TOKEN` is set (see
+  [README — Figma token](../README.md#figma-token) for scopes) and not expired (Figma PATs expire
+  after at most 90 days).
+- `[FAIL] config` → the misconfiguration names itself in the check's `reason`, regardless of mode —
+  no more matching a crash log by hand. Some of these genuinely abort boot: an invalid `LOG_LEVEL`
+  (`loadConfig` throws before the server starts) or `DS_TEAM_IDS` together with `MULTI_TENANT=true`
+  (a hard boot guard, `fatal:` + exit 1) leave the container restart-looping, which is exactly when
+  `docker compose run` is the way to ask. Others are misconfigurations the server *survives*:
+  `DS_TEAM_IDS` set without `FIGMA_TOKEN` boots healthy and only logs
+  `env_graph.disabled_no_token`, leaving cross-library aliases silently unresolved — nothing
+  crashes, so this check is the only place it surfaces.
+- `[FAIL] key` → `ENCRYPTION_KEY` is set but isn't a 64-char hex string. The `local` profile above
+  never wires `ENCRYPTION_KEY` into the container at all, so you'd only see this from a source
+  checkout or a hand-exported value; regenerate with `openssl rand -hex 32`.
+- `status`'s `config` check only confirms the environment is well-formed, not that `PUBLIC_BASE_URL`
+  is the value you meant — a wrong-but-valid URL still reports `[OK]`. If snapshot upload / extractor
+  URLs still point at `127.0.0.1` from another machine, set `PUBLIC_BASE_URL` yourself (Option B
+  above).
+- `docker compose exec ... framefit status` failing with `Container <id> is restarting, wait until
+  the container is running` is not a `status` problem — it is the diagnosis. Every service declares
+  `restart: unless-stopped`, so a container that dies during boot sits in `Restarting` and `exec`
+  has nothing to attach to. Ask the same question with `run` instead, which starts a throwaway
+  container from the same image and service environment (`--rm` cleans it up, no host port is
+  published, and the image is CMD-only so the command replaces the server cleanly):
+
+  ```bash
+  docker compose run --rm framefit-local framefit status   # or `framefit` under the full profile
+  docker compose logs framefit-local --tail 20             # the crash itself, for cross-checking
+  ```
+
+- A port that is **already taken** announces itself at `up` time, not at `exec` time: compose
+  reports `Error response from daemon: ports are not available: ... bind: address already in use`
+  and the container stays in `Created` (never Running, never Restarting) → retry on another port
+  with `MCP_PORT=4000 docker compose --profile local up -d`.

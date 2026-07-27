@@ -1,79 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runCli, isCliCommand, type CliDeps } from '../../src/infrastructure/cli.js';
-import { syncUser } from '../../src/multi-tenant/library-sync.js';
-import { createEnvGraph } from '../../src/infrastructure/env-graph.js';
 import { signBridgeToken, verifyBridgeToken } from '../../src/multi-tenant/bridge-token.js';
-import type { FigmaApi } from '../../src/ports/figma-api.js';
-
-const logger = { info() {}, warn() {}, error() {}, debug() {}, child() { return logger; } } as any;
-
-// A library-variable fixture in the exact /variables/local shape syncUser parses: one file
-// 'good' with two published COLOR variables (one single-mode, one multi-mode).
-const SINGLE_KEY = 'a'.repeat(40);
-const MULTI_KEY = 'b'.repeat(40);
-const RAW = {
-  meta: {
-    variables: {
-      v1: { id: 'VariableID:1:1', key: SINGLE_KEY, name: 'color/bg', valuesByMode: { m1: { r: 1, g: 1, b: 1, a: 1 } }, variableCollectionId: 'C', resolvedType: 'COLOR' },
-      v2: { id: 'VariableID:2:2', key: MULTI_KEY, name: 'color/surface', valuesByMode: { light: { r: 1, g: 1, b: 1, a: 1 }, dark: { r: 0, g: 0, b: 0, a: 1 } }, variableCollectionId: 'D', resolvedType: 'COLOR' },
-    },
-    variableCollections: {
-      C: { id: 'C', name: 'ThemeSingle', key: '', defaultModeId: 'm1', modes: [{ modeId: 'm1', name: 'Light' }] },
-      D: { id: 'D', name: 'ThemeMulti', key: '', defaultModeId: 'light', modes: [{ modeId: 'light', name: 'Light' }, { modeId: 'dark', name: 'Dark' }] },
-    },
-  },
-};
-
-function libraryApi(raw: unknown = RAW): FigmaApi {
-  return {
-    getTeamProjects: async () => [{ id: 'p1', name: 'DS' }],
-    getProjectFiles: async () => [{ key: 'good', name: 'DS Colors' }],
-    getVariablesLocal: async () => raw,
-  } as unknown as FigmaApi;
-}
-
-// A team with no library files → syncUser returns zero libraries.
-function emptyApi(): FigmaApi {
-  return {
-    getTeamProjects: async () => [{ id: 'p1', name: 'DS' }],
-    getProjectFiles: async () => [],
-    getVariablesLocal: async () => ({ meta: {} }),
-  } as unknown as FigmaApi;
-}
-
-interface Bufs { deps: CliDeps; out: () => string; err: () => string }
-
-function makeDeps(over: Partial<CliDeps> & { env?: NodeJS.ProcessEnv } = {}): Bufs {
-  const outBuf: string[] = [];
-  const errBuf: string[] = [];
-  const base: CliDeps = {
-    env: {},
-    out: (s) => { outBuf.push(s); },
-    err: (s) => { errBuf.push(s); },
-    logger,
-    buildApi: () => libraryApi(),
-    syncUser,
-    createEnvGraph,
-    initDb: vi.fn(),
-    closeDb: vi.fn(async () => {}),
-    ensureSchema: vi.fn(async () => {}),
-    ensureLibraryRegistrySchema: vi.fn(async () => {}),
-    ensureLibraryGraphSchema: vi.fn(async () => {}),
-    addTeam: vi.fn(async () => {}),
-    listTeams: vi.fn(async () => []),
-    removeTeam: vi.fn(async () => {}),
-    listUsers: vi.fn(async () => []),
-    getDefaultPat: vi.fn(async () => null),
-    setLibraries: vi.fn(async () => {}),
-    replaceLibrary: vi.fn(async () => {}),
-    signBridgeToken: vi.fn(async (u: string, _k: string, ttl: number) => `signed.${u}.${ttl}`),
-  };
-  const deps = { ...base, ...over } as CliDeps;
-  // Always route io to our buffers regardless of overrides.
-  deps.out = (s) => { outBuf.push(s); };
-  deps.err = (s) => { errBuf.push(s); };
-  return { deps, out: () => outBuf.join(''), err: () => errBuf.join('') };
-}
+// makeDeps lives in the shared fixture module: cli.test.ts and the status gates inject the SAME
+// CliDeps surface, so a new required field is added in one place, not two that can drift.
+import { makeDeps, libraryApi, emptyApi, SINGLE_KEY, MULTI_KEY } from './status-fixtures.js';
 
 const DB_ENV = { DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'ab'.repeat(32) };
 
@@ -420,6 +350,230 @@ describe('bridge-token command', () => {
     const code = await runCli(['bridge-token', '--user', 'u1'], deps);
     expect(code).toBe(0);
     expect(initDb).not.toHaveBeenCalled();
+  });
+});
+
+// A COMPLETE multi-tenant environment: loadMultiTenantEnv must accept it, or configCheck fails for a
+// reason unrelated to whatever the case is actually about.
+const MT_ENV = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', DATABASE_URL: 'postgres://x',
+  ENCRYPTION_KEY: 'a'.repeat(64), KEYCLOAK_JWKS_URL: 'https://x/certs',
+  OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com' };
+
+/** A logger that records what was written to it, for the paths whose only observable output IS a log
+ *  line (the pool-error callback and the pool-close fallbacks). */
+function capturingLogger(): { logger: CliDeps['logger']; lines: () => string } {
+  const seen: string[] = [];
+  const logger = { info() {}, debug() {},
+    warn: (o: unknown, m: string) => seen.push(`${JSON.stringify(o)} ${m}`),
+    error: (o: unknown, m: string) => seen.push(`${JSON.stringify(o)} ${m}`),
+    child() { return logger; } } as never;
+  return { logger, lines: () => seen.join('\n') };
+}
+
+describe('status command', () => {
+  it('is a reserved bareword', () => {
+    expect(isCliCommand(['status'])).toBe(true);
+  });
+
+  it('exits 0 with no failures and always prints the summary', async () => {
+    const { deps, out } = makeDeps({ env: {} });
+    expect(await runCli(['status', '--no-probe'], deps)).toBe(0);
+    expect(out()).toMatch(/\d+ ok, \d+ skipped, 0 failed/);
+  });
+
+  it('exits 1 when a check fails', async () => {
+    const { deps } = makeDeps({ env: { LOG_LEVEL: 'verbose' } });
+    expect(await runCli(['status', '--no-probe'], deps)).toBe(1);
+  });
+
+  it('exits 2 when a flag is given a value', async () => {
+    const { deps } = makeDeps({ env: {} });
+    expect(await runCli(['status', '--json=maybe'], deps)).toBe(2);
+  });
+
+  it('exits 2 on an unexpected positional', async () => {
+    const { deps } = makeDeps({ env: {} });
+    expect(await runCli(['status', 'wat'], deps)).toBe(2);
+  });
+
+  it('rejects a misspelled flag rather than silently doing the opposite of what was asked', async () => {
+    // --no-prob accepted as "unknown, ignore" would PERFORM the network probe the operator asked to
+    // suppress, at exit 0 - a silent inversion of intent, which is worse than a refusal because
+    // nothing in the output says the flag was not understood.
+    const a = makeDeps({ env: { FIGMA_TOKEN: 'figd_x' } });
+    expect(await runCli(['status', '--no-prob'], a.deps)).toBe(2);
+    expect(a.deps.validatePat).not.toHaveBeenCalled();
+    expect(a.out()).toBe('');
+    expect(a.err()).toMatch(/unknown flag --no-prob/);
+    // --jsom would hand human text to a JSON consumer, also at exit 0.
+    const b = makeDeps({ env: {} });
+    expect(await runCli(['status', '--jsom', '--no-probe'], b.deps)).toBe(2);
+    expect(b.out()).toBe('');
+    expect(b.err()).toMatch(/unknown flag --jsom/);
+  });
+
+  it('names the positional a valueless flag swallowed, not just "takes no value"', async () => {
+    // parseFlags reads `wat` as the value of --probe, so a message about the flag alone would leave
+    // the operator staring at an argument it never mentions.
+    const { deps, err } = makeDeps({ env: {} });
+    expect(await runCli(['status', '--probe', 'wat'], deps)).toBe(2);
+    expect(err()).toMatch(/wat/);
+    expect(err()).toMatch(/positional/);
+  });
+
+  it('honours --probe under multi-tenant, where the default is OFF, despite parseFlags giving a valueless flag an empty string', async () => {
+    // Multi-tenant ON PURPOSE: single-tenant already probes by default, so the single-tenant version
+    // of this test stayed green under a mutation that ignored --probe entirely and proved nothing
+    // about the flag. Here the default is off, so only the flag can produce the call.
+    // --probe is also NOT the last argv token, which is the parseFlags branch that assigns '' because
+    // the NEXT token starts with '--' - the empty string this test's title is about.
+    const listUsers = vi.fn(async () => ['u1']);
+    const getDefaultPat = vi.fn(async () => ({ pat: 'p', label: 'l', status: 'active' }));
+    const { deps, out } = makeDeps({ env: MT_ENV, listUsers, getDefaultPat });
+    await runCli(['status', '--probe', '--json'], deps);
+    expect(deps.validatePat).toHaveBeenCalledTimes(1);
+    const figma = JSON.parse(out()).checks.find((c: { id: string }) => c.id === 'figma');
+    expect(figma.state).toBe('ok');           // it PROBED, it did not skip
+  });
+
+  it('derives the mode with the DEFAULTED transport: MULTI_TENANT + stdio is single-tenant, so it probes', async () => {
+    // MULTI_TENANT=true with MCP_TRANSPORT=stdio is NOT multi-tenant - the server would boot
+    // single-tenant with no auth layer, which is why configCheck fails on it. Both the probe DEFAULT
+    // and the report header must follow that derived mode; an inline `MULTI_TENANT === 'true'` (i.e.
+    // not going through effectiveMultiTenant) gets both wrong and this is what catches it.
+    const { deps, out } = makeDeps({ env: { MULTI_TENANT: 'true', MCP_TRANSPORT: 'stdio', FIGMA_TOKEN: 'figd_x' } });
+    expect(await runCli(['status'], deps)).toBe(1);        // configCheck fails on the mode conflict
+    expect(deps.validatePat).toHaveBeenCalledTimes(1);     // probe defaulted ON, i.e. single-tenant
+    expect(out()).toContain('single-tenant');
+  });
+
+  it('probes by default in single-tenant; --no-probe turns it off and still exits 0', async () => {
+    const a = makeDeps({ env: { FIGMA_TOKEN: 'figd_x' } });
+    await runCli(['status'], a.deps);
+    expect(a.deps.validatePat).toHaveBeenCalledTimes(1);
+    const b = makeDeps({ env: { FIGMA_TOKEN: 'figd_x' } });
+    expect(await runCli(['status', '--no-probe'], b.deps)).toBe(0);
+    expect(b.deps.validatePat).not.toHaveBeenCalled();
+  });
+
+  it('does NOT probe by default in multi-tenant, but --probe turns it on', async () => {
+    const env = MT_ENV;
+    const listUsers = vi.fn(async () => ['u1']);
+    const getDefaultPat = vi.fn(async () => ({ pat: 'p', label: 'l', status: 'active' }));
+    const off = makeDeps({ env, listUsers, getDefaultPat });
+    await runCli(['status'], off.deps);
+    expect(off.deps.validatePat).not.toHaveBeenCalled();
+    const on = makeDeps({ env, listUsers, getDefaultPat });
+    await runCli(['status', '--probe'], on.deps);
+    expect(on.deps.validatePat).toHaveBeenCalledTimes(1);
+  });
+
+  it('--json puts exactly one document on stdout and the caveat on stderr', async () => {
+    const { deps, out, err } = makeDeps({ env: {} });
+    await runCli(['status', '--json', '--no-probe'], deps);
+    const parsed = JSON.parse(out());
+    expect(parsed.checks).toHaveLength(6);
+    expect(parsed.checks.map((c: { id: string }) => c.id))
+      .toEqual(['config', 'db', 'key', 'tokens', 'library_graph', 'figma']);
+    expect(err()).toMatch(/does not see/i);
+  });
+
+  it('never opens the database when DATABASE_URL is unset, and always closes it when set', async () => {
+    const a = makeDeps({ env: {} });
+    await runCli(['status', '--no-probe'], a.deps);
+    expect(a.deps.initDb).not.toHaveBeenCalled();
+    const b = makeDeps({ env: { DATABASE_URL: 'postgres://x' } });
+    await runCli(['status', '--no-probe'], b.deps);
+    expect(b.deps.closeDb).toHaveBeenCalledTimes(1);
+  });
+
+  it('never runs schema DDL', async () => {
+    const { deps } = makeDeps({ env: { DATABASE_URL: 'postgres://x' } });
+    await runCli(['status', '--no-probe'], deps);
+    expect(deps.ensureSchema).not.toHaveBeenCalled();
+    expect(deps.ensureLibraryRegistrySchema).not.toHaveBeenCalled();
+    expect(deps.ensureLibraryGraphSchema).not.toHaveBeenCalled();
+  });
+
+  it('prints the partial report and exits 2 when the hard deadline fires', async () => {
+    const { deps, out, err } = makeDeps({
+      env: { DATABASE_URL: 'postgres://x' }, deadlineMs: 50,
+      listUsers: () => new Promise<string[]>(() => {}),
+    });
+    expect(await runCli(['status', '--no-probe'], deps)).toBe(2);
+    expect(out()).toMatch(/\[(OK|SKIP|FAIL)\]/);          // whatever finished is still shown
+    expect(out()).toMatch(/INCOMPLETE/);                   // and stdout itself admits it was cut short
+    expect(err()).toMatch(/did not finish within 50ms/);   // the EFFECTIVE deadline, not the default
+  });
+
+  it('marks the exit-2 document incomplete, so --json cannot read as healthy on an aborted run', async () => {
+    const { deps, out } = makeDeps({
+      env: { DATABASE_URL: 'postgres://x' }, deadlineMs: 50,
+      listUsers: () => new Promise<string[]>(() => {}),
+    });
+    expect(await runCli(['status', '--json', '--no-probe'], deps)).toBe(2);
+    const s = JSON.parse(out()).summary;
+    expect(s.complete).toBe(false);
+    expect(s.ok_overall).toBe(false);   // every per-check field is true; only this says "not a verdict"
+  });
+
+  // The hard deadline bounds the CHECKS, not the teardown: pool.end() waits for the clients an
+  // abandoned check left mid-query, and initDb builds the pool with no connect timeout, so an
+  // unbounded close turned "a dependency is not answering" into a command that never returns at all -
+  // verified against a TCP blackhole DSN. The existing deadline test cannot catch this: its fixture
+  // closeDb resolves instantly.
+  it('still settles with 2 when the pool refuses to close', async () => {
+    const { deps, err } = makeDeps({
+      env: { DATABASE_URL: 'postgres://x' }, deadlineMs: 30, closeBudgetMs: 20,
+      listUsers: () => new Promise<string[]>(() => {}),
+      closeDb: vi.fn(() => new Promise<void>(() => {})),
+    });
+    expect(await runCli(['status', '--no-probe'], deps)).toBe(2);
+    expect(err()).toMatch(/did not finish within 30ms/);
+  });
+
+  it('does not let a pool that will not close overwrite a verdict it already reached', async () => {
+    const { logger, lines } = capturingLogger();
+    const { deps, out } = makeDeps({
+      env: { DATABASE_URL: 'postgres://x' }, closeBudgetMs: 20, logger,
+      closeDb: vi.fn(() => new Promise<void>(() => {})),
+    });
+    expect(await runCli(['status', '--no-probe'], deps)).toBe(0);   // the report was reached and printed
+    expect(out()).toMatch(/0 failed/);
+    expect(lines()).toMatch(/pool_close_timed_out/);                // the teardown problem is logged
+  });
+
+  it('logs a close FAILURE instead of turning a printed verdict into exit 2, and masks the DSN in it', async () => {
+    const { logger, lines } = capturingLogger();
+    const { deps } = makeDeps({
+      env: { DATABASE_URL: 'postgres://u:SENTINEL_PASS@h/db' }, logger,
+      closeDb: vi.fn(async () => { throw new Error('end() failed for postgres://u:SENTINEL_PASS@h/db'); }),
+    });
+    expect(await runCli(['status', '--no-probe'], deps)).toBe(0);
+    expect(lines()).toMatch(/pool_close_failed/);
+    expect(lines()).not.toContain('SENTINEL_PASS');
+  });
+
+  it('closes the pool even when initDb itself throws', async () => {
+    // pg can build the pool before rejecting a malformed DSN, so the close must be reachable from a
+    // throwing initDb too. The throw itself stays a throw - the entry point maps it to exit 2.
+    const { deps } = makeDeps({
+      env: { DATABASE_URL: 'postgres://x' },
+      initDb: vi.fn(() => { throw new Error('bad DSN'); }),
+    });
+    await expect(runCli(['status', '--no-probe'], deps)).rejects.toThrow('bad DSN');
+    expect(deps.closeDb).toHaveBeenCalledTimes(1);
+  });
+
+  it('redacts a DSN password that arrives through the pool error logger', async () => {
+    const { logger, lines } = capturingLogger();
+    const { deps } = makeDeps({
+      env: { DATABASE_URL: 'postgres://u:SENTINEL_PASS@h/db' }, logger,
+      initDb: (url: string, onError?: (e: Error) => void) => { onError?.(new Error(`connect ECONNREFUSED ${url}`)); },
+    });
+    await runCli(['status', '--no-probe'], deps);
+    expect(lines().length).toBeGreaterThan(0);         // the logger really was written to
+    expect(lines()).not.toContain('SENTINEL_PASS');
   });
 });
 

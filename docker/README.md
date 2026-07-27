@@ -77,7 +77,15 @@ container. `teams`/`sync`/`users` use the service's `DATABASE_URL` (and `ENCRYPT
 `mcp-server/.env`, needed to decrypt a stored PAT for `sync`) — no extra config. PAT registration
 itself stays on the `/accounts` API; `users` lists whoever already has one on file.
 
+Start with `status`: it needs no prerequisites — it just reports whatever is and isn't configured
+— and exits `0` when nothing failed, `1` when a check failed, `2` when it could not run at all
+(usage error, internal throw, or its own hard deadline). See [docs/status.md](../docs/status.md)
+for what each of the six checks means.
+
 ```bash
+# Diagnose this instance - which subsystem, if any, is broken:
+docker compose exec framefit framefit status
+
 # Who already has a Figma PAT registered (via the /accounts API):
 docker compose exec framefit framefit users
 

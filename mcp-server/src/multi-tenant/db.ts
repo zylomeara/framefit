@@ -3,6 +3,7 @@
 // *WithPat/DefaultPat return safe rows (no encrypted_pat).
 import pg from 'pg';
 import { encrypt, decrypt } from './crypto.js';
+import { NIGHTLY_INTERVAL_SEC, type TokenStats } from '../infrastructure/status.js';
 
 const { Pool } = pg;
 
@@ -27,6 +28,12 @@ export interface AddTokenInput {
   figmaHandle: string | null;
   scopes: string[];
   expiresAt: string | null; // 'YYYY-MM-DD'
+  // The moment the caller already confirmed this PAT is valid (e.g. the portal's add route calls
+  // validatePat() synchronously before addToken() - accounts-api.ts). Optional: a caller that has
+  // NOT just validated the PAT (or a raw insert path) omits it and last_validated_at stays NULL,
+  // same as before. Recording it here is not an invention - it is the validation that already
+  // happened, persisted instead of thrown away.
+  validatedAt?: Date;
 }
 
 let pool: pg.Pool | null = null;
@@ -130,10 +137,10 @@ export async function addToken(
   const isDefault = existing.rows[0].n === 0;
   const result = await p.query(
     `INSERT INTO figma_tokens
-       (keycloak_user_id, label, encrypted_pat, pat_suffix, figma_handle, scopes, expires_at, is_default)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (keycloak_user_id, label, encrypted_pat, pat_suffix, figma_handle, scopes, expires_at, is_default, last_validated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING ${SAFE_COLUMNS}`,
-    [userId, input.label, encrypted, suffix, input.figmaHandle, input.scopes, input.expiresAt, isDefault],
+    [userId, input.label, encrypted, suffix, input.figmaHandle, input.scopes, input.expiresAt, isDefault, input.validatedAt ?? null],
   );
   return result.rows[0];
 }
@@ -231,4 +238,78 @@ export async function setReadOnly(userId: string, readOnly: boolean): Promise<vo
      ON CONFLICT (keycloak_user_id) DO UPDATE SET read_only = EXCLUDED.read_only, updated_at = NOW()`,
     [userId, readOnly],
   );
+}
+
+/** Global (no user filter, by design) read-only aggregate of PAT health, for `framefit status`.
+ *  READS ONLY - a missing relation must surface as a Postgres error naming it, not be repaired. */
+export async function tokenStats(): Promise<TokenStats> {
+  // Both thresholds derive from the ONE constant the `tokens` check itself uses
+  // (2 * NIGHTLY_INTERVAL_SEC for "stale", NIGHTLY_INTERVAL_SEC for "too young to judge yet") -
+  // passed in as query parameters rather than hand-copied `interval` literals, so the SQL and the
+  // check can never drift apart on what "48 hours" or "24 hours" means.
+  const staleThresholdSec = 2 * NIGHTLY_INTERVAL_SEC;
+  const { rows: [agg] } = await getPool().query(
+    `SELECT COUNT(*)::int AS stored,
+            -- NON-default invalids only. An invalid DEFAULT is reported by name through
+            -- bad_defaults below, and the tokens check prints this count on that same fail line:
+            -- counting all invalid rows made one invalid default read as "u1 (invalid)" PLUS
+            -- "invalid_non_default: 1", i.e. a second, non-existent problem to go hunt.
+            COUNT(*) FILTER (WHERE status = 'invalid' AND NOT is_default)::int AS invalid_non_default,
+            CASE WHEN MIN(last_validated_at) IS NULL THEN NULL
+                 ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - MIN(last_validated_at)))::int END AS validation_age_sec,
+            -- A row younger than one nightly interval is exempt: the validator has not had a chance
+            -- to see it yet, so a NULL (or old) last_validated_at on a brand-new row is not evidence
+            -- of a dead validator - only a genuinely OLD row still lacking recent validation is.
+            COUNT(*) FILTER (
+              WHERE created_at < now() - (interval '1 second' * $1::int)
+                AND (last_validated_at IS NULL OR last_validated_at < now() - (interval '1 second' * $2::int))
+            )::int AS stale_or_unvalidated_total,
+            bool_or(last_validated_at > now()) AS future_validation_detected
+     FROM figma_tokens`,
+    [NIGHTLY_INTERVAL_SEC, staleThresholdSec],
+  );
+  const { rows: withoutDefault } = await getPool().query(`
+    SELECT keycloak_user_id FROM figma_tokens
+    GROUP BY keycloak_user_id HAVING COUNT(*) FILTER (WHERE is_default) = 0
+    ORDER BY keycloak_user_id`);
+  // A user can register a Figma team and never add a token at all - invisible to the query above,
+  // which only sees rows that already exist in figma_tokens. registered_teams belongs to
+  // library-registry-db.ts, but this is a plain read of its table (same pattern graphStats() already
+  // uses to read registered_teams from this sibling module), so no import is needed for it.
+  const { rows: withoutAnyToken } = await getPool().query(`
+    SELECT DISTINCT rt.keycloak_user_id
+    FROM registered_teams rt
+    LEFT JOIN figma_tokens ft ON ft.keycloak_user_id = rt.keycloak_user_id
+    WHERE ft.keycloak_user_id IS NULL
+    ORDER BY rt.keycloak_user_id`);
+  // expires_at is DATE: node-pg parses it at LOCAL midnight, so ::text is required or the day
+  // shifts (same reason db.ts:99 already does this).
+  const { rows: bad } = await getPool().query(`
+    SELECT keycloak_user_id, label, expires_at::text AS expires_at,
+           CASE WHEN status = 'invalid' THEN 'invalid' ELSE 'expired' END AS problem
+    FROM figma_tokens
+    WHERE is_default AND (status = 'invalid' OR (expires_at IS NOT NULL AND expires_at < CURRENT_DATE))
+    ORDER BY keycloak_user_id`);
+  // Tie-broken by keycloak_user_id: without it, two defaults sharing the same expires_at resolve in
+  // whatever order Postgres happens to scan them, making the winner nondeterministic.
+  const { rows: [soonest] } = await getPool().query(`
+    SELECT keycloak_user_id, expires_at::text AS expires_at, (expires_at - CURRENT_DATE)::int AS days
+    FROM figma_tokens
+    WHERE is_default AND expires_at IS NOT NULL AND expires_at >= CURRENT_DATE
+    ORDER BY expires_at ASC, keycloak_user_id ASC LIMIT 1`);
+  return {
+    stored: agg.stored, invalid_non_default: agg.invalid_non_default,
+    users_without_default: withoutDefault.map((r) => r.keycloak_user_id),
+    users_without_any_token: withoutAnyToken.map((r) => r.keycloak_user_id),
+    bad_defaults: bad.map((r) => ({ user: r.keycloak_user_id, label: r.label, problem: r.problem, expires_at: r.expires_at ?? null })),
+    soonest_default_expiry: soonest ? { user: soonest.keycloak_user_id, expires_at: soonest.expires_at, days: soonest.days } : null,
+    // The age of the OLDEST validation, not of the most recent: MAX() let one freshly re-validated
+    // token (e.g. a manual portal action) mask every other stale row and report a dead nightly
+    // validator as healthy (five defaults 30 days stale + one revalidated a minute ago used to read
+    // as "60s ago, all healthy"). MIN() ignores NULLs (never-validated rows), which is exactly why
+    // stale_or_unvalidated_total exists as an independent count that does not ignore them.
+    validation_age_sec: agg.validation_age_sec ?? null,
+    stale_or_unvalidated_total: agg.stale_or_unvalidated_total,
+    future_validation_detected: agg.future_validation_detected ?? false,
+  };
 }
