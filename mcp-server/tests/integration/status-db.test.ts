@@ -56,6 +56,10 @@ describe.skipIf(!url)('status SQL helpers', () => {
       ('st-nodefault','ci','x','efgh','active',false, NULL, NULL, now() - interval '10 days'),
       ('st-expired','default','x','ijkl','active',true, now() - interval '10 days', CURRENT_DATE - 1, now() - interval '40 days'),
       ('st-bad','default','x','mnop','invalid',true, now() - interval '15 days', NULL, now() - interval '40 days'),
+      -- st-bad holds a SECOND invalid token, this one NOT the default: the pair is what separates
+      -- "count every invalid row" (2) from "count the invalid rows that are not defaults" (1).
+      -- Fresh created_at + a recent last_validated_at so it joins neither the stale set nor the MIN.
+      ('st-bad','ci','x','bad2','invalid',false, now() - interval '1 hour', NULL, now()),
       ('st-future','default','x','qrst','active',true, now() + interval '1 hour', CURRENT_DATE + 10, now() - interval '40 days'),
       ('st-todayexp','default','x','uvwx','active',true, now() - interval '20 days', CURRENT_DATE, now() - interval '40 days'),
       ('st-tie1','default','x','yz01','active',true, now() - interval '25 days', CURRENT_DATE, now() - interval '40 days'),
@@ -106,6 +110,18 @@ describe.skipIf(!url)('status SQL helpers', () => {
     // st-todayexp's expires_at = CURRENT_DATE exactly; CURRENT_DATE is not < CURRENT_DATE.
     expect(s.bad_defaults.map((b) => b.user)).not.toContain('st-todayexp');
     expect(s.bad_defaults).toHaveLength(2);
+  });
+
+  it('counts ONLY non-default invalid tokens, never the invalid DEFAULTS bad_defaults already names', async () => {
+    // st-bad holds both invalid rows in the seed: its DEFAULT (reported by name through
+    // bad_defaults) and a non-default 'ci' token. Counting every invalid row would answer 2 - and
+    // the tokens check prints that number as `invalid_non_default` right beside "st-bad (invalid)",
+    // sending the operator after a second bad token that does not exist.
+    const s = await tokenStats();
+    expect(s.invalid_non_default).toBe(1);
+    // Non-vacuity: there really IS an invalid default in the fixture, so 1 is a filtered answer and
+    // not simply "no invalid defaults exist here".
+    expect(s.bad_defaults).toContainEqual(expect.objectContaining({ user: 'st-bad', problem: 'invalid' }));
   });
 
   it('returns expires_at as a calendar date string, not a shifted timestamp', async () => {

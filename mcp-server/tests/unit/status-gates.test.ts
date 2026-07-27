@@ -38,11 +38,17 @@ const MT = {
   OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com',
 };
 
+// The PRODUCTION default shape, and the reason it gets its own fixture: the compose full profile
+// sets MULTI_TENANT=true and NEVER sets MCP_TRANSPORT (docker/docker-compose.yml), so every real
+// multi-tenant box relies on the transport DEFAULT ('http', config.ts) to be read as multi-tenant at
+// all. MT above states the transport explicitly, which means it exercises none of that defaulting.
+const { MCP_TRANSPORT: _MT_TRANSPORT, ...MT_DEFAULT_TRANSPORT } = MT;
+
 // Typed against the REAL aggregate interfaces, never `as never`: a field added to TokenStats or
 // GraphStats (a staleness counter, a clock-skew fact) must fail to compile here rather than arrive as
 // `undefined` and turn every green fixture into an accidental TypeError-shaped `fail`.
 const TOKENS_OK: TokenStats = {
-  stored: 1, invalid_total: 0, users_without_default: [], users_without_any_token: [],
+  stored: 1, invalid_non_default: 0, users_without_default: [], users_without_any_token: [],
   bad_defaults: [], soonest_default_expiry: null,
   last_validated_at: '2026-07-26T00:00:00.000Z', validation_age_sec: 3600,
   stale_or_unvalidated_total: 0, future_validation_detected: false,
@@ -161,6 +167,44 @@ describe('single-tenant mode', () => {
     expect(byId.get('library_graph')).toBe('skipped');
     expect(byId.get('db')).toBe('ok');
     expect(byId.get('tokens')).toBe('ok');
+  });
+});
+
+// The production-default env shape gets its own gates because NOTHING else in the suite exercises the
+// transport default: every other multi-tenant fixture sets MCP_TRANSPORT=http explicitly. Turning
+// `env.MCP_TRANSPORT ?? 'http'` into a raw `env.MCP_TRANSPORT ===` comparison (in effectiveTransport,
+// which both the mode derivation and configCheck now read) left the entire unit suite green while a
+// real box reported single-tenant. Each assertion below is one of the four false greens that mutant
+// bought: the header, the config branch, the skipped library_graph, and the dead multi-tenant gates.
+describe('the production default shape (MULTI_TENANT set, MCP_TRANSPORT unset)', () => {
+  it('is multi-tenant end to end: report header, config branch, and library_graph actually runs', async () => {
+    const report = await collectStatus(baseCtx({ env: MT_DEFAULT_TRANSPORT, db: okDb, multiTenant: true, transport: undefined }));
+    expect(report.mode.multi_tenant).toBe(true);
+    // The human header too: it is what an operator reads off a pasted terminal.
+    expect(renderText(report)).toMatch(/^framefit \S+ {2}multi-tenant {2}/m);
+    const byId = new Map(report.checks.map((c) => [c.id, c]));
+    expect(byId.get('config')).toMatchObject({ state: 'ok', detail: { mode: 'multi-tenant' } });
+    // library_graph is SKIPPED in single-tenant by construction - so "not skipped" is exactly the
+    // fact the mutant destroys, and it cannot be satisfied by any single-tenant run.
+    expect(byId.get('library_graph')!.state).not.toBe('skipped');
+  });
+
+  it('keeps the multi-tenant-only gates live: a registered team with no PAT fails, a missing MCP_HOST fails', async () => {
+    // Gate 1 - the tokens check's users_without_any_token branch is `ctx.multiTenant &&` guarded, so
+    // under the mutant this same fixture reports ok: a dead validator behind a green line.
+    const noPat = await collectStatus(baseCtx({
+      env: MT_DEFAULT_TRANSPORT, transport: undefined,
+      db: { ...okDb, tokenStats: async () => ({ ...TOKENS_OK, users_without_any_token: ['u1'] }) },
+    }), [checkById('tokens')]);
+    expect(noPat.mode.multi_tenant).toBe(true);
+    expect(noPat.checks[0].state).toBe('fail');
+
+    // Gate 2 - loadMultiTenantEnv only runs on the multi-tenant branch of configCheck, so under the
+    // mutant an env that cannot boot multi-tenant at all reports [OK] config.
+    const { MCP_HOST: _host, ...withoutHost } = MT_DEFAULT_TRANSPORT;
+    const missingHost = await collectStatus(baseCtx({ env: withoutHost, transport: undefined }), [checkById('config')]);
+    expect(missingHost.checks[0].state).toBe('fail');
+    expect((missingHost.checks[0] as { reason: string }).reason).toMatch(/MCP_HOST/);
   });
 });
 

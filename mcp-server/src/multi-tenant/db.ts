@@ -250,7 +250,11 @@ export async function tokenStats(): Promise<TokenStats> {
   const staleThresholdSec = 2 * NIGHTLY_INTERVAL_SEC;
   const { rows: [agg] } = await getPool().query(
     `SELECT COUNT(*)::int AS stored,
-            COUNT(*) FILTER (WHERE status = 'invalid')::int AS invalid_total,
+            -- NON-default invalids only. An invalid DEFAULT is reported by name through
+            -- bad_defaults below, and the tokens check prints this count on that same fail line:
+            -- counting all invalid rows made one invalid default read as "u1 (invalid)" PLUS
+            -- "invalid_non_default: 1", i.e. a second, non-existent problem to go hunt.
+            COUNT(*) FILTER (WHERE status = 'invalid' AND NOT is_default)::int AS invalid_non_default,
             MIN(last_validated_at) AS oldest_validated_at,
             CASE WHEN MIN(last_validated_at) IS NULL THEN NULL
                  ELSE GREATEST(0, EXTRACT(EPOCH FROM now() - MIN(last_validated_at)))::int END AS validation_age_sec,
@@ -295,7 +299,7 @@ export async function tokenStats(): Promise<TokenStats> {
     WHERE is_default AND expires_at IS NOT NULL AND expires_at >= CURRENT_DATE
     ORDER BY expires_at ASC, keycloak_user_id ASC LIMIT 1`);
   return {
-    stored: agg.stored, invalid_total: agg.invalid_total,
+    stored: agg.stored, invalid_non_default: agg.invalid_non_default,
     users_without_default: withoutDefault.map((r) => r.keycloak_user_id),
     users_without_any_token: withoutAnyToken.map((r) => r.keycloak_user_id),
     bad_defaults: bad.map((r) => ({ user: r.keycloak_user_id, label: r.label, problem: r.problem, expires_at: r.expires_at ?? null })),

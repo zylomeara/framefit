@@ -311,11 +311,29 @@ describe('config check', () => {
     expect((r as { reason: string }).reason).toMatch(/LOG_LEVEL/);
   });
 
-  it('accepts multi-tenant with MCP_TRANSPORT unset (http is the zod default)', async () => {
+  it('accepts multi-tenant with MCP_TRANSPORT unset (http is the zod default) AND takes the multi-tenant branch', async () => {
+    // This env is the PRODUCTION shape: the compose full profile sets MULTI_TENANT=true and never
+    // sets MCP_TRANSPORT. `state === 'ok'` alone cannot pin it, because the SINGLE-tenant branch of
+    // this check returns ok too - dropping the transport default (in effectiveMultiTenant or in this
+    // check's own step 3) left the whole unit suite green while a production box reported
+    // "single-tenant", skipped library_graph, disabled every multi-tenant token gate and never ran
+    // loadMultiTenantEnv. So assert the BRANCH (detail.mode) and the report header (mode.multi_tenant).
     const env = { MULTI_TENANT: 'true', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64),
                   KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x', MCP_HOST: 'f.example.com' };
+    const report = await collectStatus(baseCtx({ env, multiTenant: true, transport: undefined }), [configCheck]);
+    expect(report.checks[0]).toMatchObject({ state: 'ok', detail: { mode: 'multi-tenant', loaders: 'loadConfig+loadMultiTenantEnv' } });
+    expect(report.mode.multi_tenant).toBe(true);
+  });
+
+  it('runs loadMultiTenantEnv under the production default shape too - a missing MCP_HOST is a fail, not a green', async () => {
+    // The same env as above MINUS MCP_HOST. Without the transport default this check would take the
+    // single-tenant branch, which never calls loadMultiTenantEnv at all: a box that cannot boot
+    // multi-tenant would report [OK] config.
+    const env = { MULTI_TENANT: 'true', DATABASE_URL: 'postgres://x', ENCRYPTION_KEY: 'a'.repeat(64),
+                  KEYCLOAK_JWKS_URL: 'https://x/certs', OAUTH_AUTHORIZATION_SERVER: 'https://x' };
     const r = await run({ env, multiTenant: true, transport: undefined });
-    expect(r.state).toBe('ok');
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/MCP_HOST/);
   });
 
   it('fails when multi-tenant is declared with a non-http transport', async () => {
@@ -541,7 +559,7 @@ describe('effective mode consistency (header vs. config check)', () => {
   });
 });
 
-const TOKENS: TokenStats = { stored: 1, invalid_total: 0, users_without_default: [], users_without_any_token: [],
+const TOKENS: TokenStats = { stored: 1, invalid_non_default: 0, users_without_default: [], users_without_any_token: [],
   bad_defaults: [], soonest_default_expiry: null, last_validated_at: '2026-07-26T00:00:00.000Z', validation_age_sec: 3600,
   stale_or_unvalidated_total: 0, future_validation_detected: false };
 const GRAPH: GraphStats = { libraries: 2, variables: 100, teams: 1, users_with_teams_and_no_libraries: [],
@@ -620,8 +638,26 @@ describe('tokens check', () => {
     expect((r as { reason: string }).reason).toMatch(/u2 \(expired\)/);
   });
   it('does NOT fail on non-default invalid rows, but reports the count', async () => {
-    const r = await run({ invalid_total: 3 });
+    const r = await run({ invalid_non_default: 3 });
     expect(r).toMatchObject({ state: 'ok', detail: { invalid_non_default: 3 } });
+  });
+  it('reports ZERO invalid_non_default when the only invalid token is the default it just named', async () => {
+    // The exact operator-facing fixture: ONE user holding ONE invalid DEFAULT token. The reason
+    // already names "u1 (invalid)"; a count that also included that row rendered
+    // `invalid_non_default: 1` beside it, so the operator went hunting a SECOND bad token that does
+    // not exist. The number has to mean what its name says - the invalid rows that are NOT defaults.
+    const r = await run({ stored: 1, invalid_non_default: 0,
+      bad_defaults: [{ user: 'u1', label: 'default', problem: 'invalid', expires_at: null }] });
+    expect(r.state).toBe('fail');
+    expect((r as { reason: string }).reason).toMatch(/u1 \(invalid\)/);
+    expect(r).toMatchObject({ detail: { invalid_non_default: 0 } });
+  });
+  it('counts ONLY the non-default invalids on the fail line, never the named default alongside them', async () => {
+    // Non-vacuous counterpart to the row above: one invalid default (named) AND two invalid
+    // non-defaults. The detail must be 2 - the count of the OTHER rows - not 3.
+    const r = await run({ stored: 3, invalid_non_default: 2,
+      bad_defaults: [{ user: 'u1', label: 'default', problem: 'invalid', expires_at: null }] });
+    expect(r).toMatchObject({ state: 'fail', detail: { invalid_non_default: 2 } });
   });
   it('fails in multi-tenant when validation never ran', async () => {
     const r = await run({ last_validated_at: null, validation_age_sec: null });

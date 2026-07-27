@@ -1,4 +1,4 @@
-import { loadConfig } from './config.js';
+import { loadConfig, DEFAULT_MCP_TRANSPORT } from './config.js';
 import { multiTenantEnvGraphConflict, parseTeamIds } from './env-graph.js';
 import { isMultiTenant, loadMultiTenantEnv, isEncryptionKeyHex, ENCRYPTION_KEY_HINT } from '../multi-tenant/env.js';
 
@@ -43,7 +43,11 @@ export interface Check { id: string; run(ctx: StatusCtx): Promise<CheckResult>; 
 
 export interface TokenStats {
   stored: number;
-  invalid_total: number;
+  // Invalid tokens that are NOT their user's default, counted in SQL. An invalid DEFAULT is already
+  // named, per user, by `bad_defaults`, and the tokens check renders THIS number on that very fail
+  // line - counting the same row in both places told the operator "u1 (invalid)" and
+  // "invalid_non_default: 1" at once, sending them hunting a second problem that does not exist.
+  invalid_non_default: number;
   users_without_default: string[];
   // Distinct from users_without_default: a user can register a Figma team and never add a token at
   // all, which a query scoped to figma_tokens rows alone can never see (there is no row to find).
@@ -269,12 +273,22 @@ export function buildReport(
   };
 }
 
+// The ONE place the transport default is applied, read by BOTH the mode derivation below and
+// configCheck's declared-vs-effective comparison. Two copies of `env.MCP_TRANSPORT ?? 'http'` were
+// two things that had to stay in step; the default itself comes from config.ts's schema, so this
+// cannot drift from what the server would really boot with either. Dropping the default here is
+// load-bearing, not cosmetic: the compose full profile sets MULTI_TENANT=true and never sets
+// MCP_TRANSPORT, so a raw comparison reads every production box as stdio -> single-tenant.
+export function effectiveTransport(env: NodeJS.ProcessEnv): string {
+  return env.MCP_TRANSPORT ?? DEFAULT_MCP_TRANSPORT;
+}
+
 // The ONE derivation of "is this process multi-tenant" - env alone, never a caller-supplied flag.
 // Compares the DEFAULTED transport, exactly as index.ts:47 does via config.MCP_TRANSPORT (zod
 // default 'http', config.ts) - comparing the raw MCP_TRANSPORT value would treat every box that
 // simply does not set it (the compose default) as if it had chosen stdio.
 export function effectiveMultiTenant(env: NodeJS.ProcessEnv): boolean {
-  return isMultiTenant(env) && (env.MCP_TRANSPORT ?? 'http') === 'http';
+  return isMultiTenant(env) && effectiveTransport(env) === 'http';
 }
 
 export async function collectStatus(
@@ -380,10 +394,11 @@ export const configCheck: Check = {
       return { state: 'fail', reason: `loadConfig rejected the environment: ${msg}` };
     }
 
-    // 3. Declared vs effective mode. Compare the DEFAULTED transport, exactly as index.ts:47 does
-    // via config.MCP_TRANSPORT (zod default 'http') - comparing the raw value would fail every box
-    // that simply does not set MCP_TRANSPORT, which is the compose default.
-    const transport = ctx.env.MCP_TRANSPORT ?? 'http';
+    // 3. Declared vs effective mode. Compare the DEFAULTED transport, through the SAME
+    // `effectiveTransport` the mode derivation uses - an inline second copy of that defaulting was
+    // free to drift from it, and dropping it here fails every box that simply does not set
+    // MCP_TRANSPORT, which is the compose default.
+    const transport = effectiveTransport(ctx.env);
     if (isMultiTenant(ctx.env) && transport !== 'http') {
       return { state: 'fail', reason: `MULTI_TENANT is set but MCP_TRANSPORT is "${transport}" - the server would boot single-tenant with no auth layer; multi-tenant requires the http transport` };
     }
@@ -558,7 +573,9 @@ export const tokensCheck: Check = {
     }
     if (s.bad_defaults.length > 0) {
       return { state: 'fail', reason: `default PAT unusable for: ${s.bad_defaults.map((b) => `${b.user} (${b.problem})`).join(', ')}`,
-        detail: { invalid_non_default: s.invalid_total } };
+        // NON-default invalids only (the SQL filters on is_default), so this number never re-counts
+        // the very defaults the reason above just named by user.
+        detail: { invalid_non_default: s.invalid_non_default } };
     }
     // "0 invalid" means nothing if the validator is dead: nightly runs only inside the multi-tenant
     // server process and swallows per-row failures (nightly-validation.ts:37-39), so a key rotation
@@ -580,7 +597,7 @@ export const tokensCheck: Check = {
       return { state: 'fail', reason: 'a token has a validation timestamp in the future - the database clock is skewed, so age-based checks here cannot be trusted until it is fixed' };
     }
     return { state: 'ok', detail: {
-      stored: s.stored, invalid_non_default: s.invalid_total, validated_age_sec: s.validation_age_sec,
+      stored: s.stored, invalid_non_default: s.invalid_non_default, validated_age_sec: s.validation_age_sec,
       // Single-tenant never runs the nightly validator at all (it lives only in the multi-tenant
       // server process, same as the comment above) - a bare `validated_age_sec=null` here reads
       // like a gap in the data rather than what it is: a field this mode never populates.

@@ -82,7 +82,7 @@ export function makeDeps(over: Partial<CliDeps> & { env?: NodeJS.ProcessEnv } = 
     setLibraries: vi.fn(async () => {}),
     replaceLibrary: vi.fn(async () => {}),
     signBridgeToken: vi.fn(async (u: string, _k: string, ttl: number) => `signed.${u}.${ttl}`),
-    tokenStats: vi.fn(async () => ({ stored: 0, invalid_total: 0, users_without_default: [],
+    tokenStats: vi.fn(async () => ({ stored: 0, invalid_non_default: 0, users_without_default: [],
       users_without_any_token: [], bad_defaults: [], soonest_default_expiry: null,
       last_validated_at: null, validation_age_sec: null, stale_or_unvalidated_total: 0,
       future_validation_detected: false })),

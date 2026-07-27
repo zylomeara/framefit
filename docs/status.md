@@ -3,18 +3,30 @@
 `framefit status` answers one question: **is this instance able to do its job right now, and if not,
 which part is broken?** It needs no prerequisites - it uses whatever happens to be configured and
 honestly reports the rest as skipped, so it is the first thing to run on a box that is behaving
-strangely, including a box whose server refuses to boot (a crash-looping container has no reachable
-`/health`, but `docker compose exec` still works).
+strangely, including a box whose server refuses to boot: a crash-looping container has no reachable
+`/health`, and it is not running either, so `docker compose run` - not `exec` - is what still gets a
+verdict out of the same image and the same service environment.
 
-Two invocation forms:
+Three invocation forms:
 
 ```bash
 # A source checkout. There is no `framefit` on PATH - the bin symlink exists only in the image
 # (docker/Dockerfile:21) - so call the built entrypoint directly.
 node dist/index.js status
 
-# A deployed box (compose service `framefit`, or `framefit-local` under the local profile).
+# A deployed box whose container is RUNNING (compose service `framefit`, or `framefit-local` under
+# the local profile).
 docker compose exec framefit framefit status
+
+# A deployed box whose container is NOT running - the crash-loop case this command exists for.
+# Every compose service declares `restart: unless-stopped`, so a container that dies during boot
+# sits in `Restarting`, and `exec` refuses outright:
+#     Error response from daemon: Container <id> is restarting, wait until the container is running
+# `run` starts a THROWAWAY container from the same image, carrying the same service environment
+# (compose enables the service's own profile for `run`, so no --profile flag is needed). The image
+# is CMD-only, so `framefit status` replaces the server command cleanly; `--rm` leaves nothing
+# behind, and `run` publishes no host port, so it cannot collide with the looping container.
+docker compose run --rm framefit framefit status
 ```
 
 Flags:
@@ -124,6 +136,10 @@ Whether the stored Figma PATs are usable, and whether anything is still validati
 failure condition. Nightly validation runs only inside the multi-tenant server process, so
 single-tenant reports the age as not-checked rather than as a gap in the data.
 
+`invalid_non_default` counts invalid tokens that are NOT their user's default, and it appears on the
+failure line as well as on the ok one. Invalid DEFAULTS are already named, per user, in that failure
+reason; counting them here too would read as a second, separate problem to go hunt.
+
 ### library_graph
 
 Whether the per-user variable-library graph can resolve anything.
@@ -172,8 +188,12 @@ Exactly one JSON document on stdout. Fields:
 - `key_fingerprint` - the first 8 hex characters of sha256 over the DECODED `ENCRYPTION_KEY` bytes, or
   `null`. Two boxes can be compared for "same key?" without either revealing it; hex case and a
   trailing newline do not change it.
-- `checks[]` - one object per check, in registry order: `{ id, state }` plus `reason` (for `fail` and
-  `skipped`) or `detail` (for `ok`).
+- `checks[]` - one object per check, in registry order: `{ id, state }` plus `reason` and/or
+  `detail`, by state: an `ok` row always carries `detail` and never `reason`; a `skipped` row always
+  carries `reason` and never `detail`; a `fail` row always carries `reason` and MAY carry `detail`
+  too. Read both on a failure - a `figma` failure carries `detail.accepted` ("k of n" probes
+  accepted) and a `tokens` failure over a bad default carries `detail.invalid_non_default`, so a
+  consumer that reads only `reason` on failures drops the numbers behind them.
 - `summary` - `{ total, ok, skipped, failed, complete, ok_overall }`.
   - `total`, `ok`, `skipped`, `failed` - counts over the checks that COMPLETED, which on the deadline
     path is fewer than the whole registry.
@@ -189,8 +209,10 @@ Exactly one JSON document on stdout. Fields:
 `status` reads the **process environment only**. It never loads a `.env` file - unlike `pnpm start`,
 which passes `--env-file-if-exists=.env` (`mcp-server/package.json:23`). Under `docker compose exec` it
 therefore sees exactly the service's environment, which is the environment the server itself booted
-with. In a shell where you have only sourced a `.env` by hand, it sees whatever that shell exported and
-nothing more.
+with. Under `docker compose run` it sees that environment as compose renders it NOW - from the compose
+file, `env_file` and your shell - which is the right question to ask of a container that will not boot,
+but it is not proof of what the looping container started with if the config changed since. In a shell
+where you have only sourced a `.env` by hand, it sees whatever that shell exported and nothing more.
 
 It also cannot see a **running server's memory**. The single-tenant variable graph is built in the
 server process and held there for the life of that process, so a fresh `sync` is invisible to a running
