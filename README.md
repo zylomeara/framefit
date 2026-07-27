@@ -45,8 +45,11 @@ Prerequisites: Node 20+ and [pnpm](https://pnpm.io/installation).
 git clone https://github.com/zylomeara/framefit.git && cd framefit/mcp-server
 pnpm install
 pnpm build
-node dist/index.js status   # sanity check: is this checkout able to do its job? (docs/status.md)
+node dist/index.js status   # sanity check: is this checkout able to do its job?
 ```
+
+That last line is [`framefit status`](docs/status.md) — a full diagnosis of the instance, worth
+knowing about before anything else here breaks.
 
 Register it with Claude Code — replace the path with your absolute checkout path and supply a
 [Figma token](#figma-token):

@@ -135,8 +135,9 @@ Run `framefit status` first — it names the failing subsystem instead of you gu
 checks below applies. See [docs/status.md](status.md) for what each check covers.
 
 ```bash
-docker compose exec framefit framefit status   # deployed box
-node dist/index.js status                      # source checkout, from mcp-server/
+docker compose exec framefit-local framefit status   # local profile (this page's Option A/B)
+docker compose exec framefit framefit status          # full profile (multi-tenant, below)
+node dist/index.js status                             # source checkout, from mcp-server/
 ```
 
 - `[SKIP] figma` naming a missing `FIGMA_TOKEN`, or `[FAIL] figma` carrying the HTTP status Figma
@@ -144,12 +145,16 @@ node dist/index.js status                      # source checkout, from mcp-serve
   [README — Figma token](../README.md#figma-token) for scopes) and not expired (Figma PATs expire
   after at most 90 days).
 - `[FAIL] config` → the same validation failure that would abort boot and restart-loop the
-  container names itself in the check's `reason` (a broken `ENCRYPTION_KEY`, or `DS_TEAM_IDS` set
-  without `FIGMA_TOKEN`, are two examples) — no more matching the crash log by hand.
+  container names itself in the check's `reason`, regardless of mode (an invalid `LOG_LEVEL`, or
+  `DS_TEAM_IDS` set without `FIGMA_TOKEN`, are two examples) — no more matching the crash log by
+  hand.
+- `[FAIL] key` → `ENCRYPTION_KEY` is set but isn't a 64-char hex string. The `local` profile above
+  never wires `ENCRYPTION_KEY` into the container at all, so you'd only see this from a source
+  checkout or a hand-exported value; regenerate with `openssl rand -hex 32`.
 - `status`'s `config` check only confirms the process would boot, not that `PUBLIC_BASE_URL` is
   the value you meant — a wrong-but-valid URL still reports `[OK]`. If snapshot upload / extractor
   URLs still point at `127.0.0.1` from another machine, set `PUBLIC_BASE_URL` yourself (Option B
   above).
 - `status` can't run at all if the container never started. `docker compose exec` failing outright
-  (no running `framefit` service to exec into) usually means the port is already taken →
-  `MCP_PORT=4000 docker compose --profile local up -d`.
+  (no running `framefit-local`/`framefit` service to exec into) usually means the port is already
+  taken → `MCP_PORT=4000 docker compose --profile local up -d`.
