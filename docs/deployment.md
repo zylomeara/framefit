@@ -66,15 +66,41 @@ caddy hash-password   # enter a password, copy the bcrypt hash
 
 ```caddyfile
 mcp.your-domain.com {
-    basic_auth {
-        you <bcrypt-hash-from-above>
-    }
-    reverse_proxy 127.0.0.1:3846
+	log {
+		output file /var/log/caddy/framefit.log
+		format json
+	}
+
+	# Exempt on purpose: the browser extractor loads this script cross-origin and POSTs its
+	# capture back, and neither request can carry basic-auth credentials. The unguessable
+	# capToken minted by get_layout_spec is the credential. log_skip keeps that capToken - which
+	# travels in the URL path - out of the access log. 2MiB, not 2MB: Caddy reads 2MB as
+	# 2,000,000 bytes, below the server's own 2,097,152, and a body between the two dies at the
+	# edge as a bare 413 with no CORS header - which a browser can only report as
+	# "Failed to fetch".
+	@dom_snapshots path /api/dom-snapshots/*
+	handle @dom_snapshots {
+		log_skip
+		request_body {
+			max_size 2MiB
+		}
+		reverse_proxy 127.0.0.1:3846
+	}
+
+	handle {
+		# /health is behind the credential too. An uptime monitor just sends it:
+		# `curl -fsS -u you:your-password https://mcp.your-domain.com/health` returns 200.
+		basic_auth {
+			you <bcrypt-hash-from-above>
+		}
+		reverse_proxy 127.0.0.1:3846
+	}
 }
 ```
 
-(`Caddyfile.example` in the repo root shows the same shape as a snippet for an
-existing Caddyfile.) Two server-side settings to add in `docker/.env`:
+(`Caddyfile.example` in the repo root is the same configuration as a snippet for an existing
+Caddyfile, including the `/api/dom-snapshots/*` carve-out. Do not add `encode` to either: the MCP
+route is an SSE stream and gzip buffers it.) Two server-side settings to add in `docker/.env`:
 
 ```dotenv
 # The origin browsers and clients actually reach — used in emitted URLs
@@ -92,7 +118,21 @@ claude mcp add --transport http framefit https://mcp.your-domain.com/mcp \
 ```
 
 **Never skip the `basic_auth` block.** An unauthenticated `/mcp` behind a public
-domain is an open proxy to your Figma account.
+domain is an open proxy to your Figma account. The one exception is
+`/api/dom-snapshots/*`, which is authenticated by the per-call capability token instead - putting
+`basic_auth` in front of it breaks the in-browser capture with an opaque "Failed to fetch" and does
+not make the deployment safer. Everything else is behind the credential, `/health` included: an
+uptime monitor sends it like any other client -
+`curl -fsS -u you:your-password https://mcp.your-domain.com/health` returns 200.
+
+That carve-out is not rate-limited anywhere in this project, and a stock Caddy cannot rate-limit it
+either: `rate_limit` is a third-party module, absent from the official binary (verified on 2.11.4 -
+`caddy list-modules` lists no rate-limiting module at all). `max_size` bounds one request, not their
+rate, so an anonymous caller can keep sending unknown tokens; each costs the server a map lookup, a
+drained body it never buffers, and one log line. If that matters on your domain, put the cap outside the snippet above -
+rebuild Caddy with `xcaddy build --with github.com/mholt/caddy-ratelimit`, or add a firewall /
+fail2ban rule on the prefix - and keep the container's log rotation (`docker/docker-compose.yml`
+already caps the json-file driver at 10m x 3), which is what bounds the rejected-upload log lines.
 
 ### Cross-library design tokens (optional)
 
