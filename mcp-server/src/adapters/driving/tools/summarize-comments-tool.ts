@@ -16,7 +16,7 @@ export function registerSummarizeCommentsTool(server: McpServer, deps: ToolDeps)
   server.registerTool(
     'summarize_comments',
     {
-      description: 'Aggregate statistics for a Figma file\'s comments (counts by author/anchor/node/date, top threads, mentions) using the same filters as get_comments. Returns a compact ~1-2KB summary — use this first to scope large files before fetching full threads.',
+      description: 'Aggregate statistics for a Figma file\'s comments (counts by author/anchor/node/date, top threads, mentions) using the same filters as get_comments. Returns a compact ~1-2KB summary - use this first to scope large files before fetching full threads.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

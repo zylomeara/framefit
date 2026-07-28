@@ -16,7 +16,7 @@ const InputSchema = {
   node_id: z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a compound instance-path id like "I1:2;3:4"')
     .describe('A node you already know (anywhere in the file). Ancestry is resolved UP from it to the page.'),
   query: z.string().min(2).optional()
-    .describe('Highlight ancestor children whose name contains this substring (case-insensitive) — surfaces neighbors even beyond the per-ancestor cap.'),
+    .describe('Highlight ancestor children whose name contains this substring (case-insensitive) - surfaces neighbors even beyond the per-ancestor cap.'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
@@ -140,7 +140,7 @@ export function registerGetNodeAncestryTool(server: McpServer, deps: ToolDeps): 
     {
       description: 'Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). ' +
         'Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read ' +
-        'the ancestor children. bbox-guided, id-confirmed, ≤12 light REST calls — never fetches the whole ' +
+        'the ancestor children. bbox-guided, id-confirmed, <=12 light REST calls - never fetches the whole ' +
         'file. query highlights matching names in scope.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },

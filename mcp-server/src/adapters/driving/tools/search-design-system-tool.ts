@@ -76,8 +76,8 @@ function refusalDiagnosis(err: FigmaApiError): string {
 
 const InputSchema = {
   team_id: z.string().min(1).optional().describe('Figma team id OR a team URL (id is extracted). Optional: when omitted, falls back to your registered design-system teams.'),
-  query: z.string().min(1).describe('Search terms; spaces = AND. Matches component/style name, description, page. Lexical, not semantic — try short fragments ("button", "space", "toast").'),
-  file: z.string().min(1).optional().describe('Figma file URL/key — narrows results to the libraries this file actually consumes (does not add teams).'),
+  query: z.string().min(1).describe('Search terms; spaces = AND. Matches component/style name, description, page. Lexical, not semantic - try short fragments ("button", "space", "toast").'),
+  file: z.string().min(1).optional().describe('Figma file URL/key - narrows results to the libraries this file actually consumes (does not add teams).'),
   limit: z.number().int().min(1).max(50).default(15).describe('Max matches (default 15)'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
@@ -86,7 +86,7 @@ export function registerSearchDesignSystemTool(server: McpServer, deps: ToolDeps
   server.registerTool(
     'search_design_system',
     {
-      description: 'Search published design-system libraries (components, component sets, styles) by name/description. team_id is OPTIONAL: without it, the tool searches your registered DS teams. Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key, kind, library file, node_id, page and source team_id — use node_id with get_design_context. Lexical name search; run short queries.',
+      description: 'Search published design-system libraries (components, component sets, styles) by name/description. team_id is OPTIONAL: without it, the tool searches your registered DS teams. Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key, kind, library file, node_id, page and source team_id - use node_id with get_design_context. Lexical name search; run short queries.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

@@ -18,26 +18,26 @@ are unified.
 Aliases within the file are resolved. Cross-library aliases are resolved headless via the
 registered library graph: when the source library's team is registered, the token returns
 `value:<hex>`, `resolved_via:"graph"`, and `source_library` (the source file key). Otherwise it
-stays honest — `value:null`, `alias:true`, `alias_of:<VariableID>` — meaning that library's team
+stays honest - `value:null`, `alias:true`, `alias_of:<VariableID>` - meaning that library's team
 is not registered yet (register it to resolve).
 
 **How the graph gets built.** The cross-library graph exists in two deployment shapes. In
 single-tenant/stdio it is built in-memory from the teams named in the `DS_TEAM_IDS` env var
 (comma-separated team ids or `figma.com/team/<id>` URLs; see the
 [`.env` reference](../../mcp-server/.env.example) and the [deployment guide](../deployment.md)). In
-multi-tenant it is built per user from the teams each user registers — via the bundled `framefit`
+multi-tenant it is built per user from the teams each user registers - via the bundled `framefit`
 operator CLI (`framefit teams add` then `framefit sync`) or the `/accounts` portal API (see
 [docker/README](../../docker/README.md)). In multi-tenant an uploaded per-user snapshot is the
-fallback when the graph can't resolve a key (`resolved_via:"snapshot"`) — the rescue path for
+fallback when the graph can't resolve a key (`resolved_via:"snapshot"`) - the rescue path for
 libraries whose variables the REST API refuses to serve at all; its upload contract is open and
 documented in [snapshot-ingest](../snapshot-ingest.md) (bring your own uploader). Single-tenant has
 the graph only.
 
 Access to the Variables REST API depends on the file's Figma plan, on the token being valid, and on
-the token carrying `file_variables:read` — a 403 here is one of several causes, and the error
+the token carrying `file_variables:read` - a 403 here is one of several causes, and the error
 message quotes Figma's own reason. Raise `timeout_ms` on large files.
 Multi-mode tokens (collections with >1 mode) carry `mode_dependent:true` and
-`modes:{<modeName>:<hex>}` — `value` is the DEFAULT mode; do not treat it as the on-screen value
+`modes:{<modeName>:<hex>}` - `value` is the DEFAULT mode; do not treat it as the on-screen value
 without checking the node's mode (see
 [`get_design_context`](navigation.md#get_design_context)).
 
@@ -74,7 +74,7 @@ without checking the node's mode (see
 Search published design-system libraries (components, component sets, styles) by
 name/description. `team_id` is OPTIONAL: without it, the tool searches your registered DS teams.
 Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key,
-kind, library file, node_id, page and source team_id — use `node_id` with
+kind, library file, node_id, page and source team_id - use `node_id` with
 [`get_design_context`](navigation.md#get_design_context). Lexical name search; run short queries.
 
 **Parameters**
@@ -82,8 +82,8 @@ kind, library file, node_id, page and source team_id — use `node_id` with
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `team_id` | string | Figma team id OR a team URL (id is extracted). Optional: when omitted, falls back to your registered design-system teams. |
-| `query` | string, **required** | Search terms; spaces = AND. Matches component/style name, description, page. Lexical, not semantic — try short fragments ("button", "space", "toast"). |
-| `file` | string | Figma file URL/key — narrows results to the libraries this file actually consumes (does not add teams). |
+| `query` | string, **required** | Search terms; spaces = AND. Matches component/style name, description, page. Lexical, not semantic - try short fragments ("button", "space", "toast"). |
+| `file` | string | Figma file URL/key - narrows results to the libraries this file actually consumes (does not add teams). |
 | `limit` | integer 1–50 (default 15) | Max matches |
 | `figma_token` | string | Override Figma PAT |
 
@@ -138,7 +138,7 @@ explaining why and how to populate mappings.
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `file` | string, **required** | Figma file URL or raw key |
-| `node_ids` | string[], **required** | Instance node ids — top-level (`"1:42"`) or nested (`"I12:340;56:7890"`, copied from `get_metadata`/`get_review_board`). Resolved shallowly (depth 1); for a whole frame use `get_design_context`. |
+| `node_ids` | string[], **required** | Instance node ids - top-level (`"1:42"`) or nested (`"I12:340;56:7890"`, copied from `get_metadata`/`get_review_board`). Resolved shallowly (depth 1); for a whole frame use `get_design_context`. |
 | `figma_token` | string | Override Figma PAT |
 
 **Example**
@@ -155,8 +155,8 @@ explaining why and how to populate mappings.
 ### get_figjam
 
 Structured content of a FigJam board: sticky notes (text + color), shapes-with-text, sections,
-connectors (from→to edges with labels), and tables. The headless analogue of the official
-`get_figjam` — returns board data, not generated UI code. Use `nodeNames` to label connector
+connectors (from->to edges with labels), and tables. The headless analogue of the official
+`get_figjam` - returns board data, not generated UI code. Use `nodeNames` to label connector
 endpoints. Tables degrade to an ordered flat list of cell texts (REST exposes no row/column
 index).
 

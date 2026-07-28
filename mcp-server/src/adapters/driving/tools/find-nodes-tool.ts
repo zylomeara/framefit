@@ -32,7 +32,7 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
     'find_nodes',
     {
-      description: 'Find nodes by name OR text content (substring or fuzzy) inside a Figma file or a subtree, without knowing node ids. Use this when node names are master-component placeholders rather than semantics (e.g. the label "Корзина" lives in a node named "Все жанры") — it also matches the node\'s text (characters). Returns node_id, name, type, breadcrumb path, size, and matched_on (name|text|property). Component-instance text set as a property override (e.g. a DS section header) matches as \'property\'. Feed a node_id into get_design_context or get_text_styles. Scope with node_id to search a single frame; omit it to search the whole file.',
+      description: 'Find nodes by name OR text content (substring or fuzzy) inside a Figma file or a subtree, without knowing node ids. Use this when node names are master-component placeholders rather than semantics (e.g. the label "Cart" lives in a node named "All genres") - it also matches the node\'s text (characters). Returns node_id, name, type, breadcrumb path, size, and matched_on (name|text|property). Component-instance text set as a property override (e.g. a DS section header) matches as \'property\'. Feed a node_id into get_design_context or get_text_styles. Scope with node_id to search a single frame; omit it to search the whole file.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

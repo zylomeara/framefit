@@ -20,7 +20,7 @@ const InputSchema = {
   query: z.string().min(2)
     .describe('Substring to match against a breakpoint-variant frame\'s own name OR its nearest section/page (container) name, case-insensitive.'),
   render_width: z.number().positive()
-    .describe('The width you rendered the DOM at — variants are ranked by how close a CONTENT frame\'s width is to this.'),
+    .describe('The width you rendered the DOM at - variants are ranked by how close a CONTENT frame\'s width is to this.'),
   parent_node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"').optional()
     .describe('Scope the walk to this node\'s subtree (e.g. a section or page) instead of the whole document. Use on huge files to avoid a slow/timing-out whole-document walk.'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
@@ -76,7 +76,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
   server.registerTool(
     'find_breakpoint_variant',
     {
-      description: 'Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required — avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame\'s own width (a variant named "desktop" (w1280) whose inner drawer content is w420 matches render_width 420). On huge files pass parent_node_id (a section or page) to scope the walk and avoid timing out.',
+      description: 'Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required - avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame\'s own width (a variant named "desktop" (w1280) whose inner drawer content is w420 matches render_width 420). On huge files pass parent_node_id (a section or page) to scope the walk and avoid timing out.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

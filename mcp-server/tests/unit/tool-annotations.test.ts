@@ -669,31 +669,20 @@ describe('the source scanner reads code, not prose', () => {
   });
 });
 
-// 17 shipped descriptions already contain non-ASCII characters (em dashes and arrows in 15 of
-// them; find_nodes and get_review_board additionally carry Cyrillic). Cleaning them is a separate
-// task, so the assert here is an EXACT-SET ratchet rather than `toEqual([])`: it is green today,
-// it goes red the moment a NEW tool or a re-worded description introduces non-ASCII, and it also
-// goes red when the debt is paid - which forces whoever pays it to shrink this list rather than
-// leave a vacuous lock behind.
-const KNOWN_NON_ASCII_DESCRIPTIONS = [
-  'compare_node_to_dom',
-  'find_breakpoint_variant',
-  'find_nodes',
-  'find_threads',
-  'get_design_context',
-  'get_figjam',
-  'get_layout_spec',
-  'get_metadata',
-  'get_node_ancestry',
-  'get_pin_detail',
-  'get_review_board',
-  'get_screenshot',
-  'get_text_styles',
-  'get_variables',
-  'search_design_system',
-  'suggest_pairs',
-  'summarize_comments',
-];
+// This was an EXACT-SET ratchet over a 17-entry backlog: em dashes and arrows in 15 descriptions,
+// plus Russian example values in find_nodes and get_review_board and an emoji in
+// compare_node_to_dom. It was written to go red BOTH on new non-ASCII and when the backlog was
+// PAID, precisely so that paying it could not be done silently. It was paid on 2026-07-28 (71
+// characters across 17 descriptions, substituted rather than deleted), so the set is now empty and
+// the assert is the `toEqual([])` it was always meant to become.
+//
+// Keep the named constant, empty: it is the sentence "this list is deliberately empty" in a form a
+// diff can show. Anyone re-adding a name here is announcing a regression rather than fixing a test.
+//
+// This row watches the REGISTRATION CONFIG. registration-shape.test.ts asserts the same property
+// over what a client is actually handed by tools/list, and scripts/stdio-smoke.mjs over the BUILT
+// artifact. Three vantages, because a source-level pass proves nothing about the delivered bytes.
+const KNOWN_NON_ASCII_DESCRIPTIONS: string[] = [];
 
 describe('user-visible registration strings are ASCII', () => {
   it('no tool description contains a non-ASCII character beyond the recorded backlog', () => {

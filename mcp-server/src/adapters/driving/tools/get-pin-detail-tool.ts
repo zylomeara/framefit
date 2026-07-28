@@ -18,11 +18,11 @@ const InputSchema = {
   pin_node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"').optional()
     .describe('Address the pin directly by its marker node id (from item.pinNodeId in get_review_board output). Use this on multi-lane boards where pin numbers repeat per lane and a number alone is ambiguous. Provide either pin_number OR pin_node_id (exactly one).'),
   focus_radius: z.number().min(0.02).max(0.5).default(DEFAULT_FOCUS_RADIUS)
-    .describe('Focus-crop half-size as a fraction of the prod screenshot width. 0.12 ≈ a ~24%-wide window.'),
+    .describe('Focus-crop half-size as a fraction of the prod screenshot width. 0.12 gives a ~24%-wide window.'),
   depth: z.number().int().min(1).max(10).default(6).describe('Subtree depth to fetch (match get_review_board).'),
   pin_name: z.string().optional().describe('Override the pin marker name pattern (regex).'),
   comment_field_name: z.string().optional().describe('Override the comment-field name pattern (regex).'),
-  reference_name: z.string().optional().describe('Override the reference/"Макет" frame name pattern (regex).'),
+  reference_name: z.string().optional().describe('Override the reference (mockup) frame name pattern (regex).'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
@@ -48,7 +48,7 @@ export function registerGetPinDetailTool(server: McpServer, deps: ToolDeps): voi
   server.registerTool(
     'get_pin_detail',
     {
-      description: 'Inspect ONE review-board pin in a single call: returns a zoomed, reticle-marked PNG crop of exactly where the pin points (the prod screenshot region) plus its resolved referenceNode (deepest leaf + suggested container + path + confidence), the reference-frame node_id, and the full-res screenshot URL. Use this to recover a pin whose get_review_board confidence is not "high": read the element in the crop, then find_nodes(file, query=<what you see>, node_id=<referenceFrameNodeId>) to locate it in the reference — this beats the linear projection when prod/reference layouts drift. board_node_id is the same section you pass to get_review_board. Address the pin by pin_number (unique-numbered boards) OR by pin_node_id (from item.pinNodeId in the get_review_board output) — use pin_node_id on multi-lane boards where numbers repeat per lane.',
+      description: 'Inspect ONE review-board pin in a single call: returns a zoomed, reticle-marked PNG crop of exactly where the pin points (the prod screenshot region) plus its resolved referenceNode (deepest leaf + suggested container + path + confidence), the reference-frame node_id, and the full-res screenshot URL. Use this to recover a pin whose get_review_board confidence is not "high": read the element in the crop, then find_nodes(file, query=<what you see>, node_id=<referenceFrameNodeId>) to locate it in the reference - this beats the linear projection when prod/reference layouts drift. board_node_id is the same section you pass to get_review_board. Address the pin by pin_number (unique-numbered boards) OR by pin_node_id (from item.pinNodeId in the get_review_board output) - use pin_node_id on multi-lane boards where numbers repeat per lane.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

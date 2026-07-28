@@ -21,7 +21,7 @@ export function registerGetFigjamTool(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
     'get_figjam',
     {
-      description: 'Structured content of a FigJam board: sticky notes (text + color), shapes-with-text, sections, connectors (from→to edges with labels), and tables. The headless analogue of the official get_figjam — returns board data, not generated UI code. Use nodeNames to label connector endpoints. Tables degrade to an ordered flat list of cell texts (REST exposes no row/column index).',
+      description: 'Structured content of a FigJam board: sticky notes (text + color), shapes-with-text, sections, connectors (from->to edges with labels), and tables. The headless analogue of the official get_figjam - returns board data, not generated UI code. Use nodeNames to label connector endpoints. Tables degrade to an ordered flat list of cell texts (REST exposes no row/column index).',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

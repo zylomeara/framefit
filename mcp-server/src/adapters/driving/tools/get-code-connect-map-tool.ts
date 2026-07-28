@@ -11,7 +11,7 @@ import { FigmaApiError } from '../../../ports/errors.js';
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
   node_ids: z.array(z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"')).min(1).max(50)
-    .describe('Instance node ids — top-level ("1:42") or nested ("I12:340;56:7890", copied from get_metadata/get_review_board). Resolved shallowly (depth 1); for a whole frame use get_design_context.'),
+    .describe('Instance node ids - top-level ("1:42") or nested ("I12:340;56:7890", copied from get_metadata/get_review_board). Resolved shallowly (depth 1); for a whole frame use get_design_context.'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 

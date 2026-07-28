@@ -15,15 +15,15 @@ const InputSchema = {
   format: z.enum(['png', 'svg', 'jpg']).default('png').describe('Image format'),
   scale: z.number().min(0.25).max(4).default(2).describe('Raster scale (png/jpg); ignored for svg. Lower if the image is huge.'),
   return: z.enum(['url', 'inline', 'preview']).default('url')
-    .describe('url (default): signed URL + dimensions + curl hint — token-cheap. inline: embed full PNG/JPG base64 or SVG markup. preview: ONE step — a downscaled inline image plus the full-res signed URL (cheap "what is this", with an escape hatch to full size).'),
+    .describe('url (default): signed URL + dimensions + curl hint - token-cheap. inline: embed full PNG/JPG base64 or SVG markup. preview: ONE step - a downscaled inline image plus the full-res signed URL (cheap "what is this", with an escape hatch to full size).'),
   tiles: z.boolean().default(false)
     .describe('For very large frames: also return a children_map (per-direct-child node_id, bounds, and a signed URL) so each part can be rendered legibly. Figma renders whole nodes, not regions, so tiling = per-child.'),
   focus: z.object({
     x: z.number().min(0).max(1),
     y: z.number().min(0).max(1),
-  }).optional().describe('Point of interest within the node (0..1 each) — e.g. target.atPercent from get_review_board. When set, returns a tight zoomed crop centered on this point (with a reticle marking it) instead of the whole node.'),
+  }).optional().describe('Point of interest within the node (0..1 each) - e.g. target.atPercent from get_review_board. When set, returns a tight zoomed crop centered on this point (with a reticle marking it) instead of the whole node.'),
   focus_radius: z.number().min(0.02).max(0.5).default(DEFAULT_FOCUS_RADIUS)
-    .describe('Focus-crop half-size as a fraction of node width (only used with focus). 0.12 ≈ a ~24%-wide window around the point.'),
+    .describe('Focus-crop half-size as a fraction of node width (only used with focus). 0.12 gives a ~24%-wide window around the point.'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
@@ -37,7 +37,7 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
   server.registerTool(
     'get_screenshot',
     {
-      description: 'Render a Figma node to an image. Default return=url gives a short-lived signed URL plus pixel dimensions and a curl hint (token-cheap — strongly preferred; avoids inlining megabytes of base64). return=inline embeds the PNG/JPG as base64 or returns SVG markup directly, only for agents that cannot fetch URLs. Use a lower scale for very large frames. return=preview gives a one-step downscaled inline image plus the full-res URL. Pass focus={x,y} (0..1, e.g. target.atPercent from get_review_board) to get a zoomed crop centered on that point with a reticle marking it — ideal for seeing exactly what a review pin points at; the crop is always PNG.',
+      description: 'Render a Figma node to an image. Default return=url gives a short-lived signed URL plus pixel dimensions and a curl hint (token-cheap - strongly preferred; avoids inlining megabytes of base64). return=inline embeds the PNG/JPG as base64 or returns SVG markup directly, only for agents that cannot fetch URLs. Use a lower scale for very large frames. return=preview gives a one-step downscaled inline image plus the full-res URL. Pass focus={x,y} (0..1, e.g. target.atPercent from get_review_board) to get a zoomed crop centered on that point with a reticle marking it - ideal for seeing exactly what a review pin points at; the crop is always PNG.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

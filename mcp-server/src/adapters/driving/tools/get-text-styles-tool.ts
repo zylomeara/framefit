@@ -12,8 +12,8 @@ import { serializeForDelivery } from './serialize.js';
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
   node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"')
-    .describe('Root node — its text descendants\' typography is returned (no full tree).'),
-  include_color: z.boolean().default(true).describe('Join each text node\'s color (fill) — hex or token name. Text color lives on fill, not in textStyle.'),
+    .describe('Root node - its text descendants\' typography is returned (no full tree).'),
+  include_color: z.boolean().default(true).describe('Join each text node\'s color (fill) - hex or token name. Text color lives on fill, not in textStyle.'),
   dedupe: z.boolean().default(true).describe('Group nodes that share an identical style into one entry.'),
   depth: z.number().int().min(1).max(10).default(8).describe('How deep to fetch/walk the subtree.'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
@@ -23,7 +23,7 @@ export function registerGetTextStylesTool(server: McpServer, deps: ToolDeps): vo
   server.registerTool(
     'get_text_styles',
     {
-      description: 'Extract only the typography of a node\'s subtree (fontFamily, fontWeight, fontSize, lineHeightPx, letterSpacing, align) without the full design tree — for fast spec verification of a deep text node. Pass dedupe=true to group identical styles. Use find_nodes first to get a node_id.',
+      description: 'Extract only the typography of a node\'s subtree (fontFamily, fontWeight, fontSize, lineHeightPx, letterSpacing, align) without the full design tree - for fast spec verification of a deep text node. Pass dedupe=true to group identical styles. Use find_nodes first to get a node_id.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

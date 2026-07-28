@@ -124,7 +124,7 @@ export interface ReviewBoard {
   warnings: string[];
 }
 
-// Raster screenshots are RECTANGLEs (image fill) named like "Снимок экрана …", "IMG_…", "image …".
+// Raster screenshots are RECTANGLEs (image fill) named like "Screenshot ...", "IMG_...", "image ...".
 function isProdScreenshot(n: RawSceneNode): boolean {
   return n.type === 'RECTANGLE' && (n.fills ?? []).some((f) => f.type === 'IMAGE');
 }
@@ -150,7 +150,7 @@ export function buildReviewBoard(root: RawSceneNode, opts: DetectOpts): ReviewBo
   const screenshots: RawSceneNode[] = [];
   walk(root, (n) => { if (isProdScreenshot(n)) screenshots.push(n); });
 
-  // Reference ("Макет") frames: top-level container columns that aren't screenshots, pins, or
+  // Reference (mockup) frames: top-level container columns that aren't screenshots, pins, or
   // comment fields. Detected structurally (the aligned non-screenshot column), not by name.
   const refPinRe = opts.pinName ? new RegExp(opts.pinName, 'i') : DEFAULT_PIN_NAME;
   const refCommentRe = opts.commentFieldName ? new RegExp(opts.commentFieldName, 'i') : DEFAULT_COMMENT_FIELD_NAME;

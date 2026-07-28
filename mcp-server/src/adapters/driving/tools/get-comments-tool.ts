@@ -75,7 +75,7 @@ export type ToolDeps = {
 const InputSchema = {
   ...FilterSchema,
   as_markdown: z.boolean().default(true).describe('Return markdown (default) vs structured JSON'),
-  node_depth: z.number().int().min(0).max(10).default(0).describe('Figma /nodes depth for fallback name resolution — 0 = name only (fast)'),
+  node_depth: z.number().int().min(0).max(10).default(0).describe('Figma /nodes depth for fallback name resolution - 0 = name only (fast)'),
   limit: z.number().int().min(1).max(200).default(50).describe('Max threads returned'),
   offset: z.number().int().min(0).default(0).describe('Skip first N matching threads (pagination)'),
   timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-call Figma request timeout in ms (default 90000). Raise toward the 120000 max for very large files if you still hit timeouts.'),

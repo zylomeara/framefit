@@ -11,7 +11,7 @@ const InputSchema = {
   fuzzy: z
     .boolean()
     .default(false)
-    .describe('Typo-tolerant fuzzy matching. Default false uses fast exact substring. For word-form variants search by the common stem (e.g. "обнов"); enable fuzzy for typos.'),
+    .describe('Typo-tolerant fuzzy matching. Default false uses fast exact substring. For word-form variants search by the common stem (e.g. "updat" matches update/updated/updating); enable fuzzy for typos.'),
   limit: z.number().int().min(1).max(50).default(10).describe('Max matches returned'),
   node_depth: z.number().int().min(0).max(10).default(0).describe('Figma /nodes depth for fallback name resolution'),
   timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-call Figma request timeout in ms (default 90000). Raise toward the 120000 max for very large files if you still hit timeouts.'),
@@ -21,7 +21,7 @@ export function registerFindThreadsTool(server: McpServer, deps: ToolDeps): void
   server.registerTool(
     'find_threads',
     {
-      description: 'Search a Figma file\'s comment threads by text, ranked by relevance, with optional fuzzy matching and the full filter set. Returns scored matches with highlights — use to locate specific discussions in large files.',
+      description: 'Search a Figma file\'s comment threads by text, ranked by relevance, with optional fuzzy matching and the full filter set. Returns scored matches with highlights - use to locate specific discussions in large files.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

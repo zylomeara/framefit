@@ -25,7 +25,7 @@ const InputSchema = {
     'skeleton (default depth 6): collapsed structural map (single-child wrappers collapsed, repeated siblings summarized). ' +
     'branch (default depth 4): the compare-compatible layout spec. ' +
     'coverage (default depth 6): per-container which will yield gap rows. ' +
-    'typography (default depth 8): flat TEXT leaves (single-root → reaches deep DS text). ' +
+    'typography (default depth 8): flat TEXT leaves (single-root -> reaches deep DS text). ' +
     'spacing (default depth 6): gaps/paddings per container.'),
   max_depth: z.number().int().min(1).max(8).optional().describe('Projection depth (per-view default 4-8).'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
