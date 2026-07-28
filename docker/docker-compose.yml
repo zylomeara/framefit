@@ -99,7 +99,16 @@ services:
       # past the 90s timeout on this tight-memory single box (observed under load testing).
       # Overrides the config default of 2. Raise on a well-resourced multi-tenant host.
       - FIGMA_MAX_CONCURRENT_REQUESTS=1
-      # ENFORCE_AUDIENCE=true   # enable once Keycloak issues figma-scoped aud (currently soft; set in mcp-server/.env on prod)
+      # Hard-enforce the JWT audience on /accounts. OFF by default (the loader default lives in
+      # mcp-server/src/multi-tenant/env.ts) and this entry ships commented, because enforcing needs
+      # a Keycloak audience mapper that stamps a framefit-scoped aud on portal tokens - turn it on
+      # before that mapper exists and every /accounts call 401s. While it is off, ANY valid token
+      # from the same realm is accepted on /accounts, the API that manages Figma PATs, CI keys and
+      # bridge tokens. /mcp stays soft regardless, on purpose (dynamic-client tokens carry an azp
+      # this server cannot predict). Full note: docs/deployment.md, multi-tenant section.
+      # Uncomment below, or set ENFORCE_AUDIENCE in mcp-server/.env (env_file) - but not both: an
+      # active entry here shadows that file.
+      # - ENFORCE_AUDIENCE=true
     depends_on:
       figma-postgres:
         condition: service_healthy

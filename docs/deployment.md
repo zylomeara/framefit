@@ -8,7 +8,7 @@ and who needs to reach it.
 | stdio (recommended start) | your machine | none needed — process-local | [README Tier 1](../README.md#tier-1--local-stdio-the-10-minute-path) |
 | Docker, local | your machine | none — published on `127.0.0.1` only | [docker/README §1](../docker/README.md) |
 | **VPS, single-tenant** | a server you own | **you add it** (SSH tunnel or reverse proxy) | this page |
-| VPS, multi-tenant | a server you own | OIDC (external Keycloak) | [docker/README §2](../docker/README.md) + notes below |
+| VPS, multi-tenant | a server you own | OIDC (external Keycloak) — audience enforcement is opt-in, read the note below | [docker/README §2](../docker/README.md) + notes below |
 
 ## VPS, single-tenant — one user, one token, reachable from anywhere
 
@@ -180,6 +180,36 @@ Honest scope notes before you pick this shape:
   `/accounts` HTTP API directly.
 - Expect assembly. If you just want *a server on a VPS for yourself*, single-tenant
   above is the right shape.
+- **Audience enforcement is opt-in, and off by default — so the realm is the blast radius.**
+  `ENFORCE_AUDIENCE` defaults to `false`. Enabling it requires a Keycloak audience mapper that
+  stamps a framefit-scoped `aud` on the portal's tokens; turn the flag on before that mapper
+  exists and every `/accounts` call 401s, which is exactly why it is not the default.
+
+  While it is off, **any valid token from that realm is accepted on `/accounts`** — the API that
+  adds and removes Figma PATs, mints CI keys and issues bridge tokens. Signature, issuer and expiry
+  are still checked; what is not checked is *who the token was minted for* — the server logs the
+  audience mismatch and serves the request anyway. So if framefit shares a realm with other
+  applications, a token minted for any one of them can drive `/accounts` as its own subject.
+  Configure the mapper, then set `ENFORCE_AUDIENCE=true`; give framefit its own realm if you cannot.
+
+  `/mcp` is a separate case and stays soft **regardless of this flag**, deliberately: hosts that
+  register as dynamic OAuth clients present a token whose `azp` framefit cannot predict, so a hard
+  check there would break legitimate connectors. A valid same-realm token therefore reaches the
+  tool surface — under that subject's own stored PAT — whichever way you set this. There is no
+  setting in this repo that changes that; realm separation is the control.
+
+  The server states which of the two it is doing, at boot, so you are not left inferring it from
+  config: under the `full` profile `docker compose logs framefit | grep mt.audience_enforcement_disabled`
+  prints the line while enforcement is off, and prints nothing once it is on. (`framefit status`
+  does *not* cover this — it reports the deployment's mode and subsystems, not this flag.)
+
+  Every admitted mismatch is logged too, one line per request:
+  `docker compose logs framefit | grep mt.jwt_audience_soft_mismatch` lists the requests that were
+  served while carrying someone else's `aud`/`azp`, and names the client they came from — that is
+  how you learn a foreign client is using your `/accounts`, or which connector's tokens `/mcp` is
+  admitting. In soft mode it is the *only* signal there is: nothing is refused, so nothing else
+  marks it. A matching token logs no line, so a quiet grep is an answer rather than an absence of
+  logging.
 
 ## Troubleshooting
 
