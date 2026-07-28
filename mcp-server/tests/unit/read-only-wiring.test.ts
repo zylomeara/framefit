@@ -114,7 +114,7 @@ describe('the refusal ends at a command the reader can actually run, per mode', 
   it('single-tenant names the env var and never mentions a portal that does not exist here', async () => {
     const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, refusingDeps({ FRAMEFIT_READ_ONLY: 'true' }));
-    const res = await call('resolve_comment', { file: 'abc123', comment_id: 'c-1' });
+    const res = await call('delete_comment', { file: 'abc123', comment_id: 'c-1' });
     expect(res.isError).toBe(true);
     const text = textOf(res.content[0]);
     expect(text).toMatch(/read-only/i);
@@ -137,8 +137,8 @@ describe('the refusal ends at a command the reader can actually run, per mode', 
 
   it('with the gate unset, writes still proceed', async () => {
     const { server, call } = makeFakeMcpServer();
-    registerWriteCommentsTools(server, { ...deps({}), buildApi: () => ({ resolveComment: async () => undefined }) as never });
-    const res = await call('resolve_comment', { file: 'abc123', comment_id: 'c-1' });
+    registerWriteCommentsTools(server, { ...deps({}), buildApi: () => ({ deleteComment: async () => undefined }) as never });
+    const res = await call('delete_comment', { file: 'abc123', comment_id: 'c-1' });
     expect(res.isError).toBeFalsy();
   });
 });

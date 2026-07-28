@@ -32,6 +32,18 @@
       "readOnlyHint": true
     }
   },
+  "delete_comment": {
+    "description": "Permanently delete a Figma comment. There is no undo: Figma does not restore deleted comments and file version history does not bring them back. This is NOT a way to resolve a thread - Figma has no API to mark a thread resolved, so resolution happens in the Figma UI only; get_comments reports a \"resolved\" flag it cannot change. Only the comment author may delete it. Disabled in read-only mode. Pass the comment id from get_comments.",
+    "inputSchemaKeys": [
+      "comment_id",
+      "file"
+    ],
+    "digest": "402a7c2c8a1b9292994ff346650ec5c61d9a01c193a7a1b5dcfa9403ae1033bf",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true
+    }
+  },
   "export_assets": {
     "description": "Export Figma nodes as rendered images (PNG/SVG/JPG) and return signed S3 URLs. Use get_metadata first to find node IDs. Returns url:null for nodes Figma could not render. Set include_raw_images:true to also return the ORIGINAL uploaded source images (IMAGE fills) per node as raw_images:[{imageRef,url}].",
     "inputSchemaKeys": [
@@ -358,18 +370,6 @@
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false
-    }
-  },
-  "resolve_comment": {
-    "description": "Resolve a Figma comment thread (marks it resolved; it stays visible in the file). Disabled in read-only mode. Pass the comment id from get_comments.",
-    "inputSchemaKeys": [
-      "comment_id",
-      "file"
-    ],
-    "digest": "42312b5bd66c6f748b1ef944b9e9fdd29733ed170c4aeb3aee258fa0a0b2eb4e",
-    "annotations": {
-      "readOnlyHint": false,
-      "destructiveHint": true
     }
   },
   "search_design_system": {

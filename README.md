@@ -112,7 +112,7 @@ reverse proxy — the server has no auth of its own) is covered in [`docs/deploy
 | --- | --- | --- |
 | **Design QA** | `get_layout_spec`, `suggest_pairs`, `compare_node_to_dom`, `find_breakpoint_variant`, `get_view` | [design-qa.md](docs/tools/design-qa.md) |
 | **Navigation & content** | `get_metadata`, `find_nodes`, `get_node_ancestry`, `get_text_styles`, `compare_breakpoints`, `get_screenshot`, `export_assets`, `get_design_context` | [navigation.md](docs/tools/navigation.md) |
-| **Comments & review** | `get_comments`, `summarize_comments`, `find_threads`, `post_comment`, `reply_to_comment`, `resolve_comment`, `get_review_board`, `get_pin_detail` | [comments-review.md](docs/tools/comments-review.md) |
+| **Comments & review** | `get_comments`, `summarize_comments`, `find_threads`, `post_comment`, `reply_to_comment`, `delete_comment`, `get_review_board`, `get_pin_detail` | [comments-review.md](docs/tools/comments-review.md) |
 | **Design system** | `get_variables`, `search_design_system`, `get_libraries`, `get_code_connect_map`, `get_figjam` | [design-system.md](docs/tools/design-system.md) |
 
 ## Using with AI agents

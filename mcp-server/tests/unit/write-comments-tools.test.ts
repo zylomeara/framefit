@@ -38,7 +38,7 @@ function makeDeps(overrides: Partial<ToolDeps> & { apiOverride?: Partial<FigmaAp
     getComponent: vi.fn(),
     postComment: vi.fn(async () => makeComment({ id: 'c-posted', message: 'ok' })),
     replyComment: vi.fn(async () => makeComment({ id: 'c-reply', parent_id: 'c-root', message: 'reply' })),
-    resolveComment: vi.fn(async () => undefined),
+    deleteComment: vi.fn(async () => undefined),
     ...apiOverride,
   } as FigmaApi;
   return {
@@ -100,14 +100,14 @@ describe('write-comments tools', () => {
     expect(parsed.parent_id).toBe('c-root');
   });
 
-  it('resolve_comment is refused when read_only=true', async () => {
+  it('delete_comment is refused when read_only=true', async () => {
     const deps = makeDeps({
       readOnly: { isReadOnly: async () => true, remediation: SINGLE_TENANT_READ_ONLY_REMEDIATION },
     });
     const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, deps);
 
-    const res = await call('resolve_comment', { file: 'abc123', comment_id: 'c-42' });
+    const res = await call('delete_comment', { file: 'abc123', comment_id: 'c-42' });
 
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/read-only/i);
@@ -118,7 +118,7 @@ describe('write-comments tools', () => {
     const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, deps);
 
-    const res = await call('resolve_comment', { file: 'abc123', comment_id: 'c-99' });
+    const res = await call('delete_comment', { file: 'abc123', comment_id: 'c-99' });
 
     expect(res.isError).toBeFalsy();
     const parsed = JSON.parse(textOf(res.content[0]));

@@ -5,8 +5,9 @@ Read and write Figma comment threads, and extract structured data from design-re
 
 On large files start with [`summarize_comments`](#summarize_comments) to scope, then fetch full
 threads with [`get_comments`](#get_comments) or search them with [`find_threads`](#find_threads).
-The write tools ([`post_comment`](#post_comment), [`reply_to_comment`](#reply_to_comment),
-[`resolve_comment`](#resolve_comment)) are disabled when the server runs in read-only mode. Set
+The two additive write tools ([`post_comment`](#post_comment),
+[`reply_to_comment`](#reply_to_comment)) and the destructive
+[`delete_comment`](#delete_comment) are all disabled when the server runs in read-only mode. Set
 `FRAMEFIT_READ_ONLY=true` in the server environment to turn that on; only the exact value `true`
 (any case) enables it, and anything else leaves writes enabled rather than failing to start.
 
@@ -157,17 +158,20 @@ Reply to an existing comment thread in a Figma file. Disabled in read-only mode.
 
 ---
 
-### resolve_comment
+### delete_comment
 
-Resolve a Figma comment thread (marks it resolved; it stays visible in the file). Disabled in
-read-only mode. Pass the comment id from `get_comments`.
+Permanently delete a Figma comment. There is no undo: Figma does not restore deleted comments and
+file version history does not bring them back. This is NOT a way to resolve a thread - Figma has no
+API to mark a thread resolved, so resolution happens in the Figma UI only; `get_comments` reports a
+`resolved` flag it cannot change. Only the comment author may delete it. Disabled in read-only mode.
+Pass the comment id from `get_comments`.
 
 **Parameters**
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `file` | string, **required** | Figma file URL or raw file key |
-| `comment_id` | string, **required** | ID of the comment or thread root to resolve |
+| `comment_id` | string, **required** | ID of the comment to delete (a thread root, or a single reply) |
 
 **Example**
 

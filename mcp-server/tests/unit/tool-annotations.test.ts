@@ -26,7 +26,7 @@ function registered() {
 // --- what "a write" is, anchored to the transport ----------------------------------------------
 // This used to be "a tool file that contains the text `assertWritable(`" - i.e. the classification
 // asked whether the tool CALLED THE GATE, and answered a question about the gate rather than about
-// the tool. A tool that issues a real Figma DELETE through api.resolveComment and never calls
+// the tool. A tool that issues a real Figma DELETE through api.deleteComment and never calls
 // assertWritable was therefore classified read-only, and this whole file stayed green while it
 // shipped: measured, with a purge_comments tool annotated readOnlyHint:true, on 2026-07-28. The
 // anchor is now the HTTP verb on the wire, plus whether a tool can reach it.
@@ -341,14 +341,14 @@ describe('every registered tool declares its safety class', () => {
     const writes = [...registered().values()]
       .filter((r) => r.annotations!.readOnlyHint === false)
       .map((r) => r.name).sort();
-    expect(writes).toEqual(['post_comment', 'reply_to_comment', 'resolve_comment']);
+    expect(writes).toEqual(['delete_comment', 'post_comment', 'reply_to_comment']);
   });
 
   it('exactly the destructive tool declares destructiveHint:true', () => {
     const destructive = [...registered().values()]
       .filter((r) => r.annotations!.destructiveHint === true)
       .map((r) => r.name).sort();
-    expect(destructive).toEqual(['resolve_comment']);
+    expect(destructive).toEqual(['delete_comment']);
   });
 
   it('non-destructive writes say so explicitly (destructiveHint defaults to TRUE when readOnlyHint is false)', () => {
@@ -360,7 +360,7 @@ describe('every registered tool declares its safety class', () => {
   it('the transport scraper actually sees figma-rest.ts (guards against silent regex rot)', () => {
     const methods = writeCapableApiMethods();
     expect(methods, 'no state-changing verb found in figma-rest.ts - the scraper has rotted').not.toEqual([]);
-    expect(methods, 'the DELETE').toContain('resolveComment');
+    expect(methods, 'the DELETE').toContain('deleteComment');
     expect(methods, 'the POSTs').toEqual(expect.arrayContaining(['postComment', 'replyComment']));
     // Negative control: a scraper matching everything would sweep the GET methods in too, and then
     // every tool would "reach a write" and the classification below would be vacuously satisfiable.
@@ -544,7 +544,7 @@ describe('tools do not speak HTTP themselves', () => {
 // over source text, and a double-quoted name and a relocated file both walked past it. Then the
 // input was observed via the TOP stack frame, and the next review walked past THAT with
 // REGISTRATION indirection: a tool registered through a shared helper was attributed to the
-// helper, so the module holding its handler - and its plain, literal api.resolveComment(...) -
+// helper, so the module holding its handler - and its plain, literal api.deleteComment(...) -
 // was pattern-matched by nothing. No dynamic call anywhere; what was indirect was how the tool
 // reached the SDK, and that changed WHICH module every check looked at.
 //
@@ -578,11 +578,11 @@ describe('tools do not speak HTTP themselves', () => {
 //      in the driver - is a loud false alarm instead (fallback attribution to the driver
 //      classifies it a write and demands a refusal from it).
 //   2. Call indirection inside an attributed module. `reachesAWrite()` looks for a literal
-//      `.postComment(` / `.replyComment(` / `.resolveComment(`, so all of these reach the same
+//      `.postComment(` / `.replyComment(` / `.deleteComment(`, so all of these reach the same
 //      code and are invisible to it:
 //
-//        api['resolveComment'](k, id)             bracket dispatch, including a runtime-built name
-//        const f = api.resolveComment.bind(api)   .bind / .call / .apply
+//        api['deleteComment'](k, id)              bracket dispatch, including a runtime-built name
+//        const f = api.deleteComment.bind(api)    .bind / .call / .apply
 //        api[methodFromConfig](k, id)             any computed member access
 //        await import(specifierInAVariable)       a dynamic import whose specifier is not a literal
 //        an HTTP call to a host assembled at runtime rather than written out
@@ -619,8 +619,8 @@ describe('the source scanner reads code, not prose', () => {
   it('the comment-stripped read does not change what the scrapers find on the real tree', () => {
     // A lexer that mis-entered a string state would blank the rest of a file and quietly shrink
     // every derived set to nothing. Pinning both derived sets makes that loud rather than silent.
-    expect(writeCapableApiMethods()).toEqual(['postComment', 'replyComment', 'resolveComment']);
-    expect(toolsThatWrite()).toEqual(['post_comment', 'reply_to_comment', 'resolve_comment']);
+    expect(writeCapableApiMethods()).toEqual(['deleteComment', 'postComment', 'replyComment']);
+    expect(toolsThatWrite()).toEqual(['delete_comment', 'post_comment', 'reply_to_comment']);
   });
 
   it('the file walk descends into subdirectories', () => {
@@ -636,7 +636,7 @@ describe('the source scanner reads code, not prose', () => {
   it('registration paths are observed, so neither quoting, location nor a helper can hide a tool', () => {
     const frames = registrationFrames();
     // The map is keyed by the argument the tool passed, so a name this file could not have
-    // guessed the quoting of is still present. resolve_comment is registered in a file that uses
+    // guessed the quoting of is still present. delete_comment is registered in a file that uses
     // single quotes today; what matters is that nothing here READ that quote to learn the name.
     expect([...frames.keys()].sort()).toEqual([...registered().keys()].sort());
     // The tool's OWN module must be on its attributed path. toContain, not toEqual: a helper
@@ -645,7 +645,7 @@ describe('the source scanner reads code, not prose', () => {
     // with all three write tools routed through a five-line helper, every safety check on this
     // page stays green because the helper is APPENDED - the top-frame-only attribution instead
     // REPLACED the tool's module with the helper, which was the hole).
-    expect(frames.get('resolve_comment')).toContain(join(toolsDir, 'write-comments-tools.ts'));
+    expect(frames.get('delete_comment')).toContain(join(toolsDir, 'write-comments-tools.ts'));
   });
 
   it('sees every import spelling a contributor can reach for, and ignores commented-out ones', () => {

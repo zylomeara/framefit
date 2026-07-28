@@ -377,7 +377,7 @@ export class CachingFigmaApiAdapter implements FigmaApi {
 
   postComment(fileKey: string, input: { message: string }) { return this.inner.postComment(fileKey, input); }
   replyComment(fileKey: string, commentId: string, input: { message: string }) { return this.inner.replyComment(fileKey, commentId, input); }
-  resolveComment(fileKey: string, commentId: string) { return this.inner.resolveComment(fileKey, commentId); }
+  deleteComment(fileKey: string, commentId: string) { return this.inner.deleteComment(fileKey, commentId); }
 
   async getComponent(key: string): Promise<PublishedComponentMeta> {
     if (!this.read) return this.inner.getComponent(key);

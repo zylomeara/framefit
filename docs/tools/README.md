@@ -43,7 +43,7 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
 | [`find_threads`](comments-review.md#find_threads) | Search comment threads by text, ranked by relevance, with optional fuzzy matching. |
 | [`post_comment`](comments-review.md#post_comment) | Post a new root-level comment on a file. |
 | [`reply_to_comment`](comments-review.md#reply_to_comment) | Reply to an existing comment thread. |
-| [`resolve_comment`](comments-review.md#resolve_comment) | Resolve a comment thread (marks it resolved; it stays visible in the file). |
+| [`delete_comment`](comments-review.md#delete_comment) | Permanently delete a Figma comment. There is no undo: Figma does not restore deleted comments and file version history does not bring them back. This is NOT a way to resolve a thread. |
 | [`get_review_board`](comments-review.md#get_review_board) | Extract a design-review board in one call: pins ↔ notes ↔ targets, grouped by lane, with resolved reference nodes. |
 | [`get_pin_detail`](comments-review.md#get_pin_detail) | Inspect one review-board pin: a zoomed reticle-marked crop plus its resolved reference node — in a single call. |
 

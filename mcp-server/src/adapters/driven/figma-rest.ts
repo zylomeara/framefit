@@ -233,7 +233,8 @@ export class FigmaRestAdapter implements FigmaApi {
     return this.request<RawComment>(url, { method: 'POST', body: { message: input.message, comment_id: commentId }, writeScopeHint: true });
   }
 
-  async resolveComment(fileKey: string, commentId: string): Promise<void> {
+  /** Figma has no resolve endpoint; this is a DELETE, and the method name says so. */
+  async deleteComment(fileKey: string, commentId: string): Promise<void> {
     const url = `${BASE_URL}/files/${encodeURIComponent(fileKey)}/comments/${encodeURIComponent(commentId)}`;
     await this.request<unknown>(url, { method: 'DELETE', writeScopeHint: true });
   }
