@@ -1,17 +1,16 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Jimp } from 'jimp';
 import { registerGetScreenshotTool } from '../../src/adapters/driving/tools/get-screenshot-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 afterEach(() => vi.unstubAllGlobals());
 
 function harness(getImages: FigmaApi['getImages'], getNodesRaw?: FigmaApi['getNodesRaw']) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [],
@@ -28,7 +27,7 @@ function harness(getImages: FigmaApi['getImages'], getNodesRaw?: FigmaApi['getNo
     defaultToken: 'figd_x', logger,
   };
   registerGetScreenshotTool(server, deps);
-  return handlers.get_screenshot;
+  return (a: any): Promise<any> => call('get_screenshot', a);
 }
 
 describe('get_screenshot tool', () => {

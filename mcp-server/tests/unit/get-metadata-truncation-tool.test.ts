@@ -1,17 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetMetadataTool } from '../../src/adapters/driving/tools/get-metadata-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 function install(doc: RawSceneNode, maxResultChars = 40000) {
-  let handler: ((a: Record<string, unknown>) => Promise<{ content: { text: string }[] }>) | undefined;
-  const server = { tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   // Mock returns the FULL tree regardless of depth; toSparseTree does the client-side
   // depth cut, so a node whose children exist beyond the requested depth gets childCount.
   const api = { getNodesRaw: async (_k: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: doc } } }) };
   const deps = { buildApi: () => api as never, defaultToken: 't', logger: { warn() {} } as never, maxResultChars };
   registerGetMetadataTool(server, deps as never);
-  return (a: Record<string, unknown>) => handler!(a);
+  return (a: Record<string, unknown>) => call('get_metadata', a);
 }
 
 const doc: RawSceneNode = {

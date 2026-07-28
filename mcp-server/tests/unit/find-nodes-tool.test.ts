@@ -1,16 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerFindNodesTool } from '../../src/adapters/driving/tools/find-nodes-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
 function harness(api: Partial<FigmaApi>, extraDeps: Partial<ToolDeps> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getNodesRaw: async () => ({ nodes: {} }),
@@ -21,7 +20,7 @@ function harness(api: Partial<FigmaApi>, extraDeps: Partial<ToolDeps> = {}) {
     ...extraDeps,
   };
   registerFindNodesTool(server, deps);
-  return handlers.find_nodes;
+  return (a: any): Promise<any> => call('find_nodes', a);
 }
 
 const subtree = { id: '1:0', name: 'desktop', type: 'FRAME', children: [

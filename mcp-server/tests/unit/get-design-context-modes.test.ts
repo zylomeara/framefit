@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetDesignContextTool } from '../../src/adapters/driving/tools/get-design-context-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import { buildGraph, resolveKey, resolveKeyInMode, keyIsMultiMode } from '../../src/domain/variable-graph.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -43,8 +43,7 @@ const singleVars = { meta: {
 // a top-level CANVAS, making coverageComplete true. Backward-compatible — defaults to the bare
 // (no getDocumentRaw) api that the suppression tests rely on to make discovery fail/skip.
 function handlerFor(docArg: unknown, varsArg: unknown, rootId: string, extraDeps: Partial<ToolDeps> = {}, withDiscovery = false) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getNodesRaw: async () => ({ nodes: { [rootId]: { document: docArg } } }),
@@ -59,7 +58,7 @@ function handlerFor(docArg: unknown, varsArg: unknown, rootId: string, extraDeps
     ...extraDeps,
   };
   registerGetDesignContextTool(server, deps);
-  return handlers.get_design_context;
+  return (a: any): Promise<any> => call('get_design_context', a);
 }
 
 const run = () => handlerFor(doc, variables, 'F');
@@ -266,8 +265,7 @@ describe('get_design_context mode_context', () => {
   });
 
   it('absent when idx failed to load (spec (P)): variables fetch error', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getNodesRaw: async () => ({ nodes: { F: { document: docNoPins } } }),
@@ -279,7 +277,7 @@ describe('get_design_context mode_context', () => {
       libraryFiles: { has: async () => true },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: 'F', include_component_docs: false });
+    const res = await call('get_design_context', { file: 'abc', node_id: 'F', include_component_docs: false });
     expect(JSON.parse(res.content[0].text).mode_context).toBeUndefined();
   });
 

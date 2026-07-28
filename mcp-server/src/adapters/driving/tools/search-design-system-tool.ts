@@ -26,10 +26,12 @@ const InputSchema = {
 };
 
 export function registerSearchDesignSystemTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'search_design_system',
-    'Search published design-system libraries (components, component sets, styles) by name/description. team_id is OPTIONAL: without it, the tool searches your registered DS teams. Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key, kind, library file, node_id, page and source team_id — use node_id with get_design_context. Lexical name search; run short queries.',
-    InputSchema,
+    {
+      description: 'Search published design-system libraries (components, component sets, styles) by name/description. team_id is OPTIONAL: without it, the tool searches your registered DS teams. Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key, kind, library file, node_id, page and source team_id — use node_id with get_design_context. Lexical name search; run short queries.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('search_design_system', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         // Resolve candidate team ids: explicit team_id → else the user's registered teams.

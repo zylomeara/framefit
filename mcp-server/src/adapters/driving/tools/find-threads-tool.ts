@@ -18,10 +18,12 @@ const InputSchema = {
 };
 
 export function registerFindThreadsTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'find_threads',
-    'Search a Figma file\'s comment threads by text, ranked by relevance, with optional fuzzy matching and the full filter set. Returns scored matches with highlights — use to locate specific discussions in large files.',
-    InputSchema,
+    {
+      description: 'Search a Figma file\'s comment threads by text, ranked by relevance, with optional fuzzy matching and the full filter set. Returns scored matches with highlights — use to locate specific discussions in large files.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('find_threads', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const out = await findThreadsUseCase(deps.buildApi(token, args.timeout_ms), deps.logger, {

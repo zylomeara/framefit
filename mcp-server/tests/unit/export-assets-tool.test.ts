@@ -1,15 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerExportAssetsTool } from '../../src/adapters/driving/tools/export-assets-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
 function harness(over: Partial<FigmaApi> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -24,7 +23,7 @@ function harness(over: Partial<FigmaApi> = {}) {
     defaultToken: 'figd_x', logger,
   };
   registerExportAssetsTool(server, deps);
-  return handlers.export_assets;
+  return (a: any): Promise<any> => call('export_assets', a);
 }
 
 describe('export_assets tool', () => {

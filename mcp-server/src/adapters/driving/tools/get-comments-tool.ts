@@ -79,10 +79,12 @@ const InputSchema = {
 };
 
 export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_comments',
-    'Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. Anchors resolve to node names/pages. Use summarize_comments first on large files.',
-    InputSchema,
+    {
+      description: 'Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. Anchors resolve to node names/pages. Use summarize_comments first on large files.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('get_comments', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const r = await getCommentsUseCase(deps.buildApi(token, args.timeout_ms), deps.logger, {

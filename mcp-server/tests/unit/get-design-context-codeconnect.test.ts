@@ -1,17 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetDesignContextTool } from '../../src/adapters/driving/tools/get-design-context-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 const frame = { id: '1:5', name: 'Card', type: 'FRAME', children: [{ id: '1:6', name: 'Btn', type: 'INSTANCE', componentId: 'C:1' }] };
 
 function harness(withCodeConnect: boolean) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -26,12 +25,11 @@ function harness(withCodeConnect: boolean) {
     ...(withCodeConnect ? { codeConnect: { lookup: async () => new Map([['LIB|7:7', { component_name: 'Button', source: 's', template: 't', template_data: { imports: ['import {Button}'] }, label: 'React' }]]) } } : {}),
   };
   registerGetDesignContextTool(server, deps);
-  return handlers.get_design_context;
+  return (a: any): Promise<any> => call('get_design_context', a);
 }
 
 function mkDoc(opts: { getComponent?: FigmaApi['getComponent']; getFileComponentSets?: FigmaApi['getFileComponentSets']; getNodesRaw?: FigmaApi['getNodesRaw']; withCodeConnect?: boolean }) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -47,7 +45,7 @@ function mkDoc(opts: { getComponent?: FigmaApi['getComponent']; getFileComponent
     ...(opts.withCodeConnect ? { codeConnect: { lookup: async () => new Map() } } : {}),
   };
   registerGetDesignContextTool(server, deps);
-  return handlers.get_design_context;
+  return (a: any): Promise<any> => call('get_design_context', a);
 }
 
 const withDesc = async (key: string) => ({ key, file_key: 'LIB', node_id: '7:7', name: 'Button', description: 'Primary action', componentSetId: 'CS:1', documentationLinks: [{ uri: 'https://docs/btn' }] });
@@ -125,8 +123,7 @@ describe('get_design_context Code Connect enrichment', () => {
   });
 
   it('R4-F4: a code_connect lookup error records a degraded_stage', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -142,7 +139,7 @@ describe('get_design_context Code Connect enrichment', () => {
       codeConnect: { lookup: async () => { throw new Error('cc boom'); } },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4, include_component_docs: false });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4, include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
     expect(res.isError).toBeFalsy();
     expect(body.degraded_stages).toContainEqual({ stage: 'code_connect', reason: 'error' });
@@ -153,8 +150,7 @@ describe('get_design_context Code Connect enrichment', () => {
     // CC resolution runs first and produces its payload; the LATER set-docs fetch throws. The
     // response must carry the real codeConnect data AND must NOT list code_connect as degraded —
     // a stage cannot be simultaneously present and failed.
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -170,7 +166,7 @@ describe('get_design_context Code Connect enrichment', () => {
       codeConnect: { lookup: async () => new Map([['LIB|7:7', { component_name: 'Button', source: 's', template: 't', template_data: { imports: ['import {Button}'] }, label: 'React' }]]) },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
     const body = JSON.parse(res.content[0].text);
     expect(res.isError).toBeFalsy();
     expect(body.codeConnect['1:6']).toMatchObject({ component: 'Button' });   // CC payload survived
@@ -183,8 +179,7 @@ describe('get_design_context Code Connect enrichment', () => {
     // Code Connect published for this component). The LATER docs fetch throws a plain error. Before
     // the fix, `codeConnect === undefined` (an empty payload looks identical to "never ran") made the
     // shared catch falsely attribute the docs failure to code_connect too.
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -200,7 +195,7 @@ describe('get_design_context Code Connect enrichment', () => {
       codeConnect: { lookup: async () => new Map() },   // resolves — legitimately zero mappings
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
     const body = JSON.parse(res.content[0].text);
     expect(res.isError).toBeFalsy();
     expect(body.codeConnect).toBeUndefined();                         // legitimately empty — not an error
@@ -213,8 +208,7 @@ describe('get_design_context Code Connect enrichment', () => {
     // completed (withDesc succeeds), so the docs path CAN and must still succeed. Before the fix,
     // CC and docs shared one try/catch: the throw skipped the docs block entirely, yet the blanket
     // `if (wantDocs && !docsResolved)` check falsely marked component_docs degraded too.
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -230,7 +224,7 @@ describe('get_design_context Code Connect enrichment', () => {
       codeConnect: { lookup: async () => { throw new Error('cc boom'); } },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
     const body = JSON.parse(res.content[0].text);
     expect(res.isError).toBeFalsy();
     expect(body.components['C:1']).toMatchObject({ description: 'Primary action' });   // docs produced!
@@ -239,8 +233,7 @@ describe('get_design_context Code Connect enrichment', () => {
   });
 
   it('surfaces rate_limited from getComponent (does not silently drop snippets)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -255,7 +248,7 @@ describe('get_design_context Code Connect enrichment', () => {
       codeConnect: { lookup: async () => new Map() },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4 });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4 });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/rate_limited|rate limit/i);
   });

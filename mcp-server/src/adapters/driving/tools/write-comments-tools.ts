@@ -10,12 +10,14 @@ import {
 
 // Writes always use the connection's default token (no per-call override) so a write can't be issued under an ad-hoc token.
 export function registerWriteCommentsTools(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'post_comment',
-    'Post a new root-level comment on a Figma file. Disabled in read-only mode.',
     {
-      file: z.string().min(1).describe('Figma file URL or raw file key'),
-      message: z.string().min(1).describe('Comment text'),
+      description: 'Post a new root-level comment on a Figma file. Disabled in read-only mode.',
+      inputSchema: {
+        file: z.string().min(1).describe('Figma file URL or raw file key'),
+        message: z.string().min(1).describe('Comment text'),
+      },
     },
     async (args) =>
       runTool('post_comment', deps.logger, deps.defaultToken, async (token) => {
@@ -29,13 +31,15 @@ export function registerWriteCommentsTools(server: McpServer, deps: ToolDeps): v
       }, deps.noTokenHint),
   );
 
-  server.tool(
+  server.registerTool(
     'reply_to_comment',
-    'Reply to an existing comment thread in a Figma file. Disabled in read-only mode.',
     {
-      file: z.string().min(1).describe('Figma file URL or raw file key'),
-      comment_id: z.string().min(1).describe('ID of the root comment to reply to'),
-      message: z.string().min(1).describe('Reply text'),
+      description: 'Reply to an existing comment thread in a Figma file. Disabled in read-only mode.',
+      inputSchema: {
+        file: z.string().min(1).describe('Figma file URL or raw file key'),
+        comment_id: z.string().min(1).describe('ID of the root comment to reply to'),
+        message: z.string().min(1).describe('Reply text'),
+      },
     },
     async (args) =>
       runTool('reply_to_comment', deps.logger, deps.defaultToken, async (token) => {
@@ -50,12 +54,14 @@ export function registerWriteCommentsTools(server: McpServer, deps: ToolDeps): v
       }, deps.noTokenHint),
   );
 
-  server.tool(
+  server.registerTool(
     'resolve_comment',
-    'Resolve a Figma comment thread (marks it resolved; it stays visible in the file). Disabled in read-only mode. Pass the comment id from get_comments.',
     {
-      file: z.string().min(1).describe('Figma file URL or raw file key'),
-      comment_id: z.string().min(1).describe('ID of the comment or thread root to resolve'),
+      description: 'Resolve a Figma comment thread (marks it resolved; it stays visible in the file). Disabled in read-only mode. Pass the comment id from get_comments.',
+      inputSchema: {
+        file: z.string().min(1).describe('Figma file URL or raw file key'),
+        comment_id: z.string().min(1).describe('ID of the comment or thread root to resolve'),
+      },
     },
     async (args) =>
       runTool('resolve_comment', deps.logger, deps.defaultToken, async (token) => {

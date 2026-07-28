@@ -5,6 +5,7 @@ import { buildLayoutSpec, VIEW_CAPS } from '../../src/domain/layout-spec/project
 import { buildSpacing, buildCoverage, buildSkeleton } from '../../src/domain/layout-spec/views.js';
 import { serializeForDelivery } from '../../src/adapters/driving/tools/serialize.js';
 import { RESULT_BUDGET_BYTES } from '../../src/adapters/driving/tools/clamp-specs.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 // Skeleton fixtures: a VERTICAL list whose items share a NAME but may differ in child-shape.
 const radio: any = { id: 'r', name: 'radio', type: 'INSTANCE', absoluteBoundingBox: { x: 0, y: 0, width: 20, height: 20 }, children: [] };
@@ -27,15 +28,14 @@ const chain = (levels: number): any => {
 };
 
 function harness(overrides: any = {}) {
-  const captured: any[] = [];
-  const server: any = { tool: (_n: string, _d: string, _s: any, h: any) => captured.push(h) };
+  const { server, call } = makeFakeMcpServer();
   const getNodesRaw = vi.fn(async (_fk: string, ids: string[]) => ({
     nodes: Object.fromEntries(ids.map((id) => [id, { document: chain(8), components: {} }])) }));
   const api = withFrameRaw({ getNodesRaw } as any);
   const buildApi = vi.fn(() => api);
   const deps: any = { logger: { info() {}, warn() {}, error() {} }, buildApi, defaultToken: 't', ...overrides };
   registerGetViewTool(server, deps);
-  return { handler: captured[0], getNodesRaw };
+  return { handler: (a: any): Promise<any> => call('get_view', a), getNodesRaw };
 }
 
 describe('get_view', () => {

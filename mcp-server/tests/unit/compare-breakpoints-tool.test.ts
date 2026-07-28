@@ -1,17 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerCompareBreakpointsTool } from '../../src/adapters/driving/tools/compare-breakpoints-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 function harness(api: Partial<FigmaApi>) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => api as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 };
   registerCompareBreakpointsTool(server, deps);
-  return handlers.compare_breakpoints;
+  return (a: any): Promise<any> => call('compare_breakpoints', a);
 }
 
 const frame = (id: string, name: string, w: number, fontSize: number) => ({

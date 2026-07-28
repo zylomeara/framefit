@@ -1,7 +1,6 @@
 // mcp-server/tests/unit/layout-spec-match-profiles.test.ts
 // match-profiles: schema + tolerance resolution + structTol decoupling of the structural detectors.
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   registerCompareNodeToDomTool,
   resolveTolerance,
@@ -21,6 +20,7 @@ import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { RawSceneNode, RawVariablesResponse } from '../../src/domain/figma-raw.js';
 import { withFrameRaw } from './helpers/frame-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // resolveTolerance — the resolution unit (omitted-vs-explicit is distinguishable, since the schema
@@ -162,11 +162,10 @@ const logger = createLogger({ level: 'silent' });
 const emptyVars: RawVariablesResponse = { meta: { variables: {}, variableCollections: {} } };
 
 function harness(api: Partial<FigmaApi>, maxResultChars = 40000, extra: Partial<ToolDeps> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars, ...extra };
   registerCompareNodeToDomTool(server, deps);
-  return handlers.compare_node_to_dom;
+  return (a: any): Promise<any> => call('compare_node_to_dom', a);
 }
 
 // card 343×120 VERTICAL, 2 children; okDom with a diverging gap (figma 20 / dom 48) → gap-fail + size-pass

@@ -51,11 +51,13 @@ function buildView(view: View, raw: RawSceneNode, ctx: ProjectorContext, effDept
 }
 
 export function registerGetViewTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_view',
-    'Single-root navigation over a held frame: one node_id, five pure lenses (skeleton/branch/' +
-    'coverage/typography/spacing) sliced from one deep-fetch, zero re-fetch across views/depths.',
-    InputSchema,
+    {
+      description: 'Single-root navigation over a held frame: one node_id, five pure lenses (skeleton/branch/' +
+      'coverage/typography/spacing) sliced from one deep-fetch, zero re-fetch across views/depths.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('get_view', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);

@@ -1,15 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetMetadataTool } from '../../src/adapters/driving/tools/get-metadata-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
 function harness(api: Partial<FigmaApi>, maxResultChars = 40000) {
-  const handlers: Record<string, (args: any) => Promise<any>> = {};
-  const server = { tool: (name: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[name] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(),
@@ -22,7 +21,7 @@ function harness(api: Partial<FigmaApi>, maxResultChars = 40000) {
     defaultToken: 'figd_x', logger, maxResultChars,
   };
   registerGetMetadataTool(server, deps);
-  return handlers.get_metadata;
+  return (a: any): Promise<any> => call('get_metadata', a);
 }
 
 describe('get_metadata tool', () => {

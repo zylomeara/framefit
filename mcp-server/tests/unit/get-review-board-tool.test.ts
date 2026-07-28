@@ -1,19 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import fixture from '../fixtures/review-board-profile.json';
 import { registerGetReviewBoardTool } from '../../src/adapters/driving/tools/get-review-board-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 function install(doc: RawSceneNode, maxResultChars = 40000) {
-  let handler: ((a: Record<string, unknown>) => Promise<{ content: { text: string }[] }>) | undefined;
-  const server = { tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const api = {
     getNodesRaw: async (_k: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: doc } } }),
     getImages: async (_k: string, ids: string[]) => ({ images: Object.fromEntries(ids.map((i) => [i, `https://signed/${i}`])) }),
   };
   const deps = { buildApi: () => api as never, defaultToken: 't', logger: { warn() {} } as never, maxResultChars };
   registerGetReviewBoardTool(server, deps as never);
-  return (a: Record<string, unknown>) => handler!(a);
+  return (a: Record<string, unknown>) => call('get_review_board', a);
 }
 
 describe('get_review_board tool', () => {

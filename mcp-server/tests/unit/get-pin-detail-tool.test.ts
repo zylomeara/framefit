@@ -1,21 +1,20 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Jimp } from 'jimp';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetPinDetailTool } from '../../src/adapters/driving/tools/get-pin-detail-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
 function install(doc: RawSceneNode) {
-  let handler: ((a: Record<string, unknown>) => Promise<any>) | undefined;
-  const server = { tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const api = {
     getNodesRaw: async (_k: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: doc } } }),
     getImages: async (_k: string, ids: string[], opts: any) => ({ images: Object.fromEntries(ids.map((i) => [i, `https://s3/${opts.format}-${opts.scale}.png`])) }),
   };
   const deps = { buildApi: () => api as never, defaultToken: 't', logger: { warn() {} } as never, maxResultChars: 40000 };
   registerGetPinDetailTool(server, deps as never);
-  return (a: Record<string, unknown>) => handler!(a);
+  return (a: Record<string, unknown>): Promise<any> => call('get_pin_detail', a);
 }
 
 // A minimal review board: prod RECTANGLE (image fill) + numbered pin INSTANCE + aligned reference FRAME.

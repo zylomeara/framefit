@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetFigjamTool } from '../../src/adapters/driving/tools/get-figjam-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 const canvas = { id: '0:1', name: 'Page', type: 'CANVAS', children: [
@@ -12,8 +12,7 @@ const canvas = { id: '0:1', name: 'Page', type: 'CANVAS', children: [
 ] };
 
 function harness(over: Partial<FigmaApi> = {}, maxResultChars = 40000) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -25,7 +24,7 @@ function harness(over: Partial<FigmaApi> = {}, maxResultChars = 40000) {
     defaultToken: 'figd_x', logger, maxResultChars,
   };
   registerGetFigjamTool(server, deps);
-  return handlers.get_figjam;
+  return (a: any): Promise<any> => call('get_figjam', a);
 }
 
 describe('get_figjam tool', () => {

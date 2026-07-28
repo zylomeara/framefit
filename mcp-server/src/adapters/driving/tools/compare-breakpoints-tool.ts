@@ -19,10 +19,12 @@ const InputSchema = {
 };
 
 export function registerCompareBreakpointsTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'compare_breakpoints',
-    'Compare one element\'s typography across several breakpoint frames in a single call. Pass the breakpoint frame node_ids (one per width) and the element name (e.g. "tabs"); returns the element\'s text-style per breakpoint with the frame name and width. Replaces opening each width frame by hand.',
-    InputSchema,
+    {
+      description: 'Compare one element\'s typography across several breakpoint frames in a single call. Pass the breakpoint frame node_ids (one per width) and the element name (e.g. "tabs"); returns the element\'s text-style per breakpoint with the frame name and width. Replaces opening each width frame by hand.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('compare_breakpoints', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);

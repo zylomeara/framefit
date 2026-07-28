@@ -7,14 +7,14 @@ import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-too
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
 import { FETCH_DEPTH } from '../../src/domain/layout-spec/projector.js';
 import { withFrameRaw } from './helpers/frame-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 function harness(api: Partial<FigmaApi>, depsOverrides: Partial<ToolDeps> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000, ...depsOverrides };
   registerGetLayoutSpecTool(server, deps);
-  return handlers.get_layout_spec;
+  return (a: any): Promise<any> => call('get_layout_spec', a);
 }
 
 const doc: RawSceneNode = {
@@ -319,10 +319,9 @@ describe('get_layout_spec hydration receipt (Phase 1)', () => {
     // self-contained harness (McpServer, registerGetLayoutSpecTool, logger, FigmaApi are already
     // imported at the top of this test file); wrap the api with withFrameRaw so the tool's
     // getFrameRaw call resolves through the getNodesRaw mock:
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     registerGetLayoutSpecTool(server, { buildApi: () => withFrameRaw({ getNodesRaw }) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 } as any);
-    const run = handlers.get_layout_spec;
+    const run = (a: any): Promise<any> => call('get_layout_spec', a);
     const out = JSON.parse((await run({ file: 'abc', node_ids: ['dd:0'], max_depth: 4 })).content[0].text);
     expect(Array.isArray(out.hydration)).toBe(true);
     const rec = out.hydration.find((h: any) => h.node_id === 'dd:0');

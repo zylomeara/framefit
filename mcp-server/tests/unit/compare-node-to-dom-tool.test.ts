@@ -9,14 +9,14 @@ import type { DomSnapshotOk } from '../../src/domain/layout-spec/types.js';
 import { withFrameRaw } from './helpers/frame-raw.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import { buildGraph, resolveKeyInMode } from '../../src/domain/variable-graph.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 function harness(api: Partial<FigmaApi>, maxResultChars = 40000, extra: Partial<ToolDeps> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars, ...extra };
   registerCompareNodeToDomTool(server, deps);
-  return handlers.compare_node_to_dom;
+  return (a: any): Promise<any> => call('compare_node_to_dom', a);
 }
 
 // records logger.info calls so a test can assert an event was (or was NOT)
@@ -2025,10 +2025,9 @@ describe('compare_node_to_dom tool', () => {
           raw: { nodes: { '1:1': { document: card } } }, heldDepth: 5, hydrated: true, effectiveMaxDepth: 4,
         }),
       } as unknown as FigmaApi;
-      const handlers: Record<string, (a: any) => Promise<any>> = {};
-      const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+      const { server, call } = makeFakeMcpServer();
       registerCompareNodeToDomTool(server, { buildApi: () => clampedApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 } as any);
-      const run = handlers.compare_node_to_dom;
+      const run = (a: any): Promise<any> => call('compare_node_to_dom', a);
 
       const out = JSON.parse((await run({ file: 'abc', pairs: [{ node_id: '1:1', dom: okDom }], max_depth: 8 })).content[0].text);
       // NB: VerificationReceipt has no `depthLevels` field (it's an internal buildVerification input,
@@ -2375,10 +2374,9 @@ describe('compare_node_to_dom hydration receipt (Phase 1, Figma-side only)', () 
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: chain(6) } } }));
     // self-contained harness (McpServer, registerCompareNodeToDomTool, logger, FigmaApi already
     // imported at the top of this test file):
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     registerCompareNodeToDomTool(server, { buildApi: () => withFrameRaw({ getNodesRaw }) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 } as any);
-    const run = handlers.compare_node_to_dom;
+    const run = (a: any): Promise<any> => call('compare_node_to_dom', a);
     const out = JSON.parse((await run({ file: 'abc', pairs: [{ node_id: '1:1', dom }], max_depth: 4 })).content[0].text);
     expect(Array.isArray(out.hydration)).toBe(true);
     expect(out.hydration.find((h: any) => h.node_id === '1:1')).toBeTruthy();

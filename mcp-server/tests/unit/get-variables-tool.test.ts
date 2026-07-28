@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetVariablesTool } from '../../src/adapters/driving/tools/get-variables-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
@@ -8,12 +7,12 @@ import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-too
 import { CachingFigmaApiAdapter, type ReadCaches } from '../../src/adapters/driven/caching-figma-api.js';
 import { FileStructureCache } from '../../src/infrastructure/file-structure-cache.js';
 import { TtlCache } from '../../src/infrastructure/node-cache.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
 function harness(getVariablesLocal: FigmaApi['getVariablesLocal'], maxResultChars?: number) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -24,7 +23,7 @@ function harness(getVariablesLocal: FigmaApi['getVariablesLocal'], maxResultChar
     defaultToken: 'figd_x', logger, maxResultChars,
   };
   registerGetVariablesTool(server, deps);
-  return handlers.get_variables;
+  return (a: any): Promise<any> => call('get_variables', a);
 }
 
 describe('get_variables tool', () => {
@@ -67,8 +66,7 @@ describe('get_variables tool', () => {
       librariesCache: new TtlCache(300_000), componentCache: new TtlCache(300_000),
       docCache: new TtlCache(300_000), componentSetsCache: new TtlCache(300_000), imageFillsCache: new TtlCache(300_000),
     };
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: (_token: string, timeoutMs?: number) =>
         new CachingFigmaApiAdapter(inner, new FileStructureCache(300_000), logger, readCaches, { timeoutMs: timeoutMs ?? 90_000 }),
@@ -76,11 +74,11 @@ describe('get_variables tool', () => {
     };
     registerGetVariablesTool(server, deps);
 
-    const res1 = await handlers.get_variables({ file: 'abc' });
+    const res1 = await call('get_variables', { file: 'abc' });
     expect(res1.isError).toBe(true);
     expect(res1.content[0].text).toMatch(/Enterprise/i);
 
-    const res2 = await handlers.get_variables({ file: 'abc' });
+    const res2 = await call('get_variables', { file: 'abc' });
     expect(res2.isError).toBe(true);
     expect(res2.content[0].text).toMatch(/Enterprise/i);
 
@@ -89,8 +87,7 @@ describe('get_variables tool', () => {
 
   it('passes timeout_ms through to buildApi', async () => {
     let seenTimeout: number | undefined;
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: (_t: string, timeoutMs?: number) => {
         seenTimeout = timeoutMs;
@@ -99,13 +96,12 @@ describe('get_variables tool', () => {
       defaultToken: 'figd_x', logger,
     };
     registerGetVariablesTool(server, deps);
-    await handlers.get_variables({ file: 'abc', timeout_ms: 90000 });
+    await call('get_variables', { file: 'abc', timeout_ms: 90000 });
     expect(seenTimeout).toBe(90000);
   });
 
   it('does not fail the tool when the snapshot lookup throws (degrades to honest aliases)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
         variableCollections: { 'VC': { id: 'VC', name: 'Theme', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
@@ -115,7 +111,7 @@ describe('get_variables tool', () => {
       variableSnapshot: { lookup: async () => { throw new Error('snapshot db down'); } },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
+    const res = await call('get_variables', { file: 'abc' });
     expect(res.isError).toBeFalsy();
     const body = JSON.parse(res.content[0].text);
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
@@ -124,8 +120,7 @@ describe('get_variables tool', () => {
   });
 
   it('resolves cross-library aliases via the variableSnapshot lookup (by extracted published key)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
         variableCollections: { 'VC': { id: 'VC', name: 'Theme', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
@@ -135,7 +130,7 @@ describe('get_variables tool', () => {
       variableSnapshot: { lookup: async (keys) => new Map(keys.includes('abcdef0123456789abcdef0123456789abcdef01') ? [['abcdef0123456789abcdef0123456789abcdef01', { value: '#abcdef', resolved_type: 'COLOR', name: 'primitive/blue' }]] : []) },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
+    const res = await call('get_variables', { file: 'abc' });
     const body = JSON.parse(res.content[0].text);
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
     expect(t.value).toBe('#abcdef');
@@ -143,8 +138,7 @@ describe('get_variables tool', () => {
   });
 
   it('resolves cross-library aliases via the library graph (resolved_via:graph + source_library)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
         variableCollections: { 'VC': { id: 'VC', name: 'Theme', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
@@ -154,7 +148,7 @@ describe('get_variables tool', () => {
       variableGraph: { resolve: (k) => k === 'abcdef0123456789abcdef0123456789abcdef01' ? { value: '#abcdef', sourceLibrary: 'LIBKEY' } : undefined },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
+    const res = await call('get_variables', { file: 'abc' });
     const body = JSON.parse(res.content[0].text);
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
     expect(t.value).toBe('#abcdef');
@@ -230,8 +224,7 @@ describe('get_variables tool', () => {
   it('graph-first + per-key snapshot fallback: graph resolves aaaa key, snapshot resolves bbbb key; lookup called with only missed keys', async () => {
     const AAAA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // 40 hex chars
     const BBBB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; // 40 hex chars
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const lookupFn = vi.fn(async (keys: string[]) => new Map(
       keys.includes(BBBB) ? [[BBBB, { value: '#bbbbbb', resolved_type: 'COLOR', name: 'lib/blue' }]] : []
     ));
@@ -248,7 +241,7 @@ describe('get_variables tool', () => {
       variableSnapshot: { lookup: lookupFn },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
+    const res = await call('get_variables', { file: 'abc' });
     const body = JSON.parse(res.content[0].text);
     const ta = body.tokens.find((x: any) => x.name === 'color/a');
     const tb = body.tokens.find((x: any) => x.name === 'color/b');
@@ -266,8 +259,7 @@ describe('get_variables tool', () => {
   });
 
   it('node_id mode returns only the variables the node subtree references', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getVariablesLocal: async () => ({ meta: {
@@ -282,7 +274,7 @@ describe('get_variables tool', () => {
       defaultToken: 'figd_x', logger,
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc', node_id: '1-5' });
+    const res = await call('get_variables', { file: 'abc', node_id: '1-5' });
     const body = JSON.parse(res.content[0].text);
     expect(body.tokens.map((x: any) => x.name)).toEqual(['used/space']);
     expect(body.summary.total).toBe(1);
@@ -299,8 +291,7 @@ describe('get_variables tool', () => {
   });
 
   it('emits modes + mode_dependent for a cross-library multi-mode token (via graph)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const KEY = 'abcdef0123456789abcdef0123456789abcdef01';
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
@@ -314,7 +305,7 @@ describe('get_variables tool', () => {
         : undefined },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
+    const res = await call('get_variables', { file: 'abc' });
     const body = JSON.parse(res.content[0].text);
     const t = body.tokens.find((x: any) => x.name === 'text icon/accent');
     expect(t.mode_dependent).toBe(true);

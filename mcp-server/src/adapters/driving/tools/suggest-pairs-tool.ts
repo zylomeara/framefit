@@ -42,13 +42,16 @@ export const InputSchema = {
 };
 
 export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): void {
-  server.tool('suggest_pairs',
-    'Propose Figma-node ↔ DOM-element pairs (by text/size/order/role) with confidence + ambiguous flags + honest ' +
-    'unmatched, so you review proposed pairs instead of hand-building them (compound I…;… ids come dug out of the ' +
-    'frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to ' +
-    'compare_node_to_dom. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
-    'inspected — the top is reported honestly in unmatched_figma/unmatched_dom instead, and you drill in by hand.',
-    InputSchema,
+  server.registerTool(
+    'suggest_pairs',
+    {
+      description: 'Propose Figma-node ↔ DOM-element pairs (by text/size/order/role) with confidence + ambiguous flags + honest ' +
+      'unmatched, so you review proposed pairs instead of hand-building them (compound I…;… ids come dug out of the ' +
+      'frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to ' +
+      'compare_node_to_dom. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
+      'inspected — the top is reported honestly in unmatched_figma/unmatched_dom instead, and you drill in by hand.',
+      inputSchema: InputSchema,
+    },
     async (args) => runTool('suggest_pairs', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
       const parsed = parseFileKey(args.file);
       if (!parsed.ok) throw new Error(parsed.error);

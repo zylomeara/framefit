@@ -1,17 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetTextStylesTool } from '../../src/adapters/driving/tools/get-text-styles-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 function harness(api: Partial<FigmaApi>, maxResultChars = 40000) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => api as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars };
   registerGetTextStylesTool(server, deps);
-  return handlers.get_text_styles;
+  return (a: any): Promise<any> => call('get_text_styles', a);
 }
 
 const doc = { id: '1:0', name: 'tabs', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 1280, height: 40 }, children: [

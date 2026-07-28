@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
 import type { AncestryResult } from '../../src/application/node-ancestry.js';
 
@@ -25,14 +24,12 @@ import {
   registerGetNodeAncestryTool,
   ANCESTRY_CHILDREN_CAP,
 } from '../../src/adapters/driving/tools/get-node-ancestry-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 type Handler = (a: Record<string, unknown>) => Promise<{ content: { type: string; text?: string }[]; isError?: boolean }>;
 
 function install(): Handler {
-  let handler: Handler | undefined;
-  const server = {
-    tool: (_n: string, _d: string, _s: unknown, h: Handler) => { handler = h; },
-  } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const api = {};
   const deps = {
     buildApi: () => api as never,
@@ -40,7 +37,7 @@ function install(): Handler {
     logger: { warn() {}, info() {} } as never,
   };
   registerGetNodeAncestryTool(server, deps as never);
-  return (a: Record<string, unknown>) => handler!(a);
+  return (a: Record<string, unknown>) => call('get_node_ancestry', a);
 }
 
 function n(
@@ -397,14 +394,13 @@ describe('get_node_ancestry tool', () => {
       callsUsed: 1,
     });
 
-    let handler: Handler | undefined;
-    const server = { tool: (_n: string, _d: string, _s: unknown, h: Handler) => { handler = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const buildApi = vi.fn((_token: string, _timeoutMs?: number, _deadlineAt?: number) => ({}) as never);
     const deps = { buildApi, defaultToken: 'tok', logger: { warn() {}, info() {} } as never, toolTimeBudgetMs: 1234 };
     registerGetNodeAncestryTool(server, deps as never);
 
     const before = Date.now();
-    await handler!({ file: 'ABC123', node_id: '30-1' }); // dash-form id — normalization is part of the wiring
+    await call('get_node_ancestry', { file: 'ABC123', node_id: '30-1' }); // dash-form id — normalization is part of the wiring
     expect(buildApi).toHaveBeenCalledTimes(1);
     const [token, timeoutMs, deadlineAt] = buildApi.mock.calls[0];
     expect(token).toBe('tok');

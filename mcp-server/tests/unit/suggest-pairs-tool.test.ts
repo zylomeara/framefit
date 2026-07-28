@@ -1,19 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerSuggestPairsTool, InputSchema } from '../../src/adapters/driving/tools/suggest-pairs-tool.js';
 import { DOM_SNAPSHOT_SCHEMA_VERSION } from '../../src/adapters/driving/tools/dom-snapshot-schema.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 function harness(api: Partial<FigmaApi>, depsOverrides: Partial<ToolDeps> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => api as FigmaApi, defaultToken: 'figd_x', logger, ...depsOverrides };
   registerSuggestPairsTool(server, deps);
-  return handlers.suggest_pairs;
+  return (a: any): Promise<any> => call('suggest_pairs', a);
 }
 
 // compound (nested-instance) id, colon form — Figma keys /nodes children this way for

@@ -35,17 +35,19 @@ const InputSchema = {
 };
 
 export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_layout_spec',
-    'Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, ' +
-    'typography, fill hex, component identity. Lightweight (shallow fetch) — use it to pick the target frame width ' +
-    'and build node↔selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor ' +
-    '(schema-versioned with the server) as extractor_js — by default a short loader thunk that fetches the ' +
-    'canonical script from the server rather than inlining it (extractor_mode:"inline" forces the full script, ' +
-    'e.g. if a CSP blocks the loader\'s script tag); when the server is configured for it, also returns an ' +
-    'upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to ' +
-    'compare_node_to_dom instead of pasting raw snapshot JSON.',
-    InputSchema,
+    {
+      description: 'Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, ' +
+      'typography, fill hex, component identity. Lightweight (shallow fetch) — use it to pick the target frame width ' +
+      'and build node↔selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor ' +
+      '(schema-versioned with the server) as extractor_js — by default a short loader thunk that fetches the ' +
+      'canonical script from the server rather than inlining it (extractor_mode:"inline" forces the full script, ' +
+      'e.g. if a CSP blocks the loader\'s script tag); when the server is configured for it, also returns an ' +
+      'upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to ' +
+      'compare_node_to_dom instead of pasting raw snapshot JSON.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('get_layout_spec', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);

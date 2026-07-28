@@ -236,19 +236,21 @@ const InputSchema = {
 };
 
 export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'compare_node_to_dom',
-    'Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, inter-child gaps ' +
-    '(derived from geometry — insensitive to margin/padding/gap implementation), effective paddings, cross-axis ' +
-    'offsets, typography, colors, component identity (warn-only). Returns machine-readable rows ' +
-    '{prop, figma, dom, delta, status} per pair + a ready "Verified against Figma" markdown block. ' +
-    'Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). ' +
-    'Token rows with status `review` (📝) carry `figma`/`dom` token names — judge them: return **same token** ' +
-    '(→ resolved) only if the names denote the same concept; **wrong token** (→ report) ONLY when they denote ' +
-    'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
-    'rename), answer **unsure** and escalate — never call it wrong. `review` rows keep the verdict non-green until ' +
-    'resolved; a name that merely differs textually is not a defect.',
-    InputSchema,
+    {
+      description: 'Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, inter-child gaps ' +
+      '(derived from geometry — insensitive to margin/padding/gap implementation), effective paddings, cross-axis ' +
+      'offsets, typography, colors, component identity (warn-only). Returns machine-readable rows ' +
+      '{prop, figma, dom, delta, status} per pair + a ready "Verified against Figma" markdown block. ' +
+      'Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). ' +
+      'Token rows with status `review` (📝) carry `figma`/`dom` token names — judge them: return **same token** ' +
+      '(→ resolved) only if the names denote the same concept; **wrong token** (→ report) ONLY when they denote ' +
+      'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
+      'rename), answer **unsure** and escalate — never call it wrong. `review` rows keep the verdict non-green until ' +
+      'resolved; a name that merely differs textually is not a defect.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('compare_node_to_dom', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const t0 = Date.now();

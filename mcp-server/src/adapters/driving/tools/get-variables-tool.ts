@@ -26,10 +26,12 @@ const InputSchema = {
 };
 
 export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_variables',
-    'List design tokens (Figma variables) in a file: name, type, default-mode value (colors as hex), and collection. Pass node_id to return ONLY the variables a node subtree references (the headless analogue of get_variable_defs) instead of the whole-file catalog. Returns a summary header (total, resolved_via buckets {local,graph,snapshot}, unresolved count, by_type counts) plus optional filters (collection, name, type, unresolved_only) and pagination (limit/offset). Duplicate rows are deduped and case-variant collection names are unified. Aliases within the file are resolved. Cross-library aliases are resolved headless via the registered library graph: when the source library\'s team is registered, the token returns value:<hex>, resolved_via:"graph", and source_library (the source file key). Otherwise it stays honest — value:null, alias:true, alias_of:<VariableID> — meaning that library\'s team is not registered yet (register it to resolve). Requires the file to expose variables (Enterprise plan); raise timeout_ms on large files. Multi-mode tokens (collections with >1 mode) carry mode_dependent:true and modes:{<modeName>:<hex>} — value is the DEFAULT mode; do not treat it as the on-screen value without checking the node\'s mode (see get_design_context).',
-    InputSchema,
+    {
+      description: 'List design tokens (Figma variables) in a file: name, type, default-mode value (colors as hex), and collection. Pass node_id to return ONLY the variables a node subtree references (the headless analogue of get_variable_defs) instead of the whole-file catalog. Returns a summary header (total, resolved_via buckets {local,graph,snapshot}, unresolved count, by_type counts) plus optional filters (collection, name, type, unresolved_only) and pagination (limit/offset). Duplicate rows are deduped and case-variant collection names are unified. Aliases within the file are resolved. Cross-library aliases are resolved headless via the registered library graph: when the source library\'s team is registered, the token returns value:<hex>, resolved_via:"graph", and source_library (the source file key). Otherwise it stays honest — value:null, alias:true, alias_of:<VariableID> — meaning that library\'s team is not registered yet (register it to resolve). Requires the file to expose variables (Enterprise plan); raise timeout_ms on large files. Multi-mode tokens (collections with >1 mode) carry mode_dependent:true and modes:{<modeName>:<hex>} — value is the DEFAULT mode; do not treat it as the on-screen value without checking the node\'s mode (see get_design_context).',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('get_variables', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);

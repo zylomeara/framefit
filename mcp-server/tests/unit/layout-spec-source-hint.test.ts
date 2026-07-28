@@ -15,7 +15,6 @@ import { diffPair } from '../../src/domain/layout-spec/diff.js';
 import {
   buildPairSource, SOURCE_NOTE_NO_PARSE, registerCompareNodeToDomTool,
 } from '../../src/adapters/driving/tools/compare-node-to-dom-tool.js';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
@@ -23,6 +22,7 @@ import { withFrameRaw } from './helpers/frame-raw.js';
 import type { LayoutSpec, DomSnapshotOk, PairAttribution, PairResult, PairSource } from '../../src/domain/layout-spec/types.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
 import { renderReport } from '../../src/domain/layout-spec/report.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 // ── Live CSS-modules classes (turbopack P1: module with an extension + hash-with-digit + local) ──
 const CARD_A = 'card-module-scss-module__Cd2__root';    // card.module.scss / root
@@ -365,11 +365,10 @@ describe('source-hint — attribution collection in diff + source assembly in th
 // ── Tool level: cross-pair isolation (#8b) + budget independence of the window (#9) ──
 const logger = createLogger({ level: 'silent' });
 function harness(api: Partial<FigmaApi>, maxResultChars = 40000) {
-  const handlers: Record<string, (a: unknown) => Promise<{ content: { text: string }[] }>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: unknown) => Promise<{ content: { text: string }[] }>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars };
   registerCompareNodeToDomTool(server, deps);
-  return handlers.compare_node_to_dom;
+  return (a: any): Promise<any> => call('compare_node_to_dom', a);
 }
 
 describe('source-hint — tool: cross-pair isolation + budget', () => {

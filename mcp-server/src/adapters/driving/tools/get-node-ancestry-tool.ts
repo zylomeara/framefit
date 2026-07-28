@@ -135,13 +135,15 @@ function queryHits(
 }
 
 export function registerGetNodeAncestryTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_node_ancestry',
-    'Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). ' +
-      'Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read ' +
-      'the ancestor children. bbox-guided, id-confirmed, ≤12 light REST calls — never fetches the whole ' +
-      'file. query highlights matching names in scope.',
-    InputSchema,
+    {
+      description: 'Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). ' +
+        'Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read ' +
+        'the ancestor children. bbox-guided, id-confirmed, ≤12 light REST calls — never fetches the whole ' +
+        'file. query highlights matching names in scope.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('get_node_ancestry', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);

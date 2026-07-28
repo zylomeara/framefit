@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerFindNodesTool } from '../../src/adapters/driving/tools/find-nodes-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 // Minimal harness: capture the tool handler the registration installs.
 function install(rootDoc: RawSceneNode) {
-  let handler: ((args: Record<string, unknown>) => Promise<{ content: { text: string }[] }>) | undefined;
-  const server = { tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const api = {
     getNodesRaw: async (_k: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: rootDoc } } }),
   };
@@ -14,7 +13,7 @@ function install(rootDoc: RawSceneNode) {
     buildApi: () => api as never, defaultToken: 't', logger: { warn() {} } as never, maxResultChars: 40000,
   };
   registerFindNodesTool(server, deps as never);
-  return (args: Record<string, unknown>) => handler!(args);
+  return (args: Record<string, unknown>) => call('find_nodes', args);
 }
 
 const board: RawSceneNode = {

@@ -1,15 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetCodeConnectMapTool } from '../../src/adapters/driving/tools/get-code-connect-map-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
 function harness(withCC: boolean) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -23,12 +22,11 @@ function harness(withCC: boolean) {
     ...(withCC ? { codeConnect: { lookup: async () => new Map([['LIB|7:7', { component_name: 'Button', source: 's', template: 't', template_data: {}, label: 'React' }]]) } } : {}),
   };
   registerGetCodeConnectMapTool(server, deps);
-  return handlers.get_code_connect_map;
+  return (a: any): Promise<any> => call('get_code_connect_map', a);
 }
 
 function ccHarness(cc: any, apiOverrides: Partial<FigmaApi> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const baseApi = {
     getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
     getDocumentRaw: async () => ({}) as any, getImages: async () => ({ images: {} }), getVariablesLocal: async () => ({}),
@@ -43,7 +41,7 @@ function ccHarness(cc: any, apiOverrides: Partial<FigmaApi> = {}) {
     codeConnect: cc,
   };
   registerGetCodeConnectMapTool(server, deps);
-  return handlers.get_code_connect_map;
+  return (a: any): Promise<any> => call('get_code_connect_map', a);
 }
 
 describe('get_code_connect_map tool', () => {
@@ -60,8 +58,7 @@ describe('get_code_connect_map tool', () => {
     expect(body.count).toBe(0);
   });
   it('reports partial misses via requested vs count', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -80,7 +77,7 @@ describe('get_code_connect_map tool', () => {
       codeConnect: { lookup: async () => new Map([['LIB|7:7', { component_name: 'Button', source: 's', template: 't', template_data: {}, label: 'React' }]]) },
     };
     registerGetCodeConnectMapTool(server, deps);
-    const res = await handlers.get_code_connect_map({ file: 'abc', node_ids: ['1-6', '1-7'] });
+    const res = await call('get_code_connect_map', { file: 'abc', node_ids: ['1-6', '1-7'] });
     const body = JSON.parse(res.content[0].text);
     expect(body.requested).toBe(2);
     expect(body.count).toBe(1);

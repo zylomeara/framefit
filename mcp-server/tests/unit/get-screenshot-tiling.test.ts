@@ -1,18 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetScreenshotTool } from '../../src/adapters/driving/tools/get-screenshot-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 function install(doc: RawSceneNode) {
-  let handler: ((a: Record<string, unknown>) => Promise<{ content: { text: string }[] }>) | undefined;
-  const server = { tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const api = {
     getNodesRaw: async (_k: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: doc } } }),
     getImages: async (_k: string, ids: string[]) => ({ images: Object.fromEntries(ids.map((i) => [i, `https://signed/${i}`])) }),
   };
   const deps = { buildApi: () => api as never, defaultToken: 't', logger: { warn() {} } as never, maxResultChars: 40000 };
   registerGetScreenshotTool(server, deps as never);
-  return (a: Record<string, unknown>) => handler!(a);
+  return (a: Record<string, unknown>) => call('get_screenshot', a);
 }
 
 const huge: RawSceneNode = {

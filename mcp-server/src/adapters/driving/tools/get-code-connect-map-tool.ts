@@ -16,10 +16,12 @@ const InputSchema = {
 };
 
 export function registerGetCodeConnectMapTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_code_connect_map',
-    'Map Figma instance nodes to their Code Connect code snippets (component, imports, source) from mappings your CI uploaded (Figma exposes no Code Connect REST endpoint, so this reads CI-ingested mappings, not Figma directly). When the map is empty the response carries a `reason` (no_instances | components_unresolved | no_mappings | not_configured) and a `note` explaining why and how to populate mappings.',
-    InputSchema,
+    {
+      description: 'Map Figma instance nodes to their Code Connect code snippets (component, imports, source) from mappings your CI uploaded (Figma exposes no Code Connect REST endpoint, so this reads CI-ingested mappings, not Figma directly). When the map is empty the response carries a `reason` (no_instances | components_unresolved | no_mappings | not_configured) and a `note` explaining why and how to populate mappings.',
+      inputSchema: InputSchema,
+    },
     async (args) =>
       runTool('get_code_connect_map', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);
