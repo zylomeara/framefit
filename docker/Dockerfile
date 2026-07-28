@@ -24,6 +24,12 @@ COPY --chown=app:app mcp-server/package.json ./
 # Operator CLI shim: dist/index.js lands mode 644 in the image (tsc preserves the #!/usr/bin/env node
 # shebang but not the exec bit), so make it executable and expose it on PATH as `framefit`.
 RUN ln -s /app/dist/index.js /usr/local/bin/framefit && chmod +x /app/dist/index.js
+# The image author declaring how this process is invoked - the same class of fact as BIND_HOST
+# above, and read the same way argv[1] is. Without it a diagnosis from the running container names
+# `node /app/dist/index.js status`: true, and runnable only for a reader who already has a shell
+# inside the container. With it the message names the `docker compose exec` form too, which is what
+# the reader on the host can actually paste (src/infrastructure/status-hint.ts).
+ENV FRAMEFIT_INVOCATION=docker
 USER app
 EXPOSE 3846
 # The healthcheck runs INSIDE the container and structurally cannot observe host-side port

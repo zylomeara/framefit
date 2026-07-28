@@ -73,7 +73,9 @@ export interface CliDeps {
   // not be silently absent from what the CLI hands to the checks.
   tokenStats: () => Promise<TokenStats>;
   graphStats: () => Promise<GraphStats>;
-  validatePat: (pat: string, timeoutMs?: number) => Promise<{ ok: true; handle: string } | { ok: false; status: number }>;
+  // Must stay identical to StatusCtx.validatePat (status.ts), optional `reason` included: that is
+  // Figma's own refusal text, and figmaCheck prints it instead of a bare status code.
+  validatePat: (pat: string, timeoutMs?: number) => Promise<{ ok: true; handle: string } | { ok: false; status: number; reason?: string }>;
   // The verify half of the ENCRYPTION_KEY self-test; signBridgeToken above is the sign half.
   verifyBridgeToken: (token: string, secretHex: string, scope: string) => Promise<string | null>;
   now: () => number;

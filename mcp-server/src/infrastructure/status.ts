@@ -31,8 +31,11 @@ export interface StatusCtx {
   db?: StatusDb;
   signBridgeToken: (userId: string, secretHex: string, ttlSec: number) => Promise<string>;
   verifyBridgeToken: (token: string, secretHex: string, scope: string) => Promise<string | null>;
+  // `reason` mirrors PatValidation (multi-tenant/validate-pat.ts) and is what lets this CLI print
+  // WHY Figma refused rather than only that it did - the status code alone cannot classify a dead
+  // token, which is the ambiguity the tool messages point at this command to resolve.
   validatePat: (pat: string, timeoutMs?: number) =>
-    Promise<{ ok: true; handle: string } | { ok: false; status: number }>;
+    Promise<{ ok: true; handle: string } | { ok: false; status: number; reason?: string }>;
   hostname: string;
   pid: number;
   /** Secrets discovered at RUNTIME (decrypted PATs). A check adds a value here before letting it
@@ -696,10 +699,34 @@ export const figmaCheck: Check = {
     }
     if (!ctx.multiTenant) {
       const token = ctx.env.FIGMA_TOKEN;
-      if (!token) return { state: 'skipped', reason: 'no FIGMA_TOKEN to probe (callers may pass a per-call figma_token)' };
+      // The old text - "no FIGMA_TOKEN to probe (callers may pass a per-call figma_token)" - reads
+      // as reassurance, and it lands in a run whose summary says "1 ok, 5 skipped, 0 failed" with
+      // exit 0. On stdio the token lives in the MCP host's env block (claude mcp add --env
+      // FIGMA_TOKEN=...) and never in the shell, so the reader whose token is dead is EXACTLY the
+      // reader who gets this line. The per-call-token fact it drops is not lost: configCheck's own
+      // detail still carries it, on a line printed by the same run.
+      if (!token) return { state: 'skipped', reason:
+        'no FIGMA_TOKEN in this process environment, so the token was not probed - this is NOT a verdict '
+        + 'that the token is fine. On stdio the token lives in your MCP host\'s env block, not your shell; '
+        + 're-run this command with FIGMA_TOKEN set to probe it.' };
       // Single probe, so it gets the WHOLE per-check budget - there is no second user to share it with.
       const result = await ctx.validatePat(token, PER_CHECK_TIMEOUT_MS);
-      if (!result.ok) return { state: 'fail', reason: `Figma refused the token (HTTP ${result.status})` };
+      if (!result.ok) {
+        const quoted = result.reason ? `: ${result.reason}` : '';
+        // 401 and 403 are the two statuses /v1/me uses to REFUSE a credential, and that endpoint
+        // takes no input but the token, so for those two the expiry sentence is sound. It is gated
+        // rather than appended unconditionally because any other status is Figma not answering: a
+        // 429 rendered as "Figma refused the token ... PATs expire after at most 90 days" diagnoses
+        // a rate limit as a dead token, which is the very thing the neighbouring row in
+        // status.test.ts ("reports the HTTP status rather than calling a 429 a rejection") exists
+        // to forbid.
+        const refused = result.status === 401 || result.status === 403;
+        return { state: 'fail', reason: refused
+          ? `Figma refused the token (HTTP ${result.status})${quoted}.`
+            + ' Figma PATs expire after at most 90 days.'
+          : `Figma did not answer the token probe (HTTP ${result.status})${quoted}.`
+            + ' That status is not a verdict about the token - re-run this command before changing it.' };
+      }
       return { state: 'ok', detail: { handle: result.handle } };
     }
     // Named separately, the way dbCheck does: a combined "needs X and Y" reason forces an operator
@@ -726,7 +753,23 @@ export const figmaCheck: Check = {
       ctx.secrets.add(row.pat);
       probed++;
       const result = await ctx.validatePat(row.pat, perUserTimeoutMs);
-      if (result.ok) accepted++; else bad.push(`${user} (HTTP ${result.status})`);
+      // Figma's own reason, per user, for the same reason the single-tenant branch above prints it:
+      // "u1 (HTTP 403)" cannot tell a revoked token from one Figma refused for another cause, and
+      // this list is the whole output an operator gets for those users.
+      //
+      // FENCED IN DOUBLE QUOTES, and that fence is the whole argument - not escaping. The entries
+      // are joined with ", " and each opens with "<user> (HTTP <n>", so upstream text placed inside
+      // that parenthesis could close it and open another: the reason
+      //     x), admin (HTTP 200: accepted
+      // rendered as `u1 (HTTP 403: x), admin (HTTP 200: accepted)` - an invented user carrying a
+      // success that never happened, in this server's own voice. The double quote is the ONE
+      // character upstreamReason strips from the alphabet outright (printableAsciiOnly,
+      // figma-rest.ts), put there for exactly this purpose at the adapter's own fence, so a
+      // quote-delimited reason cannot be escaped from at all rather than merely being awkward to
+      // escape from. Everything an intermediary writes stays visibly inside its quotes; the entry
+      // boundaries outside them stay this server's.
+      if (result.ok) accepted++;
+      else bad.push(`${user} (HTTP ${result.status})${result.reason ? ` reason "${result.reason}"` : ''}`);
     }
     // Nobody has a default PAT to probe: `probed` stayed 0, so NOTHING was actually called. Reporting
     // `ok` here (accepted: "0 of 0", as this used to) renders a green [OK] line for a check that never

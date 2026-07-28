@@ -9,6 +9,7 @@ import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
 import { listTokens, listTokensForIds, collectNodeVariableIds } from '../../../domain/variables.js';
 import { extractLibraryKey } from '../../../domain/variable-snapshot.js';
 import { FigmaApiError } from '../../../ports/errors.js';
+import { tokenStatusHint } from '../../../infrastructure/status-hint.js';
 import { summarizeTokens, filterTokens, dedupeTokens, canonicalizeCollections } from '../../../domain/variables-summary.js';
 
 const InputSchema = {
@@ -137,7 +138,13 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
             tokens,
           });
         } catch (err) {
-          if (err instanceof FigmaApiError && err.kind === 'forbidden') {
+          // BOTH 403 kinds, not just 'forbidden'. mapStatus routes a 403 whose reason names a scope
+          // (and neither the token nor a plan) to kind 'auth' - that is the ONLY auth-403 it
+          // produces - so the scope-family 403, the one case where Figma told us exactly what is
+          // wrong, was the one case that bypassed this branch entirely and ended at no runnable
+          // command at all. The kind is READ here, never moved: nothing in this file changes what
+          // mapStatus classifies.
+          if (err instanceof FigmaApiError && (err.kind === 'forbidden' || (err.kind === 'auth' && err.status === 403))) {
             // PRESERVE err.message - it already carries the bounded, sanitized upstream reason that
             // mapStatus parsed out of Figma's body. The old code threw a brand-new Error with the
             // Enterprise sentence, discarding both the message and the reason, so a user whose
@@ -179,7 +186,25 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
             const tokenNamed = /invalid token/i.test(reason);
             const scopeNamed = /scope/i.test(reason);
             const planNamed = /limited by figma plan|incorrect account type/i.test(reason);
-            const tail = tokenNamed && planNamed
+            // Read from the KIND, not re-derived from the reason string: an auth-403 is by
+            // construction the scope family and nothing else (reasonFamily ranks the token and the
+            // plan above the scope, and both of those map to 'forbidden'). Testing the string again
+            // here would be a second classifier free to disagree with the one that chose the kind.
+            // This branch is unreachable for a 'forbidden' error, so every tail below keeps exactly
+            // the behaviour its own gates already pin.
+            const scopeFamily = err.kind === 'auth';
+            const tail = scopeFamily
+              // mapStatus's scope sentence names this server's GENERIC read pair
+              // (file_comments:read, file_content:read) because it is written for five call sites
+              // at once. For this endpoint those are the wrong scopes, and a reader who checks them
+              // finds them present and concludes the scope is not the problem. Correcting the
+              // subject is this layer's job, exactly as search_design_system corrects "this file's
+              // plan" to the team it actually called; the sentence above is not repeated.
+              ? 'Figma named a scope. The scopes named above are this server\'s generic read pair,'
+                + ' not the one this endpoint needs: the Variables REST API needs'
+                + ' file_variables:read.'
+                + ' Check that scope on the Personal access tokens page in Figma.'
+              : tokenNamed && planNamed
               // Figma named two causes and the ranking answered one. Naming the other is not
               // second-guessing the ranking - the message still LEADS with the token - it is
               // refusing to drop a cause Figma put in the same sentence.
@@ -216,7 +241,15 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
                     + " the file's Figma plan, the token being valid, and the token carrying"
                     + ' file_variables:read.'
                     + ' Check that scope on the Personal access tokens page in Figma.';
-            throw new Error(`${err.message} ${tail}`);
+            // The one check that is always available, in the form THIS process can actually run.
+            // Every tail above ends at something the reader does in Figma's web UI; none of them
+            // ends at anything they can run against this instance, and on the branch where Figma
+            // named nothing the alternative would be to invent a remedy for a cause nobody knows.
+            // Derived from process.argv[1], because `framefit` is on PATH only inside the container
+            // image or from a published package - a hard-coded string is wrong in the mode the
+            // README leads with. It points at a check and names no culprit, so it composes with the
+            // plan branch above, which has just said the token is not the problem.
+            throw new Error(`${err.message} ${tail} ${tokenStatusHint(undefined, { perCallToken: args.figma_token !== undefined })}`);
           }
           if (err instanceof FigmaApiError && err.kind === 'unknown_4xx' && err.status === 400) {
             // Body-first: the too-large advice recommends splitting a design-system file, which is a

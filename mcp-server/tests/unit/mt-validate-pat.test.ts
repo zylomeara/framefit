@@ -21,14 +21,25 @@ describe('validatePat', () => {
     expect((init.headers as Record<string, string>)['X-Figma-Token']).toBe('figd_valid');
   });
 
-  it('returns not-ok for 403 (invalid/expired token)', async () => {
+  // Both rows now pin the REASON as well as the status. The status alone cannot classify a dead
+  // token (the same token answers 401 on one endpoint and 403 on another), and `status` printed
+  // exactly "Figma refused the token (HTTP 403)" - terminating the diagnosis in the ambiguity it
+  // was pointed at to resolve.
+  it('returns not-ok for 403, carrying Figma\'s own reason', async () => {
     stubFetch(403, { status: 403, err: 'Invalid token' });
-    expect(await validatePat('figd_dead')).toEqual({ ok: false, status: 403 });
+    expect(await validatePat('figd_dead')).toEqual({ ok: false, status: 403, reason: 'Invalid token' });
   });
 
   it('returns not-ok for 401', async () => {
     stubFetch(401, { err: 'no' });
-    expect(await validatePat('bad')).toEqual({ ok: false, status: 401 });
+    expect(await validatePat('bad')).toEqual({ ok: false, status: 401, reason: 'no' });
+  });
+
+  it('a body with no readable reason yields no reason field at all', async () => {
+    // Same rule as the REST adapter: an HTML interstitial from a proxy or captive portal must
+    // contribute nothing rather than arrive as this server's diagnosis in this server's voice.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<HTML>403</HTML>', { status: 403 })));
+    expect(await validatePat('figd_dead')).toEqual({ ok: false, status: 403 });
   });
 
   it('throws on network error (caller decides, not "invalid")', async () => {

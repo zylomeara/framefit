@@ -21,6 +21,7 @@ import { registerGetScreenshotTool } from '../../src/adapters/driving/tools/get-
 import { registerExportAssetsTool } from '../../src/adapters/driving/tools/export-assets-tool.js';
 import { registerGetReviewBoardTool } from '../../src/adapters/driving/tools/get-review-board-tool.js';
 import boardFixture from '../fixtures/review-board-profile.json';
+import { tokenStatusHint } from '../../src/infrastructure/status-hint.js';
 import { buildToolDeps } from '../../src/infrastructure/server.js';
 import { loadConfig } from '../../src/infrastructure/config.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
@@ -226,6 +227,77 @@ describe('search_design_system carries the upstream reason instead of a boolean'
 });
 
 /**
+ * The fan-out. `search_design_system` calls up to five teams and used to keep ONE refusal, which
+ * every later failure overwrote - so the reader got a remedy chosen by settle order, with no team
+ * id in the text at all. `skipped_teams` does not mitigate it: that array is built into the SUCCESS
+ * result, and this path is the one where nothing came back.
+ */
+describe('a multi-team refusal names which team produced which cause', () => {
+  /** Registered-team fallback (no team_id), one reply per team, routed by the team id in the URL. */
+  async function callFanOut(byTeam: Record<string, { status: number; body: string }>) {
+    stubFetch((url) => {
+      for (const [id, r] of Object.entries(byTeam)) if (url.includes(`/teams/${id}/`)) return r;
+      return VERSION_OK;
+    });
+    const { server, call } = makeFakeMcpServer();
+    registerSearchDesignSystemTool(server, { ...deps(), registeredTeams: { list: async () => Object.keys(byTeam) } });
+    const res = await call('search_design_system', { query: 'button', limit: 10 });
+    return { isError: res.isError, text: textOf(res.content[0]) };
+  }
+
+  const DEAD_TOKEN = { status: 403, body: '{"status":403,"err":"Invalid token"}' };          // kind forbidden
+  const MISSING_SCOPE = { status: 403, body: '{"status":403,"err":"missing scope team_library_content:read"}' };   // kind auth
+
+  it('same cause on every team: one diagnosis, and it says which teams it covers', async () => {
+    const r = await callFanOut({ '111': DEAD_TOKEN, '222': DEAD_TOKEN });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/All 2 teams \(111, 222\) were refused the same way/);
+    expect(r.text).toContain('Invalid token');
+    expect(r.text, 'one cause, so one remedy is honest here').not.toMatch(/not for the same reason/i);
+    expect(r.text).toMatch(/Run `(framefit|node )[^`]* status`/);
+  });
+
+  it('causes that DISAGREE are never resolved into one remedy by settle order', async () => {
+    // The exact race round 2 widened: 'auth' (re-scope) against 'forbidden' (re-issue). Those two
+    // remedies are incompatible, and the old code picked whichever request settled last - silently,
+    // and with nothing naming the team it came from.
+    const r = await callFanOut({ '111': MISSING_SCOPE, '222': DEAD_TOKEN });
+    expect(r.isError).toBe(true);
+    expect(r.text, 'the reader is told plainly that one answer will not do').toMatch(/not for the same reason/i);
+    expect(r.text, 'the scope team, with its own cause').toMatch(/Team 111: .*missing scope team_library_content:read/);
+    expect(r.text, 'the dead-token team, with its own').toMatch(/Team 222: .*Invalid token/);
+    expect(r.text).toMatch(/revoked, mistyped, or past its expiry/);
+    expect(r.text).toMatch(/generic read pair/i);
+    expect(r.text).toMatch(/Run `(framefit|node )[^`]* status`/);
+  });
+
+  it('and the disagreeing case is DETERMINISTIC, not settle order', async () => {
+    // Two concurrent requests: the message must be the same on every run, and it must be the same
+    // whichever order the teams were registered in.
+    const a = await callFanOut({ '111': MISSING_SCOPE, '222': DEAD_TOKEN });
+    vi.unstubAllGlobals();
+    const b = await callFanOut({ '111': MISSING_SCOPE, '222': DEAD_TOKEN });
+    expect(b.text).toBe(a.text);
+  });
+
+  it('a team that failed some other way is named too, and not folded into the diagnosis', async () => {
+    // A 404 is not a 403 and nothing in the 403 diagnosis is a claim about it - but before this it
+    // reached the reader nowhere at all on this path.
+    const r = await callFanOut({ '111': DEAD_TOKEN, '222': { status: 404, body: '{"status":404,"err":"Not found"}' } });
+    expect(r.text).toContain('Invalid token');
+    expect(r.text).toMatch(/not diagnosed above: 222/);
+    expect(r.text, 'the 404 team is not claimed to have the 403 cause').not.toMatch(/Team 222: Figma rejected/);
+  });
+
+  it('a single team is unchanged - no lead, no attribution noise', async () => {
+    const r = await callFanOut({ '111': DEAD_TOKEN });
+    expect(r.text).not.toMatch(/All 1 teams/);
+    expect(r.text).not.toMatch(/Team 111:/);
+    expect(r.text.startsWith('Figma rejected the token (403).')).toBe(true);
+  });
+});
+
+/**
  * ROUND 2. Every row above asserts the delivered text, which is what made the headline defect
  * visible - but four defects survived that were invisible to a row reading only for what THIS
  * task's code emits. The adapter writes one sentence, the tool appends another, and the reader gets
@@ -380,8 +452,10 @@ describe('round 4: a body naming all three signals drops none of them', () => {
     for (const [status, body] of [[403, TRIPLE], [403, '{"status":403,"err":"Invalid token, incorrect account type"}']] as [number, string][]) {
       const r = await callVariables(status, body);
       expect(nonAscii(r.text)).toEqual([]);
-      const last = r.text.trim().split(/(?<=[.])\s+/).filter(Boolean).pop() ?? '';
-      expect(last, `last sentence for ${body}`).toMatch(/^(Check|Ask|Open|Issue|Retry|Give|Wait|Split|Name)/);
+      const tail = withoutStatusPointer(r.text);
+      const last = tail.split(/(?<=[.])\s+/).filter(Boolean).pop() ?? '';
+      expect(last, `last sentence of the TAIL for ${body}`).toMatch(/^(Check|Ask|Open|Issue|Retry|Give|Wait|Split|Name)/);
+      expect(r.text, `the pointer itself for ${body}`).toMatch(/Run `(framefit|node )[^`]* status`/);
       vi.unstubAllGlobals();
     }
   });
@@ -607,12 +681,42 @@ function nonAscii(s: string): string[] {
   return out;
 }
 
+/**
+ * The tool's OWN tail, with the closing `status` pointer removed.
+ *
+ * The pointer is appended by a different layer and always begins "Run", so admitting "Run" into the
+ * verb lists below cost both of those rows the behaviour they exist to reject: with the pointer in
+ * place as the last sentence, hedging the final sentence of the get_variables 403 tail left the
+ * whole suite green, where the identical mutation was red before "Run" was admitted. The pointer is
+ * therefore cut off and asserted separately, and the verb list goes back to its original alphabet
+ * reading the sentence it was written for.
+ *
+ * TWICE WRONG, and the second time is the instructive one. The first cut was `indexOf('Run `')`,
+ * which finds the FIRST such command - so a tail carrying a command of its OWN was itself removed
+ * and the row then examined a sentence the reader never reaches: a legal verb before that command
+ * with the hedge after it passed the whole suite while the delivered tail ended on "It is unclear
+ * which of these applies". Cutting at the EXACT pointer, searched from the END, closes both
+ * directions at once - the string is computed from the same function the tool calls, so nothing
+ * shorter can be mistaken for it, and requiring it to be the SUFFIX means text appended AFTER the
+ * pointer cannot hide behind the cut either.
+ */
+function withoutStatusPointer(text: string): string {
+  const pointer = tokenStatusHint();
+  const i = text.lastIndexOf(pointer);
+  if (i === -1) return text.trim();          // the 400 rows carry no pointer at all
+  expect(text.slice(i), 'the pointer must be the SUFFIX of the delivered text').toBe(pointer);
+  return text.slice(0, i).trim();
+}
+
 const ALL_403_BODIES = [
   '{"status":403,"err":"Invalid token"}',
   '{"status":403,"error":true,"message":"Invalid token"}',
   '{"status":403,"err":"Limited by Figma plan"}',
   '{"status":403,"err":"Incorrect account type"}',
   '<HTML><HEAD><TITLE>ERROR: The request could not be satisfied',
+  // kind 'auth', not 'forbidden' - the class that bypassed the 403 branch entirely and ended at no
+  // runnable command at all. It belongs in EVERY sweep in this file, not only in its own row.
+  '{"status":403,"err":"missing scope file_variables:read"}',
 ];
 
 describe('every message in this task is ASCII, and ends at something the reader can do', () => {
@@ -636,17 +740,66 @@ describe('every message in this task is ASCII, and ends at something the reader 
     // The 400 "Request too large" paragraph is deliberately NOT in this list: its wording is the
     // brief's verbatim text and its final clause is the parenthetical about the request timeout.
     // The retry instruction sits in the middle of it, and the row below asserts it is there.
+    //
+    // Admitting "Run" to this list to accommodate the appended `status` pointer was a mistake and
+    // is reverted: the pointer is the last sentence of every 403 now, so the list stopped reading
+    // the tail this row is about and a hedged tail passed. The pointer is stripped first and
+    // checked on its own line below, which is both assertions instead of neither.
     const cases: [number, string][] = [
       ...ALL_403_BODIES.map((b) => [403, b] as [number, string]),
       [400, '{"status":400,"err":"Invalid parameter: node_id"}'],
     ];
     for (const [status, b] of cases) {
       const r = await callVariables(status, b);
-      const last = r.text.trim().split(/(?<=[.])\s+/).filter(Boolean).pop() ?? '';
-      expect(last, `last sentence of the message for ${status} ${b}`)
+      const tail = withoutStatusPointer(r.text);
+      const last = tail.split(/(?<=[.])\s+/).filter(Boolean).pop() ?? '';
+      expect(last, `last sentence of the TAIL for ${status} ${b}`)
         .toMatch(/^(Check|Ask|Open|Issue|Retry|Give|Wait|Split|Name)/);
       vi.unstubAllGlobals();
     }
+  });
+
+  it('every 403 - both kinds - closes with a runnable status command', async () => {
+    // The claim "every 403 grew a closing pointer" was untrue and ungated: a scope-family 403 is
+    // kind 'auth', bypassed the branch the pointer was appended to, and ended at whatever mapStatus
+    // had written. Asserted over BOTH tools and every body, so the claim has a gate rather than a
+    // sentence in a report.
+    for (const b of ALL_403_BODIES) {
+      const r = await callVariables(403, b);
+      expect(r.text, `get_variables 403 pointer for ${b}`).toMatch(/Run `(framefit|node )[^`]* status`/);
+      vi.unstubAllGlobals();
+
+      stubFetch(() => ({ status: 403, body: b }));
+      const { server, call } = makeFakeMcpServer();
+      registerSearchDesignSystemTool(server, deps());
+      const res = await call('search_design_system', { query: 'button', team_id: '123', limit: 10 });
+      expect(textOf(res.content[0]), `search_design_system 403 pointer for ${b}`)
+        .toMatch(/Run `(framefit|node )[^`]* status`/);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a scope-family 403 corrects the generic scope pair instead of leaving it to be checked', async () => {
+    // mapStatus writes one scope sentence for five call sites: "Check scopes: file_comments:read,
+    // file_content:read". For these two endpoints those are the wrong scopes, and a reader who
+    // finds them present concludes the scope is not the problem.
+    const v = await callVariables(403, '{"status":403,"err":"missing scope file_variables:read"}');
+    expect(v.isError).toBe(true);
+    expect(v.text).toContain('missing scope file_variables:read');
+    expect(v.text, 'the scope THIS endpoint needs').toContain('file_variables:read');
+    expect(v.text, 'and the correction of the pair above it').toMatch(/generic read pair/i);
+    vi.unstubAllGlobals();
+
+    stubFetch(() => ({ status: 403, body: '{"status":403,"err":"missing scope team_library_content:read"}' }));
+    const { server, call } = makeFakeMcpServer();
+    registerSearchDesignSystemTool(server, deps());
+    const res = await call('search_design_system', { query: 'button', team_id: '123', limit: 10 });
+    const t = textOf(res.content[0]);
+    expect(res.isError).toBe(true);
+    expect(t).toContain('team_library_content:read');
+    expect(t).toMatch(/generic read pair/i);
+    expect(t, 'Figma named a scope, so nothing may answer that this is a plan matter')
+      .not.toMatch(/published-library reads are one of/i);
   });
 
   it('the too-large message still tells the reader to retry', async () => {
