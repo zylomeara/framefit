@@ -41,6 +41,13 @@ const ConfigSchema = z.object({
   // (fresh-clone stranger path: cp .env.example .env → crash-loop without this).
   // Mirrors the `|| undefined` pattern in multi-tenant/env.ts for PUBLIC_BASE_URL.
   FIGMA_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
+  // Read-only gate for single-tenant/stdio. Deliberately a permissive string, read leniently at
+  // the use site (`?.toLowerCase() === 'true'`, the multi-tenant/env.ts MULTI_TENANT precedent),
+  // NOT a z.enum: loadConfig throws on a parse failure and index.ts has no catch, so a strict enum
+  // would turn FRAMEFIT_READ_ONLY=1 into a boot crash that reaches a stdio user only as "MCP
+  // server failed to start". Also not z.coerce.boolean(), which maps the string 'false' to true.
+  // Unset or unrecognised means WRITE-ENABLED - today's behaviour, unchanged.
+  FRAMEFIT_READ_ONLY: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),

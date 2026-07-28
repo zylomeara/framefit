@@ -5,7 +5,7 @@ import { createLogger } from '../../src/infrastructure/logger.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import { buildGraph, resolveKey, resolveKeyModes, resolveKeyInMode, type Lib } from '../../src/domain/variable-graph.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 // Guarded live integration test — hits the real Figma REST API. Only runs when
 // FIGMA_E2E_TOKEN is set (mirrors smoke.test.ts's describe.skipIf convention),
@@ -92,7 +92,7 @@ describe.skipIf(!enabled)('nested-menu case — cross-library mode resolution', 
       node_id: E2E_NODE,
       include_component_docs: false,
     });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const entries = Object.values(body.globalVars ?? {}) as any[];
 
     // Strengthened: assert the FULL A+B+C outcome, not just that #8b6afb appears somewhere (which

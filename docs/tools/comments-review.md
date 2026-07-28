@@ -6,7 +6,9 @@ Read and write Figma comment threads, and extract structured data from design-re
 On large files start with [`summarize_comments`](#summarize_comments) to scope, then fetch full
 threads with [`get_comments`](#get_comments) or search them with [`find_threads`](#find_threads).
 The write tools ([`post_comment`](#post_comment), [`reply_to_comment`](#reply_to_comment),
-[`resolve_comment`](#resolve_comment)) are disabled when the server runs in read-only mode.
+[`resolve_comment`](#resolve_comment)) are disabled when the server runs in read-only mode. Set
+`FRAMEFIT_READ_ONLY=true` in the server environment to turn that on; only the exact value `true`
+(any case) enables it, and anything else leaves writes enabled rather than failing to start.
 
 ## Shared filter parameters
 

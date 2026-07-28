@@ -6,7 +6,7 @@ import { getCommentsUseCase, clampToBudget, computeWarnings } from '../../../app
 import { formatMarkdown } from '../../../domain/format-markdown.js';
 import type { Thread } from '../../../domain/types.js';
 import { FilterSchema, toCriteria } from './shared-schemas.js';
-import { runTool, jsonResult, textResult } from './shared-error-handler.js';
+import { runTool, jsonResult, textResult, type ReadOnlyGate } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
 
 export type ToolDeps = {
@@ -50,8 +50,11 @@ export type ToolDeps = {
     // gate ancestor discovery precisely; when absent, callers fall back to `resolve().modesByName`.
     isMultiMode?(key: string): boolean;
   };
-  /** Multi-tenant write gate: resolves the user's read_only flag per request. Undefined → writes always allowed (single-tenant/stdio). */
-  readOnly?: { isReadOnly: () => Promise<boolean> };
+  /** Write gate. Multi-tenant resolves the user's read_only flag per request; single-tenant sets a
+   * constant gate when FRAMEFIT_READ_ONLY=true (buildToolDeps). Undefined → no read-only mode was
+   * configured, so writes are allowed. Carries its own remediation sentence because the two modes
+   * have different answers — see ReadOnlyGate. */
+  readOnly?: ReadOnlyGate;
   /** Multi-tenant: list the user's registered design-system team ids — the fallback for search_design_system when no team_id is given. Undefined → single-tenant/stdio. */
   registeredTeams?: { list(): Promise<string[]> };
   /** Multi-tenant: is this fileKey a registered variable-library file (library_files)? Drives the

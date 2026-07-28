@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Jimp } from 'jimp';
 import { registerGetPinDetailTool } from '../../src/adapters/driving/tools/get-pin-detail-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -14,7 +14,7 @@ function install(doc: RawSceneNode) {
   };
   const deps = { buildApi: () => api as never, defaultToken: 't', logger: { warn() {} } as never, maxResultChars: 40000 };
   registerGetPinDetailTool(server, deps as never);
-  return (a: Record<string, unknown>): Promise<any> => call('get_pin_detail', a);
+  return (a: Record<string, unknown>) => call('get_pin_detail', a);
 }
 
 // A minimal review board: prod RECTANGLE (image fill) + numbered pin INSTANCE + aligned reference FRAME.
@@ -185,8 +185,8 @@ describe('get_pin_detail tool', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(png as unknown as BodyInit, { status: 200, headers: { 'content-type': 'image/png' } })));
     const call = install(board(1));
     const res = await call({ file: 'k', board_node_id: '12:1', pin_number: 1 });
-    const img = res.content.find((c: any) => c.type === 'image');
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    const img = res.content.find((c) => c.type === 'image')!;
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     expect(img.mimeType).toBe('image/png');
     expect(meta.pin_number).toBe(1);
     expect(meta.referenceFrameNodeId).toBe('ref');
@@ -209,8 +209,8 @@ describe('get_pin_detail tool', () => {
     const call = install(boardNoCoord());
     const res = await call({ file: 'k', board_node_id: '12:1', pin_number: 1 });
     expect(res.isError).toBeFalsy();
-    expect(res.content.find((c: any) => c.type === 'image')).toBeUndefined();
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text')!.text);
+    expect(res.content.find((c) => c.type === 'image')).toBeUndefined();
+    const meta = JSON.parse(res.content.find((c) => c.type === 'text')!.text);
     expect(meta.note).toMatch(/no screenshot coordinate/i);
     // referenceReason is set to 'no_reference_frame' because the pin fell into the no-shot
     // lane (no prodId → refFrame = null); the key must be present in the payload.
@@ -257,8 +257,8 @@ describe('get_pin_detail tool', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(png as unknown as BodyInit, { status: 200, headers: { 'content-type': 'image/png' } })));
     const call = install(boardDupPins());
     const res = await call({ file: 'k', board_node_id: '12:1', pin_node_id: '400:1' });
-    const img = res.content.find((c: any) => c.type === 'image');
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    const img = res.content.find((c) => c.type === 'image')!;
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     expect(res.isError).toBeFalsy();
     expect(img).toBeTruthy();
     // Proves '400:1' was selected (not '300:1'): pin '400:1' tip x=337 → atPercent.x ≈ 0.337
@@ -297,10 +297,10 @@ describe('get_pin_detail tool', () => {
     const call = install(boardNoRef());
     const res = await call({ file: 'k', board_node_id: '12:1', pin_number: 1 });
     // Must take the image path (coordinate existed → renderFocusCrop was invoked).
-    const img = res.content.find((c: any) => c.type === 'image');
+    const img = res.content.find((c) => c.type === 'image')!;
     expect(img).toBeDefined();
-    expect(img!.mimeType).toBe('image/png');
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    expect(img.mimeType).toBe('image/png');
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     // referenceNode must be null (no reference frame → resolution failed).
     expect(meta.referenceNode).toBeNull();
     // referenceReason must be a non-null string explaining why (honest-null invariant).

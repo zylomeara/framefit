@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { registerGetMetadataTool } from '../../src/adapters/driving/tools/get-metadata-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 function install(doc: RawSceneNode, maxResultChars = 40000) {
   const { server, call } = makeFakeMcpServer();
@@ -23,7 +23,7 @@ describe('get_metadata truncation block', () => {
   it('reports requested vs effective depth and truncated branches', async () => {
     const call = install(doc);
     const res = await call({ file: 'k', node_id: '0:0', depth: 1 });
-    const out = JSON.parse(res.content[0].text);
+    const out = JSON.parse(textOf(res.content[0]));
     expect(out.truncation.requested_depth).toBe(1);
     expect(out.truncation.effective_depth).toBe(1);
     expect(out.truncation.reason).toBe('none');
@@ -66,8 +66,8 @@ describe('get_metadata truncation block', () => {
     const BUDGET = 900;
     const call = install(deepDoc, BUDGET);
     const res = await call({ file: 'k', node_id: '0:0', depth: 3 });
-    expect(res.content[0].text.length).toBeLessThanOrEqual(BUDGET); // delivery ≤ budget
-    const out = JSON.parse(res.content[0].text);
+    expect(textOf(res.content[0]).length).toBeLessThanOrEqual(BUDGET); // delivery ≤ budget
+    const out = JSON.parse(textOf(res.content[0]));
 
     expect(out.truncation.requested_depth).toBe(3);
     expect(out.truncation.effective_depth).toBe(2);      // frontier expanded a branch — NOT floor (eff 1)
@@ -100,7 +100,7 @@ describe('get_metadata truncation block', () => {
     // Budget admits the small light expansions but not the 40-wide heavy one.
     const call = install(doc2, 700);
     const res = await call({ file: 'k', node_id: '0:0', depth: 4 });
-    const out = JSON.parse(res.content[0].text);
+    const out = JSON.parse(textOf(res.content[0]));
 
     expect(out.truncation.min_effective_depth).toBe(1);          // heavy cut at depth 1
     expect(out.truncation.effective_depth).toBeGreaterThan(1);   // light deeper
@@ -126,8 +126,8 @@ describe('get_metadata truncation block', () => {
     const call = install(wide, BUDGET);
     const res = await call({ file: 'k', node_id: '0:0', depth: 4 });
     // Delivery NEVER exceeds the budget — catches an under-estimate of the truncation block (RED on compact-without-stub).
-    expect(res.content[0].text.length).toBeLessThanOrEqual(BUDGET);
-    const out = JSON.parse(res.content[0].text);
+    expect(textOf(res.content[0]).length).toBeLessThanOrEqual(BUDGET);
+    const out = JSON.parse(textOf(res.content[0]));
     expect(out.truncation).toBeDefined();           // co-lock on content: the floor path was actually taken
     expect(out.omittedChildren).toBeGreaterThan(0);  // width truncated
     expect(out.truncation.reason).toBe('both');      // depth collapsed + width truncated
@@ -154,8 +154,8 @@ describe('get_metadata truncation block', () => {
       children: Array.from({ length: 6 }, (_, i) => mk(`${i + 1}:0`)) };
     const call = install(branchy, 900);
     const res = await call({ file: 'k', node_id: '0:0', depth: 4 });
-    expect(res.content[0].text.length).toBeLessThanOrEqual(900); // delivery ≤ budget (incl. under the mutation — not the discriminator here)
-    const out = JSON.parse(res.content[0].text);
+    expect(textOf(res.content[0]).length).toBeLessThanOrEqual(900); // delivery ≤ budget (incl. under the mutation — not the discriminator here)
+    const out = JSON.parse(textOf(res.content[0]));
     expect(out.omittedChildren).toBeUndefined();  // reserve → NOT a coarse whole-branch clamp
     expect(out.children.length).toBe(6);          // all 6 branches kept
     expect(out.truncation.reason).toBe('depth');  // depth degrade only, not 'both'
@@ -174,8 +174,8 @@ describe('get_metadata truncation block', () => {
     const tree5: RawSceneNode = { id: '0:0', name: 'root', type: 'FRAME', children: [chain('a', 4), chain('b', 4)] };
     const call = install(tree5, 700);
     const res = await call({ file: 'k', node_id: '0:0', depth: 5 });
-    expect(res.content[0].text.length).toBeLessThanOrEqual(700);
-    const out = JSON.parse(res.content[0].text);
+    expect(textOf(res.content[0]).length).toBeLessThanOrEqual(700);
+    const out = JSON.parse(textOf(res.content[0]));
     expect(out.truncation.effective_depth).toBe(2);      // compact fits to depth 2 (pretty → 1)
     expect(out.truncation.min_effective_depth).toBe(2);  // all branches at depth 2 (pretty → 1)
   });
@@ -195,8 +195,8 @@ describe('get_metadata truncation block', () => {
     })) };
     const call = install(floorDoc, 1060);
     const res = await call({ file: 'k', node_id: '0:0', depth: 2 });
-    expect(res.content[0].text.length).toBeLessThanOrEqual(1060); // delivery ≤ budget — RED without the stub in the gate (1149)
-    const out = JSON.parse(res.content[0].text);
+    expect(textOf(res.content[0]).length).toBeLessThanOrEqual(1060); // delivery ≤ budget — RED without the stub in the gate (1149)
+    const out = JSON.parse(textOf(res.content[0]));
     expect(out.omittedChildren).toBeGreaterThan(0); // the gate forced a clamp
     expect(out.truncation.reason).toBe('both');     // depth collapsed (2→1) + width truncated
   });

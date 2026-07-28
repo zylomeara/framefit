@@ -24,11 +24,9 @@ import {
   registerGetNodeAncestryTool,
   ANCESTRY_CHILDREN_CAP,
 } from '../../src/adapters/driving/tools/get-node-ancestry-tool.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, type ToolHandler, type ToolResult } from '../helpers/fake-mcp-server.js';
 
-type Handler = (a: Record<string, unknown>) => Promise<{ content: { type: string; text?: string }[]; isError?: boolean }>;
-
-function install(): Handler {
+function install(): ToolHandler {
   const { server, call } = makeFakeMcpServer();
   const api = {};
   const deps = {
@@ -61,7 +59,7 @@ function named(id: string, name: string, type: string, box: { x: number; y: numb
   return { ...n(id, type, box, [], extra), name };
 }
 
-function parseOutput(res: Awaited<ReturnType<Handler>>): Record<string, unknown> {
+function parseOutput(res: ToolResult): Record<string, unknown> {
   const text = res.content.find((c) => c.type === 'text')?.text ?? '{}';
   return JSON.parse(text);
 }

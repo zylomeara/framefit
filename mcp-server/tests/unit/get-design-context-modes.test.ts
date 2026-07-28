@@ -4,7 +4,7 @@ import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import { buildGraph, resolveKey, resolveKeyInMode, keyIsMultiMode } from '../../src/domain/variable-graph.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -278,7 +278,7 @@ describe('get_design_context mode_context', () => {
     };
     registerGetDesignContextTool(server, deps);
     const res = await call('get_design_context', { file: 'abc', node_id: 'F', include_component_docs: false });
-    expect(JSON.parse(res.content[0].text).mode_context).toBeUndefined();
+    expect(JSON.parse(textOf(res.content[0])).mode_context).toBeUndefined();
   });
 
   it('absent when a cross-library binding has no graph to track it (spec (P): untracked)', async () => {

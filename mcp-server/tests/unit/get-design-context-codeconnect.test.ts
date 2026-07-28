@@ -4,7 +4,7 @@ import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 const frame = { id: '1:5', name: 'Card', type: 'FRAME', children: [{ id: '1:6', name: 'Btn', type: 'INSTANCE', componentId: 'C:1' }] };
@@ -140,7 +140,7 @@ describe('get_design_context Code Connect enrichment', () => {
     };
     registerGetDesignContextTool(server, deps);
     const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4, include_component_docs: false });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(res.isError).toBeFalsy();
     expect(body.degraded_stages).toContainEqual({ stage: 'code_connect', reason: 'error' });
     expect(body.degraded_stages).not.toContainEqual({ stage: 'component_docs', reason: 'error' }); // wantDocs was false
@@ -167,7 +167,7 @@ describe('get_design_context Code Connect enrichment', () => {
     };
     registerGetDesignContextTool(server, deps);
     const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(res.isError).toBeFalsy();
     expect(body.codeConnect['1:6']).toMatchObject({ component: 'Button' });   // CC payload survived
     expect(body.degraded_stages).toContainEqual({ stage: 'component_docs', reason: 'error' });
@@ -196,7 +196,7 @@ describe('get_design_context Code Connect enrichment', () => {
     };
     registerGetDesignContextTool(server, deps);
     const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(res.isError).toBeFalsy();
     expect(body.codeConnect).toBeUndefined();                         // legitimately empty — not an error
     expect(body.degraded_stages).toContainEqual({ stage: 'component_docs', reason: 'error' });
@@ -225,7 +225,7 @@ describe('get_design_context Code Connect enrichment', () => {
     };
     registerGetDesignContextTool(server, deps);
     const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(res.isError).toBeFalsy();
     expect(body.components['C:1']).toMatchObject({ description: 'Primary action' });   // docs produced!
     expect(body.degraded_stages).toContainEqual({ stage: 'code_connect', reason: 'error' });

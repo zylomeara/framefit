@@ -5,7 +5,7 @@ import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import { buildGraph, resolveKeyInMode } from '../../src/domain/variable-graph.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 afterEach(() => vi.useRealTimers());
@@ -554,7 +554,7 @@ describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest 
     registerGetDesignContextTool(server, deps);
 
     const res = await call('get_design_context', { file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
       token: 'text icon/accent', value: '#a73afd', mode: 'Default', mode_dependent: true, mode_source: 'default',
@@ -807,7 +807,7 @@ describe('get_design_context: skipped discovery + downstream-alias multi-mode de
     registerGetDesignContextTool(server, deps);
 
     const res = await call('get_design_context', { file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const strokeRef = body.node.children[0].stroke;
     // The downstream alias hop into the unpinned multi-mode collection CD fell back to CD's DEFAULT
     // mode (#a73afd). Because discovery was SKIPPED, coverage is NOT complete → mode_source MUST stay

@@ -41,6 +41,14 @@ services:
       - FIGMA_TOKEN
       # Same bare pass-through: single-tenant cross-library graph teams (optional).
       - DS_TEAM_IDS
+      # Same bare pass-through: refuse every write tool on this connection. This is the ONLY
+      # single-tenant service, so without this line the flag documented in mcp-server/.env.example
+      # reaches a bare `node dist/index.js` and the stdio path but never the container - and
+      # .env.example is the env_file of the MULTI-TENANT service below, which ignores the flag
+      # entirely (there read-only is per-user, in the database). Bare rather than
+      # `=${FRAMEFIT_READ_ONLY:-}`: an unset host var must OMIT the variable, not inject an empty
+      # string. Safe here for the same reason FIGMA_TOKEN is - this service has no env_file.
+      - FRAMEFIT_READ_ONLY
       - LOG_LEVEL=${LOG_LEVEL:-info}
       # Browser-facing base for the extractor loader / dom-snapshot upload_url. The
       # server would otherwise fall back to its in-container bound origin (also :3846);

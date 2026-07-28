@@ -4,7 +4,7 @@ import { registerGetScreenshotTool } from '../../src/adapters/driving/tools/get-
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 afterEach(() => vi.unstubAllGlobals());
@@ -27,7 +27,7 @@ function harness(getImages: FigmaApi['getImages'], getNodesRaw?: FigmaApi['getNo
     defaultToken: 'figd_x', logger,
   };
   registerGetScreenshotTool(server, deps);
-  return (a: any): Promise<any> => call('get_screenshot', a);
+  return (a: Record<string, unknown>) => call('get_screenshot', a);
 }
 
 describe('get_screenshot tool', () => {
@@ -36,7 +36,7 @@ describe('get_screenshot tool', () => {
     vi.stubGlobal('fetch', fetchSpy);
     const run = harness(async () => ({ images: { '1:5': 'https://s3/i.png' } }));
     const res = await run({ file: 'abc', node_id: '1-5', format: 'png', scale: 2 });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.url).toBe('https://s3/i.png');
     expect(body.original_width).toBe(360);
     expect(body.original_height).toBe(891);
@@ -49,7 +49,7 @@ describe('get_screenshot tool', () => {
   it('url mode for svg: keeps original dims but omits scaled width/height', async () => {
     const run = harness(async () => ({ images: { '1:5': 'https://s3/i.svg' } }));
     const res = await run({ file: 'abc', node_id: '1-5', format: 'svg' });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.url).toBe('https://s3/i.svg');
     expect(body.original_width).toBe(360);
     expect(body.width).toBeUndefined();
@@ -59,7 +59,7 @@ describe('get_screenshot tool', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { 'content-type': 'image/png' } })));
     const run = harness(async () => ({ images: { '1:5': 'https://s3/i.png' } }));
     const res = await run({ file: 'abc', node_id: '1-5', format: 'png', scale: 2, return: 'inline' });
-    const img = res.content.find((c: any) => c.type === 'image');
+    const img = res.content.find((c) => c.type === 'image')!;
     expect(img).toBeTruthy();
     expect(img.mimeType).toBe('image/png');
     expect(img.data).toBe(Buffer.from([1, 2, 3, 4]).toString('base64'));
@@ -117,8 +117,8 @@ describe('get_screenshot tool', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([9, 9, 9]), { status: 200, headers: { 'content-type': 'image/png' } })));
     const run = harness(getImages, getNodesRaw);
     const res = await run({ file: 'abc', node_id: '1-5', format: 'png', scale: 2, return: 'preview' });
-    const img = res.content.find((c: any) => c.type === 'image');
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    const img = res.content.find((c) => c.type === 'image')!;
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     expect(img.mimeType).toBe('image/png');
     expect(img.data).toBe(Buffer.from([9, 9, 9]).toString('base64'));
     expect(meta.preview_scale).toBeCloseTo(0.19, 2); // 768 / 4000
@@ -135,7 +135,7 @@ describe('get_screenshot tool', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'image/png' } })));
     const run = harness(getImages); // default node 360×891 (longest 891 > 768 → slight downscale)
     const res = await run({ file: 'abc', node_id: '1-5', format: 'png', scale: 1, return: 'preview' });
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     expect(meta.preview_scale).toBeLessThanOrEqual(1);
     expect(meta.preview_scale).toBeCloseTo(0.86, 2); // 768 / 891
     expect(meta.preview_width).toBe(Math.round(360 * meta.preview_scale));
@@ -159,8 +159,8 @@ describe('get_screenshot tool', () => {
     })) as unknown as FigmaApi['getImages'];
     const run = harness(getImages); // default node 360×891
     const res = await run({ file: 'abc', node_id: '1-5', format: 'png', scale: 2, focus: { x: 0.5, y: 0.5 } });
-    const img = res.content.find((c: any) => c.type === 'image');
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    const img = res.content.find((c) => c.type === 'image')!;
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     expect(img.mimeType).toBe('image/png');
     const out = await Jimp.read(Buffer.from(img.data, 'base64'));
     expect(out.bitmap.width).toBe(48);            // 2 × 0.12 × 200 (source image is 200 wide)

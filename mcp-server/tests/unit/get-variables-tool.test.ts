@@ -7,7 +7,7 @@ import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-too
 import { CachingFigmaApiAdapter, type ReadCaches } from '../../src/adapters/driven/caching-figma-api.js';
 import { FileStructureCache } from '../../src/infrastructure/file-structure-cache.js';
 import { TtlCache } from '../../src/infrastructure/node-cache.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -113,7 +113,7 @@ describe('get_variables tool', () => {
     registerGetVariablesTool(server, deps);
     const res = await call('get_variables', { file: 'abc' });
     expect(res.isError).toBeFalsy();
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
     expect(t.value).toBeNull();
     expect(t.alias).toBe(true);
@@ -131,7 +131,7 @@ describe('get_variables tool', () => {
     };
     registerGetVariablesTool(server, deps);
     const res = await call('get_variables', { file: 'abc' });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
     expect(t.value).toBe('#abcdef');
     expect(t.resolved_via).toBe('snapshot');
@@ -149,7 +149,7 @@ describe('get_variables tool', () => {
     };
     registerGetVariablesTool(server, deps);
     const res = await call('get_variables', { file: 'abc' });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
     expect(t.value).toBe('#abcdef');
     expect(t.resolved_via).toBe('graph');
@@ -242,7 +242,7 @@ describe('get_variables tool', () => {
     };
     registerGetVariablesTool(server, deps);
     const res = await call('get_variables', { file: 'abc' });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const ta = body.tokens.find((x: any) => x.name === 'color/a');
     const tb = body.tokens.find((x: any) => x.name === 'color/b');
     // graph-resolved token
@@ -275,7 +275,7 @@ describe('get_variables tool', () => {
     };
     registerGetVariablesTool(server, deps);
     const res = await call('get_variables', { file: 'abc', node_id: '1-5' });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.tokens.map((x: any) => x.name)).toEqual(['used/space']);
     expect(body.summary.total).toBe(1);
   });
@@ -306,7 +306,7 @@ describe('get_variables tool', () => {
     };
     registerGetVariablesTool(server, deps);
     const res = await call('get_variables', { file: 'abc' });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const t = body.tokens.find((x: any) => x.name === 'text icon/accent');
     expect(t.mode_dependent).toBe(true);
     expect(t.modes).toEqual({ Default: '#a73afd', MonogramDark: '#8b6afb' });

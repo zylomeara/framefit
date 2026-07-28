@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fixture from '../fixtures/review-board-profile.json';
 import { registerGetReviewBoardTool } from '../../src/adapters/driving/tools/get-review-board-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 function install(doc: RawSceneNode, maxResultChars = 40000) {
   const { server, call } = makeFakeMcpServer();
@@ -19,7 +19,7 @@ describe('get_review_board tool', () => {
   it('returns grouped items with pin↔text↔target', async () => {
     const call = install(fixture as unknown as RawSceneNode);
     const res = await call({ file: 'k', node_id: '12:100' });
-    const out = JSON.parse(res.content[0].text);
+    const out = JSON.parse(textOf(res.content[0]));
     const items = out.groups.flatMap((g: { items: unknown[] }) => g.items);
     expect(items).toHaveLength(3);
     const i1 = items.find((i: { number: number }) => i.number === 1);
@@ -54,7 +54,7 @@ describe('get_review_board tool', () => {
 
     const call = install(doc);
     const res = await call({ file: 'k', node_id: '12:1' });
-    const out = JSON.parse(res.content[0].text);
+    const out = JSON.parse(textOf(res.content[0]));
     const lane = out.groups.find((g: any) => g.screenshots.prod?.node_id === 'prod');
     expect(lane.screenshots.reference).toEqual({ node_id: 'ref' });
     const item = lane.items.find((i: any) => i.number === 1);
@@ -63,7 +63,7 @@ describe('get_review_board tool', () => {
 
     // include_bounds must reach buildReviewBoard → path nodes carry w/h. FAILS while bounds are not threaded through.
     const res2 = await call({ file: 'k', node_id: '12:1', include_bounds: true });
-    const out2 = JSON.parse(res2.content[0].text);
+    const out2 = JSON.parse(textOf(res2.content[0]));
     const item2 = out2.groups.find((g: any) => g.screenshots.prod?.node_id === 'prod').items[0];
     expect(item2.target.referenceNode.path[0].w).toBe(1000);
   });
@@ -114,17 +114,17 @@ describe('get_review_board tool', () => {
     const doc = buildLanes(20);
     const runBig = install(doc, 400000);
     const big = await runBig({ file: 'k', node_id: '9000:1' });
-    const deliveredLen = big.content[0].text.length;
-    const bigOut = JSON.parse(big.content[0].text);
+    const deliveredLen = textOf(big.content[0]).length;
+    const bigOut = JSON.parse(textOf(big.content[0]));
     expect(bigOut.warnings).not.toContain('auto_clamped');
     expect(bigOut.groups.length).toBe(20); // sanity: all 20 lanes present at a generous budget
 
     const runTight = install(doc, deliveredLen + 100);
     const tight = await runTight({ file: 'k', node_id: '9000:1' });
-    const out = JSON.parse(tight.content[0].text);
+    const out = JSON.parse(textOf(tight.content[0]));
     expect(out.warnings).not.toContain('auto_clamped');  // the compact measure fits; a pretty measure would have cut
     expect(out.groups.length).toBe(bigOut.groups.length); // co-lock on content
-    expect(tight.content[0].text.length).toBeLessThanOrEqual(deliveredLen + 100);
+    expect(textOf(tight.content[0]).length).toBeLessThanOrEqual(deliveredLen + 100);
 
     // run 3: budget just BELOW the delivered length — forces a real truncation. Catches
     // "measure the bare lanes array (without file/node_id/unmatched/warnings)": deliveredLen+100 above
@@ -133,6 +133,6 @@ describe('get_review_board tool', () => {
     // the silent budget overflow.
     const runEdge = install(doc, deliveredLen - 1);
     const edge = await runEdge({ file: 'k', node_id: '9000:1' });
-    expect(edge.content[0].text.length).toBeLessThanOrEqual(deliveredLen - 1);
+    expect(textOf(edge.content[0]).length).toBeLessThanOrEqual(deliveredLen - 1);
   });
 });

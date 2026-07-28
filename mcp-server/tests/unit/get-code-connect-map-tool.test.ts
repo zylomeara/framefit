@@ -3,7 +3,7 @@ import { registerGetCodeConnectMapTool } from '../../src/adapters/driving/tools/
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -22,7 +22,7 @@ function harness(withCC: boolean) {
     ...(withCC ? { codeConnect: { lookup: async () => new Map([['LIB|7:7', { component_name: 'Button', source: 's', template: 't', template_data: {}, label: 'React' }]]) } } : {}),
   };
   registerGetCodeConnectMapTool(server, deps);
-  return (a: any): Promise<any> => call('get_code_connect_map', a);
+  return (a: Record<string, unknown>) => call('get_code_connect_map', a);
 }
 
 function ccHarness(cc: any, apiOverrides: Partial<FigmaApi> = {}) {
@@ -41,20 +41,20 @@ function ccHarness(cc: any, apiOverrides: Partial<FigmaApi> = {}) {
     codeConnect: cc,
   };
   registerGetCodeConnectMapTool(server, deps);
-  return (a: any): Promise<any> => call('get_code_connect_map', a);
+  return (a: Record<string, unknown>) => call('get_code_connect_map', a);
 }
 
 describe('get_code_connect_map tool', () => {
   it('returns node_id→snippet for mapped instances', async () => {
     const run = harness(true);
     const res = await run({ file: 'abc', node_ids: ['1-6'] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.map['1:6']).toMatchObject({ component: 'Button' });
   });
   it('reports nothing when Code Connect is unavailable (single-tenant)', async () => {
     const run = harness(false);
     const res = await run({ file: 'abc', node_ids: ['1-6'] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.count).toBe(0);
   });
   it('reports partial misses via requested vs count', async () => {
@@ -78,7 +78,7 @@ describe('get_code_connect_map tool', () => {
     };
     registerGetCodeConnectMapTool(server, deps);
     const res = await call('get_code_connect_map', { file: 'abc', node_ids: ['1-6', '1-7'] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.requested).toBe(2);
     expect(body.count).toBe(1);
     expect(body.map['1:6']).toMatchObject({ component: 'Button' });
@@ -88,7 +88,7 @@ describe('get_code_connect_map tool', () => {
   it('exposes instances/resolvedComponents counters on success', async () => {
     const run = harness(true);
     const res = await run({ file: 'abc', node_ids: ['1-6'] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.instances).toBe(1);
     expect(body.resolvedComponents).toBe(1);
   });
@@ -96,7 +96,7 @@ describe('get_code_connect_map tool', () => {
   it('single-tenant empty result carries reason not_configured', async () => {
     const run = harness(false);
     const res = await run({ file: 'abc', node_ids: ['1-6'] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.count).toBe(0);
     expect(body.reason).toBe('not_configured');
     expect(body.note).toBeTruthy();
@@ -105,7 +105,7 @@ describe('get_code_connect_map tool', () => {
   it('reports reason no_mappings when an instance resolves but has no mapping', async () => {
     const run = ccHarness({ lookup: async () => new Map() });
     const res = await run({ file: 'abc', node_ids: ['1-6'] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.count).toBe(0);
     expect(body.reason).toBe('no_mappings');
     expect(body.note).toMatch(/figma connect parse/);
@@ -117,7 +117,7 @@ describe('get_code_connect_map tool', () => {
       { getNodesRaw: async () => ({ nodes: { '1:6': { document: { id: '1:6', name: 'Frame', type: 'FRAME' }, components: {} } } }) },
     );
     const res = await run({ file: 'abc', node_ids: ['1-6'] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.reason).toBe('no_instances');
     expect(body.note).toMatch(/instance/i);
   });
@@ -128,7 +128,7 @@ describe('get_code_connect_map tool', () => {
       { getComponent: async () => { throw new Error('boom'); } },
     );
     const res = await run({ file: 'abc', node_ids: ['1-6'] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.instances).toBe(1);
     expect(body.resolvedComponents).toBe(0);
     expect(body.reason).toBe('components_unresolved');
@@ -144,7 +144,7 @@ describe('get_code_connect_map tool', () => {
       } }) },
     );
     const res = await run({ file: 'abc', node_ids: ['I12-340;56-7890'] }); // URL/dash form input
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.map[restKey]).toMatchObject({ component: 'WayOfPayment' });
   });
 
@@ -158,7 +158,7 @@ describe('get_code_connect_map tool', () => {
       } }) },
     );
     const res = await run({ file: 'abc', node_ids: [wanted] });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.map[wanted]).toMatchObject({ component: 'WayOfPayment' });
   });
 });

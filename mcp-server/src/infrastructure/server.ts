@@ -9,6 +9,9 @@ import type { AppConfig } from './config.js';
 import type { Logger } from './logger.js';
 import { registerAllTools } from '../adapters/driving/tools/register-all.js';
 import type { ToolDeps } from '../adapters/driving/tools/get-comments-tool.js';
+import {
+  PORTAL_READ_ONLY_REMEDIATION, SINGLE_TENANT_READ_ONLY_REMEDIATION, type ReadOnlyGate,
+} from '../adapters/driving/tools/shared-error-handler.js';
 import { CachingFigmaApiAdapter } from '../adapters/driven/caching-figma-api.js';
 import type { ReadCaches } from '../adapters/driven/caching-figma-api.js';
 import { FileStructureCache } from './file-structure-cache.js';
@@ -226,7 +229,7 @@ export function makeReadCaches(config: AppConfig, logger?: Logger, budget?: Cach
  *   multi-tenant http  → env.publicBaseUrl ?? `https://${env.mcpHost}` (its own deps
  *                       are built per request in startMultiTenantHttpServer).
  */
-function buildToolDeps(config: AppConfig, logger: Logger, snapshotStore?: DomSnapshotStore): ToolDeps {
+export function buildToolDeps(config: AppConfig, logger: Logger, snapshotStore?: DomSnapshotStore): ToolDeps {
   const budget = new CacheBudget(config.CACHE_MAX_BYTES, logger);
   const fileStructureCache = new FileStructureCache(config.FILE_STRUCTURE_TTL_SEC * 1000); // count-capped, no budget
   const frameStore = new FrameHydrationStore(
@@ -252,6 +255,16 @@ function buildToolDeps(config: AppConfig, logger: Logger, snapshotStore?: DomSna
   // the sync goes through the same caching adapter. Undefined (no DS_TEAM_IDS, or DS_TEAM_IDS set but
   // no token) → the field is omitted and ToolDeps is byte-for-byte the prior no-graph shape.
   const variableGraph = createEnvGraphFromConfig(config, logger, buildApi);
+  // Read-only gate, single-tenant. This is the ONE place the stdio path can acquire one: without
+  // it assertWritable is handed undefined on every call and "Disabled in read-only mode", printed
+  // in three tool descriptions, is simply false. Absent unless the value is exactly "true" (any
+  // case), so an unset or mistyped value leaves today's behaviour byte-for-byte unchanged - and
+  // that default is itself locked by read-only-wiring.test.ts, so it cannot be flipped quietly.
+  const readOnly: ReadOnlyGate | undefined =
+    config.FRAMEFIT_READ_ONLY?.toLowerCase() === 'true'
+      ? { isReadOnly: async () => true, remediation: SINGLE_TENANT_READ_ONLY_REMEDIATION }
+      : undefined;
+
   return {
     buildApi,
     defaultToken: config.FIGMA_TOKEN,
@@ -260,6 +273,7 @@ function buildToolDeps(config: AppConfig, logger: Logger, snapshotStore?: DomSna
     toolTimeBudgetMs: config.FIGMA_TOOL_TIME_BUDGET_MS,
     snapshotStore,
     tenantId: 'local',
+    ...(readOnly ? { readOnly } : {}),
     ...(variableGraph ? { variableGraph } : {}),
   };
 }
@@ -762,7 +776,10 @@ async function startMultiTenantHttpServer(
       maxResultChars: config.MAX_RESULT_CHARS,
       toolTimeBudgetMs: config.FIGMA_TOOL_TIME_BUDGET_MS,
       noTokenHint: hint,
-      readOnly: { isReadOnly: async () => (await settings.getUserSettings(userId)).read_only },
+      readOnly: {
+        isReadOnly: async () => (await settings.getUserSettings(userId)).read_only,
+        remediation: PORTAL_READ_ONLY_REMEDIATION,
+      },
       registeredTeams: { list: () => listTeams(userId) },
       libraryFiles: { has: (fk: string) => hasLibraryFile(userId, fk) },
       codeConnect: { lookup: (refs) => cc.lookupMappings(userId, refs) },

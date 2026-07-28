@@ -4,7 +4,8 @@ import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-too
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { RawComment } from '../../src/domain/types.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
-import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { SINGLE_TENANT_READ_ONLY_REMEDIATION } from '../../src/adapters/driving/tools/shared-error-handler.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -56,15 +57,14 @@ describe('write-comments tools', () => {
     const res = await call('post_comment', { file: 'abc123', message: 'LGTM' });
 
     expect(res.isError).toBeFalsy();
-    const text = res.content[0].text;
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(textOf(res.content[0]));
     expect(parsed.id).toBe('c-posted');
   });
 
   it('post_comment is REFUSED (read-only) with no REST call when read_only=true', async () => {
     let called = false;
     const deps = makeDeps({
-      readOnly: { isReadOnly: async () => true },
+      readOnly: { isReadOnly: async () => true, remediation: SINGLE_TENANT_READ_ONLY_REMEDIATION },
       apiOverride: {
         postComment: vi.fn(async () => { called = true; return makeComment(); }),
       },
@@ -96,13 +96,13 @@ describe('write-comments tools', () => {
 
     expect(res.isError).toBeFalsy();
     expect(capturedCommentId).toBe('c-root');
-    const parsed = JSON.parse(res.content[0].text);
+    const parsed = JSON.parse(textOf(res.content[0]));
     expect(parsed.parent_id).toBe('c-root');
   });
 
   it('resolve_comment is refused when read_only=true', async () => {
     const deps = makeDeps({
-      readOnly: { isReadOnly: async () => true },
+      readOnly: { isReadOnly: async () => true, remediation: SINGLE_TENANT_READ_ONLY_REMEDIATION },
     });
     const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, deps);
@@ -121,7 +121,7 @@ describe('write-comments tools', () => {
     const res = await call('resolve_comment', { file: 'abc123', comment_id: 'c-99' });
 
     expect(res.isError).toBeFalsy();
-    const parsed = JSON.parse(res.content[0].text);
+    const parsed = JSON.parse(textOf(res.content[0]));
     expect(parsed.ok).toBe(true);
   });
 });
