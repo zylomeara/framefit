@@ -24,6 +24,7 @@ export function registerGetMetadataTool(server: McpServer, deps: ToolDeps): void
     {
       description: 'A sparse map of a Figma file: id/name/type/position/size per node, depth-limited. Cheap navigation — call this first, then get_design_context on a chosen node_id. On large nodes the depth degrades per-branch: light branches stay deep while heavy ones collapse; truncation reports effective_depth (deepest shown) and min_effective_depth (shallowest branch), with truncated:true + childCount on each cut node.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_metadata', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

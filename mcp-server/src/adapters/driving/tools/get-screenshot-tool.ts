@@ -38,6 +38,7 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
     {
       description: 'Render a Figma node to an image. Default return=url gives a short-lived signed URL plus pixel dimensions and a curl hint (token-cheap — strongly preferred; avoids inlining megabytes of base64). return=inline embeds the PNG/JPG as base64 or returns SVG markup directly, only for agents that cannot fetch URLs. Use a lower scale for very large frames. return=preview gives a one-step downscaled inline image plus the full-res URL. Pass focus={x,y} (0..1, e.g. target.atPercent from get_review_board) to get a zoomed crop centered on that point with a reticle marking it — ideal for seeing exactly what a review pin points at; the crop is always PNG.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_screenshot', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

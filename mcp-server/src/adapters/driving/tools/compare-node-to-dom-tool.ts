@@ -250,6 +250,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
       'rename), answer **unsure** and escalate — never call it wrong. `review` rows keep the verdict non-green until ' +
       'resolved; a name that merely differs textually is not a defect.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('compare_node_to_dom', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

@@ -84,6 +84,10 @@ export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void
     {
       description: 'Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. Anchors resolve to node names/pages. Use summarize_comments first on large files.',
       inputSchema: InputSchema,
+      // Advisory metadata only. MCP clients are instructed to treat annotations as untrusted, and
+      // nothing in this server reads them - the only writability enforcement here is
+      // assertWritable (shared-error-handler.ts). This is a disclosure, not a gate.
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_comments', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

@@ -49,6 +49,7 @@ export function registerGetPinDetailTool(server: McpServer, deps: ToolDeps): voi
     {
       description: 'Inspect ONE review-board pin in a single call: returns a zoomed, reticle-marked PNG crop of exactly where the pin points (the prod screenshot region) plus its resolved referenceNode (deepest leaf + suggested container + path + confidence), the reference-frame node_id, and the full-res screenshot URL. Use this to recover a pin whose get_review_board confidence is not "high": read the element in the crop, then find_nodes(file, query=<what you see>, node_id=<referenceFrameNodeId>) to locate it in the reference — this beats the linear projection when prod/reference layouts drift. board_node_id is the same section you pass to get_review_board. Address the pin by pin_number (unique-numbered boards) OR by pin_node_id (from item.pinNodeId in the get_review_board output) — use pin_node_id on multi-lane boards where numbers repeat per lane.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_pin_detail', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

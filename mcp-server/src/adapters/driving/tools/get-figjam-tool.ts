@@ -23,6 +23,7 @@ export function registerGetFigjamTool(server: McpServer, deps: ToolDeps): void {
     {
       description: 'Structured content of a FigJam board: sticky notes (text + color), shapes-with-text, sections, connectors (from→to edges with labels), and tables. The headless analogue of the official get_figjam — returns board data, not generated UI code. Use nodeNames to label connector endpoints. Tables degrade to an ordered flat list of cell texts (REST exposes no row/column index).',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_figjam', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

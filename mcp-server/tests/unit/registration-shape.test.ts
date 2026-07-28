@@ -3,12 +3,13 @@
 // at RUNTIME with a message that points at registration rather than at the stub. This gate is
 // therefore over the live registration path, not over the source text alone.
 //
-// Two independent things are locked here:
+// Three independent things are locked here:
 //   1. the CALL SHAPE - every tool goes through `registerTool`, never the deprecated positional
 //      `tool()` overload (which cannot carry annotations);
 //   2. the REGISTERED SURFACE - what a client actually receives from `tools/list` is byte-identical
 //      to the recorded baseline. The shape migration must not move a single character of any
 //      description or schema, and this is the check that proves it rather than asserting it by eye.
+//   3. the SAFETY ANNOTATIONS a client receives, recorded per tool and compared exactly.
 import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -78,7 +79,12 @@ describe('every tool registers through registerTool', () => {
 // real client over the real protocol shows the delivered surface, so that is what this locks.
 // Baseline in tests/fixtures/tool-surface.json was recorded from the pre-migration tree.
 
-type SurfaceEntry = { description: string; inputSchemaKeys: string[]; digest: string };
+type SurfaceEntry = {
+  description: string;
+  inputSchemaKeys: string[];
+  digest: string;
+  annotations: Record<string, unknown> | undefined;
+};
 
 function canonical(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(canonical);
@@ -104,10 +110,20 @@ async function liveSurface(): Promise<Record<string, SurfaceEntry>> {
   const out: Record<string, SurfaceEntry> = {};
   for (const t of tools) {
     const props = (t.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
+    // `annotations` is held OUT of the digest on purpose and locked separately below. Declaring the
+    // safety annotations added one top-level key to all 26 delivered entries; digesting the whole
+    // entry would have forced a re-record of all 26 baselines, discarding the pre-migration
+    // recording of the descriptions and schemas - the one thing this fixture exists to protect.
+    // Split this way, every recorded digest stays byte-identical to the pre-annotation tree, which
+    // is itself the proof that nothing but the annotations moved, and the annotations still cannot
+    // drift unnoticed.
+    const withoutAnnotations = { ...(t as Record<string, unknown>) };
+    delete withoutAnnotations.annotations;
     out[t.name] = {
       description: t.description ?? '',
       inputSchemaKeys: Object.keys(props).sort(),
-      digest: createHash('sha256').update(JSON.stringify(canonical(t))).digest('hex'),
+      digest: createHash('sha256').update(JSON.stringify(canonical(withoutAnnotations))).digest('hex'),
+      annotations: t.annotations as Record<string, unknown> | undefined,
     };
   }
   return out;
@@ -165,5 +181,18 @@ describe('the tools/list surface a client receives is unchanged', () => {
       drifted,
       'tools/list entries differ from tests/fixtures/tool-surface.json beyond name/description/field set',
     ).toEqual([]);
+  });
+
+  it('delivers the recorded safety annotations, over the real protocol', async () => {
+    const live = await liveSurface();
+    // Fail-closed on both sides: a tool that stops sending annotations compares undefined against a
+    // recorded object and drifts, and a baseline entry missing the key drifts against every live
+    // object. tool-annotations.test.ts decides WHICH class each tool belongs to; this only proves
+    // the class the client is handed is the class that was recorded.
+    const drifted = Object.keys(baseline)
+      .filter((n) => live[n])
+      .filter((n) => JSON.stringify(canonical(live[n].annotations)) !== JSON.stringify(canonical(baseline[n].annotations)))
+      .map((n) => ({ tool: n, baseline: baseline[n].annotations, live: live[n].annotations }));
+    expect(drifted, 'tool annotations differ from tests/fixtures/tool-surface.json').toEqual([]);
   });
 });

@@ -78,6 +78,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
     {
       description: 'Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required — avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame\'s own width (a variant named "desktop" (w1280) whose inner drawer content is w420 matches render_width 420). On huge files pass parent_node_id (a section or page) to scope the walk and avoid timing out.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('find_breakpoint_variant', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

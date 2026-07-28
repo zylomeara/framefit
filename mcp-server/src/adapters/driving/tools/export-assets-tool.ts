@@ -27,6 +27,7 @@ export function registerExportAssetsTool(server: McpServer, deps: ToolDeps): voi
     {
       description: 'Export Figma nodes as rendered images (PNG/SVG/JPG) and return signed S3 URLs. Use get_metadata first to find node IDs. Returns url:null for nodes Figma could not render. Set include_raw_images:true to also return the ORIGINAL uploaded source images (IMAGE fills) per node as raw_images:[{imageRef,url}].',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('export_assets', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

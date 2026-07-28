@@ -23,6 +23,7 @@ export function registerFindThreadsTool(server: McpServer, deps: ToolDeps): void
     {
       description: 'Search a Figma file\'s comment threads by text, ranked by relevance, with optional fuzzy matching and the full filter set. Returns scored matches with highlights — use to locate specific discussions in large files.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('find_threads', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

@@ -47,6 +47,7 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
       'upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to ' +
       'compare_node_to_dom instead of pasting raw snapshot JSON.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_layout_spec', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

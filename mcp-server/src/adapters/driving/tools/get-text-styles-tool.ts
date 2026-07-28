@@ -25,6 +25,7 @@ export function registerGetTextStylesTool(server: McpServer, deps: ToolDeps): vo
     {
       description: 'Extract only the typography of a node\'s subtree (fontFamily, fontWeight, fontSize, lineHeightPx, letterSpacing, align) without the full design tree — for fast spec verification of a deep text node. Pass dedupe=true to group identical styles. Use find_nodes first to get a node_id.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_text_styles', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

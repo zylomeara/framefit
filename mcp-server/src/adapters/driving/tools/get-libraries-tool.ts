@@ -19,6 +19,7 @@ export function registerGetLibrariesTool(server: McpServer, deps: ToolDeps): voi
     {
       description: 'List the design-system libraries a Figma file publishes or consumes. "publishes" = components this file itself exports (GET /files/:key/components). "consumes" = external libraries the file actually uses, detected from remote component references resolved to their source files (grouped by library file key with component_count + sample names). Best-effort: it surfaces libraries with USED components, not merely-subscribed-but-unused ones. Use a library file key with get_design_context; for search_design_system pass the team id from the library file\'s URL.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_libraries', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

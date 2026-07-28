@@ -143,6 +143,7 @@ export function registerGetNodeAncestryTool(server: McpServer, deps: ToolDeps): 
         'the ancestor children. bbox-guided, id-confirmed, ≤12 light REST calls — never fetches the whole ' +
         'file. query highlights matching names in scope.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_node_ancestry', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

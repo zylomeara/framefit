@@ -57,6 +57,7 @@ export function registerGetViewTool(server: McpServer, deps: ToolDeps): void {
       description: 'Single-root navigation over a held frame: one node_id, five pure lenses (skeleton/branch/' +
       'coverage/typography/spacing) sliced from one deep-fetch, zero re-fetch across views/depths.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       runTool('get_view', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {

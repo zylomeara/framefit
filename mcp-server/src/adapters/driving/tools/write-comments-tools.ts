@@ -18,6 +18,9 @@ export function registerWriteCommentsTools(server: McpServer, deps: ToolDeps): v
         file: z.string().min(1).describe('Figma file URL or raw file key'),
         message: z.string().min(1).describe('Comment text'),
       },
+      // A write, but not a destruction: it adds a comment and removes nothing. destructiveHint is
+      // stated explicitly because the MCP default is TRUE whenever readOnlyHint is false.
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     async (args) =>
       runTool('post_comment', deps.logger, deps.defaultToken, async (token) => {
@@ -40,6 +43,9 @@ export function registerWriteCommentsTools(server: McpServer, deps: ToolDeps): v
         comment_id: z.string().min(1).describe('ID of the root comment to reply to'),
         message: z.string().min(1).describe('Reply text'),
       },
+      // A write, but not a destruction: it adds a comment and removes nothing. destructiveHint is
+      // stated explicitly because the MCP default is TRUE whenever readOnlyHint is false.
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     async (args) =>
       runTool('reply_to_comment', deps.logger, deps.defaultToken, async (token) => {
@@ -62,6 +68,9 @@ export function registerWriteCommentsTools(server: McpServer, deps: ToolDeps): v
         file: z.string().min(1).describe('Figma file URL or raw file key'),
         comment_id: z.string().min(1).describe('ID of the comment or thread root to resolve'),
       },
+      // DELETE against Figma's comments endpoint: permanent, no undo, no restore via file version
+      // history. Stated so a host that surfaces annotations can raise the approval bar.
+      annotations: { readOnlyHint: false, destructiveHint: true },
     },
     async (args) =>
       runTool('resolve_comment', deps.logger, deps.defaultToken, async (token) => {

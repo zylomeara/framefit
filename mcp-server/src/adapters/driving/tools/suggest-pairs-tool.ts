@@ -51,6 +51,7 @@ export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): voi
       'compare_node_to_dom. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
       'inspected — the top is reported honestly in unmatched_figma/unmatched_dom instead, and you drill in by hand.',
       inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
     },
     async (args) => runTool('suggest_pairs', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
       const parsed = parseFileKey(args.file);
