@@ -7,6 +7,7 @@ import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
 import { buildReviewBoard, type Lane } from '../../../domain/review-board.js';
 import { clampToBudget } from '../../../application/get-comments.js';
 import { serializeForDelivery } from './serialize.js';
+import { FigmaApiError } from '../../../ports/errors.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
@@ -47,13 +48,30 @@ export function registerGetReviewBoardTool(server: McpServer, deps: ToolDeps): v
           includeBounds: args.include_bounds,
         });
 
+        // Screenshot URLs are an ENRICHMENT of a board that is already complete without them, so a
+        // render failure must not take the board with it. This became reachable when getImages
+        // started throwing on a 200 body carrying `err` (it previously returned an empty set and
+        // this loop simply populated nothing) - a partial answer would have become no answer.
+        // The reason is not swallowed either: it lands in warnings, where a reader sees why the
+        // urls are null instead of guessing.
+        const screenshotWarnings: string[] = [];
         if (args.include_screenshots) {
           const prodIds = [...new Set(board.groups.map((g) => g.screenshots.prod?.node_id).filter((x): x is string => !!x))];
           if (prodIds.length) {
-            const { images } = await api.getImages(parsed.value, prodIds, { format: 'png', scale: 1 });
-            for (const g of board.groups) {
-              const nid = g.screenshots.prod?.node_id;
-              if (nid && images[nid] && g.screenshots.prod) g.screenshots.prod.url = images[nid];
+            try {
+              const { images } = await api.getImages(parsed.value, prodIds, { format: 'png', scale: 1 });
+              for (const g of board.groups) {
+                const nid = g.screenshots.prod?.node_id;
+                if (nid && images[nid] && g.screenshots.prod) g.screenshots.prod.url = images[nid];
+              }
+            } catch (err) {
+              // NARROW on purpose: exactly the class that regressed, the 200-with-`err` body
+              // getImages started throwing on. A catch that also absorbed 403/404/5xx/timeouts
+              // would invent a shape this tool never had - every one of those set isError in every
+              // prior commit - so anything else is rethrown, 429 included.
+              if (!(err instanceof FigmaApiError && err.kind === 'upstream' && err.status === 200)) throw err;
+              deps.logger.info({ err: err.message }, 'review_board.screenshots_unavailable');
+              screenshotWarnings.push(`screenshots_unavailable: ${err.message}`);
             }
           }
         }
@@ -65,14 +83,14 @@ export function registerGetReviewBoardTool(server: McpServer, deps: ToolDeps): v
         const budget = deps.maxResultChars ?? 40000;
         const serialize = (lanes: Lane[]): string =>
           serializeForDelivery({ file: parsed.value, node_id: id, groups: lanes,
-            unmatched: board.unmatched, warnings: [...board.warnings, 'auto_clamped'] });
+            unmatched: board.unmatched, warnings: [...board.warnings, ...screenshotWarnings, 'auto_clamped'] });
         const { kept, clamped } = clampToBudget(board.groups, budget, serialize);
         return jsonResult({
           file: parsed.value,
           node_id: id,
           groups: kept,
           unmatched: board.unmatched,
-          warnings: [...board.warnings, ...(clamped ? ['auto_clamped'] : [])],
+          warnings: [...board.warnings, ...screenshotWarnings, ...(clamped ? ['auto_clamped'] : [])],
         });
       }, deps.noTokenHint),
   );

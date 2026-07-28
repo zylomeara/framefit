@@ -7,6 +7,7 @@ import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
 import { buildReviewBoard, type Lane, type ReviewItem } from '../../../domain/review-board.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 import { renderFocusCrop, DEFAULT_FOCUS_RADIUS } from './focus-crop.js';
+import { FigmaApiError } from '../../../ports/errors.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
@@ -132,7 +133,20 @@ export function registerGetPinDetailTool(server: McpServer, deps: ToolDeps): voi
         const { buffer, region, sourceScale } = await renderFocusCrop(api, parsed.value, t.screenshotNodeId, prodBox.width, {
           focusX: t.atPercent.x, focusY: t.atPercent.y, focusRadius, requestedScale: 2,
         });
-        const full_res_url = (await api.getImages(parsed.value, [t.screenshotNodeId], { format: 'png', scale: 2 })).images[t.screenshotNodeId] ?? null;
+        // The crop is already rendered and in hand at this point; the full-res URL is an extra.
+        // Since getImages started throwing on a 200 body carrying `err`, an unguarded call here
+        // would discard a finished image over a missing link. Null, with the reason, as before.
+        let full_res_url: string | null = null;
+        let fullResUnavailable: string | undefined;
+        try {
+          full_res_url = (await api.getImages(parsed.value, [t.screenshotNodeId], { format: 'png', scale: 2 })).images[t.screenshotNodeId] ?? null;
+        } catch (err) {
+          // Narrowed to the class that regressed - same catch, same reasoning, as
+          // get-review-board-tool.ts. 403/404/5xx/timeout/429 all still fail the call.
+          if (!(err instanceof FigmaApiError && err.kind === 'upstream' && err.status === 200)) throw err;
+          deps.logger.info({ err: err.message }, 'get_pin_detail.full_res_unavailable');
+          fullResUnavailable = `Full-res URL unavailable: ${err.message}`;
+        }
 
         const meta: Record<string, unknown> = {
           pin_number: item.number,
@@ -144,6 +158,7 @@ export function registerGetPinDetailTool(server: McpServer, deps: ToolDeps): voi
           region,
           source_scale: sourceScale,
           full_res_url,
+          ...(fullResUnavailable ? { full_res_url_note: fullResUnavailable } : {}),
           note: `Reticle marks pin ${item.number}. If referenceNode looks wrong (confidence != high), read the element in the crop, then find_nodes(file, query=<what you see>, node_id=referenceFrameNodeId) to locate it in the reference.`,
         };
         return {

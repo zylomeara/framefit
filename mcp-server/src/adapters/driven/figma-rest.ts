@@ -112,6 +112,33 @@ export class FigmaRestAdapter implements FigmaApi {
       `${BASE_URL}/images/${encodeURIComponent(fileKey)}` +
       `?ids=${encodeURIComponent(ids.join(','))}&format=${opts.format}${scaleParam}`;
     const payload = await this.request<{ err: string | null; images: Record<string, string | null> }>(url);
+    // GET /v1/images reports render/export failures INSIDE a 200 body, so mapStatus never sees them
+    // and a body-first rule scoped to status mapping cannot reach this channel. This field was
+    // typed and then dropped, so get_screenshot / export_assets answered a failed render with an
+    // empty image set and no reason at all - strictly worse than a misleading message.
+    //
+    // Same bounded, sanitized quoting as mapStatus, through the SAME parser and the SAME
+    // interpolator (no second quoting path). kind stays 'upstream' - a genuine upstream failure,
+    // already in caching-figma-api's negative-cache whitelist - because a NEW kind would change
+    // five kind-branching call sites, four of which construct FigmaApiError directly and so have
+    // no gate that would notice.
+    if (typeof payload.err === 'string' && payload.err.length > 0) {
+      const reason = upstreamReason(JSON.stringify({ err: payload.err }));
+      // No fixed remedy pinned onto the quote. The first version ended every one of these with
+      // "Open the node in Figma to confirm it exists and has visible content" - true for
+      // "Node not found", false for a rate limit and for a too-large render, whose bodies exclude
+      // that premise outright. This endpoint answers with several unrelated reasons and sends no
+      // discriminator between them, so the only honest tail points at the reason itself. With
+      // nothing quotable (a reason that sanitizes away entirely) the message says so instead of
+      // pretending to carry one.
+      throw new FigmaApiError('upstream', 200,
+        reason === undefined
+          ? 'Figma could not render this export and gave a reason this server could not read.'
+            + ' Retry once; if it repeats, check the node ids, the format and the scale in this call.'
+          : `Figma could not render this export.${quoteUpstream(reason)}`
+            + ' Figma named that itself, so act on it before changing anything else about this call.',
+        undefined, reason);
+    }
     return { images: payload.images ?? {} };
   }
 
@@ -534,10 +561,32 @@ function reasonFamily(reason: string | undefined): 'dead_token' | 'plan_limit' |
   // Captured live: `curl -H 'X-Figma-Token: <invalid>' https://api.figma.com/v1/me`
   // -> {"status":403,"err":"Invalid token"}. Figma lumps revoked, mistyped and expired into it.
   if (/invalid token/i.test(reason)) return 'dead_token';
-  // Figma's documented 403 string for an endpoint the file's plan does not include. The ONLY
-  // branch allowed to talk about plans - see the excludes on the Invalid-token row of
-  // tests/unit/figma-error-diagnosis.test.ts.
-  if (/limited by figma plan/i.test(reason)) return 'plan_limit';
+  // Figma's documented 403 strings for an endpoint the file's plan, or the account's tier, does not
+  // include. The ONLY branch allowed to talk about plans - see the excludes on the Invalid-token
+  // row of tests/unit/figma-error-diagnosis.test.ts.
+  //
+  // "Incorrect account type" joined this family because leaving it unclassified produced a
+  // CONTRADICTORY composite one layer up: this function fell through to the message saying the
+  // token may be revoked, mistyped or expired, and get_variables then appended that Figma had named
+  // a plan or account-type limit rather than a token problem. The reader was told to do both, and
+  // each half was correct on its own - which is why only a test over the DELIVERED text catches it.
+  //
+  // KIND MOVEMENT, stated as the CLASS it is rather than as the example I happened to synthesise
+  // (my first version named one probe body and a reader would have concluded the freeze was
+  // narrower than it is). The moved class is EXACTLY:
+  //
+  //   a 403 whose parsed reason matches /incorrect account type/i AND ALSO matches /scope/i
+  //     -> was kind 'auth' (it reached the scope branch), is now kind 'forbidden'
+  //
+  // in either body shape (`err` or `message`), on every call shape, for any number of distinct
+  // reason strings in that class - a review sweep found two plausible ones where I had synthesised
+  // one. A reason matching /incorrect account type/i WITHOUT a scope does not move at all: both
+  // plan_limit and the fallthrough return 'forbidden' at 403. Nothing else in the table moves; the
+  // direction is toward the frozen 403 default, which takes the choice of kind away from an
+  // intermediary rather than giving it any. Locked by a row that iterates the class, not an example.
+  // Provenance for the string itself: cited by the task-11 brief, NOT captured - I have no account
+  // whose tier refuses an endpoint. Same standing as its neighbour.
+  if (/limited by figma plan|incorrect account type/i.test(reason)) return 'plan_limit';
   // The scope test used to run against the RAW body, and BEFORE this function. Two things followed,
   // both reproduced: an HTML interstitial containing the word "scope" produced kind 'auth' and this
   // server's most confident quote-free sentence, letting an intermediary CHOOSE the kind five call
@@ -631,11 +680,24 @@ function mapStatus(res: Response, body: string, writeOp?: WriteOp): FigmaApiErro
       return new FigmaApiError('auth', 403, scopeMsg + quoted, undefined, reason);
     }
     if (family === 'plan_limit') {
+      // A reason can name BOTH a plan/account limit and a scope, and the sentence below tells the
+      // reader that scoping is irrelevant - false over such a body, and this task's own defect
+      // class. The DENIAL is what becomes conditional, NOT the ranking: reversing the ranking so a
+      // scope-bearing body took the scope branch would hand an intermediary the kind back by
+      // writing "scope" into a body, which is exactly what four measured bodies did before the
+      // ranking was introduced. So plan still outranks scope, and when both are named this server
+      // says it cannot tell which refused the call, because Figma does not say.
+      const alsoScope = /scope/i.test(reason ?? '');
       return new FigmaApiError('forbidden', 403,
         `Figma denied access (403).${quoted}`
-        + " Figma named a limit on this file's Figma plan, not a problem with the token:"
-        + ' re-issuing or re-scoping the token will not change it. Ask whoever owns this file in'
-        + ' Figma which endpoints its plan covers.',
+        + (alsoScope
+          ? ' Figma named a plan or account-type limit AND a scope, and does not say which of them'
+            + ' refused the call, so treat neither as excluded. Check the scopes on the Personal'
+            + ' access tokens page in Figma, then ask whoever owns this file which endpoints its'
+            + ' plan covers.'
+          : " Figma named a limit on this file's Figma plan, not a problem with the token:"
+            + ' re-issuing or re-scoping the token will not change it. Ask whoever owns this file in'
+            + ' Figma which endpoints its plan covers.'),
         undefined, reason);
     }
     return new FigmaApiError('forbidden', 403, forbiddenMessage(writeOp, quoted), undefined, reason);

@@ -29,7 +29,7 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
   server.registerTool(
     'get_variables',
     {
-      description: 'List design tokens (Figma variables) in a file: name, type, default-mode value (colors as hex), and collection. Pass node_id to return ONLY the variables a node subtree references (the headless analogue of get_variable_defs) instead of the whole-file catalog. Returns a summary header (total, resolved_via buckets {local,graph,snapshot}, unresolved count, by_type counts) plus optional filters (collection, name, type, unresolved_only) and pagination (limit/offset). Duplicate rows are deduped and case-variant collection names are unified. Aliases within the file are resolved. Cross-library aliases are resolved headless via the registered library graph: when the source library\'s team is registered, the token returns value:<hex>, resolved_via:"graph", and source_library (the source file key). Otherwise it stays honest — value:null, alias:true, alias_of:<VariableID> — meaning that library\'s team is not registered yet (register it to resolve). Requires the file to expose variables (Enterprise plan); raise timeout_ms on large files. Multi-mode tokens (collections with >1 mode) carry mode_dependent:true and modes:{<modeName>:<hex>} — value is the DEFAULT mode; do not treat it as the on-screen value without checking the node\'s mode (see get_design_context).',
+      description: 'List design tokens (Figma variables) in a file: name, type, default-mode value (colors as hex), and collection. Pass node_id to return ONLY the variables a node subtree references (the headless analogue of get_variable_defs) instead of the whole-file catalog. Returns a summary header (total, resolved_via buckets {local,graph,snapshot}, unresolved count, by_type counts) plus optional filters (collection, name, type, unresolved_only) and pagination (limit/offset). Duplicate rows are deduped and case-variant collection names are unified. Aliases within the file are resolved. Cross-library aliases are resolved headless via the registered library graph: when the source library\'s team is registered, the token returns value:<hex>, resolved_via:"graph", and source_library (the source file key). Otherwise it stays honest — value:null, alias:true, alias_of:<VariableID> — meaning that library\'s team is not registered yet (register it to resolve). Access to the Variables REST API depends on the file\'s Figma plan, on the token being valid, and on the token carrying file_variables:read - a 403 here is one of several causes, and the error message quotes Figma\'s own reason. Raise timeout_ms on large files. Multi-mode tokens (collections with >1 mode) carry mode_dependent:true and modes:{<modeName>:<hex>} — value is the DEFAULT mode; do not treat it as the on-screen value without checking the node\'s mode (see get_design_context).',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -138,19 +138,118 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
           });
         } catch (err) {
           if (err instanceof FigmaApiError && err.kind === 'forbidden') {
-            throw new Error('Figma denied variables access. The Variables REST API requires an Enterprise plan (and a token with file_variables:read).');
+            // PRESERVE err.message - it already carries the bounded, sanitized upstream reason that
+            // mapStatus parsed out of Figma's body. The old code threw a brand-new Error with the
+            // Enterprise sentence, discarding both the message and the reason, so a user whose
+            // 90-day PAT had expired was told to buy a subscription. Only Figma's OWN plan-shaped
+            // reasons may be answered as a plan problem; everything else names what this endpoint
+            // additionally needs and stops.
+            // FIVE tails, because the tail composes with a message this tool did not write and the
+            // reader gets both halves. mapStatus answers a 403 in one of several ways, and no single
+            // tail follows them all:
+            //   - Figma named the token             -> its message already excludes everything else;
+            //   - Figma named the token AND a plan  -> the ranking answers the token and says
+            //     nothing about the plan, so a reader whose real problem IS the plan reissues a
+            //     token and checks a scope, and neither can work. The ranking is right about which
+            //     cause to LEAD with and wrong to be the whole answer, so this tail carries the one
+            //     it dropped. (Found by writing the triple-signal row, not by reasoning: the pair
+            //     rows only asserted that the two halves do not contradict, and an OMISSION is not a
+            //     contradiction.)
+            //   - Figma named the plan/account type -> its message already excludes the token;
+            //   - Figma named BOTH that and a scope -> its message says it cannot tell which, so a
+            //     tail that picks one takes the choice back;
+            //   - Figma named nothing readable      -> its message enumerates the possibilities, and
+            //     an endpoint-specific tail mentioning only the scope leaves that enumeration
+            //     INCOMPLETE, contradicting this tool's own corrected description in the same
+            //     context window. The plan belongs in that list; it is a possibility there, not a
+            //     verdict, which is the distinction the Enterprise sentence lost.
+            //
+            // The ORDER MIRRORS reasonFamily's ranking (token, then plan, then scope) and that is
+            // load-bearing: testing the plan first, as the first version did, contradicted the half
+            // above it on any body naming two things - over `Invalid token, incorrect account type`
+            // mapStatus said the token was revoked and this tail answered "rather than a token
+            // problem". A tail composing with a ranked classifier has to be ranked the same way.
+            //
+            // Not shared code with reasonFamily. Both layers already import from domain/, so a
+            // shared constant WAS available and would have violated no boundary - this is a choice,
+            // not a constraint. It is made because a shared constant would not have caught a single
+            // one of these contradictions: every one of them was a pair of individually correct
+            // sentences, and only the composite rows in tool-diagnosis-e2e.test.ts see those.
+            const reason = err.upstreamReason ?? '';
+            const tokenNamed = /invalid token/i.test(reason);
+            const scopeNamed = /scope/i.test(reason);
+            const planNamed = /limited by figma plan|incorrect account type/i.test(reason);
+            const tail = tokenNamed && planNamed
+              // Figma named two causes and the ranking answered one. Naming the other is not
+              // second-guessing the ranking - the message still LEADS with the token - it is
+              // refusing to drop a cause Figma put in the same sentence.
+              ? 'Figma named a plan or account-type limit in the same reason, so a fresh token may'
+                + ' not be enough on its own, and this endpoint also needs file_variables:read.'
+                + ' Check that scope on the Personal access tokens page in Figma, then ask whoever'
+                + ' owns this file which endpoints its plan covers.'
+              : tokenNamed
+                // Silent about plans on purpose: Figma named the token and nothing else, so raising
+                // a plan here - even to deny it - re-supplies the premise this change removes.
+                ? 'This endpoint also needs the file_variables:read scope on the token, and Figma'
+                  + ' answers a missing scope with this same 403.'
+                  + ' Check that scope on the Personal access tokens page in Figma.'
+                : planNamed && scopeNamed
+                // Adds the two endpoint-specific facts and picks NEITHER, because the half above
+                // has just said Figma did not say which one refused the call.
+                ? 'The scope this endpoint needs is file_variables:read, and a Figma plan can'
+                  + ' exclude the Variables REST API outright.'
+                  + ' Name both when you ask.'
+                : planNamed
+                  // Not "not available on this FILE's plan": one of the two strings this matches
+                  // names the ACCOUNT type, which is not the same subject. Ends at an action
+                  // mapStatus has NOT already given - its half already says "Ask whoever owns this
+                  // file in Figma which endpoints its plan covers", and repeating that in different
+                  // words reads as a stutter in the composite. What this layer knows and that one
+                  // does not is WHICH endpoint.
+                  ? 'Figma named a plan or account-type limit rather than a token problem, and the'
+                    + ' Variables REST API is one of the endpoints a Figma plan can exclude.'
+                    + ' Name that endpoint when you ask.'
+                  // Completes mapStatus's list for THIS endpoint and stops. It does not repeat
+                  // "open the file in Figma as that account" - the half above already says it, and
+                  // the one thing missing from that half is the scope name.
+                  : 'For this endpoint the possibilities are three things Figma answers identically:'
+                    + " the file's Figma plan, the token being valid, and the token carrying"
+                    + ' file_variables:read.'
+                    + ' Check that scope on the Personal access tokens page in Figma.';
+            throw new Error(`${err.message} ${tail}`);
           }
           if (err instanceof FigmaApiError && err.kind === 'unknown_4xx' && err.status === 400) {
-            throw new Error(
-              "Figma rejected this file's variables as too large (its server-side ~55s job limit — too many variables/modes). " +
-              "This is intermittent (load-dependent), so retry first — it often succeeds. " +
-              "If it keeps failing: the endpoint has no filtering and node-scoping still fetches the whole file, " +
-              "so split the design-system file into smaller files. (Raising the request timeout does NOT help — this is Figma's job limit, not a client timeout.)",
-            );
+            // Body-first: the too-large advice recommends splitting a design-system file, which is a
+            // multi-day refactor. It must not be given for a 400 that merely reports a malformed
+            // parameter. mapStatus's fallthrough assigns unknown_4xx to EVERY non-401/403/404/429
+            // 4xx, so this branch sees both.
+            const reason = err.upstreamReason ?? '';
+            if (/too large|request too large/i.test(reason) || reason === '') {
+              // err.message ends with mapStatus's generic 4xx tail ("Retrying this unchanged will
+              // get the same answer"), which is FALSE for this endpoint's load-dependent job limit.
+              // Forwarding it straight into "retry first" would hand the reader two contradictory
+              // instructions, so the override is stated rather than implied - and with no reason at
+              // all the paragraph is offered as the known candidate, not asserted as the cause.
+              const lead = reason === ''
+                ? 'Figma gave no reason for this 400, and that generic advice does not apply here: '
+                : 'That generic advice does not apply here: ';
+              throw new Error(
+                `${err.message} ${lead}`
+                + "Figma rejected this file's variables as too large (its server-side ~55s job limit - too many variables/modes). "
+                + 'This is intermittent (load-dependent), so retry first - it often succeeds. '
+                + 'If it keeps failing: the endpoint has no filtering and node-scoping still fetches the whole file, '
+                + "so split the design-system file into smaller files. (Raising the request timeout does NOT help - this is Figma's job limit, not a client timeout.)",
+              );
+            }
+            throw new Error(`${err.message} Check the call's parameters against the quoted reason before assuming a size problem.`);
           }
           if (err instanceof FigmaApiError && err.kind === 'network' && err.message.includes('timed out')) {
             throw new Error(
-              `${err.message}. The variables endpoint is slow on large files — retry with a higher timeout_ms (up to 120000). ` +
+              // The em dash here was the last non-ASCII character in this tool's ERROR messages
+              // (the description still carries several, recorded as backlog in
+              // tool-annotations.test.ts). Checked on delivered text by a row in
+              // tool-diagnosis-e2e.test.ts rather than by eye.
+              `${err.message}. The variables endpoint is slow on large files - retry with a higher timeout_ms (up to 120000). ` +
               "If it still times out, the file's variables are likely too big to fetch whole; node-scoping won't help (it fetches the same file), so split the design-system file.",
             );
           }

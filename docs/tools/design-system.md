@@ -33,7 +33,9 @@ libraries whose variables the REST API refuses to serve at all; its upload contr
 documented in [snapshot-ingest](../snapshot-ingest.md) (bring your own uploader). Single-tenant has
 the graph only.
 
-Requires the file to expose variables (Enterprise plan); raise `timeout_ms` on large files.
+Access to the Variables REST API depends on the file's Figma plan, on the token being valid, and on
+the token carrying `file_variables:read` — a 403 here is one of several causes, and the error
+message quotes Figma's own reason. Raise `timeout_ms` on large files.
 Multi-mode tokens (collections with >1 mode) carry `mode_dependent:true` and
 `modes:{<modeName>:<hex>}` — `value` is the DEFAULT mode; do not treat it as the on-screen value
 without checking the node's mode (see

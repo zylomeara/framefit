@@ -58,19 +58,59 @@ export function registerSearchDesignSystemTool(server: McpServer, deps: ToolDeps
         // doesn't sink the whole search.
         const libsByTeam: { teamId: string; lib: RawTeamLibrary }[] = [];
         const skipped: { team_id: string; reason: string }[] = [];
-        let sawForbidden = false;
+        let forbidden: FigmaApiError | undefined;
         await Promise.all(teams.map(async (teamId) => {
           try {
             libsByTeam.push({ teamId, lib: await api.getTeamLibrary(teamId) });
           } catch (err) {
             if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
-            if (err instanceof FigmaApiError && err.kind === 'forbidden') sawForbidden = true;
+            // Keep the ERROR, not a boolean: mapStatus already put Figma's own reason into its
+            // message (and into upstreamReason), and a boolean discards it before it can be shown -
+            // so a dead token was reported here as a missing team scope.
+            if (err instanceof FigmaApiError && err.kind === 'forbidden') forbidden = err;
             skipped.push({ team_id: teamId, reason: err instanceof FigmaApiError ? err.kind : 'error' });
           }
         }));
         if (libsByTeam.length === 0) {
-          if (sawForbidden) {
-            throw new Error('Figma denied team library access. The token needs team_library_content:read (or file_content:read) and access to that team.');
+          if (forbidden) {
+            // The scope tail used to be appended unconditionally, which reads as a contradiction
+            // over a plan-shaped 403: mapStatus says "re-issuing or re-scoping the token will not
+            // change it" and this sentence then sent the reader to re-scope the token. Same guard
+            // as get_variables' 403 branch, for the same reason - the tail composes with a message
+            // this tool did not write.
+            //
+            // Ranked like reasonFamily, for the reason spelled out in get-variables-tool.ts: the
+            // plan tail may only follow the message that names the plan and NOTHING else. When
+            // Figma named the token, or named a scope alongside the plan, mapStatus's half has
+            // already declined to pick - so this half names the specific scopes and picks nothing.
+            const reason = forbidden.upstreamReason ?? '';
+            const tokenNamed = /invalid token/i.test(reason);
+            const scopeNamed = /scope/i.test(reason);
+            const planRaw = /limited by figma plan|incorrect account type/i.test(reason);
+            const planNamed = !tokenNamed && !scopeNamed && planRaw;
+            // When the ranking answered the token but Figma ALSO named a plan, the plan must not
+            // vanish from the answer: a reader whose real problem is the plan would otherwise
+            // reissue a token and check two scopes, and none of that can work. Same fix, same
+            // reason, as get_variables' token+plan tail.
+            const planAlso = tokenNamed && planRaw
+              ? 'Figma also named a plan or account-type limit, so a fresh token may not be enough'
+                + ' on its own. '
+              : '';
+            throw new Error(
+              `${forbidden.message} `
+              + planAlso
+              + (planNamed
+                // mapStatus's plan sentence names "this file's Figma plan" - generic wording that is
+                // slightly wrong here, because the call that failed was a TEAM endpoint. Correcting
+                // the subject is this layer's job; repeating its "ask the owner" instruction in
+                // different words would not be.
+                ? 'Published-library reads are one of the endpoints a Figma plan can exclude, and'
+                  + ' this call was about a team rather than a file.'
+                  + ' Ask whoever owns that team in Figma whether its plan covers published-library reads.'
+                : 'Reading a team library needs team_library_content:read (or file_content:read) and access to that team.'
+                  + ' Check those two on the Personal access tokens page in Figma, and open the team in Figma as that account.'
+                  + (planAlso ? ' Then ask whoever owns that team whether its plan covers published-library reads.' : '')),
+            );
           }
           throw new Error('No team libraries could be read for the resolved team(s). Check the team id(s) and token access.');
         }

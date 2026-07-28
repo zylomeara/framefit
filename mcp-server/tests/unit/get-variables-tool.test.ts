@@ -37,11 +37,24 @@ describe('get_variables tool', () => {
     expect(res.content[0].text).toContain('16');
   });
 
-  it('maps a forbidden (non-Enterprise) error to a clear hint', async () => {
-    const run = harness(async () => { throw new FigmaApiError('forbidden', 403, 'no'); });
+  // REWRITTEN, not merely re-worded. The old row asserted /Enterprise/i on a 403 whose fixture
+  // carried the message 'no' - i.e. it pinned this tool's habit of REPLACING whatever Figma said
+  // with one fixed cause. Against the live body for this endpoint
+  // ({"status":403,"error":true,"message":"Invalid token"}) that assertion was green over a message
+  // telling a user with an expired PAT to buy a subscription. The contract now is: forward the
+  // mapped message, add the scope THIS endpoint needs, and name a plan only when the body does.
+  it('a forbidden error forwards the mapped message and never invents a plan cause', async () => {
+    const run = harness(async () => {
+      throw new FigmaApiError('forbidden', 403,
+        'Figma rejected the token (403). Figma\'s response said: "Invalid token".', undefined, 'Invalid token');
+    });
     const res = await run({ file: 'abc' });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/Enterprise/i);
+    const text = res.content[0].text as string;
+    expect(text).toContain('Invalid token');
+    expect(text).toContain('file_variables:read');
+    expect(text).not.toMatch(/Enterprise/i);
+    expect(text).not.toMatch(/\bplan\b/i);
   });
 
   // R8-F3: OBSOLETE BY DESIGN as originally written — that version fed a hand-built
@@ -50,15 +63,23 @@ describe('get_variables tool', () => {
   // verdict and is now NEVER negative-cached (a weak token's 403 must not poison a different,
   // possibly stronger token's call) — that reconstructed shape can no longer occur in practice.
   // Rewritten to pin the real (more honest) behavior through the REAL CachingFigmaApiAdapter:
-  // every repeated 403 reaches the real API again (never served from a marker), and the
-  // Enterprise hint still fires on each real call.
-  it('a forbidden (403) is never negative-cached: the second call reaches the real API and still gets the Enterprise hint', async () => {
+  // every repeated 403 reaches the real API again (never served from a marker).
+  //
+  // REWRITTEN AGAIN here: the two /Enterprise/i assertions pinned the replacement literal rather
+  // than the never-cached property this row exists for. What must repeat identically is the
+  // FORWARDED diagnosis, so that is what is asserted now - the row still fails if the 403 starts
+  // being served from a marker, and no longer passes only while the tool blames a subscription.
+  it('a forbidden (403) is never negative-cached: the second call reaches the real API and repeats the same forwarded diagnosis', async () => {
     let calls = 0;
     const inner: FigmaApi = {
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
       getDocumentRaw: async () => ({}) as any, getNodesRaw: async () => ({ nodes: {} }),
       getImages: async () => ({ images: {} }), getFileVersion: async () => ({ version: '1', name: 'F', lastModified: 'X' }),
-      getVariablesLocal: async () => { calls++; throw new FigmaApiError('forbidden', 403, 'Figma denied variables access'); },
+      getVariablesLocal: async () => {
+        calls++;
+        throw new FigmaApiError('forbidden', 403,
+          'Figma rejected the token (403). Figma\'s response said: "Invalid token".', undefined, 'Invalid token');
+      },
     } as unknown as FigmaApi;
     const readCaches: ReadCaches = {
       nodeCache: new TtlCache(300_000), variablesCache: new TtlCache(300_000),
@@ -76,11 +97,12 @@ describe('get_variables tool', () => {
 
     const res1 = await call('get_variables', { file: 'abc' });
     expect(res1.isError).toBe(true);
-    expect(res1.content[0].text).toMatch(/Enterprise/i);
+    expect(res1.content[0].text).toContain('Invalid token');
+    expect(res1.content[0].text).not.toMatch(/Enterprise/i);
 
     const res2 = await call('get_variables', { file: 'abc' });
     expect(res2.isError).toBe(true);
-    expect(res2.content[0].text).toMatch(/Enterprise/i);
+    expect(res2.content[0].text).toBe(res1.content[0].text);   // identical, and never prefixed 'cached: '
 
     expect(calls).toBe(2); // never cached — both calls reached the real (fake) API
   });
@@ -339,8 +361,19 @@ describe('get_variables tool', () => {
     expect(out.returned).toBe(1);
   });
 
+  // REWRITTEN: the fixture used to be FigmaApiError('unknown_4xx', 400, 'Request too large') — a
+  // shape mapStatus never produces, since its message is the whole sentence and the reason lives in
+  // upstreamReason. Constructed that way the row exercised the no-reason path while reading like a
+  // test of the too-large path, and `not.toMatch(/Figma returned 400/)` passed only because the
+  // fixture had dropped the prefix the real error carries. The real message is used now, and the
+  // no-leak assertion pins what it was for: the bracketed kind tag runTool would print.
   it('maps Figma 400 (too large) to a retry/split error — NOT timeout_ms (wrong remedy for a server-side job limit)', async () => {
-    const tool = harness(async () => { throw new FigmaApiError('unknown_4xx', 400, 'Request too large'); });
+    const tool = harness(async () => {
+      throw new FigmaApiError('unknown_4xx', 400,
+        'Figma returned 400. Figma\'s response said: "Request too large".'
+        + ' Retrying this unchanged will get the same answer; change the request or the id it names.',
+        undefined, 'Request too large');
+    });
     const res = await tool({ file: 'ABC123' } as never);
     expect(res.isError).toBe(true);
     const text = res.content[0].text as string;
@@ -349,7 +382,7 @@ describe('get_variables tool', () => {
     expect(text).toMatch(/split/i);          // structural fix if it persists
     expect(text).not.toMatch(/timeout_ms/i); // 400 is Figma's job limit; timeout_ms does NOT help
     expect(text).not.toMatch(/node_id/i);    // node-scoping still fetches /local → same 400
-    expect(text).not.toMatch(/unknown_4xx|Figma returned 400/); // no generic kind leak
+    expect(text).not.toMatch(/\[unknown_4xx\]/); // no raw kind tag
   });
 
   it('maps a request-timeout to an actionable error that DOES steer to timeout_ms', async () => {

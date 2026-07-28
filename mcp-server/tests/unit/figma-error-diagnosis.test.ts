@@ -76,6 +76,30 @@ describe('mapStatus: kind and status are FROZEN, only the message gains the reas
       contains: [/Limited by Figma plan/],
     },
     {
+      // Added in task 11, from a defect visible only in the COMPOSITE: unclassified, this string
+      // took the fallthrough message ("the token may be revoked, mistyped or expired") and
+      // get_variables then appended that Figma had named a plan or account-type limit rather than a
+      // token problem. Each half defensible, the pair contradictory. Kind is unchanged either way -
+      // plan_limit and the fallthrough both return 'forbidden' at 403 - which is what makes this a
+      // message fix rather than a reclassification.
+      name: '403 Incorrect account type joins the plan family without moving its kind',
+      provenance: 'cited by the task-11 brief as the second plan-shaped 403 string; NOT captured',
+      status: 403, body: '{"status":403,"err":"Incorrect account type"}',
+      kind: 'forbidden', expectStatus: 403,
+      contains: [/Incorrect account type/, /plan/i],
+      excludes: [/revoked|mistyped|expiry/i, /cannot tell which of these it is/i],
+    },
+    {
+      // ONE MEMBER of the moved class, kept in the table for its message; the class itself is
+      // locked by its own describe block below, because a row per example understates a bound.
+      name: 'a body naming BOTH the account type and a scope ranks as plan, not scope',
+      provenance: 'synthesised probe; the ranking decision it locks is what moved',
+      status: 403, body: '{"status":403,"err":"Incorrect account type and scope"}',
+      kind: 'forbidden', expectStatus: 403,
+      contains: [/Incorrect account type and scope/, /plan/i],
+      excludes: [/Check scopes:/],
+    },
+    {
       name: '403 Invalid scope keeps the scope branch and its kind',
       provenance: 'Figma variables-endpoint reference: documented 403 strings',
       status: 403, body: '{"status":403,"err":"Invalid scope"}',
@@ -547,5 +571,61 @@ describe('round 2: the real 401, measured after the reviewer refuted my claim th
     const e = await errFor(401, '<HTML>401</HTML>');
     expect(e.upstreamReason).toBeUndefined();
     expect(e.message).toMatch(/revoked, mistyped, or past its expiry/);
+  });
+});
+
+/**
+ * The kind movement task 11 introduces, locked as the CLASS it is rather than as the one body that
+ * happened to be synthesised while measuring it. The first version of this lock named a single
+ * probe string, and a reader checking the freeze against that example would have concluded the
+ * moved set was narrower than it is - a review sweep found a second, more plausible member.
+ *
+ * THE CLASS: a 403 whose parsed reason matches /incorrect account type/i AND ALSO matches /scope/i
+ * was kind 'auth' (it reached the scope branch) and is now kind 'forbidden'. In either body shape,
+ * on every call shape. A reason matching the account type WITHOUT a scope does not move at all.
+ */
+describe('the moved class, enumerated rather than exemplified', () => {
+  const WITH_SCOPE = [
+    'Incorrect account type and scope',
+    'Incorrect account type; missing scope file_variables:read',
+    'incorrect ACCOUNT TYPE - scope',
+  ];
+  const WITHOUT_SCOPE = ['Incorrect account type', 'Limited by Figma plan'];
+
+  it('every member moves to forbidden, in both body shapes', async () => {
+    for (const reason of WITH_SCOPE) {
+      for (const body of [JSON.stringify({ status: 403, err: reason }),
+        JSON.stringify({ status: 403, error: true, message: reason })]) {
+        const e = await errFor(403, body);
+        expect(e.kind, `class member not at the frozen 403 default: ${body}`).toBe('forbidden');
+        expect(e.status).toBe(403);
+      }
+    }
+  });
+
+  it('and none of them is told that scoping is irrelevant', async () => {
+    // The message half of the same fix: the ranking puts these on the plan branch, whose sentence
+    // used to deny that re-scoping could help - over a body that names a scope outright.
+    for (const reason of WITH_SCOPE) {
+      const e = await errFor(403, JSON.stringify({ status: 403, err: reason }));
+      expect(e.message, reason).not.toMatch(/re-scoping the token will not change it/i);
+      expect(e.message, reason).toMatch(/treat neither as excluded/i);
+    }
+  });
+
+  it('a reason naming the account type WITHOUT a scope does not move, and keeps the plan sentence', async () => {
+    for (const reason of WITHOUT_SCOPE) {
+      const e = await errFor(403, JSON.stringify({ status: 403, err: reason }));
+      expect(e.kind).toBe('forbidden');
+      expect(e.message, reason).toMatch(/re-scoping the token will not change it/i);
+    }
+  });
+
+  it('the ranking above it is unchanged: a token named alongside either one still wins', async () => {
+    for (const reason of ['Invalid token, incorrect account type', 'Invalid token; missing scope']) {
+      const e = await errFor(403, JSON.stringify({ status: 403, err: reason }));
+      expect(e.kind).toBe('forbidden');
+      expect(e.message, reason).toMatch(/revoked, mistyped, or past its expiry/);
+    }
   });
 });

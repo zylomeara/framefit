@@ -6,6 +6,7 @@ import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
 import { downloadRaster, downloadText } from './image-download.js';
 import { DEFAULT_FOCUS_RADIUS, renderFocusCrop } from './focus-crop.js';
+import { FigmaApiError } from '../../../ports/errors.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
@@ -141,7 +142,20 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
           if (args.tiles) {
             const kids = (entry.document.children ?? []).filter((c) => c.absoluteBoundingBox);
             if (kids.length) {
-              const { images: kidImages } = await api.getImages(parsed.value, kids.map((c) => c.id), { format: args.format, scale: args.scale });
+              // The whole-node render above already succeeded and is in `out`. A failure on the
+              // per-child renders must not throw it away: before getImages started throwing on a
+              // 200 body carrying `err`, this path yielded url:null per child and the main result
+              // still came back. Same shape kept, with the reason attached instead of silence.
+              let kidImages: Record<string, string | null> = {};
+              try {
+                kidImages = (await api.getImages(parsed.value, kids.map((c) => c.id), { format: args.format, scale: args.scale })).images;
+              } catch (err) {
+                // Narrowed to the class that regressed - same catch, same reasoning, as
+                // get-review-board-tool.ts. 403/404/5xx/timeout/429 all still fail the call.
+                if (!(err instanceof FigmaApiError && err.kind === 'upstream' && err.status === 200)) throw err;
+                deps.logger.info({ err: err.message }, 'get_screenshot.tiles_unavailable');
+                out.children_map_note = `Per-child renders unavailable: ${err.message}`;
+              }
               out.children_map = kids.map((c) => {
                 const cb = c.absoluteBoundingBox!;
                 return { node_id: c.id, name: c.name, bounds: { x: cb.x, y: cb.y, w: cb.width, h: cb.height }, url: kidImages[c.id] ?? null };
