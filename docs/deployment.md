@@ -6,16 +6,28 @@ and who needs to reach it.
 | Shape | Where | Auth | Guide |
 |---|---|---|---|
 | stdio (recommended start) | your machine | none needed — process-local | [README Tier 1](../README.md#tier-1--local-stdio-the-10-minute-path) |
-| Docker, local | your machine | none — binds `127.0.0.1` only | [docker/README §1](../docker/README.md) |
+| Docker, local | your machine | none — published on `127.0.0.1` only | [docker/README §1](../docker/README.md) |
 | **VPS, single-tenant** | a server you own | **you add it** (SSH tunnel or reverse proxy) | this page |
 | VPS, multi-tenant | a server you own | OIDC (external Keycloak) | [docker/README §2](../docker/README.md) + notes below |
 
 ## VPS, single-tenant — one user, one token, reachable from anywhere
 
-The single-tenant server has **no authentication of its own** and holds your
-`FIGMA_TOKEN`. It deliberately binds `127.0.0.1`, so nothing is exposed by default.
-Anyone who can reach `/mcp` can read every Figma file your token can — so the whole
-question of a VPS deployment is *how you gate access*. Two safe answers:
+The single-tenant server has **no authentication of its own** and holds your `FIGMA_TOKEN`. It
+binds `127.0.0.1` by default (`BIND_HOST`), and refuses `/mcp` requests carrying a browser `Origin`
+it does not recognise, so a fresh install is reachable only from the box it runs on. Anyone who can
+reach `/mcp` can read every Figma file your token can - so the whole question of a VPS deployment
+is *how you gate access*. Two safe answers:
+
+> The loopback default is IPv4-only. A client configured with `http://localhost:3846/mcp` on a host
+> whose resolver returns `::1` first will not connect. Fix it on the client: point it at
+> `http://127.0.0.1:3846/mcp`, the form every example in this repository uses.
+>
+> `BIND_HOST=::1` is not the same fix. One listen cannot be both loopback-only and dual-stack, so
+> it does not add IPv6 - it swaps which clients break, and `http://127.0.0.1:3846/mcp` then gets
+> `ECONNREFUSED`. Never set it on the container either: `/health` reports `loopback: true` for
+> `::1`, and the image healthcheck exits 0 only on `"loopback":false`, so the container would go
+> permanently unhealthy. The image sets `BIND_HOST=0.0.0.0` on purpose - the compose port mapping
+> is what keeps it host-local.
 
 ### Option A — SSH tunnel (no domain, no TLS setup, 5 minutes)
 

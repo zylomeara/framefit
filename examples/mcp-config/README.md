@@ -61,8 +61,12 @@ Once the npm package is published, the clone-and-build step disappears and regis
 single line (no absolute paths):
 
 ```bash
-claude mcp add framefit --env FIGMA_TOKEN=figd_your_token_here -- npx -y framefit
+claude mcp add framefit --env FIGMA_TOKEN=figd_your_token_here --env MCP_TRANSPORT=stdio -- npx -y framefit
 ```
+
+The transport flag is not optional: the server defaults to the HTTP transport, which is the shape
+the container deployments rely on, so without it this line boots an HTTP server the host never
+speaks to.
 
 This section will be updated with the published package name.
 

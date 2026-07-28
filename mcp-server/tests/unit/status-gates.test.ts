@@ -288,10 +288,43 @@ describe('renderers and docs', () => {
     // the prose: bare `toContain('mode')` is satisfied by the word "mode" in a sentence, and
     // `toContain('complete')` by "completed" - so a doc that names three fields out of eleven passes.
     const doc = readDoc();
-    for (const field of ['schema', 'generated_at', 'version', 'mode', 'transport_source', 'scope',
+    for (const field of ['schema', 'generated_at', 'version', 'mode', 'transport_source',
+                         'bind_host', 'bind_host_source', 'scope',
                          'key_fingerprint', 'checks', 'summary', 'total', 'ok', 'skipped', 'failed',
                          'complete', 'ok_overall']) {
       expect(doc, `docs/status.md does not document the JSON field "${field}" in a code span`)
+        .toMatch(new RegExp(`\`[^\`\n]*\\b${field}\\b[^\`\n]*\``));
+    }
+  });
+
+  it('documents a mode sub-field in BOTH places a consumer reads: the shape AND a bullet nested under `mode`', () => {
+    // The gate above asks only "does this name appear in SOME backticked span, anywhere in the
+    // file". Measured against this very doc: deleting `bind_host` from the `mode` shape leaves it
+    // green, and deleting the nested bullet leaves it green too - only deleting BOTH goes red. So
+    // it cannot see the failure that actually costs a consumer their afternoon, which is a field
+    // documented at the WRONG NESTING LEVEL: a top-level bullet reads as `report.bind_host`, and
+    // the real path is `report.mode.bind_host`.
+    //
+    // Scoped to the two fields that have both locations. `multi_tenant`, `transport` and
+    // `transport_source` are explained in the `mode` bullet's own prose rather than as sub-bullets,
+    // and `scope` has no sub-bullets at all - a blanket "every name in a `{ }` shape needs its own
+    // sub-bullet" rule would fail all four without any of them being wrong.
+    const doc = readDoc();
+    const shape = /^- `mode` - `\{([^`]*)\}`/m.exec(doc);
+    expect(shape, 'the `mode` bullet no longer opens with a `{ ... }` field shape').not.toBeNull();
+
+    // Everything between the shape and the next TOP-LEVEL bullet, of which only the two-space
+    // bullets count. The indentation IS the assertion: the same sentence one column to the left is
+    // a sibling of `mode` rather than a child of it, which is exactly the bug being locked out.
+    const after = doc.slice(shape!.index + shape![0].length);
+    const nextTop = after.search(/^- /m);
+    const nested = nextTop === -1 ? after : after.slice(0, nextTop);
+    const subBullets = [...nested.matchAll(/^ {2}- .*(?:\n {4}.*)*/gm)].map((m) => m[0]).join('\n');
+
+    for (const field of ['bind_host', 'bind_host_source']) {
+      expect(shape![1], `the \`mode\` field shape does not list "${field}"`)
+        .toMatch(new RegExp(`\\b${field}\\b`));
+      expect(subBullets, `"${field}" has no bullet nested under \`mode\` - documented anywhere else it reads as report.${field}, but the real path is report.mode.${field}`)
         .toMatch(new RegExp(`\`[^\`\n]*\\b${field}\\b[^\`\n]*\``));
     }
   });

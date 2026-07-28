@@ -83,8 +83,10 @@ honestly unresolved. The first graph-needing call (`get_variables`, `get_design_
 design system (measured ~11 libraries / 7000+ variables), one-time per process; later calls are
 fast and the call is not hung.
 
-> An npm package is on the way — it will replace the clone-and-build step with a one-line
-> `claude mcp add framefit -- npx -y framefit`. Until it is published, use the path form above.
+> An npm package is on the way - it will replace the clone-and-build step with a one-line
+> `claude mcp add framefit --env MCP_TRANSPORT=stdio -- npx -y framefit`. The transport flag is
+> not optional: the server defaults to the HTTP transport, which is the shape the container
+> deployments rely on. Until the package is published, use the path form above.
 
 ### Tier 2 — Docker (single-tenant or the production stack)
 

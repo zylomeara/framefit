@@ -189,9 +189,16 @@ Exactly one JSON document on stdout. Fields:
 - `generated_at` - ISO 8601 UTC timestamp of when the report was built.
 - `version` - the framefit version, the same literal the MCP handshake reports
   (`src/infrastructure/version.ts`; the stdio smoke script cross-checks the two).
-- `mode` - `{ multi_tenant, transport, transport_source }`: the EFFECTIVE mode, the raw
-  `MCP_TRANSPORT` (`null` when unset), and `transport_source` = `"env"` or `"unset"`, because hosts set
-  the transport per launch and "unset" is a different fact than any particular value.
+- `mode` - `{ multi_tenant, transport, transport_source, bind_host, bind_host_source }`: the
+  EFFECTIVE mode, the raw `MCP_TRANSPORT` (`null` when unset), and `transport_source` = `"env"` or
+  `"unset"`, because hosts set the transport per launch and "unset" is a different fact than any
+  particular value.
+  - `bind_host` / `bind_host_source` - the interface a server started from THIS environment would
+    listen on (`BIND_HOST`, default `127.0.0.1`), and whether that came from the environment
+    (`"env"`) or from the schema default (`"default"`). An empty `BIND_HOST=` counts as
+    `"default"`, because the config preprocess turns it back into loopback. Derived, not observed:
+    this command does not connect to a running server, so the field says which interface would be
+    bound, not which one currently is.
 - `scope` - `{ hostname, pid, env_source }`: which process answered. `env_source` is always
   `"process"`.
 - `key_fingerprint` - the first 8 hex characters of sha256 over the DECODED `ENCRYPTION_KEY` bytes, or

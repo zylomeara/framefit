@@ -82,14 +82,18 @@ describe('collectStatus', () => {
   });
 
   it('reports the effective mode and where the transport came from', async () => {
+    // toEqual, not toMatchObject: this is the whole-shape lock on `mode`. A field added to the
+    // report without being documented and rendered goes red here first (bind_host did).
     const unset = await collectStatus(baseCtx(), [okCheck]);
-    expect(unset.mode).toEqual({ multi_tenant: false, transport: null, transport_source: 'unset' });
+    expect(unset.mode).toEqual({ multi_tenant: false, transport: null, transport_source: 'unset',
+                                 bind_host: '127.0.0.1', bind_host_source: 'default' });
     // multi_tenant is now DERIVED from env (collectStatus overwrites ctx.multiTenant), so the mode
     // must be expressed through the environment, not just the ctx.multiTenant/transport fields -
     // a caller passing multiTenant: true with no MULTI_TENANT in env would no longer see it reflected.
-    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http' };
+    const env = { MULTI_TENANT: 'true', MCP_TRANSPORT: 'http', BIND_HOST: '0.0.0.0' };
     const mt = await collectStatus(baseCtx({ env, multiTenant: true, transport: 'http' }), [okCheck]);
-    expect(mt.mode).toEqual({ multi_tenant: true, transport: 'http', transport_source: 'env' });
+    expect(mt.mode).toEqual({ multi_tenant: true, transport: 'http', transport_source: 'env',
+                              bind_host: '0.0.0.0', bind_host_source: 'env' });
   });
 
   it('wires key_fingerprint from the environment', async () => {

@@ -1,4 +1,4 @@
-import { loadConfig, DEFAULT_MCP_TRANSPORT } from './config.js';
+import { loadConfig, DEFAULT_MCP_TRANSPORT, DEFAULT_BIND_HOST } from './config.js';
 import { multiTenantEnvGraphConflict, parseTeamIds } from './env-graph.js';
 import { isMultiTenant, loadMultiTenantEnv, isEncryptionKeyHex, ENCRYPTION_KEY_HINT } from '../multi-tenant/env.js';
 
@@ -82,7 +82,18 @@ export interface StatusReport {
   schema: 1;
   generated_at: string;
   version: string;
-  mode: { multi_tenant: boolean; transport: string | null; transport_source: 'env' | 'unset' };
+  mode: {
+    multi_tenant: boolean;
+    transport: string | null;
+    transport_source: 'env' | 'unset';
+    /** The interface the server would bind. Reported so a green verdict names the interface it is
+     *  green about - before this, every field in the report was silent about which socket the
+     *  checks were green for, so `status` could not disagree with a box that booted loopback when
+     *  its operator believed it was reachable, or the reverse. Derived, never observed: this CLI
+     *  does not connect to the running server, so it reports what THIS environment would bind. */
+    bind_host: string;
+    bind_host_source: 'env' | 'default';
+  };
   scope: { hostname: string; pid: number; env_source: 'process' };
   key_fingerprint: string | null;
   checks: ({ id: string } & CheckResult)[];
@@ -262,6 +273,10 @@ export function buildReport(
       multi_tenant: ctx.multiTenant,
       transport: ctx.transport ?? null,
       transport_source: ctx.transport ? 'env' : 'unset',
+      bind_host: effectiveBindHost(ctx.env),
+      // Truthiness carries the SAME '' rule effectiveBindHost applies: `BIND_HOST=` changed nothing
+      // about what gets bound, so it cannot be credited as the source of the value either.
+      bind_host_source: ctx.env.BIND_HOST ? 'env' : 'default',
     },
     scope: { hostname: ctx.hostname, pid: ctx.pid, env_source: 'process' },
     key_fingerprint: keyFingerprint(ctx.env.ENCRYPTION_KEY),
@@ -280,6 +295,16 @@ export function buildReport(
 // MCP_TRANSPORT, so a raw comparison reads every production box as stdio -> single-tenant.
 export function effectiveTransport(env: NodeJS.ProcessEnv): string {
   return env.MCP_TRANSPORT ?? DEFAULT_MCP_TRANSPORT;
+}
+
+// The ONE place the bind default is applied outside the server, read by the mode header and by
+// configCheck. The default itself comes from config.ts's schema, so this cannot drift from what
+// the server would really bind. The '' case mirrors the schema preprocess: an empty assignment
+// means "unset", not "every interface" - dropping it here would make status report `bind_host: ""`
+// for the exact copied-.env line the preprocess exists to neutralise.
+export function effectiveBindHost(env: NodeJS.ProcessEnv): string {
+  const raw = env.BIND_HOST;
+  return raw === undefined || raw === '' ? DEFAULT_BIND_HOST : raw;
 }
 
 // The ONE derivation of "is this process multi-tenant" - env alone, never a caller-supplied flag.
@@ -362,8 +387,11 @@ export function renderText(report: StatusReport, width = 100): string {
   const transport = report.mode.transport_source === 'env'
     ? `transport: ${report.mode.transport} (from MCP_TRANSPORT; hosts set it per launch)`
     : 'transport: unset (hosts set MCP_TRANSPORT per launch)';
+  // The bind belongs on the SAME line as the transport: this header is what gets pasted into a
+  // ticket, and "which interface" is the other half of "can anything reach this process".
+  const bind = `bind: ${report.mode.bind_host}${report.mode.bind_host_source === 'default' ? ' (default)' : ''}`;
   const head = [
-    `framefit ${report.version}  ${report.mode.multi_tenant ? 'multi-tenant' : 'single-tenant'}  ${transport}${fp}`,
+    `framefit ${report.version}  ${report.mode.multi_tenant ? 'multi-tenant' : 'single-tenant'}  ${transport}  ${bind}${fp}`,
     'env: process environment only (this command does not read .env)',
     '',
   ];
@@ -436,6 +464,9 @@ export const configCheck: Check = {
     }
     return { state: 'ok', detail: {
       mode: 'single-tenant',
+      // Surfaced on the check's own line, not only in the header: this mode has no authentication
+      // of its own, so "which interface is it listening on" is part of what an `ok` here means.
+      bind_host: effectiveBindHost(ctx.env),
       figma_token: token ? 'set' : 'not set (fine: callers may pass a per-call figma_token)',
       ds_team_ids: teamCount,
     } };
