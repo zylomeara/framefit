@@ -303,11 +303,18 @@ describe('every spelling collapses to a canonical bind, and /health reports it',
     '0:0:0:0:0:ffff:127.0.0.1', '0::ffff:127.0.0.1', '::ffff:7f00:1',
   ];
 
+  // Dial the address the SOCKET reports, not the spelling that was configured. BIND_HOST=localhost
+  // is the row that forces this: the name resolves to two families while the socket bound exactly
+  // one of them, so a dial by name can land on the family this server is NOT on - where the port
+  // belongs to whoever else happens to hold it. Bracketing is written out here instead of borrowed
+  // from dialableHost, because deriving the dial from the function under test would be circular.
+  const dialBound = (address: string): string => (address.includes(':') ? `[${address}]` : address);
+
   it.each(loopbackSpellings)('BIND_HOST=%s -> /health says loopback:true', async (bind) => {
     const config = loadConfig({ MCP_TRANSPORT: 'http', PORT: '0', NODE_ENV: 'test', BIND_HOST: bind });
     const handle = await startServer(config, logger);
     try {
-      const res = await fetch(`http://${dialableHost(bind)}:${handle.port}/health`);
+      const res = await fetch(`http://${dialBound(handle.address)}:${handle.port}/health`);
       const body = await res.json() as { status: string; bind: { address: string; loopback: boolean } };
       expect(body.status).toBe('ok');
       expect(body.bind.address).toBe(handle.address);      // the payload reports what the socket bound

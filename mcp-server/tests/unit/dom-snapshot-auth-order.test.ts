@@ -6,7 +6,7 @@
 // observable difference between the two orders.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
-import type { Server } from 'node:http';
+import { startTestServer, type TestHttpServer } from '../helpers/http-test-server.js';
 import { handleUpload, createDomSnapshotRoutes } from '../../src/infrastructure/dom-snapshot-routes.js';
 import { DomSnapshotStore, MAX_SNAPSHOTS_PER_POST } from '../../src/infrastructure/dom-snapshot-store.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
@@ -134,8 +134,7 @@ describe('the happy path and the honest body errors are unchanged', () => {
 // pattern as the GET /extractor.js block in dom-snapshot-routes.test.ts) because the thing under
 // test IS the middleware order; a direct handleUpload call cannot observe it.
 describe('the capToken gate sits ahead of the body parser', () => {
-  let server: Server;
-  let base: string;
+  let server: TestHttpServer;
   let store: DomSnapshotStore;
   let liveToken: string;
 
@@ -147,13 +146,11 @@ describe('the capToken gate sits ahead of the body parser', () => {
     liveToken = store.mint('owner-a');
     const app = express();
     app.use('/api/dom-snapshots', createDomSnapshotRoutes({ store, logger: createLogger({ level: 'silent' }) }));
-    await new Promise<void>((r) => { server = app.listen(0, () => r()); });
-    const a = server.address();
-    base = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
+    server = await startTestServer(app);
   });
-  afterEach(() => new Promise<void>((r) => server.close(() => r())));
+  afterEach(() => server.close());
 
-  const post = (token: string, body: string) => fetch(`${base}/api/dom-snapshots/${token}`, {
+  const post = (token: string, body: string) => fetch(`${server.base}/api/dom-snapshots/${token}`, {
     method: 'POST',
     headers: { 'content-type': 'text/plain' },
     body,
@@ -186,7 +183,7 @@ describe('the capToken gate sits ahead of the body parser', () => {
   });
 
   it('the OPTIONS preflight still short-circuits with its CORS headers', async () => {
-    const res = await fetch(`${base}/api/dom-snapshots/deadbeef`, {
+    const res = await fetch(`${server.base}/api/dom-snapshots/deadbeef`, {
       method: 'OPTIONS',
       headers: { origin: 'https://page.example.com', 'access-control-request-method': 'POST' },
     });
@@ -208,20 +205,19 @@ describe('the capToken gate sits ahead of the body parser', () => {
     now = 3 * 60 * 60 * 1000;   // past the hard cap
     const app = express();
     app.use('/api/dom-snapshots', createDomSnapshotRoutes({ store: clocked, logger: createLogger({ level: 'silent' }) }));
-    const s = await new Promise<Server>((r) => { const x = app.listen(0, () => r(x)); });
-    const a = s.address();
-    const url = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}/api/dom-snapshots/${tok}`;
+    const expired = await startTestServer(app);
     try {
+      const url = `${expired.base}/api/dom-snapshots/${tok}`;
       const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: OVERSIZE });
       expect(res.status).toBe(404);
       expect(res.headers.get('access-control-allow-origin')).toBe('*');
     } finally {
-      await new Promise<void>((r) => s.close(() => r()));
+      await expired.close();
     }
   });
 
   it('GET /extractor.js is not caught by the POST-scoped gate', async () => {
-    const res = await fetch(`${base}/api/dom-snapshots/extractor.js`);
+    const res = await fetch(`${server.base}/api/dom-snapshots/extractor.js`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('window.__figmaDomDiff = ');
   });

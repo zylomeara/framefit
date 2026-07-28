@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
-import type { Server } from 'node:http';
+import { startTestServer, type TestHttpServer } from '../helpers/http-test-server.js';
 import { createAccountsRouter, type AccountsApiDeps, daysLeft } from '../../src/multi-tenant/accounts-api.js';
 import type { FigmaTokenRow } from '../../src/multi-tenant/db.js';
 
@@ -13,8 +13,7 @@ function fakeRow(over: Partial<FigmaTokenRow> = {}): FigmaTokenRow {
   };
 }
 
-let server: Server;
-let base: string;
+let server: TestHttpServer;
 let deps: AccountsApiDeps;
 let calls: Record<string, unknown[]>;
 
@@ -40,18 +39,14 @@ beforeEach(async () => {
   app.use(express.json());
   app.use((_req, res, next) => { res.locals.userId = 'u1'; next(); });
   app.use('/accounts', createAccountsRouter(deps));
-  await new Promise<void>((resolve) => {
-    server = app.listen(0, () => resolve());
-  });
-  const addr = server.address();
-  base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  server = await startTestServer(app);
 });
 
-afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())));
+afterEach(() => server.close());
 
 describe('accounts api', () => {
   it('GET /accounts returns safe rows with days_left', async () => {
-    const res = await fetch(`${base}/accounts`);
+    const res = await fetch(`${server.base}/accounts`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body[0].label).toBe('work');
@@ -60,7 +55,7 @@ describe('accounts api', () => {
   });
 
   it('POST /accounts validates PAT then stores it', async () => {
-    const res = await fetch(`${base}/accounts`, {
+    const res = await fetch(`${server.base}/accounts`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'work', pat: 'figd_secret_token_value', expires_at: '2026-09-01' }),
@@ -79,7 +74,7 @@ describe('accounts api', () => {
 
   it('POST /accounts rejects a PAT Figma refuses', async () => {
     deps.validatePat = async () => ({ ok: false, status: 403 });
-    const res = await fetch(`${base}/accounts`, {
+    const res = await fetch(`${server.base}/accounts`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'work', pat: 'figd_dead_token_value' }),
@@ -90,7 +85,7 @@ describe('accounts api', () => {
 
   it('POST /accounts rejects missing fields and bad label', async () => {
     for (const body of [{}, { label: 'a' }, { pat: 'figd_x_long_enough' }, { label: 'bad/slash', pat: 'figd_x_long_enough' }]) {
-      const res = await fetch(`${base}/accounts`, {
+      const res = await fetch(`${server.base}/accounts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -101,7 +96,7 @@ describe('accounts api', () => {
 
   it('POST /accounts maps unique violation to 409', async () => {
     deps.db.addToken = async () => { const e: any = new Error('dup'); e.code = '23505'; throw e; };
-    const res = await fetch(`${base}/accounts`, {
+    const res = await fetch(`${server.base}/accounts`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'work', pat: 'figd_secret_token_value' }),
@@ -110,20 +105,20 @@ describe('accounts api', () => {
   });
 
   it('DELETE /accounts/:label → 200/404', async () => {
-    expect((await fetch(`${base}/accounts/work`, { method: 'DELETE' })).status).toBe(200);
+    expect((await fetch(`${server.base}/accounts/work`, { method: 'DELETE' })).status).toBe(200);
     deps.db.removeToken = async () => false;
-    expect((await fetch(`${base}/accounts/none`, { method: 'DELETE' })).status).toBe(404);
+    expect((await fetch(`${server.base}/accounts/none`, { method: 'DELETE' })).status).toBe(404);
   });
 
   it('PUT /accounts/:label/default → 200/404', async () => {
-    expect((await fetch(`${base}/accounts/work/default`, { method: 'PUT' })).status).toBe(200);
+    expect((await fetch(`${server.base}/accounts/work/default`, { method: 'PUT' })).status).toBe(200);
     deps.db.setDefaultToken = async () => false;
-    expect((await fetch(`${base}/accounts/none/default`, { method: 'PUT' })).status).toBe(404);
+    expect((await fetch(`${server.base}/accounts/none/default`, { method: 'PUT' })).status).toBe(404);
   });
 
   it('POST /accounts/:label/validate revalidates and persists status', async () => {
     deps.validatePat = async () => ({ ok: false, status: 403 });
-    const res = await fetch(`${base}/accounts/work/validate`, { method: 'POST' });
+    const res = await fetch(`${server.base}/accounts/work/validate`, { method: 'POST' });
     expect(res.status).toBe(200);
     expect((await res.json()).status).toBe('invalid');
     expect(calls.updateValidation).toEqual([1, 'invalid', 'u1']);

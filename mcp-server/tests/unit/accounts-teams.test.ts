@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
-import type { Server } from 'node:http';
+import { startTestServer, type TestHttpServer } from '../helpers/http-test-server.js';
 import { createAccountsRouter, type AccountsApiDeps } from '../../src/multi-tenant/accounts-api.js';
 import type { LibraryRow } from '../../src/multi-tenant/library-registry-db.js';
 
@@ -55,8 +55,7 @@ function baseDeps(overrides: Partial<AccountsApiDeps> = {}): AccountsApiDeps {
 
 // ---- harness ----------------------------------------------------------------
 
-let server: Server;
-let base: string;
+let server: TestHttpServer;
 let removeTokenSpy: ReturnType<typeof makeRemoveTokenFake>;
 
 function makeApp(deps: AccountsApiDeps, userId = 'u1') {
@@ -69,12 +68,10 @@ function makeApp(deps: AccountsApiDeps, userId = 'u1') {
 
 async function startApp(deps: AccountsApiDeps, userId = 'u1') {
   const app = makeApp(deps, userId);
-  await new Promise<void>((r) => { server = app.listen(0, () => r()); });
-  const a = server.address();
-  base = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
+  server = await startTestServer(app);
 }
 
-afterEach(() => new Promise<void>((r) => server.close(() => r())));
+afterEach(() => server.close());
 
 // ---- tests ------------------------------------------------------------------
 
@@ -89,7 +86,7 @@ describe('accounts teams – POST /teams', () => {
   });
 
   it('registers a team instantly and returns 201 with {team_id} (no discovery)', async () => {
-    const res = await fetch(`${base}/accounts/teams`, {
+    const res = await fetch(`${server.base}/accounts/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ team_id: TEAM_ID }),
@@ -100,7 +97,7 @@ describe('accounts teams – POST /teams', () => {
   });
 
   it('calls addTeam but does NOT call discover (discovery moved to background sync)', async () => {
-    await fetch(`${base}/accounts/teams`, {
+    await fetch(`${server.base}/accounts/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ team_id: TEAM_ID }),
@@ -110,7 +107,7 @@ describe('accounts teams – POST /teams', () => {
   });
 
   it('returns 400 for non-numeric team_id', async () => {
-    const res = await fetch(`${base}/accounts/teams`, {
+    const res = await fetch(`${server.base}/accounts/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ team_id: 'abc' }),
@@ -119,7 +116,7 @@ describe('accounts teams – POST /teams', () => {
   });
 
   it('returns 400 for missing team_id', async () => {
-    const res = await fetch(`${base}/accounts/teams`, {
+    const res = await fetch(`${server.base}/accounts/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
@@ -134,7 +131,7 @@ describe('accounts teams – POST /teams without registry dep', () => {
   });
 
   it('returns 404 when registry dep is absent', async () => {
-    const res = await fetch(`${base}/accounts/teams`, {
+    const res = await fetch(`${server.base}/accounts/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ team_id: TEAM_ID }),
@@ -153,7 +150,7 @@ describe('accounts teams – GET /teams', () => {
   });
 
   it('returns teams and libraries scoped to userId', async () => {
-    const res = await fetch(`${base}/accounts/teams`);
+    const res = await fetch(`${server.base}/accounts/teams`);
     expect(res.status).toBe(200);
     const body = await res.json() as { teams: { team_id: string }[]; libraries: LibraryRow[] };
     expect(body.teams).toEqual([{ team_id: TEAM_ID }]);
@@ -169,7 +166,7 @@ describe('accounts teams – GET /teams without registry dep', () => {
   });
 
   it('returns empty teams/libraries gracefully', async () => {
-    const res = await fetch(`${base}/accounts/teams`);
+    const res = await fetch(`${server.base}/accounts/teams`);
     expect(res.status).toBe(200);
     const body = await res.json() as { teams: unknown[]; libraries: unknown[] };
     expect(body).toEqual({ teams: [], libraries: [] });
@@ -187,26 +184,26 @@ describe('accounts teams – DELETE /teams/:id', () => {
   });
 
   it('removes team and returns {ok:true}', async () => {
-    const res = await fetch(`${base}/accounts/teams/${TEAM_ID}`, { method: 'DELETE' });
+    const res = await fetch(`${server.base}/accounts/teams/${TEAM_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(registry.removeTeam).toHaveBeenCalledWith('u1', TEAM_ID);
   });
 
   it('does NOT call removeToken (no route collision with /:label)', async () => {
-    await fetch(`${base}/accounts/teams/${TEAM_ID}`, { method: 'DELETE' });
+    await fetch(`${server.base}/accounts/teams/${TEAM_ID}`, { method: 'DELETE' });
     expect(removeTokenSpy).not.toHaveBeenCalled();
   });
 
   it('returns 404 when removeTeam returns false', async () => {
     registry.removeTeam.mockResolvedValueOnce(false);
-    const res = await fetch(`${base}/accounts/teams/${TEAM_ID}`, { method: 'DELETE' });
+    const res = await fetch(`${server.base}/accounts/teams/${TEAM_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(404);
     expect((await res.json() as any).error).toBe('Team not registered');
   });
 
   it('returns 400 for bad (non-numeric) team id', async () => {
-    const res = await fetch(`${base}/accounts/teams/not-an-id`, { method: 'DELETE' });
+    const res = await fetch(`${server.base}/accounts/teams/not-an-id`, { method: 'DELETE' });
     expect(res.status).toBe(400);
   });
 });
@@ -217,7 +214,7 @@ describe('accounts teams – DELETE /teams/:id without registry dep', () => {
   });
 
   it('returns 404 when registry dep is absent', async () => {
-    const res = await fetch(`${base}/accounts/teams/${TEAM_ID}`, { method: 'DELETE' });
+    const res = await fetch(`${server.base}/accounts/teams/${TEAM_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(404);
     expect((await res.json() as any).error).toBe('Team registry unavailable');
   });
@@ -232,7 +229,7 @@ describe('accounts teams – POST /sync (kick off background sync)', () => {
   });
 
   it('returns 202 with {status:"started"} and calls start with userId', async () => {
-    const res = await fetch(`${base}/accounts/sync`, { method: 'POST' });
+    const res = await fetch(`${server.base}/accounts/sync`, { method: 'POST' });
     expect(res.status).toBe(202);
     const body = await res.json() as { status: string; startedAt?: number };
     expect(body.status).toBe('started');
@@ -249,7 +246,7 @@ describe('accounts teams – POST /teams/:id/sync (per-team sync)', () => {
   });
 
   it('returns 202 {status:"started"} and calls start with (userId, teamId)', async () => {
-    const res = await fetch(`${base}/accounts/teams/${TEAM_ID}/sync`, { method: 'POST' });
+    const res = await fetch(`${server.base}/accounts/teams/${TEAM_ID}/sync`, { method: 'POST' });
     expect(res.status).toBe(202);
     const body = await res.json() as { status: string };
     expect(body.status).toBe('started');
@@ -257,7 +254,7 @@ describe('accounts teams – POST /teams/:id/sync (per-team sync)', () => {
   });
 
   it('returns 400 for a bad (non-numeric) team id', async () => {
-    const res = await fetch(`${base}/accounts/teams/not-an-id/sync`, { method: 'POST' });
+    const res = await fetch(`${server.base}/accounts/teams/not-an-id/sync`, { method: 'POST' });
     expect(res.status).toBe(400);
     expect(syncFake.start).not.toHaveBeenCalled();
   });
@@ -269,7 +266,7 @@ describe('accounts teams – POST /teams/:id/sync without sync dep', () => {
   });
 
   it('returns 404 when sync dep is absent', async () => {
-    const res = await fetch(`${base}/accounts/teams/${TEAM_ID}/sync`, { method: 'POST' });
+    const res = await fetch(`${server.base}/accounts/teams/${TEAM_ID}/sync`, { method: 'POST' });
     expect(res.status).toBe(404);
     expect((await res.json() as any).error).toBe('Sync unavailable');
   });
@@ -284,7 +281,7 @@ describe('accounts teams – GET /sync (status for polling)', () => {
   });
 
   it('returns 200 with the status object', async () => {
-    const res = await fetch(`${base}/accounts/sync`);
+    const res = await fetch(`${server.base}/accounts/sync`);
     expect(res.status).toBe(200);
     const body = await res.json() as { state: string; startedAt?: number };
     expect(body).toEqual({ state: 'running', startedAt: 123 });
@@ -298,13 +295,13 @@ describe('accounts teams – /sync without sync dep', () => {
   });
 
   it('POST returns 404 when sync dep is absent', async () => {
-    const res = await fetch(`${base}/accounts/sync`, { method: 'POST' });
+    const res = await fetch(`${server.base}/accounts/sync`, { method: 'POST' });
     expect(res.status).toBe(404);
     expect((await res.json() as any).error).toBe('Sync unavailable');
   });
 
   it('GET returns {state:"idle"} when sync dep is absent', async () => {
-    const res = await fetch(`${base}/accounts/sync`);
+    const res = await fetch(`${server.base}/accounts/sync`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ state: 'idle' });
   });
@@ -318,18 +315,14 @@ describe('accounts teams – userId isolation', () => {
     // Start a fresh server with userId = 'user-XYZ'
     const deps = baseDeps({ registry });
     const app = makeApp(deps, 'user-XYZ');
-    const srv = await new Promise<Server>((r) => {
-      const s = app.listen(0, () => r(s));
-    });
-    const a = srv.address();
-    const altBase = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
+    const alt = await startTestServer(app);
 
     try {
-      await fetch(`${altBase}/accounts/teams`);
+      await fetch(`${alt.base}/accounts/teams`);
       expect(registry.listTeams).toHaveBeenCalledWith('user-XYZ');
       expect(registry.listTeams).not.toHaveBeenCalledWith('u1');
     } finally {
-      await new Promise<void>((r) => srv.close(() => r()));
+      await alt.close();
     }
   });
 });

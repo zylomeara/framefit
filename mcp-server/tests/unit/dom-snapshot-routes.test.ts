@@ -7,7 +7,7 @@
 // call rather than over a real oversize HTTP request.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
-import type { Server } from 'node:http';
+import { startTestServer, type TestHttpServer } from '../helpers/http-test-server.js';
 import { DomSnapshotStore } from '../../src/infrastructure/dom-snapshot-store.js';
 import { handleUpload, domSnapshotErrorMiddleware, createDomSnapshotRoutes } from '../../src/infrastructure/dom-snapshot-routes.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
@@ -256,20 +256,17 @@ describe('domSnapshotErrorMiddleware', () => {
 // real HTTP server (same pattern as variable-snapshot-ingest.test.ts), not supertest, so status code +
 // headers are asserted for real rather than reconstructed from a mocked Response.
 describe('GET /extractor.js', () => {
-  let server: Server;
-  let base: string;
+  let server: TestHttpServer;
 
   beforeEach(async () => {
     const app = express();
     app.use('/api/dom-snapshots', createDomSnapshotRoutes({ store: new DomSnapshotStore(), logger: createLogger({ level: 'silent' }) }));
-    await new Promise<void>((r) => { server = app.listen(0, () => r()); });
-    const a = server.address();
-    base = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
+    server = await startTestServer(app);
   });
-  afterEach(() => new Promise<void>((r) => server.close(() => r())));
+  afterEach(() => server.close());
 
   it('200, text/javascript, Cache-Control: no-cache, schema-versioned + parseable canonical extractor body', async () => {
-    const res = await fetch(`${base}/api/dom-snapshots/extractor.js`);
+    const res = await fetch(`${server.base}/api/dom-snapshots/extractor.js`);
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/javascript');
@@ -284,7 +281,7 @@ describe('GET /extractor.js', () => {
   });
 
   it('CORS Access-Control-Allow-Methods includes GET (the header must not lie about what this router serves)', async () => {
-    const res = await fetch(`${base}/api/dom-snapshots/extractor.js`);
+    const res = await fetch(`${server.base}/api/dom-snapshots/extractor.js`);
     expect(res.headers.get('access-control-allow-methods')).toBe('GET, POST, OPTIONS');
   });
 });

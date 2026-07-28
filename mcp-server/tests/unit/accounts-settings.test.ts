@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
-import type { Server } from 'node:http';
+import { startTestServer, type TestHttpServer } from '../helpers/http-test-server.js';
 import { createAccountsRouter, type AccountsApiDeps } from '../../src/multi-tenant/accounts-api.js';
 import type { FigmaTokenRow } from '../../src/multi-tenant/db.js';
 
@@ -13,8 +13,7 @@ function fakeRow(over: Partial<FigmaTokenRow> = {}): FigmaTokenRow {
   };
 }
 
-let server: Server;
-let base: string;
+let server: TestHttpServer;
 let settingsCalls: { fn: string; args: unknown[] }[];
 let deps: AccountsApiDeps;
 
@@ -50,18 +49,14 @@ beforeEach(async () => {
   app.use(express.json());
   app.use((_req, res, next) => { res.locals.userId = 'u1'; next(); });
   app.use('/accounts', createAccountsRouter(deps));
-  await new Promise<void>((resolve) => {
-    server = app.listen(0, () => resolve());
-  });
-  const addr = server.address();
-  base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  server = await startTestServer(app);
 });
 
-afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())));
+afterEach(() => server.close());
 
 describe('GET /accounts/settings', () => {
   it('returns read_only and calls getUserSettings with userId', async () => {
-    const res = await fetch(`${base}/accounts/settings`);
+    const res = await fetch(`${server.base}/accounts/settings`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ read_only: true });
@@ -70,14 +65,14 @@ describe('GET /accounts/settings', () => {
 
   it('returns 404 when settings dep is absent', async () => {
     delete (deps as any).settings;
-    const res = await fetch(`${base}/accounts/settings`);
+    const res = await fetch(`${server.base}/accounts/settings`);
     expect(res.status).toBe(404);
   });
 });
 
 describe('PUT /accounts/settings', () => {
   it('updates read_only=false and echoes; calls setReadOnly with [u1, false]', async () => {
-    const res = await fetch(`${base}/accounts/settings`, {
+    const res = await fetch(`${server.base}/accounts/settings`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ read_only: false }),
@@ -89,7 +84,7 @@ describe('PUT /accounts/settings', () => {
   });
 
   it('rejects non-boolean read_only with 400', async () => {
-    const res = await fetch(`${base}/accounts/settings`, {
+    const res = await fetch(`${server.base}/accounts/settings`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ read_only: 'yes' }),
@@ -101,7 +96,7 @@ describe('PUT /accounts/settings', () => {
 
   it('returns 404 when settings dep is absent', async () => {
     delete (deps as any).settings;
-    const res = await fetch(`${base}/accounts/settings`, {
+    const res = await fetch(`${server.base}/accounts/settings`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ read_only: true }),

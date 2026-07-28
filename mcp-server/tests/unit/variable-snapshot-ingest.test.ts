@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
-import type { Server } from 'node:http';
+import { startTestServer, type TestHttpServer } from '../helpers/http-test-server.js';
 import { createVariableSnapshotIngest, type SnapshotIngestDeps } from '../../src/multi-tenant/variable-snapshot-ingest.js';
 
-let server: Server; let base: string; let calls: any;
+let server: TestHttpServer; let calls: any;
 beforeEach(async () => {
   calls = {};
   const deps: SnapshotIngestDeps = {
@@ -12,13 +12,12 @@ beforeEach(async () => {
   };
   const app = express();
   app.use('/api/variables', createVariableSnapshotIngest(deps));
-  await new Promise<void>((r) => { server = app.listen(0, () => r()); });
-  const a = server.address(); base = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
+  server = await startTestServer(app);
 });
-afterEach(() => new Promise<void>((r) => server.close(() => r())));
+afterEach(() => server.close());
 
 const body = { library_file_key: 'LIB', entries: [{ key: 'b2b2c4d6', value: '#f00', resolved_type: 'COLOR', name: 'bg' }] };
-const post = (b: unknown, auth?: string) => fetch(`${base}/api/variables/snapshot`, { method: 'POST', headers: { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${auth}` } : {}) }, body: JSON.stringify(b) });
+const post = (b: unknown, auth?: string) => fetch(`${server.base}/api/variables/snapshot`, { method: 'POST', headers: { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${auth}` } : {}) }, body: JSON.stringify(b) });
 
 describe('variable-snapshot ingest', () => {
   it('401 without bearer', async () => { expect((await post(body)).status).toBe(401); });
@@ -59,7 +58,7 @@ describe('variable-snapshot ingest', () => {
     expect((await res.json()).stored).toBe(1);
   });
   it('answers the CORS preflight OPTIONS with 204 + Figma-scoped headers', async () => {
-    const res = await fetch(`${base}/api/variables/snapshot`, { method: 'OPTIONS', headers: { 'access-control-request-method': 'POST', origin: 'https://www.figma.com' } });
+    const res = await fetch(`${server.base}/api/variables/snapshot`, { method: 'OPTIONS', headers: { 'access-control-request-method': 'POST', origin: 'https://www.figma.com' } });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-origin')).toBe('https://www.figma.com');
     expect((res.headers.get('access-control-allow-headers') || '').toLowerCase()).toContain('authorization');
