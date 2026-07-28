@@ -6,6 +6,7 @@ import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
 import { downloadRaster, downloadText } from './image-download.js';
 import { DEFAULT_FOCUS_RADIUS, renderFocusCrop } from './focus-crop.js';
+import { FigmaApiError } from '../../../ports/errors.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
@@ -14,15 +15,15 @@ const InputSchema = {
   format: z.enum(['png', 'svg', 'jpg']).default('png').describe('Image format'),
   scale: z.number().min(0.25).max(4).default(2).describe('Raster scale (png/jpg); ignored for svg. Lower if the image is huge.'),
   return: z.enum(['url', 'inline', 'preview']).default('url')
-    .describe('url (default): signed URL + dimensions + curl hint — token-cheap. inline: embed full PNG/JPG base64 or SVG markup. preview: ONE step — a downscaled inline image plus the full-res signed URL (cheap "what is this", with an escape hatch to full size).'),
+    .describe('url (default): signed URL + dimensions + curl hint - token-cheap. inline: embed full PNG/JPG base64 or SVG markup. preview: ONE step - a downscaled inline image plus the full-res signed URL (cheap "what is this", with an escape hatch to full size).'),
   tiles: z.boolean().default(false)
     .describe('For very large frames: also return a children_map (per-direct-child node_id, bounds, and a signed URL) so each part can be rendered legibly. Figma renders whole nodes, not regions, so tiling = per-child.'),
   focus: z.object({
     x: z.number().min(0).max(1),
     y: z.number().min(0).max(1),
-  }).optional().describe('Point of interest within the node (0..1 each) — e.g. target.atPercent from get_review_board. When set, returns a tight zoomed crop centered on this point (with a reticle marking it) instead of the whole node.'),
+  }).optional().describe('Point of interest within the node (0..1 each) - e.g. target.atPercent from get_review_board. When set, returns a tight zoomed crop centered on this point (with a reticle marking it) instead of the whole node.'),
   focus_radius: z.number().min(0.02).max(0.5).default(DEFAULT_FOCUS_RADIUS)
-    .describe('Focus-crop half-size as a fraction of node width (only used with focus). 0.12 ≈ a ~24%-wide window around the point.'),
+    .describe('Focus-crop half-size as a fraction of node width (only used with focus). 0.12 gives a ~24%-wide window around the point.'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
@@ -33,10 +34,13 @@ const LARGE_SIDE_PX = 4000; // a node side beyond this is likely unreadable as o
 const PREVIEW_MAX_PX = 768; // longest preview side; legible enough for "what is this"
 
 export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_screenshot',
-    'Render a Figma node to an image. Default return=url gives a short-lived signed URL plus pixel dimensions and a curl hint (token-cheap — strongly preferred; avoids inlining megabytes of base64). return=inline embeds the PNG/JPG as base64 or returns SVG markup directly, only for agents that cannot fetch URLs. Use a lower scale for very large frames. return=preview gives a one-step downscaled inline image plus the full-res URL. Pass focus={x,y} (0..1, e.g. target.atPercent from get_review_board) to get a zoomed crop centered on that point with a reticle marking it — ideal for seeing exactly what a review pin points at; the crop is always PNG.',
-    InputSchema,
+    {
+      description: 'Render a Figma node to an image. Default return=url gives a short-lived signed URL plus pixel dimensions and a curl hint (token-cheap - strongly preferred; avoids inlining megabytes of base64). return=inline embeds the PNG/JPG as base64 or returns SVG markup directly, only for agents that cannot fetch URLs. Use a lower scale for very large frames. return=preview gives a one-step downscaled inline image plus the full-res URL. Pass focus={x,y} (0..1, e.g. target.atPercent from get_review_board) to get a zoomed crop centered on that point with a reticle marking it - ideal for seeing exactly what a review pin points at; the crop is always PNG.',
+      inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
+    },
     async (args) =>
       runTool('get_screenshot', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);
@@ -138,7 +142,20 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
           if (args.tiles) {
             const kids = (entry.document.children ?? []).filter((c) => c.absoluteBoundingBox);
             if (kids.length) {
-              const { images: kidImages } = await api.getImages(parsed.value, kids.map((c) => c.id), { format: args.format, scale: args.scale });
+              // The whole-node render above already succeeded and is in `out`. A failure on the
+              // per-child renders must not throw it away: before getImages started throwing on a
+              // 200 body carrying `err`, this path yielded url:null per child and the main result
+              // still came back. Same shape kept, with the reason attached instead of silence.
+              let kidImages: Record<string, string | null> = {};
+              try {
+                kidImages = (await api.getImages(parsed.value, kids.map((c) => c.id), { format: args.format, scale: args.scale })).images;
+              } catch (err) {
+                // Narrowed to the class that regressed - same catch, same reasoning, as
+                // get-review-board-tool.ts. 403/404/5xx/timeout/429 all still fail the call.
+                if (!(err instanceof FigmaApiError && err.kind === 'upstream' && err.status === 200)) throw err;
+                deps.logger.info({ err: err.message }, 'get_screenshot.tiles_unavailable');
+                out.children_map_note = `Per-child renders unavailable: ${err.message}`;
+              }
               out.children_map = kids.map((c) => {
                 const cb = c.absoluteBoundingBox!;
                 return { node_id: c.id, name: c.name, bounds: { x: cb.x, y: cb.y, w: cb.width, h: cb.height }, url: kidImages[c.id] ?? null };

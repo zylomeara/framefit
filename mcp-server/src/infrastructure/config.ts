@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 
 // The transport a process actually gets when MCP_TRANSPORT is unset - which is the PRODUCTION shape
 // (the compose full profile sets MULTI_TENANT=true and never sets MCP_TRANSPORT). Exported because
@@ -6,15 +7,47 @@ import { z } from 'zod';
 // a hand-copied 'http' over there would be free to drift from the schema default here.
 export const DEFAULT_MCP_TRANSPORT = 'http' as const;
 
+// The interface app.listen() binds when BIND_HOST is unset. Loopback, deliberately: the
+// single-tenant server has no authentication of its own and wires FIGMA_TOKEN into every call, so
+// an unset value must never mean "every interface". Exported so the literal has exactly one home
+// for any caller that needs to name the default rather than restate it.
+export const DEFAULT_BIND_HOST = '127.0.0.1' as const;
+
 const ConfigSchema = z.object({
   MCP_TRANSPORT: z.enum(['http', 'stdio']).default(DEFAULT_MCP_TRANSPORT),
   PORT: z.coerce.number().int().min(0).default(3846),
+  // BIND_HOST is the LOCAL INTERFACE this process listens on. It is NOT MCP_HOST, which is the
+  // PUBLIC hostname the multi-tenant server advertises itself at (multi-tenant/env.ts builds
+  // `https://${MCP_HOST}` from it). The two sit one prefix apart and mean opposite things, so the
+  // value is validated here rather than at bind time: a hostname would otherwise surface as an
+  // EADDRNOTAVAIL crash inside `restart: unless-stopped`, i.e. a restart loop instead of a named
+  // reason. Empty-string preprocess mirrors FIGMA_TOKEN: `BIND_HOST=` in a copied .env reaches the
+  // process as '' via docker env_file / dotenv, z.string().default() does NOT fire on '', and Node
+  // treats a falsy host as UNSPECIFIED - net.listen(0, '') binds '::'. Without the preprocess a
+  // blank assignment silently restores the wide bind this setting exists to close.
+  // The .default() sits INSIDE the preprocess, not outside it: an outer
+  // `z.preprocess(...).default()` is a ZodDefault wrapping a ZodEffects, and ZodDefault only
+  // substitutes when its OWN input is undefined - '' is not, so the default never fires and the
+  // blank assignment fails with "Required" instead of falling back to loopback.
+  BIND_HOST: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().refine((v) => v === 'localhost' || isIP(v) !== 0, {
+      message: 'BIND_HOST must be an IP literal or "localhost" - it is the bind interface, not the public hostname (that is MCP_HOST)',
+    }).default(DEFAULT_BIND_HOST),
+  ),
   // Empty string coerces to undefined BEFORE validation: `FIGMA_TOKEN=` (no value) in a
   // copied .env reaches the process as '' via docker env_file / dotenv, and for an
   // OPTIONAL credential an empty assignment must mean "not configured", never a crash
   // (fresh-clone stranger path: cp .env.example .env → crash-loop without this).
   // Mirrors the `|| undefined` pattern in multi-tenant/env.ts for PUBLIC_BASE_URL.
   FIGMA_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
+  // Read-only gate for single-tenant/stdio. Deliberately a permissive string, read leniently at
+  // the use site (`?.toLowerCase() === 'true'`, the multi-tenant/env.ts MULTI_TENANT precedent),
+  // NOT a z.enum: loadConfig throws on a parse failure and index.ts has no catch, so a strict enum
+  // would turn FRAMEFIT_READ_ONLY=1 into a boot crash that reaches a stdio user only as "MCP
+  // server failed to start". Also not z.coerce.boolean(), which maps the string 'false' to true.
+  // Unset or unrecognised means WRITE-ENABLED - today's behaviour, unchanged.
+  FRAMEFIT_READ_ONLY: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
@@ -83,6 +116,20 @@ const ConfigSchema = z.object({
   // here would be dead) → upload_url is honestly never emitted; multi-tenant reads the same
   // variable via MultiTenantEnv.publicBaseUrl with `https://${mcpHost}` as its fallback.
   PUBLIC_BASE_URL: z.string().optional(),
+  // Extra origins the /mcp origin guard will not refuse, comma-separated. Exactly that, and the
+  // name invites the broader reading, so: this does NOT make cross-origin browser use of /mcp work.
+  // Two independent blockers sit outside this guard and are unaffected by it - nothing sets CORS
+  // response headers on /mcp, and StreamableHTTPServerTransport answers OPTIONS with 405. Measured
+  // against an ALLOWED origin: the preflight returns 405 with no Access-Control-Allow-Origin, and
+  // the POST returns 200 with no Access-Control-Allow-Origin either, so the page is stopped before
+  // the request and again after it. Serving a browser tool would take a CORS layer this server does
+  // not ship; listing an origin here is necessary but nowhere near sufficient.
+  // What it IS for: the server always admits its own advertised origins, and this is the escape
+  // hatch so the guard can never become an unopenable door. Given the CORS reality above, the
+  // caller it can actually rescue is a NON-browser one that sends an Origin anyway (some clients
+  // and proxies do), not a browser page. Requests with no Origin - every ordinary MCP client -
+  // never consult it. Empty means "no extras".
+  ALLOWED_ORIGINS: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
 }).refine((c) => c.CACHE_MAX_BYTES >= c.CACHE_MAX_ENTRY_BYTES, {
   // A per-entry cap ABOVE the aggregate ceiling is contradictory: a single legit ≤entry-cap response would
   // persistently overshoot the whole budget (the protect-guard keeps it honest/terminating, but the

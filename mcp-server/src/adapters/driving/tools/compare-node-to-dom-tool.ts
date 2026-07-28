@@ -194,13 +194,13 @@ export const PairSchema = z.object({
     'DOM JSON. ref = the snapshot_ref returned by the extractor POST; selector must match byte-for-byte the ' +
     'selector string passed to the extractor, OR index addresses the snapshot by its position in that batch ' +
     '(duplicate-selector-safe). Resolvable while the underlying ref is live: sliding 30-min TTL ' +
-    "from the last touch, hard-capped at 2h from the ref's OWN createdAt — NOT from when upload_url was minted. " +
+    "from the last touch, hard-capped at 2h from the ref's OWN createdAt - NOT from when upload_url was minted. " +
     'A ref is only created on the extractor POST, which can itself happen up to ~2h after mint under regular ' +
-    'touches of the capToken — so data can stay resolvable up to ~4h after the original upload_url mint. ' +
+    'touches of the capToken - so data can stay resolvable up to ~4h after the original upload_url mint. ' +
     'Pass exactly one of dom | dom_ref.',
   ),
   label: z.string().max(80).optional().describe('Human label for the report (e.g. "drawer-body")'),
-  expected_component: z.string().max(120).optional().describe('Expected DOM component marker (class/tag/data token) — overrides heuristic match'),
+  expected_component: z.string().max(120).optional().describe('Expected DOM component marker (class/tag/data token) - overrides heuristic match'),
 }).superRefine((p, ctx) => {
   if ((p.dom === undefined) === (p.dom_ref === undefined)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass exactly one of dom | dom_ref' });
@@ -209,46 +209,49 @@ export const PairSchema = z.object({
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
-  pairs: z.array(PairSchema).min(1).max(20).describe('node_id ↔ DOM snapshot pairs, all fetched in ONE REST call'),
+  pairs: z.array(PairSchema).min(1).max(20).describe('node_id <-> DOM snapshot pairs, all fetched in ONE REST call'),
   frame_node_id: z.string().regex(COMPOUND_NODE_ID_RE).optional()
-    .describe('The breakpoint frame you resized the viewport to — enables the viewport guard'),
+    .describe('The breakpoint frame you resized the viewport to - enables the viewport guard'),
   expected_overlay_width: z.number().positive().optional()
     .describe(
       'The actual rendered width of a fixed-width overlay (drawer/modal) whose DOM box does not scale with the ' +
-      'viewport. Decouples size.w and the viewport guard from frame_node_id (fail → info on both), adds a ' +
-      'dedicated overlay_width row (expected width vs actual window width), and — when frame_node_id is ALSO ' +
-      'given — a preflight check that the chosen breakpoint frame actually matches this width ' +
+      'viewport. Decouples size.w and the viewport guard from frame_node_id (fail -> info on both), adds a ' +
+      'dedicated overlay_width row (expected width vs actual window width), and - when frame_node_id is ALSO ' +
+      'given - a preflight check that the chosen breakpoint frame actually matches this width ' +
       '(catches picking the wrong breakpoint variant before the per-pair diff).',
     ),
   tolerance_px: z.number().min(0).max(10).optional()
-    .describe('Δ below this is a pass (px metrics); omitted → 1 (token-aware/layout) or 0 (strict); an explicit >0 is rejected under strict'),
+    .describe('A delta below this is a pass (px metrics); omitted -> 1 (token-aware/layout) or 0 (strict); an explicit >0 is rejected under strict'),
   match_profile: z.enum(['strict', 'layout', 'token-aware']).optional()
-    .describe('Named strictness/scope preset (omitted → token-aware). strict = tolerance 0 (exact ' +
+    .describe('Named strictness/scope preset (omitted -> token-aware). strict = tolerance 0 (exact ' +
       'equality after 0.05px rounding); explicit tolerance_px>0 is rejected. token-aware = current ' +
       'behaviour, tolerance_px default 1. layout = only visual-geometry axes are measured ' +
       '(typography/colors/styles/component out of scope), tolerance_px as usual.'),
   max_depth: z.number().int().min(1).max(8).optional()
     .describe('Capture depth for BOTH sides (Figma projection + expected DOM snapshot depth); default 4. ' +
-      'Drill into a childrenTruncated branch by re-fetching/re-extracting it deeper (e.g. max_depth:6) — pass ' +
+      'Drill into a childrenTruncated branch by re-fetching/re-extracting it deeper (e.g. max_depth:6) - pass ' +
       'the SAME max_depth used for the get_layout_spec extractor call that produced these dom snapshots, or ' +
       'the Figma side stays shallow while the DOM side is deep (or vice versa).'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
 export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'compare_node_to_dom',
-    'Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, inter-child gaps ' +
-    '(derived from geometry — insensitive to margin/padding/gap implementation), effective paddings, cross-axis ' +
-    'offsets, typography, colors, component identity (warn-only). Returns machine-readable rows ' +
-    '{prop, figma, dom, delta, status} per pair + a ready "Verified against Figma" markdown block. ' +
-    'Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). ' +
-    'Token rows with status `review` (📝) carry `figma`/`dom` token names — judge them: return **same token** ' +
-    '(→ resolved) only if the names denote the same concept; **wrong token** (→ report) ONLY when they denote ' +
-    'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
-    'rename), answer **unsure** and escalate — never call it wrong. `review` rows keep the verdict non-green until ' +
-    'resolved; a name that merely differs textually is not a defect.',
-    InputSchema,
+    {
+      description: 'Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, inter-child gaps ' +
+      '(derived from geometry - insensitive to margin/padding/gap implementation), effective paddings, cross-axis ' +
+      'offsets, typography, colors, component identity (warn-only). Returns machine-readable rows ' +
+      '{prop, figma, dom, delta, status} per pair + a ready "Verified against Figma" markdown block. ' +
+      'Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). ' +
+      'Token rows with status `review` carry `figma`/`dom` token names - judge them: return **same token** ' +
+      '(-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote ' +
+      'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
+      'rename), answer **unsure** and escalate - never call it wrong. `review` rows keep the verdict non-green until ' +
+      'resolved; a name that merely differs textually is not a defect.',
+      inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
+    },
     async (args) =>
       runTool('compare_node_to_dom', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const t0 = Date.now();

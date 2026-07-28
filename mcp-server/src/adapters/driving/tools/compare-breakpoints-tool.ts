@@ -10,7 +10,7 @@ import { styleForName } from '../../../domain/text-styles.js';
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
   node_ids: z.array(z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"')).min(2).max(8)
-    .describe('Breakpoint frame node ids — one per width (e.g. desktop/laptop/tablet/mob). Fetched in one call.'),
+    .describe('Breakpoint frame node ids - one per width (e.g. desktop/laptop/tablet/mob). Fetched in one call.'),
   name: z.string().min(1).describe('Element name/role to compare across breakpoints (e.g. "tabs").'),
   fuzzy: z.boolean().default(false).describe('Typo-tolerant matching of the element name.'),
   include_color: z.boolean().default(true).describe('Include the element\'s text color per breakpoint.'),
@@ -19,10 +19,13 @@ const InputSchema = {
 };
 
 export function registerCompareBreakpointsTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'compare_breakpoints',
-    'Compare one element\'s typography across several breakpoint frames in a single call. Pass the breakpoint frame node_ids (one per width) and the element name (e.g. "tabs"); returns the element\'s text-style per breakpoint with the frame name and width. Replaces opening each width frame by hand.',
-    InputSchema,
+    {
+      description: 'Compare one element\'s typography across several breakpoint frames in a single call. Pass the breakpoint frame node_ids (one per width) and the element name (e.g. "tabs"); returns the element\'s text-style per breakpoint with the frame name and width. Replaces opening each width frame by hand.',
+      inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
+    },
     async (args) =>
       runTool('compare_breakpoints', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);

@@ -219,6 +219,41 @@ async function main() {
     throw new Error(`tools/list returned ${tools.length} tools, expected >= ${MIN_TOOLS}`);
   }
 
+  // The tools/list payload is the product's interface: every MCP client shows it to a user or feeds
+  // it to a model. It must be English ASCII - no em dashes, no arrow glyphs, no emoji, and above all
+  // no example values in the author's working language. Asserted HERE, on the BUILT artifact over
+  // the real protocol, because a check over the source files proves nothing about the bytes a client
+  // is handed; the unit suite asserts the same property from two other vantages.
+  // A character CLASS, not a list of the strings that were once removed - such a list can only ever
+  // catch what somebody had already found. EVERY string in the entry, walked recursively, not just
+  // `description`: two of the offenders found on 2026-07-28 sat a level below the top, under
+  // `inputSchema.properties.pairs.items.properties`, where a hand-aimed check does not look. And
+  // every KEY as well as every value: a schema property NAME ships in this same payload, and a
+  // values-only walk called a tool with a Cyrillic-named property "every delivered string ASCII".
+  const nonAscii = [];
+  const walk = (value, path) => {
+    if (typeof value === 'string') {
+      const chars = [...new Set([...value].filter((c) => c.codePointAt(0) > 0x7f))];
+      if (chars.length) {
+        const points = chars
+          .map((c) => `U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`)
+          .join(' ');
+        nonAscii.push(`${path}: ${points}`);
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, `${path}[${i}]`));
+    } else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        walk(k, `${path}.${k} <property name>`);
+        walk(v, `${path}.${k}`);
+      }
+    }
+  };
+  for (const t of tools) walk(t, t.name);
+  if (nonAscii.length) {
+    throw new Error(`non-ASCII in ${nonAscii.length} delivered string(s): ${nonAscii.join(' | ')}`);
+  }
+
   // The handshake version and the CLI's own report must agree, or `status` has grown a third
   // version literal and could name a version the server never reports.
   const run1 = await runStatus();
@@ -250,7 +285,7 @@ async function main() {
     throw new Error(`status ran ${report2.checks.length} checks with a bad LOG_LEVEL, ${statusReport.checks.length} without it`);
   }
 
-  finish(true, `handshake ok - serverInfo.name="framefit", ${tools.length} tools (>= ${MIN_TOOLS}), status --json version="${statusReport.version}", bad LOG_LEVEL reported and survived`);
+  finish(true, `handshake ok - serverInfo.name="framefit", ${tools.length} tools (>= ${MIN_TOOLS}), every delivered string ASCII, status --json version="${statusReport.version}", bad LOG_LEVEL reported and survived`);
 }
 
 main().catch((err) => {

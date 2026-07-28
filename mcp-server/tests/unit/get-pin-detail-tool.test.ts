@@ -1,21 +1,21 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Jimp } from 'jimp';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetPinDetailTool } from '../../src/adapters/driving/tools/get-pin-detail-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { FigmaApiError } from '../../src/ports/errors.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
 function install(doc: RawSceneNode) {
-  let handler: ((a: Record<string, unknown>) => Promise<any>) | undefined;
-  const server = { tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const api = {
     getNodesRaw: async (_k: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: doc } } }),
     getImages: async (_k: string, ids: string[], opts: any) => ({ images: Object.fromEntries(ids.map((i) => [i, `https://s3/${opts.format}-${opts.scale}.png`])) }),
   };
   const deps = { buildApi: () => api as never, defaultToken: 't', logger: { warn() {} } as never, maxResultChars: 40000 };
   registerGetPinDetailTool(server, deps as never);
-  return (a: Record<string, unknown>) => handler!(a);
+  return (a: Record<string, unknown>) => call('get_pin_detail', a);
 }
 
 // A minimal review board: prod RECTANGLE (image fill) + numbered pin INSTANCE + aligned reference FRAME.
@@ -186,8 +186,8 @@ describe('get_pin_detail tool', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(png as unknown as BodyInit, { status: 200, headers: { 'content-type': 'image/png' } })));
     const call = install(board(1));
     const res = await call({ file: 'k', board_node_id: '12:1', pin_number: 1 });
-    const img = res.content.find((c: any) => c.type === 'image');
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    const img = res.content.find((c) => c.type === 'image')!;
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     expect(img.mimeType).toBe('image/png');
     expect(meta.pin_number).toBe(1);
     expect(meta.referenceFrameNodeId).toBe('ref');
@@ -210,8 +210,8 @@ describe('get_pin_detail tool', () => {
     const call = install(boardNoCoord());
     const res = await call({ file: 'k', board_node_id: '12:1', pin_number: 1 });
     expect(res.isError).toBeFalsy();
-    expect(res.content.find((c: any) => c.type === 'image')).toBeUndefined();
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text')!.text);
+    expect(res.content.find((c) => c.type === 'image')).toBeUndefined();
+    const meta = JSON.parse(res.content.find((c) => c.type === 'text')!.text);
     expect(meta.note).toMatch(/no screenshot coordinate/i);
     // referenceReason is set to 'no_reference_frame' because the pin fell into the no-shot
     // lane (no prodId → refFrame = null); the key must be present in the payload.
@@ -258,8 +258,8 @@ describe('get_pin_detail tool', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(png as unknown as BodyInit, { status: 200, headers: { 'content-type': 'image/png' } })));
     const call = install(boardDupPins());
     const res = await call({ file: 'k', board_node_id: '12:1', pin_node_id: '400:1' });
-    const img = res.content.find((c: any) => c.type === 'image');
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    const img = res.content.find((c) => c.type === 'image')!;
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     expect(res.isError).toBeFalsy();
     expect(img).toBeTruthy();
     // Proves '400:1' was selected (not '300:1'): pin '400:1' tip x=337 → atPercent.x ≈ 0.337
@@ -298,14 +298,74 @@ describe('get_pin_detail tool', () => {
     const call = install(boardNoRef());
     const res = await call({ file: 'k', board_node_id: '12:1', pin_number: 1 });
     // Must take the image path (coordinate existed → renderFocusCrop was invoked).
-    const img = res.content.find((c: any) => c.type === 'image');
+    const img = res.content.find((c) => c.type === 'image')!;
     expect(img).toBeDefined();
-    expect(img!.mimeType).toBe('image/png');
-    const meta = JSON.parse(res.content.find((c: any) => c.type === 'text').text);
+    expect(img.mimeType).toBe('image/png');
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
     // referenceNode must be null (no reference frame → resolution failed).
     expect(meta.referenceNode).toBeNull();
     // referenceReason must be a non-null string explaining why (honest-null invariant).
     expect(typeof meta.referenceReason).toBe('string');
     expect(meta.referenceReason).toBeTruthy();
+  });
+
+  it('keeps the finished crop when only the full-res URL render fails', async () => {
+    // getImages now throws on a 200 body carrying `err` (Figma reports render failures inside a
+    // 200 there). The crop is already rendered and in hand when the full-res URL is fetched, so an
+    // unguarded call would discard a finished image over a missing link. The first call - the one
+    // renderFocusCrop makes - succeeds; only the second fails, which is the case that is reachable
+    // without the whole tool failing earlier for a different reason.
+    const png = await new Jimp({ width: 200, height: 200, color: 0x3366ccff }).getBuffer('image/png');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(png as unknown as BodyInit, { status: 200, headers: { 'content-type': 'image/png' } })));
+    let calls = 0;
+    const { server, call } = makeFakeMcpServer();
+    const api = {
+      getNodesRaw: async (_k: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: board() } } }),
+      getImages: async (_k: string, ids: string[], opts: { format: string; scale: number }) => {
+        if (++calls > 1) {
+          throw new FigmaApiError('upstream', 200,
+            'Figma could not render this export. Figma\'s response said: "Node not found".', undefined, 'Node not found');
+        }
+        return { images: Object.fromEntries(ids.map((i) => [i, `https://s3/${opts.format}-${opts.scale}.png`])) };
+      },
+    };
+    const deps = { buildApi: () => api as never, defaultToken: 't',
+      logger: { warn() {}, info() {} } as never, maxResultChars: 40000 };
+    registerGetPinDetailTool(server, deps as never);
+    const res = await call('get_pin_detail', { file: 'k', board_node_id: '12:1', pin_number: 1 });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content.find((c) => c.type === 'image'), 'the crop survives').toBeDefined();
+    const meta = JSON.parse(textOf(res.content.find((c) => c.type === 'text')));
+    expect(meta.full_res_url).toBeNull();
+    expect(meta.full_res_url_note).toContain('Node not found');
+  });
+
+  it('but any other failure class on that same call still fails the tool', async () => {
+    // The guard restores the shape the 200-with-err case used to have, and invents none: a 403, a
+    // 5xx or a 429 on the full-res call set isError in every prior commit and must keep doing so.
+    const png = await new Jimp({ width: 200, height: 200, color: 0x3366ccff }).getBuffer('image/png');
+    for (const e of [
+      new FigmaApiError('forbidden', 403, 'Figma denied access (403).'),
+      new FigmaApiError('upstream', 500, 'Figma upstream error (500). Try again later.'),
+      new FigmaApiError('rate_limited', 429, 'Figma rate limit hit.'),
+    ]) {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(png as unknown as BodyInit, { status: 200, headers: { 'content-type': 'image/png' } })));
+      let calls = 0;
+      const { server, call } = makeFakeMcpServer();
+      const api = {
+        getNodesRaw: async (_k: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: board() } } }),
+        getImages: async (_k: string, ids: string[], opts: { format: string; scale: number }) => {
+          if (++calls > 1) throw e;
+          return { images: Object.fromEntries(ids.map((i) => [i, `https://s3/${opts.format}-${opts.scale}.png`])) };
+        },
+      };
+      const deps = { buildApi: () => api as never, defaultToken: 't',
+        logger: { warn() {}, info() {} } as never, maxResultChars: 40000 };
+      registerGetPinDetailTool(server, deps as never);
+      const res = await call('get_pin_detail', { file: 'k', board_node_id: '12:1', pin_number: 1 });
+      expect(res.isError, `swallowed ${e.kind} ${e.status}`).toBe(true);
+      vi.unstubAllGlobals();
+    }
   });
 });

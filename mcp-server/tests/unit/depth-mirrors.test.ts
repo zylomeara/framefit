@@ -14,7 +14,6 @@
 //   - budgetFor(d) = min(300, 90*ceil(d/4)) → 4→90, 5-8→180.
 //   - descentFor(d) = min(60, 15*ceil(d/4)) → 4→15, 5-8→30.
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetLayoutSpecTool } from '../../src/adapters/driving/tools/get-layout-spec-tool.js';
 import { registerCompareNodeToDomTool } from '../../src/adapters/driving/tools/compare-node-to-dom-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
@@ -27,21 +26,20 @@ import { descentFor, MAX_TEXT_DESCENT } from '../../src/domain/layout-spec/diff.
 import { MAX_SPEC_CHILDREN, MAX_NESTED_CHILDREN } from '../../src/domain/layout-spec/projector.js';
 import { EXTRACTOR_JS } from '../../src/adapters/driving/tools/dom-extractor.js';
 import { withFrameRaw } from './helpers/frame-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 function harness(api: Partial<FigmaApi>, depsOverrides: Partial<ToolDeps> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000, ...depsOverrides };
   registerGetLayoutSpecTool(server, deps);
-  return handlers.get_layout_spec;
+  return (a: any): Promise<any> => call('get_layout_spec', a);
 }
 function compareHarness(api: Partial<FigmaApi>, depsOverrides: Partial<ToolDeps> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000, ...depsOverrides };
   registerCompareNodeToDomTool(server, deps);
-  return handlers.compare_node_to_dom;
+  return (a: any): Promise<any> => call('compare_node_to_dom', a);
 }
 
 const box = (x: number, y: number, w: number, h: number) => ({ x, y, width: w, height: h });

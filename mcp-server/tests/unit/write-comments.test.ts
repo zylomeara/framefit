@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   postCommentUseCase,
   replyCommentUseCase,
-  resolveCommentUseCase,
+  deleteCommentUseCase,
 } from '../../src/application/write-comments.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { RawComment } from '../../src/domain/types.js';
@@ -38,7 +38,7 @@ function fakeApi(overrides: Partial<FigmaApi> = {}): FigmaApi {
     getComponent: vi.fn(),
     postComment: vi.fn(),
     replyComment: vi.fn(),
-    resolveComment: vi.fn(),
+    deleteComment: vi.fn(),
     ...overrides,
   } as FigmaApi;
 }
@@ -95,14 +95,14 @@ describe('replyCommentUseCase', () => {
   });
 });
 
-describe('resolveCommentUseCase', () => {
-  it('calls resolveComment and returns {ok:true, comment_id}', async () => {
+describe('deleteCommentUseCase', () => {
+  it('calls deleteComment and returns {ok:true, comment_id}', async () => {
     let called = false;
     const api = fakeApi({
-      resolveComment: vi.fn(async () => { called = true; }),
+      deleteComment: vi.fn(async () => { called = true; }),
     });
 
-    const result = await resolveCommentUseCase(api, logger, {
+    const result = await deleteCommentUseCase(api, logger, {
       file: 'abc123',
       comment_id: 'c-42',
     });

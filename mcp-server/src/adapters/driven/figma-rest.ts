@@ -112,6 +112,33 @@ export class FigmaRestAdapter implements FigmaApi {
       `${BASE_URL}/images/${encodeURIComponent(fileKey)}` +
       `?ids=${encodeURIComponent(ids.join(','))}&format=${opts.format}${scaleParam}`;
     const payload = await this.request<{ err: string | null; images: Record<string, string | null> }>(url);
+    // GET /v1/images reports render/export failures INSIDE a 200 body, so mapStatus never sees them
+    // and a body-first rule scoped to status mapping cannot reach this channel. This field was
+    // typed and then dropped, so get_screenshot / export_assets answered a failed render with an
+    // empty image set and no reason at all - strictly worse than a misleading message.
+    //
+    // Same bounded, sanitized quoting as mapStatus, through the SAME parser and the SAME
+    // interpolator (no second quoting path). kind stays 'upstream' - a genuine upstream failure,
+    // already in caching-figma-api's negative-cache whitelist - because a NEW kind would change
+    // five kind-branching call sites, four of which construct FigmaApiError directly and so have
+    // no gate that would notice.
+    if (typeof payload.err === 'string' && payload.err.length > 0) {
+      const reason = upstreamReason(JSON.stringify({ err: payload.err }));
+      // No fixed remedy pinned onto the quote. The first version ended every one of these with
+      // "Open the node in Figma to confirm it exists and has visible content" - true for
+      // "Node not found", false for a rate limit and for a too-large render, whose bodies exclude
+      // that premise outright. This endpoint answers with several unrelated reasons and sends no
+      // discriminator between them, so the only honest tail points at the reason itself. With
+      // nothing quotable (a reason that sanitizes away entirely) the message says so instead of
+      // pretending to carry one.
+      throw new FigmaApiError('upstream', 200,
+        reason === undefined
+          ? 'Figma could not render this export and gave a reason this server could not read.'
+            + ' Retry once; if it repeats, check the node ids, the format and the scale in this call.'
+          : `Figma could not render this export.${quoteUpstream(reason)}`
+            + ' Figma named that itself, so act on it before changing anything else about this call.',
+        undefined, reason);
+    }
     return { images: payload.images ?? {} };
   }
 
@@ -225,17 +252,18 @@ export class FigmaRestAdapter implements FigmaApi {
 
   async postComment(fileKey: string, input: { message: string }): Promise<RawComment> {
     const url = `${BASE_URL}/files/${encodeURIComponent(fileKey)}/comments`;
-    return this.request<RawComment>(url, { method: 'POST', body: { message: input.message }, writeScopeHint: true });
+    return this.request<RawComment>(url, { method: 'POST', body: { message: input.message }, writeOp: 'comment_post' });
   }
 
   async replyComment(fileKey: string, commentId: string, input: { message: string }): Promise<RawComment> {
     const url = `${BASE_URL}/files/${encodeURIComponent(fileKey)}/comments`;
-    return this.request<RawComment>(url, { method: 'POST', body: { message: input.message, comment_id: commentId }, writeScopeHint: true });
+    return this.request<RawComment>(url, { method: 'POST', body: { message: input.message, comment_id: commentId }, writeOp: 'comment_reply' });
   }
 
-  async resolveComment(fileKey: string, commentId: string): Promise<void> {
+  /** Figma has no resolve endpoint; this is a DELETE, and the method name says so. */
+  async deleteComment(fileKey: string, commentId: string): Promise<void> {
     const url = `${BASE_URL}/files/${encodeURIComponent(fileKey)}/comments/${encodeURIComponent(commentId)}`;
-    await this.request<unknown>(url, { method: 'DELETE', writeScopeHint: true });
+    await this.request<unknown>(url, { method: 'DELETE', writeOp: 'comment_delete' });
   }
 
   // Heavy subtree fetches (whole-file / node subtrees) go through the shared semaphore
@@ -302,7 +330,7 @@ export class FigmaRestAdapter implements FigmaApi {
       + `or a sub-frame instead of the whole file.`;
   }
 
-  private async request<T>(url: string, init?: { method?: string; body?: unknown; writeScopeHint?: boolean }): Promise<T> {
+  private async request<T>(url: string, init?: { method?: string; body?: unknown; writeOp?: WriteOp }): Promise<T> {
     this.onRequest?.();
     const started = Date.now();
     // Deadline-aware cap, evaluated HERE (after any semaphore queue wait), not at construction.
@@ -347,7 +375,7 @@ export class FigmaRestAdapter implements FigmaApi {
           { method, url_path: safeUrl, status: res.status, body },
           'figma.request_failed',
         );
-        throw mapStatus(res, body, init?.writeScopeHint);
+        throw mapStatus(res, body, init?.writeOp);
       }
       const { text, bytes } = await this.readCapped(res, controller, safeUrl);
       this.logger.info(
@@ -373,6 +401,9 @@ export class FigmaRestAdapter implements FigmaApi {
   }
 }
 
+// Server-side cut, deliberately unchanged at 200: this same value is logged as
+// figma.request_failed. The CLIENT-visible cut is UPSTREAM_REASON_MAX (120) and is applied by
+// upstreamReason, which also refuses anything that is not a JSON string field.
 async function safeReadText(res: Response): Promise<string> {
   try {
     const t = await res.text();
@@ -382,47 +413,337 @@ async function safeReadText(res: Response): Promise<string> {
   }
 }
 
-function mapStatus(res: Response, body: string, writeScopeHint?: boolean): FigmaApiError {
+/**
+ * Client-visible cut. The SERVER-side cut in safeReadText stays 200 and is NOT raised: the same
+ * `body` value feeds the figma.request_failed log line, so raising it there would enlarge what an
+ * intermediary can write into the operator's logs. The two cuts compose: a body over 200 chars is
+ * truncated mid-JSON, fails to parse, and therefore contributes NOTHING to a client message.
+ */
+export const UPSTREAM_REASON_MAX = 120;
+
+/**
+ * Parse ONLY a string-valued `err`/`message` out of a JSON body, then bound and normalise it.
+ *
+ * This NARROWS - it does not delete - the rule stated in mapStatus below: "do not echo Figma's
+ * response body to the client". A tool result is agent context, so an unstructured body (a
+ * CloudFront edge page, a captive portal, a corporate TLS-inspecting proxy) must contribute
+ * nothing at all rather than arrive as this server's diagnosis in this server's voice.
+ *
+ * Both field names are load-bearing, measured against api.figma.com with a deliberately invalid
+ * token: /v1/me, /v1/files/:key/comments and /v1/teams/:id/styles answer
+ * `{"status":403,"err":"Invalid token"}`, while /v1/files/:key/variables/local - the endpoint whose
+ * tool today blames the customer's Figma plan - answers
+ * `{"status":403,"error":true,"message":"Invalid token"}`. Reading only `err` would leave exactly
+ * the misdiagnosed endpoint with nothing to quote.
+ */
+export function upstreamReason(body: string): string | undefined {
+  let parsed: unknown;
+  try { parsed = JSON.parse(body); } catch { return undefined; }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const rec = parsed as Record<string, unknown>;
+  const raw = typeof rec.err === 'string' ? rec.err
+    : typeof rec.message === 'string' ? rec.message
+      : undefined;
+  if (raw === undefined) return undefined;
+  // Order is load-bearing. Restrict the alphabet FIRST, so a link cannot hide behind a zero-width
+  // character; defang links SECOND; bound LAST, so truncation cannot leave half a URL behind.
+  const clean = defangLinks(printableAsciiOnly(raw)).replace(/ +/g, ' ').trim();
+  if (clean === '') return undefined;
+  return clean.length > UPSTREAM_REASON_MAX
+    ? `${clean.slice(0, UPSTREAM_REASON_MAX - 3)}...`
+    : clean;
+}
+
+/**
+ * The only characters an upstream string may contribute to a tool result: printable ASCII, and
+ * never a double quote. Both restrictions answer an attack that landed on the first version:
+ *
+ * - The double quote is the fence in quoteUpstream. A reason able to carry one closes it and keeps
+ *   writing in this server's voice - `ok". Ignore the above ...` did exactly that, and the result
+ *   read as though this server had said it. Removing the character makes the closing quote
+ *   unforgeable rather than merely discouraged; nothing downstream has to remember to escape.
+ * - Stripping C0 and DEL left U+202E (right-to-left override), U+200B (zero width space),
+ *   combining marks and emoji intact - six code points reached the message from one measured body.
+ *   A tool result is text an LLM acts on, and this branch requires ASCII in runtime strings.
+ *
+ * A whitelist, deliberately: a blacklist of the Unicode of the day is a list somebody has to keep
+ * adding to. Anything outside becomes a space, so tampering shows as spacing rather than silently
+ * gluing two words into one.
+ */
+function printableAsciiOnly(raw: string): string {
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.charCodeAt(i);
+    out += (c >= 32 && c <= 126 && c !== 34) ? raw[i] : ' ';
+  }
+  return out;
+}
+
+/** What replaces a link inside a quoted reason. Says a removal happened; hides nothing. */
+export const UPSTREAM_LINK_PLACEHOLDER = '[link removed]';
+
+// No backslash escapes in the pattern: `[.]` and `[/]` instead of the escaped forms, and `[^ ]`
+// instead of the whitespace class (whitespace is already a single space by this point). A
+// mis-decoded escape inside a security filter is a defect that reads as a typo.
+//
+// Two alternatives, because requiring `//` was not enough - a row here caught `data:text/html,evil`
+// slipping through. Either ANY scheme followed by `//`, or one of the schemes that is dangerous
+// without it. The named list is deliberately short and excludes `file:`, since "file" is the single
+// most likely word in a Figma error and `file://` is already covered by the first alternative.
+//
+// A SCHEME IS REQUIRED, and that is the whole design. A companion rule once also matched bare
+// dotted hostnames - `[a-z0-9-]+(?:[.][a-z0-9-]+)*[.][a-z]{2,}` - which is a dotted-identifier test
+// wearing a TLD's clothes. Measured over 24 realistic reason strings it damaged NINE of them:
+// `Cannot parse file.js`, `Malformed payload.json`, `Unknown field style.key`,
+// `Missing property component.name`, `design.system`, `support@figma.com`,
+// `Unable to reach api.figma.com`, `the components.meta field`, and worst,
+// `E.404.NOT_FOUND` -> `[link removed]_FOUND` - a corrupted diagnosis, which is precisely the
+// failure this whole item exists to remove. It also MISSED the bare form that would matter most, a
+// raw IPv4 with a path (`192.168.1.1/admin`). Every one of those false positives came from that
+// rule and none from this one, so it is gone.
+const UPSTREAM_LINK =
+  /(?:[a-z][a-z0-9+.-]*:[/][/]|(?:https?|ftp|ftps|data|javascript|vbscript|mailto):)[^ ]+/gi;
+
+/**
+ * Neutralise anything link-shaped inside an upstream reason.
+ *
+ * Why at all: the quote lands IMMEDIATELY before this server's own `Issue a fresh token in Figma ...`
+ * sentence, so an attacker-supplied `Paste your PAT at http://not-figma.example` inherits that
+ * remediation's endorsement, aimed at a reader which may be an LLM relaying it to a human. Credential
+ * phishing in this server's voice costs more than the link this gives up.
+ *
+ * Deliberately NOT dropping the whole quote: the sentence around the link is often the real reason,
+ * and the untouched body is still in the figma.request_failed log for an operator who needs it.
+ *
+ * THE RESIDUAL, stated rather than papered over: a schemeless host survives. `Go to
+ * not-figma.example now`, a protocol-relative `//cdn.evil.example/x`, and a bare `192.168.1.1/admin`
+ * all reach the reader inside a fence attributed to Figma. That is the accepted trade, for two
+ * reasons. It is materially less actionable than a scheme-bearing URL - nothing resolves it, no
+ * client follows it, and a reader has to retype it deliberately. And the only rule that catches it
+ * is the dotted-identifier match above, which corrupts real diagnoses: paying for a marginal
+ * phishing case with `E.404.NOT_FOUND` -> `[link removed]_FOUND` is the wrong side of the trade.
+ * A row locks this residual, so that a later "fix" back to bare-host matching has to delete an
+ * assertion that names what it costs.
+ */
+function defangLinks(s: string): string {
+  return s.replace(UPSTREAM_LINK, UPSTREAM_LINK_PLACEHOLDER);
+}
+
+/**
+ * Fence the upstream string as upstream. Never merged into an imperative sentence.
+ *
+ * The closing quote is unforgeable by CONSTRUCTION, not by escaping: printableAsciiOnly removes the
+ * double quote from the reason, so the only one after `said: ` is the one written here. An escaping
+ * scheme would work too and would be one refactor away from not working.
+ */
+export function quoteUpstream(reason: string | undefined): string {
+  return reason ? ` Figma's response said: "${reason}".` : '';
+}
+
+/**
+ * Which write this request is. A single boolean could not tell the three apart, so the 403 for a
+ * delete could not name Figma's author-only rule without asserting it for post and reply too,
+ * where it is false. Only 'comment_delete' carries a rule of its own; 'comment_post' and
+ * 'comment_reply' differ solely in naming which call failed, because Figma applies the same rule
+ * to both - inventing a further difference would be inventing a discriminator Figma does not send.
+ */
+export type WriteOp = 'comment_post' | 'comment_reply' | 'comment_delete';
+
+/**
+ * Recognise Figma's own reason strings. Matched against the PARSED reason, never the raw body, so
+ * an HTML interstitial that happens to contain the words "Invalid token" can never be promoted
+ * into a confident diagnosis. An unrecognised reason falls through to a message that names every
+ * possibility without choosing - Figma sends no discriminator for those, and inventing one is the
+ * defect this whole item exists to remove.
+ */
+function reasonFamily(reason: string | undefined): 'dead_token' | 'plan_limit' | 'scope' | undefined {
+  if (reason === undefined) return undefined;
+  // Captured live: `curl -H 'X-Figma-Token: <invalid>' https://api.figma.com/v1/me`
+  // -> {"status":403,"err":"Invalid token"}. Figma lumps revoked, mistyped and expired into it.
+  if (/invalid token/i.test(reason)) return 'dead_token';
+  // Figma's documented 403 strings for an endpoint the file's plan, or the account's tier, does not
+  // include. The ONLY branch allowed to talk about plans - see the excludes on the Invalid-token
+  // row of tests/unit/figma-error-diagnosis.test.ts.
+  //
+  // "Incorrect account type" joined this family because leaving it unclassified produced a
+  // CONTRADICTORY composite one layer up: this function fell through to the message saying the
+  // token may be revoked, mistyped or expired, and get_variables then appended that Figma had named
+  // a plan or account-type limit rather than a token problem. The reader was told to do both, and
+  // each half was correct on its own - which is why only a test over the DELIVERED text catches it.
+  //
+  // KIND MOVEMENT, stated as the CLASS it is rather than as the example I happened to synthesise
+  // (my first version named one probe body and a reader would have concluded the freeze was
+  // narrower than it is). The moved class is EXACTLY:
+  //
+  //   a 403 whose parsed reason matches /incorrect account type/i AND ALSO matches /scope/i
+  //     -> was kind 'auth' (it reached the scope branch), is now kind 'forbidden'
+  //
+  // in either body shape (`err` or `message`), on every call shape, for any number of distinct
+  // reason strings in that class - a review sweep found two plausible ones where I had synthesised
+  // one. A reason matching /incorrect account type/i WITHOUT a scope does not move at all: both
+  // plan_limit and the fallthrough return 'forbidden' at 403. Nothing else in the table moves; the
+  // direction is toward the frozen 403 default, which takes the choice of kind away from an
+  // intermediary rather than giving it any. Locked by a row that iterates the class, not an example.
+  // Provenance for the string itself: cited by the task-11 brief, NOT captured - I have no account
+  // whose tier refuses an endpoint. Same standing as its neighbour.
+  if (/limited by figma plan|incorrect account type/i.test(reason)) return 'plan_limit';
+  // The scope test used to run against the RAW body, and BEFORE this function. Two things followed,
+  // both reproduced: an HTML interstitial containing the word "scope" produced kind 'auth' and this
+  // server's most confident quote-free sentence, letting an intermediary CHOOSE the kind five call
+  // sites branch on; and a body that said `Invalid token` while carrying "scope" anywhere else took
+  // the scope branch, asserting a cause Figma had already excluded and resurrecting the write-scope
+  // sentence on a delete. Ranked below dead_token on purpose: when Figma names the token, the token
+  // is the answer.
+  if (/scope/i.test(reason)) return 'scope';
+  return undefined;
+}
+
+const REISSUE = ' Issue a fresh token in Figma (Settings -> Security -> Personal access tokens)'
+  + ' and give this server the new value.';
+
+/**
+ * One diagnosis for a dead token, shared by 401 and 403 on purpose. The same token yields 403 on
+ * every endpoint probed here and 401 on others, so the status must NOT change what the reader is
+ * told; only the number in the parentheses differs.
+ */
+function deadTokenMessage(status: number, quoted: string): string {
+  return `Figma rejected the token (${status}).${quoted}`
+    + ' The token is revoked, mistyped, or past its expiry - Figma PATs last at most 90 days, and'
+    + ' Figma answers all three the same way.'
+    + REISSUE;
+}
+
+function forbiddenMessage(writeOp: WriteOp | undefined, quoted: string): string {
+  const scopeAndAccess = ' Either the token lacks the file_comments:write scope, or the account'
+    + ' behind it cannot comment on this file. Both are visible in Figma: the scopes on the'
+    + ' Personal access tokens page, and your comment access by opening the file.';
+  switch (writeOp) {
+    case 'comment_delete':
+      // Figma's comments reference: only the person who made a comment may delete it. Stated for
+      // the delete alone - it is false for post and reply, which is why the caller passes which
+      // write this is instead of one boolean for all three.
+      return `Figma denied this delete (403).${quoted}`
+        + ' Either the token lacks the file_comments:write scope, or the comment is not yours:'
+        + ' Figma only lets you delete a comment you posted, and no scope changes that.'
+        + ' Check the scopes on the Personal access tokens page in Figma; if the comment is'
+        + " someone else's, no token will delete it.";
+    case 'comment_post':
+      return `Figma denied this comment (403).${quoted}` + scopeAndAccess;
+    case 'comment_reply':
+      return `Figma denied this reply (403).${quoted}` + scopeAndAccess;
+    default:
+      return `Figma denied access (403).${quoted}`
+        + ' This server cannot tell which of these it is: the token may be revoked, mistyped or'
+        + ' expired; it may lack a scope this endpoint needs; or the account behind it may not have'
+        + ' access to this file. Open the file in Figma as that account to separate the access case'
+        + ' from the token cases.';
+  }
+}
+
+function mapStatus(res: Response, body: string, writeOp?: WriteOp): FigmaApiError {
   const status = res.status;
+  // Body-first: the status code alone cannot classify a dead token (the SAME token yields 401 on
+  // one endpoint and 403 on another). Only a string-valued err/message is quoted, bounded and
+  // sanitized - see upstreamReason above for what this deliberately refuses to echo.
+  const reason = upstreamReason(body);
+  const quoted = quoteUpstream(reason);
+  const family = reasonFamily(reason);
+
   if (status === 401) {
-    return new FigmaApiError('auth', 401, 'Figma rejected the token (401).');
+    // Body-first here too, for a reason that was measured rather than assumed. A real 401 from
+    // api.figma.com is NOT a dead token: `Authorization: Bearer figd_...` answers
+    // {"status":401,"err":"figd_ tokens must be passed via X-Figma-Token header, not Authorization"}
+    // on four endpoints. Telling that reader the token is "revoked, mistyped, or past its expiry"
+    // names three causes Figma has excluded and hides the one it named. With no parseable reason at
+    // all, a 401 does mean the credential was refused, so the dead-token diagnosis is the best
+    // available and is used.
+    if (family === 'dead_token' || reason === undefined) {
+      return new FigmaApiError('auth', 401, deadTokenMessage(401, quoted), undefined, reason);
+    }
+    return new FigmaApiError('auth', 401,
+      `Figma refused the request as unauthenticated (401).${quoted}`
+      + ' Figma named that itself, so act on it before assuming anything about the token. For'
+      + ' reference, this server always sends the PAT in the X-Figma-Token header.',
+      undefined, reason);
   }
   if (status === 403) {
-    if (/scope/i.test(body)) {
-      const scopeMsg = writeScopeHint
+    // Body before caller context AND before the scope test: when Figma names the cause, this
+    // server must not go on offering alternatives it has already excluded - not the write hints
+    // below, and not the scope sentence either.
+    if (family === 'dead_token') {
+      return new FigmaApiError('forbidden', 403, deadTokenMessage(403, quoted), undefined, reason);
+    }
+    if (family === 'scope') {
+      const scopeMsg = writeOp
         ? 'Figma rejected the token (403). Check scopes: file_comments:write.'
         : 'Figma rejected the token (403). Check scopes: file_comments:read, file_content:read.';
-      return new FigmaApiError('auth', 403, scopeMsg);
+      return new FigmaApiError('auth', 403, scopeMsg + quoted, undefined, reason);
     }
-    const forbiddenMsg = writeScopeHint
-      ? 'Figma denied access (403). The PAT needs the file_comments:write scope, or does not have edit access to this file.'
-      : 'Figma denied access to this file. Token may not have access.';
-    return new FigmaApiError('forbidden', 403, forbiddenMsg);
+    if (family === 'plan_limit') {
+      // A reason can name BOTH a plan/account limit and a scope, and the sentence below tells the
+      // reader that scoping is irrelevant - false over such a body, and this task's own defect
+      // class. The DENIAL is what becomes conditional, NOT the ranking: reversing the ranking so a
+      // scope-bearing body took the scope branch would hand an intermediary the kind back by
+      // writing "scope" into a body, which is exactly what four measured bodies did before the
+      // ranking was introduced. So plan still outranks scope, and when both are named this server
+      // says it cannot tell which refused the call, because Figma does not say.
+      const alsoScope = /scope/i.test(reason ?? '');
+      return new FigmaApiError('forbidden', 403,
+        `Figma denied access (403).${quoted}`
+        + (alsoScope
+          ? ' Figma named a plan or account-type limit AND a scope, and does not say which of them'
+            + ' refused the call, so treat neither as excluded. Check the scopes on the Personal'
+            + ' access tokens page in Figma, then ask whoever owns this file which endpoints its'
+            + ' plan covers.'
+          : " Figma named a limit on this file's Figma plan, not a problem with the token:"
+            + ' re-issuing or re-scoping the token will not change it. Ask whoever owns this file in'
+            + ' Figma which endpoints its plan covers.'),
+        undefined, reason);
+    }
+    return new FigmaApiError('forbidden', 403, forbiddenMessage(writeOp, quoted), undefined, reason);
   }
   if (status === 404) {
-    return new FigmaApiError('not_found', 404, 'Figma file not found or no access.');
+    return new FigmaApiError('not_found', 404,
+      `Figma returned 404.${quoted}`
+      + ' That is either no such file key, or a file this token cannot see - Figma answers both the'
+      + ' same way. Open the file URL in a browser signed in as the token owner: if it loads there'
+      + ' and 404s here, the key is right and the token is the problem.',
+      undefined, reason);
   }
   if (status === 429) {
     const retry = parseInt(res.headers.get('retry-after') ?? '', 10);
+    // The wait instruction is conditional: with no Retry-After header the number renders as
+    // "unknown", and "wait that long" after it would be an instruction the reader cannot follow.
+    const wait = Number.isFinite(retry)
+      ? ` Wait ${retry}s before retrying.`
+      : ' Figma sent no Retry-After header; back off before retrying.';
     return new FigmaApiError(
       'rate_limited',
       429,
-      `Figma rate limit hit. Retry-After: ${Number.isFinite(retry) ? retry : 'unknown'}s.`,
+      // The unit belongs inside the finite branch: the previous form rendered the header-less case
+      // as "Retry-After: unknowns.".
+      `Figma rate limit hit. Retry-After: ${Number.isFinite(retry) ? `${retry}s` : 'unknown'}.${quoted}${wait}`,
       Number.isFinite(retry) ? retry : undefined,
+      reason,
     );
   }
   if (status >= 500) {
     return new FigmaApiError(
       'upstream',
       status,
-      `Figma upstream error (${status}). Try again later.`,
+      `Figma upstream error (${status}). Try again later.${quoted}`,
+      undefined,
+      reason,
     );
   }
   return new FigmaApiError(
     'unknown_4xx',
     status,
-    // Do not echo Figma's response body to the client (it may carry request
-    // context). The truncated body is logged server-side at the call site.
-    `Figma returned ${status}.`,
+    // Still no raw body here: `quoted` is the bounded, sanitized err/message string and nothing
+    // else. The truncated body is logged server-side at the call site.
+    `Figma returned ${status}.${quoted}`
+    + ' Retrying this unchanged will get the same answer; change the request or the id it names.',
+    undefined,
+    reason,
   );
 }

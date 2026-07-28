@@ -42,14 +42,14 @@ describe('FigmaRestAdapter write methods', () => {
     expect(capturedBody).toEqual({ message: 'reply text', comment_id: 'c-root' });
   });
 
-  it('resolveComment DELETEs and resolves undefined on 200 (empty body)', async () => {
+  it('deleteComment DELETEs and resolves undefined on 200 (empty body)', async () => {
     let capturedMethod: string | undefined;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       capturedMethod = init?.method;
       return new Response('', { status: 200 });
     }));
 
-    const result = await api().resolveComment('abc123', 'c-42');
+    const result = await api().deleteComment('abc123', 'c-42');
 
     expect(result).toBeUndefined();
     expect(capturedMethod).toBe('DELETE');
@@ -65,12 +65,12 @@ describe('FigmaRestAdapter write methods', () => {
     expect(err.message).toContain('file_comments:write');
   });
 
-  it('resolveComment maps 403 to {kind: "forbidden"} with file_comments:write in message', async () => {
+  it('deleteComment maps 403 to {kind: "forbidden"} with file_comments:write in message', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       return new Response('Forbidden', { status: 403 });
     }));
 
-    const err = await api().resolveComment('abc123', 'c-42').catch(e => e);
+    const err = await api().deleteComment('abc123', 'c-42').catch(e => e);
     expect(err.kind).toBe('forbidden');
     expect(err.message).toContain('file_comments:write');
   });

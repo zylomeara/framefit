@@ -1,15 +1,88 @@
-# Snippet for the main Caddyfile on the VPS — replace the example host with
-# your own domain. Append (or `import`) into the global config, then `caddy reload`.
+# Snippet for the main Caddyfile on the VPS - replace the example host with your own domain.
+# Append (or `import`) into the global config, then `caddy reload`.
+#
+# Produce the credential first:
+#
+#   caddy hash-password        # type a password, copy the bcrypt hash it prints
+#
+# Two rules encoded here, both load-bearing:
+#
+#   1. THIS PROXY IS THE AUTHENTICATION. The single-tenant server has no authentication of its
+#      own and wires your FIGMA_TOKEN into every call, so everything that reaches it is behind
+#      basic_auth - /mcp, /health, and the 404 catch-all alike.
+#
+#   2. /api/dom-snapshots/* is exempt ON PURPOSE and is NOT an oversight. The page under test
+#      loads GET /api/dom-snapshots/extractor.js as a cross-origin <script src> and POSTs its
+#      capture to /api/dom-snapshots/<capToken>. Neither request can carry basic-auth credentials
+#      (a subresource URL cannot, and the upload is an anonymous cross-origin fetch), and a 401
+#      from Caddy carries no CORS header, so the browser would report a bare "Failed to fetch".
+#      The credential on that route is the unguessable capToken minted per get_layout_spec call.
+#      Do not widen this exemption and do not remove it.
 
 framefit.example.com {
-    encode gzip
+	# No `encode`: the MCP route answers as an SSE stream and gzip buffers it.
 
-    handle {
-        reverse_proxy 127.0.0.1:3846
-    }
+	log {
+		output file /var/log/caddy/framefit.log
+		format json
+	}
 
-    log {
-        output file /var/log/caddy/framefit.log
-        format json
-    }
+	@dom_snapshots path /api/dom-snapshots/*
+	handle @dom_snapshots {
+		# The capToken travels in the URL PATH, and Caddy's JSON access log records request.uri
+		# verbatim - measured on 2.11.4: without the line below, a POST to
+		# /api/dom-snapshots/<capToken> lands in the log with the token intact, because Caddy's
+		# default redaction covers sensitive headers, not paths. A logged capToken is a replayable
+		# upload credential, so this route is excluded from the access log entirely - filtering one
+		# field would only move the token into the next one. The application still logs an
+		# 8-character prefix of it, which is enough to correlate and not enough to replay.
+		log_skip
+
+		# The only anonymous route on this origin, so it carries its own bound - and the bound must
+		# be the SAME NUMBER the server uses. 2MiB, never 2MB: Caddy reads 2MB as 2,000,000 bytes,
+		# while the server's express limit is 2mb = 2,097,152. A body between those two is accepted
+		# by the server but killed at the edge, and measured at 2,050,001 bytes that edge rejection
+		# is a bare 413 with no CORS header and no body - in a browser, exactly the opaque
+		# "Failed to fetch" this carve-out exists to prevent. At 2MiB the ceilings coincide and the
+		# edge never kills a capture the server would have taken: measured, 2,050,001 and 2,097,152
+		# bytes are both 200 through the proxy, byte-identical to posting them directly.
+		#
+		# One byte OVER the shared ceiling the edge still answers first and still answers opaquely
+		# (measured: 2,097,153 -> 413, no CORS header, empty body, while the server answers the same
+		# bytes with a readable JSON 413). That is the honest residue of having a cap at all; the fix
+		# for an oversize capture is fewer snapshots per POST, which is what the server's message
+		# says and what upload_url supports.
+		#
+		# The cap applies as the body is READ, so an unknown capToken is still answered 404 by the
+		# server first - it authenticates before reading anything.
+		request_body {
+			max_size 2MiB
+		}
+
+		# NOT rate-limited, and this file cannot fix that: `caddy list-modules` on the official
+		# 2.11.4 build lists no rate-limiting module at all - `rate_limit` ships in the third-party
+		# github.com/mholt/caddy-ratelimit plugin, so a cap written here would not even load on a
+		# stock binary. The size cap above bounds one request, not their rate. An anonymous caller
+		# can therefore hammer this prefix; each unknown token costs the server one map lookup, a
+		# drained body it never buffers, and one log line - cheap per request, unbounded in
+		# aggregate. On a public origin, bound it outside this file: rebuild Caddy with
+		# `xcaddy build --with github.com/mholt/caddy-ratelimit` and add a `rate_limit` block here,
+		# or put a firewall rule (nftables/iptables hashlimit, fail2ban) on the prefix. Leave the
+		# container's log rotation in place either way - docker/docker-compose.yml already caps the
+		# json-file driver at max-size 10m / max-file 3, which is what bounds the rejection lines.
+
+		reverse_proxy 127.0.0.1:3846
+	}
+
+	handle {
+		# /health is behind this too, deliberately - it is the same origin as /mcp and it reports
+		# the address the server is bound to. An uptime monitor is not an exception, it just sends
+		# the credential: `curl -fsS -u you:<password> https://framefit.example.com/health` is 200.
+		basic_auth {
+			# you <paste the bcrypt hash from `caddy hash-password` here>
+			you REPLACE_ME_WITH_A_BCRYPT_HASH
+		}
+
+		reverse_proxy 127.0.0.1:3846
+	}
 }

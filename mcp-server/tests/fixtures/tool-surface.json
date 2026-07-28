@@ -1,0 +1,430 @@
+{
+  "compare_breakpoints": {
+    "description": "Compare one element's typography across several breakpoint frames in a single call. Pass the breakpoint frame node_ids (one per width) and the element name (e.g. \"tabs\"); returns the element's text-style per breakpoint with the frame name and width. Replaces opening each width frame by hand.",
+    "inputSchemaKeys": [
+      "depth",
+      "figma_token",
+      "file",
+      "fuzzy",
+      "include_color",
+      "name",
+      "node_ids"
+    ],
+    "digest": "f37ac8f9d8202766fe7924049c1de3211d66b771c9d4799b2f84cad3d3291f25",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "compare_node_to_dom": {
+    "description": "Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, inter-child gaps (derived from geometry - insensitive to margin/padding/gap implementation), effective paddings, cross-axis offsets, typography, colors, component identity (warn-only). Returns machine-readable rows {prop, figma, dom, delta, status} per pair + a ready \"Verified against Figma\" markdown block. Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). Token rows with status `review` carry `figma`/`dom` token names - judge them: return **same token** (-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible rename), answer **unsure** and escalate - never call it wrong. `review` rows keep the verdict non-green until resolved; a name that merely differs textually is not a defect.",
+    "inputSchemaKeys": [
+      "expected_overlay_width",
+      "figma_token",
+      "file",
+      "frame_node_id",
+      "match_profile",
+      "max_depth",
+      "pairs",
+      "tolerance_px"
+    ],
+    "digest": "906514111a2c01d843de44a79f170a9f8518cb3f90a90e80472d9a15fc2aa114",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "delete_comment": {
+    "description": "Permanently delete a Figma comment. There is no undo: Figma does not restore deleted comments and file version history does not bring them back. This is NOT a way to resolve a thread - Figma has no API to mark a thread resolved, so resolution happens in the Figma UI only; get_comments reports a \"resolved\" flag it cannot change. Only the comment author may delete it. Disabled in read-only mode. Pass the comment id from get_comments.",
+    "inputSchemaKeys": [
+      "comment_id",
+      "file"
+    ],
+    "digest": "402a7c2c8a1b9292994ff346650ec5c61d9a01c193a7a1b5dcfa9403ae1033bf",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true
+    }
+  },
+  "export_assets": {
+    "description": "Export Figma nodes as rendered images (PNG/SVG/JPG) and return signed S3 URLs. Use get_metadata first to find node IDs. Returns url:null for nodes Figma could not render. Set include_raw_images:true to also return the ORIGINAL uploaded source images (IMAGE fills) per node as raw_images:[{imageRef,url}].",
+    "inputSchemaKeys": [
+      "figma_token",
+      "file",
+      "format",
+      "image_depth",
+      "include_raw_images",
+      "node_ids",
+      "scale"
+    ],
+    "digest": "4e8669515ede4d0cd92a00e2f8ebd0aeed689619c12e5b96ce2a7b83e5dad5f3",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "find_breakpoint_variant": {
+    "description": "Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required - avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame's own width (a variant named \"desktop\" (w1280) whose inner drawer content is w420 matches render_width 420). On huge files pass parent_node_id (a section or page) to scope the walk and avoid timing out.",
+    "inputSchemaKeys": [
+      "figma_token",
+      "file",
+      "parent_node_id",
+      "query",
+      "render_width"
+    ],
+    "digest": "a65354d6b65a2ec969ef26a5e71b9545e3e3e44eb7ba1cfa610bdcdcec08fdf1",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "find_nodes": {
+    "description": "Find nodes by name OR text content (substring or fuzzy) inside a Figma file or a subtree, without knowing node ids. Use this when node names are master-component placeholders rather than semantics (e.g. the label \"Cart\" lives in a node named \"All genres\") - it also matches the node's text (characters). Returns node_id, name, type, breadcrumb path, size, and matched_on (name|text|property). Component-instance text set as a property override (e.g. a DS section header) matches as 'property'. Feed a node_id into get_design_context or get_text_styles. Scope with node_id to search a single frame; omit it to search the whole file.",
+    "inputSchemaKeys": [
+      "depth",
+      "figma_token",
+      "file",
+      "fuzzy",
+      "limit",
+      "node_id",
+      "query",
+      "type"
+    ],
+    "digest": "b58f812a58e7d84ee002a411727f97ebed770fe28e35673258b6d674d98d8998",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "find_threads": {
+    "description": "Search a Figma file's comment threads by text, ranked by relevance, with optional fuzzy matching and the full filter set. Returns scored matches with highlights - use to locate specific discussions in large files.",
+    "inputSchemaKeys": [
+      "author_handle",
+      "author_id",
+      "figma_token",
+      "file",
+      "fuzzy",
+      "has_mentions",
+      "include_descendants",
+      "include_resolved",
+      "limit",
+      "message_contains",
+      "min_reactions",
+      "min_replies",
+      "node_depth",
+      "node_id",
+      "node_type",
+      "query",
+      "since",
+      "timeout_ms",
+      "until"
+    ],
+    "digest": "fcabfc7b2e121a5045bde9623bb9a7e33721c60ed91935efe435d21f08d9bed3",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_code_connect_map": {
+    "description": "Map Figma instance nodes to their Code Connect code snippets (component, imports, source) from mappings your CI uploaded (Figma exposes no Code Connect REST endpoint, so this reads CI-ingested mappings, not Figma directly). When the map is empty the response carries a `reason` (no_instances | components_unresolved | no_mappings | not_configured) and a `note` explaining why and how to populate mappings.",
+    "inputSchemaKeys": [
+      "figma_token",
+      "file",
+      "node_ids"
+    ],
+    "digest": "f8c2f1a56691e2806a30c4f0bc45689159c48392ac0afa42a98a52cc20c28857",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_comments": {
+    "description": "Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. Anchors resolve to node names/pages. Use summarize_comments first on large files.",
+    "inputSchemaKeys": [
+      "as_markdown",
+      "author_handle",
+      "author_id",
+      "figma_token",
+      "file",
+      "has_mentions",
+      "include_descendants",
+      "include_resolved",
+      "limit",
+      "message_contains",
+      "min_reactions",
+      "min_replies",
+      "node_depth",
+      "node_id",
+      "node_type",
+      "offset",
+      "since",
+      "timeout_ms",
+      "until"
+    ],
+    "digest": "9bc25933eadccc8c9f8766ce7b04444bf2bff1fa083d159b040f7e017c199c6b",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_design_context": {
+    "description": "Extract a descriptive, code-oriented representation of a Figma node: layout (auto-layout), sizing, fills/strokes/effects (deduplicated into globalVars), text + typography, and component instances. A fill/stroke bound to a variable in a multi-mode collection (>1 mode) is resolved to an object in globalVars: { token, value (actual hex in the node's effective variable mode), mode, mode_dependent, mode_source }. mode_source:'node' means the node's mode was confirmed via explicitVariableModes; 'default' means the mode could not be determined and the default-mode value is shown - do not treat it as the on-screen color, and such an object also carries a short `hint` pointing you to get_variables' per-mode `modes` map for the actual value. When the value was decided by modes across MORE THAN ONE multi-mode collection (a cross-collection alias chain), the object also carries modes_applied - {collection name: \"mode name (node|default)\"} - every axis actually APPLIED to compute value: (node) = that axis was pinned via explicitVariableModes on the node or an ancestor; (default) = that collection's default mode was used. modes_applied explains the computation only - it makes NO on-screen claim (that is mode_source's job, for the composite). A top-level mode_context marker may be present: \"library_default_modes\" = this file is a registered component library rendered in its default variable modes - do NOT transfer these mode-dependent values to branded pages (the same tokens resolve differently there); \"default_modes\" = every shown mode-dependent value is its axis default. The marker appears only when the server has positive evidence (all bindings tracked, no pinned axes anywhere); its absence claims nothing. Mode and collection names are verbatim Figma names; casing can differ between collections. A fill/stroke bound to a single-mode (non-mode-dependent) variable keeps its inline form: the local token name, or var(--name, value) for a cross-library variable. Human-authored component descriptions/documentation are returned as a deduped `components` map keyed by component id (disable with include_component_docs:false). Set include_screenshot:true to also attach a short-lived signed PNG URL for visual context. Container nodes whose children were cut - by the requested depth, or by the size-budget auto-degrade when `degraded` is true - are marked `truncated:true` with `childCount`; request that node_id directly, raise `depth` (max 8, no effect when `degraded` is true), or use get_metadata to see them. The call runs under a server time budget: enrichment stages (variables resolution, ancestor-mode discovery, component docs, Code Connect, screenshot) that do not fit are skipped and listed in degraded_stages [{stage, reason}] - the core subtree is never time-degraded (the size budget's `degraded` flag is separate). If the subtree fetch itself exceeds the budget the call fails fast and suggests a lower depth. Use get_metadata first to pick a node_id.",
+    "inputSchemaKeys": [
+      "depth",
+      "figma_token",
+      "file",
+      "include_component_docs",
+      "include_screenshot",
+      "node_id",
+      "screenshot_scale"
+    ],
+    "digest": "0516626fcbd6329bc53bcae73195c58e34bfa5af07906efb3e5f73fa3fe40213",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_figjam": {
+    "description": "Structured content of a FigJam board: sticky notes (text + color), shapes-with-text, sections, connectors (from->to edges with labels), and tables. The headless analogue of the official get_figjam - returns board data, not generated UI code. Use nodeNames to label connector endpoints. Tables degrade to an ordered flat list of cell texts (REST exposes no row/column index).",
+    "inputSchemaKeys": [
+      "depth",
+      "figma_token",
+      "file",
+      "include_hidden",
+      "node_id"
+    ],
+    "digest": "27291971b0927ceb63649ef1dc7a9614b176217fcd8ae8acd004d4dbf1b156e7",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_layout_spec": {
+    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js - by default a short loader thunk that fetches the canonical script from the server rather than inlining it (extractor_mode:\"inline\" forces the full script, e.g. if a CSP blocks the loader's script tag); when the server is configured for it, also returns an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to compare_node_to_dom instead of pasting raw snapshot JSON.",
+    "inputSchemaKeys": [
+      "extractor_mode",
+      "figma_token",
+      "file",
+      "include_extractor",
+      "max_depth",
+      "node_ids",
+      "text_leaves"
+    ],
+    "digest": "5008a0f11f7b577bd16dd801ea20e77d4e91983a3710f62a38ccf71b435463bc",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_libraries": {
+    "description": "List the design-system libraries a Figma file publishes or consumes. \"publishes\" = components this file itself exports (GET /files/:key/components). \"consumes\" = external libraries the file actually uses, detected from remote component references resolved to their source files (grouped by library file key with component_count + sample names). Best-effort: it surfaces libraries with USED components, not merely-subscribed-but-unused ones. Use a library file key with get_design_context; for search_design_system pass the team id from the library file's URL.",
+    "inputSchemaKeys": [
+      "figma_token",
+      "file",
+      "node_id"
+    ],
+    "digest": "83e4e1f0e3dd60a4c2e385c31eec42f056b9524fb183e4bf3a52a6b9154bf877",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_metadata": {
+    "description": "A sparse map of a Figma file: id/name/type/position/size per node, depth-limited. Cheap navigation - call this first, then get_design_context on a chosen node_id. On large nodes the depth degrades per-branch: light branches stay deep while heavy ones collapse; truncation reports effective_depth (deepest shown) and min_effective_depth (shallowest branch), with truncated:true + childCount on each cut node.",
+    "inputSchemaKeys": [
+      "depth",
+      "figma_token",
+      "file",
+      "node_id"
+    ],
+    "digest": "60fdc716f9d21e85a3913228732dd79f8be915dbc4c4638311de9f473463090a",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_node_ancestry": {
+    "description": "Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read the ancestor children. bbox-guided, id-confirmed, <=12 light REST calls - never fetches the whole file. query highlights matching names in scope.",
+    "inputSchemaKeys": [
+      "figma_token",
+      "file",
+      "node_id",
+      "query"
+    ],
+    "digest": "f545c04ade503514f0a27a4cc9e46b18f13e7d853916224e4a34f28ddac9929c",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_pin_detail": {
+    "description": "Inspect ONE review-board pin in a single call: returns a zoomed, reticle-marked PNG crop of exactly where the pin points (the prod screenshot region) plus its resolved referenceNode (deepest leaf + suggested container + path + confidence), the reference-frame node_id, and the full-res screenshot URL. Use this to recover a pin whose get_review_board confidence is not \"high\": read the element in the crop, then find_nodes(file, query=<what you see>, node_id=<referenceFrameNodeId>) to locate it in the reference - this beats the linear projection when prod/reference layouts drift. board_node_id is the same section you pass to get_review_board. Address the pin by pin_number (unique-numbered boards) OR by pin_node_id (from item.pinNodeId in the get_review_board output) - use pin_node_id on multi-lane boards where numbers repeat per lane.",
+    "inputSchemaKeys": [
+      "board_node_id",
+      "comment_field_name",
+      "depth",
+      "figma_token",
+      "file",
+      "focus_radius",
+      "pin_name",
+      "pin_node_id",
+      "pin_number",
+      "reference_name"
+    ],
+    "digest": "272ae57531ee675a7cb10bf0f086b4fb5c89940d69906828b3237501f36fbc73",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_review_board": {
+    "description": "Extract a design-review board in one call. Use this when a section packs a prod screenshot with numbered pin markers, \"comment field\" frames of numbered notes, and reference (\"Mockup\") frames - the classic design-review layout. Returns each note linked pin<->text<->target (the pin number, its comment text, and the prod-screenshot coordinate the pin points at), grouped by lane (the prod screenshot each pin sits on) - no manual x/y geometry. Pins link to comments by their sequential number, assuming numbering is unique board-wide; when it is not, a \"duplicate_pin_numbers\" warning is emitted and ambiguous/cross-lane links are left as unmatched (honest-unmatched over confidently-wrong). Each note also resolves a `referenceNode` (the node under the pin in the lane's aligned reference/\"Mockup\" frame): the deepest leaf, a `suggested` container, and an ancestor `path`; `nearestTargetNodeId` is the deepest leaf id. When no aligned reference exists, `referenceNode` is null with a `referenceReason`. Each `referenceNode` also carries a `confidence` ({level: high|medium|low, scaleDiscrepancyPx, boundaryMarginPx}) for the linear pin->reference projection - when `level` is not \"high\", re-verify the `suggested` node visually with get_screenshot (return=preview) before acting on it, because prod/reference layout differences can drift the projection into a neighbouring band. To identify the element directly, call get_screenshot with focus=target.atPercent (a zoomed crop around the pin), read what it points at, then locate that element in the reference with find_nodes - this beats the linear projection when prod/reference layouts drift.",
+    "inputSchemaKeys": [
+      "comment_field_name",
+      "depth",
+      "figma_token",
+      "file",
+      "include_bounds",
+      "include_screenshots",
+      "node_id",
+      "pin_name",
+      "reference_name"
+    ],
+    "digest": "7136b334d015488f756ff100b94c669caf0938f4ceeb0ce80ef665d30990d639",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_screenshot": {
+    "description": "Render a Figma node to an image. Default return=url gives a short-lived signed URL plus pixel dimensions and a curl hint (token-cheap - strongly preferred; avoids inlining megabytes of base64). return=inline embeds the PNG/JPG as base64 or returns SVG markup directly, only for agents that cannot fetch URLs. Use a lower scale for very large frames. return=preview gives a one-step downscaled inline image plus the full-res URL. Pass focus={x,y} (0..1, e.g. target.atPercent from get_review_board) to get a zoomed crop centered on that point with a reticle marking it - ideal for seeing exactly what a review pin points at; the crop is always PNG.",
+    "inputSchemaKeys": [
+      "figma_token",
+      "file",
+      "focus",
+      "focus_radius",
+      "format",
+      "node_id",
+      "return",
+      "scale",
+      "tiles"
+    ],
+    "digest": "273a4d317d69bec748b8caad93935825379756fc07e3b9e962207993040a8a01",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_text_styles": {
+    "description": "Extract only the typography of a node's subtree (fontFamily, fontWeight, fontSize, lineHeightPx, letterSpacing, align) without the full design tree - for fast spec verification of a deep text node. Pass dedupe=true to group identical styles. Use find_nodes first to get a node_id.",
+    "inputSchemaKeys": [
+      "dedupe",
+      "depth",
+      "figma_token",
+      "file",
+      "include_color",
+      "node_id"
+    ],
+    "digest": "5e3d3bbcc35df9756237b8aef4eabe16f057e99338ac8f7dc499250940eaf7d1",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_variables": {
+    "description": "List design tokens (Figma variables) in a file: name, type, default-mode value (colors as hex), and collection. Pass node_id to return ONLY the variables a node subtree references (the headless analogue of get_variable_defs) instead of the whole-file catalog. Returns a summary header (total, resolved_via buckets {local,graph,snapshot}, unresolved count, by_type counts) plus optional filters (collection, name, type, unresolved_only) and pagination (limit/offset). Duplicate rows are deduped and case-variant collection names are unified. Aliases within the file are resolved. Cross-library aliases are resolved headless via the registered library graph: when the source library's team is registered, the token returns value:<hex>, resolved_via:\"graph\", and source_library (the source file key). Otherwise it stays honest - value:null, alias:true, alias_of:<VariableID> - meaning that library's team is not registered yet (register it to resolve). Access to the Variables REST API depends on the file's Figma plan, on the token being valid, and on the token carrying file_variables:read - a 403 here is one of several causes, and the error message quotes Figma's own reason. Raise timeout_ms on large files. Multi-mode tokens (collections with >1 mode) carry mode_dependent:true and modes:{<modeName>:<hex>} - value is the DEFAULT mode; do not treat it as the on-screen value without checking the node's mode (see get_design_context).",
+    "inputSchemaKeys": [
+      "collection",
+      "depth",
+      "figma_token",
+      "file",
+      "limit",
+      "name",
+      "node_id",
+      "offset",
+      "timeout_ms",
+      "type",
+      "unresolved_only"
+    ],
+    "digest": "7d958e7486fcc48ff0886889b6d51e22245342f4a97c9d2a81be0a36b3ae417f",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "get_view": {
+    "description": "Single-root navigation over a held frame: one node_id, five pure lenses (skeleton/branch/coverage/typography/spacing) sliced from one deep-fetch, zero re-fetch across views/depths.",
+    "inputSchemaKeys": [
+      "figma_token",
+      "file",
+      "max_depth",
+      "node_id",
+      "view"
+    ],
+    "digest": "636d187605eb2c04cbe418e81945315872fd2d5f5660a2211ed19e048fffe7c5",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "post_comment": {
+    "description": "Post a new root-level comment on a Figma file. Disabled in read-only mode.",
+    "inputSchemaKeys": [
+      "file",
+      "message"
+    ],
+    "digest": "e733a5c273b75bb3cfc8022172b81f9a7017b492ee82a0da513bd698677b4aa6",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  "reply_to_comment": {
+    "description": "Reply to an existing comment thread in a Figma file. Disabled in read-only mode.",
+    "inputSchemaKeys": [
+      "comment_id",
+      "file",
+      "message"
+    ],
+    "digest": "037b8510a2988a51c8107a0c8f7ffec5c4a0d34a0b7949fac83ecc4ecc28ed02",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  "search_design_system": {
+    "description": "Search published design-system libraries (components, component sets, styles) by name/description. team_id is OPTIONAL: without it, the tool searches your registered DS teams. Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key, kind, library file, node_id, page and source team_id - use node_id with get_design_context. Lexical name search; run short queries.",
+    "inputSchemaKeys": [
+      "figma_token",
+      "file",
+      "limit",
+      "query",
+      "team_id"
+    ],
+    "digest": "54cdef2e3ff0c55ba255aac8fa45bc8ad971d4fc5e42aad55d603b02ade62b5a",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "suggest_pairs": {
+    "description": "Propose Figma-node <-> DOM-element pairs (by text/size/order/role) with confidence + ambiguous flags + honest unmatched, so you review proposed pairs instead of hand-building them (compound I...;... ids come dug out of the frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to compare_node_to_dom. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not inspected - the top is reported honestly in unmatched_figma/unmatched_dom instead, and you drill in by hand.",
+    "inputSchemaKeys": [
+      "dom_ref",
+      "dom_snapshot",
+      "figma_token",
+      "file",
+      "frame_node_id",
+      "max_depth"
+    ],
+    "digest": "c0dcd09b8bce3f0bfb48180b174595ddf9f26f846422474c74881053ef57a2ba",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "summarize_comments": {
+    "description": "Aggregate statistics for a Figma file's comments (counts by author/anchor/node/date, top threads, mentions) using the same filters as get_comments. Returns a compact ~1-2KB summary - use this first to scope large files before fetching full threads.",
+    "inputSchemaKeys": [
+      "author_handle",
+      "author_id",
+      "figma_token",
+      "file",
+      "has_mentions",
+      "include_descendants",
+      "include_resolved",
+      "message_contains",
+      "min_reactions",
+      "min_replies",
+      "node_depth",
+      "node_id",
+      "node_type",
+      "since",
+      "timeout_ms",
+      "top_n",
+      "until"
+    ],
+    "digest": "cbbf3cb7086046be21f289f8322bee225d7726f2379473a1787abe6d1ee5b25c",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  }
+}

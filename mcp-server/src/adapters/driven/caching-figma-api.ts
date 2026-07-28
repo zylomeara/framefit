@@ -225,10 +225,16 @@ export class CachingFigmaApiAdapter implements FigmaApi {
       // 120s retry, defeating the escalation. A marker without capMs (shouldn't exist in-memory —
       // the server factory always passes a timeoutMs) or a call with no known timeoutMs cannot make
       // the comparison → bypass (fall through to a real fetch).
-      const parsed = JSON.parse(knownError) as { kind: FigmaApiErrorKind; status: number; message: string; capMs?: number };
+      // upstreamReason travels WITH the marker. Without it a cached failure arrived at the tool
+      // with the reason present in the prose but absent from the field the tool branches on, so
+      // get_variables' body-first 400 branch degraded to its no-reason paragraph on the second
+      // identical call - the same call diagnosed two different ways, with the wrong one
+      // irreproducible on the first try. Markers written before this field existed decode to
+      // undefined, which is exactly the old behaviour.
+      const parsed = JSON.parse(knownError) as { kind: FigmaApiErrorKind; status: number; message: string; capMs?: number; upstreamReason?: string };
       if (this.timeoutMs !== undefined && parsed.capMs !== undefined && this.timeoutMs <= parsed.capMs) {
         this.logger.info({ file_key_prefix: fileKey.slice(0, 8) }, 'cache.hit_vars_error');
-        throw new FigmaApiError(parsed.kind, parsed.status, `cached: ${parsed.message}`);
+        throw new FigmaApiError(parsed.kind, parsed.status, `cached: ${parsed.message}`, undefined, parsed.upstreamReason);
       }
     }
     try {
@@ -300,7 +306,7 @@ export class CachingFigmaApiAdapter implements FigmaApi {
           && !eclipsedBySuccess) {
         // capMs stamps the cap under which this failure was observed, so the cap-aware READ above
         // can let a larger-budget escalation bypass it.
-        const marker = { kind: e.kind, status: e.status, message: e.message, capMs: this.timeoutMs };
+        const marker = { kind: e.kind, status: e.status, message: e.message, capMs: this.timeoutMs, upstreamReason: e.upstreamReason };
         this.read.variablesErrorCache?.set(key, JSON.stringify(marker));
       }
       throw e;
@@ -377,7 +383,7 @@ export class CachingFigmaApiAdapter implements FigmaApi {
 
   postComment(fileKey: string, input: { message: string }) { return this.inner.postComment(fileKey, input); }
   replyComment(fileKey: string, commentId: string, input: { message: string }) { return this.inner.replyComment(fileKey, commentId, input); }
-  resolveComment(fileKey: string, commentId: string) { return this.inner.resolveComment(fileKey, commentId); }
+  deleteComment(fileKey: string, commentId: string) { return this.inner.deleteComment(fileKey, commentId); }
 
   async getComponent(key: string): Promise<PublishedComponentMeta> {
     if (!this.read) return this.inner.getComponent(key);

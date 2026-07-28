@@ -1,5 +1,5 @@
 // Pure geometry for design-review boards: resolve a pin's prod-screenshot percentage to the
-// concrete node under it in the lane's aligned reference ("Макет") frame. The prod screenshot is
+// concrete node under it in the lane's aligned reference (mockup) frame. The prod screenshot is
 // a flat raster (no child nodes), so all semantics come from the reference frame's real subtree.
 import type { RawSceneNode } from './figma-raw.js';
 

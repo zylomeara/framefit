@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetLibrariesTool } from '../../src/adapters/driving/tools/get-libraries-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -15,8 +15,7 @@ const DOC = (components: any = {}, componentSets: any = {}) => ({
 });
 
 function harness(api: Partial<FigmaApi>) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const base = {
     getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
     getDocumentRaw: async () => DOC(), getNodesRaw: async () => ({ nodes: {} }), getImages: async () => ({ images: {} }),
@@ -26,7 +25,7 @@ function harness(api: Partial<FigmaApi>) {
   };
   const deps: ToolDeps = { buildApi: () => ({ ...base, ...api } as FigmaApi), defaultToken: 'figd_x', logger };
   registerGetLibrariesTool(server, deps);
-  return handlers.get_libraries;
+  return (a: any): Promise<any> => call('get_libraries', a);
 }
 
 describe('get_libraries tool', () => {

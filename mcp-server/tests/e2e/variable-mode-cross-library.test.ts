@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetDesignContextTool } from '../../src/adapters/driving/tools/get-design-context-tool.js';
 import { FigmaRestAdapter } from '../../src/adapters/driven/figma-rest.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import { buildGraph, resolveKey, resolveKeyModes, resolveKeyInMode, type Lib } from '../../src/domain/variable-graph.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 // Guarded live integration test — hits the real Figma REST API. Only runs when
 // FIGMA_E2E_TOKEN is set (mirrors smoke.test.ts's describe.skipIf convention),
@@ -54,10 +54,7 @@ async function libFromFile(api: FigmaApi, fileKey: string): Promise<Lib> {
 describe.skipIf(!enabled)('nested-menu case — cross-library mode resolution', () => {
   it('resolves 24/Stroke/menu stroke to a #8b6afb OBJECT with mode_source:node (not default #a73afd)', async () => {
     const logger = createLogger({ level: 'silent' });
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = {
-      tool: (n: string, _d: string, _s: unknown, h: any) => { handlers[n] = h; },
-    } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
 
     // Build the cross-library graph live, then wire resolve/resolveInMode exactly like server.ts.
     const graphApi = new FigmaRestAdapter(TOKEN!, logger);
@@ -90,12 +87,12 @@ describe.skipIf(!enabled)('nested-menu case — cross-library mode resolution', 
     };
     registerGetDesignContextTool(server, deps);
 
-    const res = await handlers.get_design_context({
+    const res = await call('get_design_context', {
       file: E2E_FILE,
       node_id: E2E_NODE,
       include_component_docs: false,
     });
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const entries = Object.values(body.globalVars ?? {}) as any[];
 
     // Strengthened: assert the FULL A+B+C outcome, not just that #8b6afb appears somewhere (which

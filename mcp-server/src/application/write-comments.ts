@@ -46,7 +46,7 @@ export async function replyCommentUseCase(
   return { id: raw.id, parent_id: raw.parent_id, message: raw.message };
 }
 
-export async function resolveCommentUseCase(
+export async function deleteCommentUseCase(
   api: FigmaApi,
   logger: Logger,
   input: { file: string; comment_id: string },
@@ -55,8 +55,10 @@ export async function resolveCommentUseCase(
   if (!parsed.ok) throw new Error(parsed.error);
   const fileKey = parsed.value;
 
-  logger.info({ tool: 'resolve_comment', file_key_prefix: fileKey.slice(0, 8) }, 'use_case.start');
+  // Log field renamed with the tool: this is what an operator greps for use_case.start /
+  // tool.error lines, and a log keyed to a tool name that no longer exists finds nothing.
+  logger.info({ tool: 'delete_comment', file_key_prefix: fileKey.slice(0, 8) }, 'use_case.start');
 
-  await api.resolveComment(fileKey, input.comment_id);
+  await api.deleteComment(fileKey, input.comment_id);
   return { ok: true, comment_id: input.comment_id };
 }

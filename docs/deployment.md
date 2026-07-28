@@ -6,16 +6,28 @@ and who needs to reach it.
 | Shape | Where | Auth | Guide |
 |---|---|---|---|
 | stdio (recommended start) | your machine | none needed — process-local | [README Tier 1](../README.md#tier-1--local-stdio-the-10-minute-path) |
-| Docker, local | your machine | none — binds `127.0.0.1` only | [docker/README §1](../docker/README.md) |
+| Docker, local | your machine | none — published on `127.0.0.1` only | [docker/README §1](../docker/README.md) |
 | **VPS, single-tenant** | a server you own | **you add it** (SSH tunnel or reverse proxy) | this page |
-| VPS, multi-tenant | a server you own | OIDC (external Keycloak) | [docker/README §2](../docker/README.md) + notes below |
+| VPS, multi-tenant | a server you own | OIDC (external Keycloak) — audience enforcement is opt-in, read the note below | [docker/README §2](../docker/README.md) + notes below |
 
 ## VPS, single-tenant — one user, one token, reachable from anywhere
 
-The single-tenant server has **no authentication of its own** and holds your
-`FIGMA_TOKEN`. It deliberately binds `127.0.0.1`, so nothing is exposed by default.
-Anyone who can reach `/mcp` can read every Figma file your token can — so the whole
-question of a VPS deployment is *how you gate access*. Two safe answers:
+The single-tenant server has **no authentication of its own** and holds your `FIGMA_TOKEN`. It
+binds `127.0.0.1` by default (`BIND_HOST`), and refuses `/mcp` requests carrying a browser `Origin`
+it does not recognise, so a fresh install is reachable only from the box it runs on. Anyone who can
+reach `/mcp` can read every Figma file your token can - so the whole question of a VPS deployment
+is *how you gate access*. Two safe answers:
+
+> The loopback default is IPv4-only. A client configured with `http://localhost:3846/mcp` on a host
+> whose resolver returns `::1` first will not connect. Fix it on the client: point it at
+> `http://127.0.0.1:3846/mcp`, the form every example in this repository uses.
+>
+> `BIND_HOST=::1` is not the same fix. One listen cannot be both loopback-only and dual-stack, so
+> it does not add IPv6 - it swaps which clients break, and `http://127.0.0.1:3846/mcp` then gets
+> `ECONNREFUSED`. Never set it on the container either: `/health` reports `loopback: true` for
+> `::1`, and the image healthcheck exits 0 only on `"loopback":false`, so the container would go
+> permanently unhealthy. The image sets `BIND_HOST=0.0.0.0` on purpose - the compose port mapping
+> is what keeps it host-local.
 
 ### Option A — SSH tunnel (no domain, no TLS setup, 5 minutes)
 
@@ -24,7 +36,7 @@ Run the server on the VPS exactly like the local path:
 ```bash
 git clone https://github.com/zylomeara/framefit.git && cd framefit/docker
 FIGMA_TOKEN=figd_your_token docker compose --profile local up -d --build
-curl -s http://127.0.0.1:3846/health   # -> {"status":"ok"}
+curl -s http://127.0.0.1:3846/health   # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
 
 On your workstation, forward the port over SSH:
@@ -54,15 +66,41 @@ caddy hash-password   # enter a password, copy the bcrypt hash
 
 ```caddyfile
 mcp.your-domain.com {
-    basic_auth {
-        you <bcrypt-hash-from-above>
-    }
-    reverse_proxy 127.0.0.1:3846
+	log {
+		output file /var/log/caddy/framefit.log
+		format json
+	}
+
+	# Exempt on purpose: the browser extractor loads this script cross-origin and POSTs its
+	# capture back, and neither request can carry basic-auth credentials. The unguessable
+	# capToken minted by get_layout_spec is the credential. log_skip keeps that capToken - which
+	# travels in the URL path - out of the access log. 2MiB, not 2MB: Caddy reads 2MB as
+	# 2,000,000 bytes, below the server's own 2,097,152, and a body between the two dies at the
+	# edge as a bare 413 with no CORS header - which a browser can only report as
+	# "Failed to fetch".
+	@dom_snapshots path /api/dom-snapshots/*
+	handle @dom_snapshots {
+		log_skip
+		request_body {
+			max_size 2MiB
+		}
+		reverse_proxy 127.0.0.1:3846
+	}
+
+	handle {
+		# /health is behind the credential too. An uptime monitor just sends it:
+		# `curl -fsS -u you:<password> https://mcp.your-domain.com/health` returns 200.
+		basic_auth {
+			you <bcrypt-hash-from-above>
+		}
+		reverse_proxy 127.0.0.1:3846
+	}
 }
 ```
 
-(`Caddyfile.example` in the repo root shows the same shape as a snippet for an
-existing Caddyfile.) Two server-side settings to add in `docker/.env`:
+(`Caddyfile.example` in the repo root is the same configuration as a snippet for an existing
+Caddyfile, including the `/api/dom-snapshots/*` carve-out. Do not add `encode` to either: the MCP
+route is an SSE stream and gzip buffers it.) Two server-side settings to add in `docker/.env`:
 
 ```dotenv
 # The origin browsers and clients actually reach — used in emitted URLs
@@ -76,11 +114,25 @@ auth header:
 
 ```bash
 claude mcp add --transport http framefit https://mcp.your-domain.com/mcp \
-  --header "Authorization: Basic $(printf 'you:your-password' | base64)"
+  --header "Authorization: Basic $(printf 'you:<password>' | base64)"
 ```
 
 **Never skip the `basic_auth` block.** An unauthenticated `/mcp` behind a public
-domain is an open proxy to your Figma account.
+domain is an open proxy to your Figma account. The one exception is
+`/api/dom-snapshots/*`, which is authenticated by the per-call capability token instead - putting
+`basic_auth` in front of it breaks the in-browser capture with an opaque "Failed to fetch" and does
+not make the deployment safer. Everything else is behind the credential, `/health` included: an
+uptime monitor sends it like any other client -
+`curl -fsS -u you:<password> https://mcp.your-domain.com/health` returns 200.
+
+That carve-out is not rate-limited anywhere in this project, and a stock Caddy cannot rate-limit it
+either: `rate_limit` is a third-party module, absent from the official binary (verified on 2.11.4 -
+`caddy list-modules` lists no rate-limiting module at all). `max_size` bounds one request, not their
+rate, so an anonymous caller can keep sending unknown tokens; each costs the server a map lookup, a
+drained body it never buffers, and one log line. If that matters on your domain, put the cap outside the snippet above -
+rebuild Caddy with `xcaddy build --with github.com/mholt/caddy-ratelimit`, or add a firewall /
+fail2ban rule on the prefix - and keep the container's log rotation (`docker/docker-compose.yml`
+already caps the json-file driver at 10m x 3), which is what bounds the rejected-upload log lines.
 
 ### Cross-library design tokens (optional)
 
@@ -128,6 +180,36 @@ Honest scope notes before you pick this shape:
   `/accounts` HTTP API directly.
 - Expect assembly. If you just want *a server on a VPS for yourself*, single-tenant
   above is the right shape.
+- **Audience enforcement is opt-in, and off by default — so the realm is the blast radius.**
+  `ENFORCE_AUDIENCE` defaults to `false`. Enabling it requires a Keycloak audience mapper that
+  stamps a framefit-scoped `aud` on the portal's tokens; turn the flag on before that mapper
+  exists and every `/accounts` call 401s, which is exactly why it is not the default.
+
+  While it is off, **any valid token from that realm is accepted on `/accounts`** — the API that
+  adds and removes Figma PATs, mints CI keys and issues bridge tokens. Signature, issuer and expiry
+  are still checked; what is not checked is *who the token was minted for* — the server logs the
+  audience mismatch and serves the request anyway. So if framefit shares a realm with other
+  applications, a token minted for any one of them can drive `/accounts` as its own subject.
+  Configure the mapper, then set `ENFORCE_AUDIENCE=true`; give framefit its own realm if you cannot.
+
+  `/mcp` is a separate case and stays soft **regardless of this flag**, deliberately: hosts that
+  register as dynamic OAuth clients present a token whose `azp` framefit cannot predict, so a hard
+  check there would break legitimate connectors. A valid same-realm token therefore reaches the
+  tool surface — under that subject's own stored PAT — whichever way you set this. There is no
+  setting in this repo that changes that; realm separation is the control.
+
+  The server states which of the two it is doing, at boot, so you are not left inferring it from
+  config: under the `full` profile `docker compose logs framefit | grep mt.audience_enforcement_disabled`
+  prints the line while enforcement is off, and prints nothing once it is on. (`framefit status`
+  does *not* cover this — it reports the deployment's mode and subsystems, not this flag.)
+
+  Every admitted mismatch is logged too, one line per request:
+  `docker compose logs framefit | grep mt.jwt_audience_soft_mismatch` lists the requests that were
+  served while carrying someone else's `aud`/`azp`, and names the client they came from — that is
+  how you learn a foreign client is using your `/accounts`, or which connector's tokens `/mcp` is
+  admitting. In soft mode it is the *only* signal there is: nothing is refused, so nothing else
+  marks it. A matching token logs no line, so a quiet grep is an answer rather than an absence of
+  logging.
 
 ## Troubleshooting
 

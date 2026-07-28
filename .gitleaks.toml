@@ -13,3 +13,16 @@ useDefault = true
 [[allowlists]]
 description = "Test fixtures use fake 40-hex API/library keys"
 paths = ['''mcp-server/tests/.*\.test\.ts$''']
+
+# The documented uptime-monitor command used the placeholder `you:your-password`, which the default
+# curl-auth-user rule reads as a real credential pair. The live tree no longer contains it - the
+# page now uses the `you:<password>` form Caddyfile.example already used - but the action scans the
+# COMMITS in a push or PR, not the tree, so the commit that introduced the placeholder would still
+# fail the scan and block publication with a string that was never a credential.
+#
+# Scoped to that exact literal by REGEX rather than by path: an allowlist on docs/ would also
+# silence a real credential pasted into the deployment guide, which is the single most likely place
+# for one to land.
+[[allowlists]]
+description = "Documented placeholder credential, never a real one"
+regexes = ['''^you:your-password$''']

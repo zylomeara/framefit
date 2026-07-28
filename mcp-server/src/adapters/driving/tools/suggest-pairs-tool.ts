@@ -28,27 +28,31 @@ export const InputSchema = {
   // dom_ref is the alternative; the handler enforces exactly-one (flat-shape input has no per-item
   // z.object to hang a superRefine on, unlike compare's PairSchema).
   dom_snapshot: DomSnapshotSchema.optional().describe(
-    'DomSnapshot object from the canonical extractor (get_layout_spec include_extractor:true) — the WHOLE ' +
+    'DomSnapshot object from the canonical extractor (get_layout_spec include_extractor:true) - the WHOLE ' +
     'frame-root subtree (root selector), carrying per-node path. Pass the OBJECT (same shape as ' +
     'compare_node_to_dom.dom), not a stringified JSON. Pass exactly one of dom_snapshot | dom_ref.'),
   dom_ref: DomRefSchema.optional().describe(
     'Reference to a browser-uploaded snapshot (get_layout_spec upload_url flow) instead of inlining the ' +
-    'whole-frame DOM JSON — moves a large snapshot off the MCP wire onto the direct upload. ref = the ' +
+    'whole-frame DOM JSON - moves a large snapshot off the MCP wire onto the direct upload. ref = the ' +
     'snapshot_ref from the extractor POST; selector must match byte-for-byte the root selector passed to the ' +
     'extractor, OR index addresses it by position. Pass exactly one of dom_snapshot | dom_ref.'),
-  max_depth: z.number().int().min(1).optional().describe('Bound matching depth (large frames — pair a subtree at a time)' +
-    ' (levels 0..max_depth inclusive are processed — effectively ≈ max_depth+1 levels of nesting under the frame root)'),
+  max_depth: z.number().int().min(1).optional().describe('Bound matching depth (large frames - pair a subtree at a time)' +
+    ' (levels 0..max_depth inclusive are processed - effectively about max_depth+1 levels of nesting under the frame root)'),
   figma_token: z.string().min(1).optional(),
 };
 
 export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): void {
-  server.tool('suggest_pairs',
-    'Propose Figma-node ↔ DOM-element pairs (by text/size/order/role) with confidence + ambiguous flags + honest ' +
-    'unmatched, so you review proposed pairs instead of hand-building them (compound I…;… ids come dug out of the ' +
-    'frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to ' +
-    'compare_node_to_dom. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
-    'inspected — the top is reported honestly in unmatched_figma/unmatched_dom instead, and you drill in by hand.',
-    InputSchema,
+  server.registerTool(
+    'suggest_pairs',
+    {
+      description: 'Propose Figma-node <-> DOM-element pairs (by text/size/order/role) with confidence + ambiguous flags + honest ' +
+      'unmatched, so you review proposed pairs instead of hand-building them (compound I...;... ids come dug out of the ' +
+      'frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to ' +
+      'compare_node_to_dom. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
+      'inspected - the top is reported honestly in unmatched_figma/unmatched_dom instead, and you drill in by hand.',
+      inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
+    },
     async (args) => runTool('suggest_pairs', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
       const parsed = parseFileKey(args.file);
       if (!parsed.ok) throw new Error(parsed.error);

@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetDesignContextTool } from '../../src/adapters/driving/tools/get-design-context-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -26,9 +26,14 @@ const variables = { meta: {
 
 // handlerFor: copied from get-design-context-modes.test.ts — accepts extraDeps (incl.
 // toolTimeBudgetMs) and an optional coverage-capable getDocumentRaw (withDiscovery).
+// get_design_context's handler takes the MCP `extra` (progressToken + sendNotification) as a
+// SECOND argument, for its heartbeat notifications. The shared fake's call() models args only, so
+// this harness reaches the recorded registration directly rather than widening the shared fake
+// into a configuration surface for its one caller.
+type HandlerWithExtra = (a: any, extra?: any) => Promise<any>;
+
 function handlerFor(docArg: unknown, varsArg: unknown, rootId: string, extraDeps: Partial<ToolDeps> = {}, withDiscovery = false) {
-  const handlers: Record<string, (a: any, extra?: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any, extra?: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, get } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getNodesRaw: async () => ({ nodes: { [rootId]: { document: docArg } } }),
@@ -43,20 +48,19 @@ function handlerFor(docArg: unknown, varsArg: unknown, rootId: string, extraDeps
     ...extraDeps,
   };
   registerGetDesignContextTool(server, deps);
-  return handlers.get_design_context;
+  return get('get_design_context')!.handler as unknown as HandlerWithExtra;
 }
 
 // handlerForApi — small variant of handlerFor taking a raw fake api object.
 function handlerForApi(apiObj: Record<string, unknown>, extraDeps: Partial<ToolDeps> = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => apiObj as unknown as FigmaApi,
     defaultToken: 'figd_x', logger, maxResultChars: 40000,
     ...extraDeps,
   };
   registerGetDesignContextTool(server, deps);
-  return handlers.get_design_context;
+  return (a: any): Promise<any> => call('get_design_context', a);
 }
 
 describe('get_design_context time budget', () => {
@@ -252,13 +256,12 @@ describe('get_design_context time budget', () => {
       getComponent: async (key: string) => ({ key, file_key: 'LIB', node_id: '7:7', name: 'Button' }),
       getFileComponentSets: async () => [],
     };
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     registerGetDesignContextTool(server, {
       buildApi: (_t: string, timeoutMs?: number) => { caps.push(timeoutMs); return apiObj as unknown as FigmaApi; },
       defaultToken: 'figd_x', logger, maxResultChars: 40000, toolTimeBudgetMs: 90_000,
     } as ToolDeps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: 'F', include_component_docs: true, include_screenshot: true });
+    const res = await call('get_design_context', { file: 'abc', node_id: 'F', include_component_docs: true, include_screenshot: true });
     expect(res.isError).toBeFalsy();
     expect(caps.length).toBe(4);                                      // core, variables, docs/CC, screenshot
     for (const c of caps) {

@@ -83,8 +83,10 @@ honestly unresolved. The first graph-needing call (`get_variables`, `get_design_
 design system (measured ~11 libraries / 7000+ variables), one-time per process; later calls are
 fast and the call is not hung.
 
-> An npm package is on the way — it will replace the clone-and-build step with a one-line
-> `claude mcp add framefit -- npx -y framefit`. Until it is published, use the path form above.
+> An npm package is on the way - it will replace the clone-and-build step with a one-line
+> `claude mcp add framefit --env MCP_TRANSPORT=stdio -- npx -y framefit`. The transport flag is
+> not optional: the server defaults to the HTTP transport, which is the shape the container
+> deployments rely on. Until the package is published, use the path form above.
 
 ### Tier 2 — Docker (single-tenant or the production stack)
 
@@ -94,7 +96,7 @@ external Keycloak):
 ```bash
 cd docker
 docker compose --profile local up -d --build   # single-tenant HTTP on 127.0.0.1:3846
-curl -s http://127.0.0.1:3846/health            # -> {"status":"ok"}
+curl -s http://127.0.0.1:3846/health            # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
 
 The compose file is profile-driven (`local` / `full`); prerequisites and production notes are in
@@ -110,7 +112,7 @@ reverse proxy — the server has no auth of its own) is covered in [`docs/deploy
 | --- | --- | --- |
 | **Design QA** | `get_layout_spec`, `suggest_pairs`, `compare_node_to_dom`, `find_breakpoint_variant`, `get_view` | [design-qa.md](docs/tools/design-qa.md) |
 | **Navigation & content** | `get_metadata`, `find_nodes`, `get_node_ancestry`, `get_text_styles`, `compare_breakpoints`, `get_screenshot`, `export_assets`, `get_design_context` | [navigation.md](docs/tools/navigation.md) |
-| **Comments & review** | `get_comments`, `summarize_comments`, `find_threads`, `post_comment`, `reply_to_comment`, `resolve_comment`, `get_review_board`, `get_pin_detail` | [comments-review.md](docs/tools/comments-review.md) |
+| **Comments & review** | `get_comments`, `summarize_comments`, `find_threads`, `post_comment`, `reply_to_comment`, `delete_comment`, `get_review_board`, `get_pin_detail` | [comments-review.md](docs/tools/comments-review.md) |
 | **Design system** | `get_variables`, `search_design_system`, `get_libraries`, `get_code_connect_map`, `get_figjam` | [design-system.md](docs/tools/design-system.md) |
 
 ## Using with AI agents

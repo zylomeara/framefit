@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
-import type { Server } from 'node:http';
+import { startTestServer, type TestHttpServer } from '../helpers/http-test-server.js';
 import { createAccountsRouter, type AccountsApiDeps } from '../../src/multi-tenant/accounts-api.js';
 
 // ---- helpers ---------------------------------------------------------------
 
-let server: Server; let base: string;
+let server: TestHttpServer;
 
 function makeDepsWithBridgeToken(): AccountsApiDeps {
   return {
@@ -43,7 +43,7 @@ function makeApp(deps: AccountsApiDeps) {
   return app;
 }
 
-afterEach(() => new Promise<void>((r) => server.close(() => r())));
+afterEach(() => server.close());
 
 // ---- tests -----------------------------------------------------------------
 
@@ -51,13 +51,11 @@ describe('accounts bridge-token', () => {
   describe('when bridgeToken dep is present', () => {
     beforeEach(async () => {
       const app = makeApp(makeDepsWithBridgeToken());
-      await new Promise<void>((r) => { server = app.listen(0, () => r()); });
-      const a = server.address();
-      base = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
+      server = await startTestServer(app);
     });
 
     it('POST /accounts/bridge-token returns 201 with token and scope', async () => {
-      const res = await fetch(`${base}/accounts/bridge-token`, { method: 'POST' });
+      const res = await fetch(`${server.base}/accounts/bridge-token`, { method: 'POST' });
       expect(res.status).toBe(201);
       const body = await res.json() as { token: string; scope: string };
       expect(body.token).toBe('tok-for-u1');
@@ -68,13 +66,11 @@ describe('accounts bridge-token', () => {
   describe('when bridgeToken dep is absent', () => {
     beforeEach(async () => {
       const app = makeApp(makeDepsWithoutBridgeToken());
-      await new Promise<void>((r) => { server = app.listen(0, () => r()); });
-      const a = server.address();
-      base = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
+      server = await startTestServer(app);
     });
 
     it('POST /accounts/bridge-token returns 404', async () => {
-      const res = await fetch(`${base}/accounts/bridge-token`, { method: 'POST' });
+      const res = await fetch(`${server.base}/accounts/bridge-token`, { method: 'POST' });
       expect(res.status).toBe(404);
     });
   });

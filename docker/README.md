@@ -18,7 +18,7 @@ Everything a contributor needs to see the server serve, with only Docker install
 ```bash
 cd docker
 docker compose --profile local up -d --build
-curl -s http://127.0.0.1:3846/health          # -> {"status":"ok"}
+curl -s http://127.0.0.1:3846/health          # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 # … MCP over HTTP at http://127.0.0.1:3846/mcp
 docker compose --profile local down
 ```

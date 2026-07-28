@@ -170,10 +170,16 @@ Whether Figma itself accepts the credentials this instance holds. The only check
 
 - **ok**: single-tenant, `FIGMA_TOKEN` accepted (`detail` carries the account handle); multi-tenant,
   every probed stored PAT accepted (`detail` reports `accepted: "k of n"`).
-- **fail**: Figma refused, reported with the HTTP status and, in multi-tenant, per user. A `429` is
-  reported as a `429`, not translated into "rejected".
+- **fail**: Figma refused, reported with the HTTP status **and Figma's own reason when it gave a
+  readable one** (`Figma refused the token (HTTP 403): Invalid token.`) - the status code alone
+  cannot tell a revoked token from an expired or mistyped one, and in multi-tenant the reason is
+  reported per user. A `429` is reported as a `429`, not translated into "rejected", and it does not
+  get the token-expiry sentence: only `401` and `403` mean the credential itself was refused.
 - **skipped**: the probe is off (the default in multi-tenant; `--no-probe` in single-tenant); no
-  `FIGMA_TOKEN` in single-tenant; or, in multi-tenant, no `DATABASE_URL`, no handle, no
+  `FIGMA_TOKEN` in single-tenant - which is **not a verdict that the token is fine**, because on
+  stdio the token lives in your MCP host's env block (`claude mcp add --env FIGMA_TOKEN=...`) and
+  never in your shell, so a bare run of this command skips the one check you came for; re-run it
+  with `FIGMA_TOKEN` set to the value your host passes. Or, in multi-tenant, no `DATABASE_URL`, no handle, no
   `ENCRYPTION_KEY`, no registered users, or no user with a default PAT to probe. That last case is a
   skip and not a green "0 of 0": nothing was called, so nothing was proven. The `tokens` check is where
   "nobody has a default" becomes a hard failure.
@@ -189,9 +195,16 @@ Exactly one JSON document on stdout. Fields:
 - `generated_at` - ISO 8601 UTC timestamp of when the report was built.
 - `version` - the framefit version, the same literal the MCP handshake reports
   (`src/infrastructure/version.ts`; the stdio smoke script cross-checks the two).
-- `mode` - `{ multi_tenant, transport, transport_source }`: the EFFECTIVE mode, the raw
-  `MCP_TRANSPORT` (`null` when unset), and `transport_source` = `"env"` or `"unset"`, because hosts set
-  the transport per launch and "unset" is a different fact than any particular value.
+- `mode` - `{ multi_tenant, transport, transport_source, bind_host, bind_host_source }`: the
+  EFFECTIVE mode, the raw `MCP_TRANSPORT` (`null` when unset), and `transport_source` = `"env"` or
+  `"unset"`, because hosts set the transport per launch and "unset" is a different fact than any
+  particular value.
+  - `bind_host` / `bind_host_source` - the interface a server started from THIS environment would
+    listen on (`BIND_HOST`, default `127.0.0.1`), and whether that came from the environment
+    (`"env"`) or from the schema default (`"default"`). An empty `BIND_HOST=` counts as
+    `"default"`, because the config preprocess turns it back into loopback. Derived, not observed:
+    this command does not connect to a running server, so the field says which interface would be
+    bound, not which one currently is.
 - `scope` - `{ hostname, pid, env_source }`: which process answered. `env_source` is always
   `"process"`.
 - `key_fingerprint` - the first 8 hex characters of sha256 over the DECODED `ENCRYPTION_KEY` bytes, or

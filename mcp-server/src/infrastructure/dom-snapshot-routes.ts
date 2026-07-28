@@ -11,23 +11,40 @@
 //   1) CORS FIRST — every response (including error responses further down
 //      the chain) must carry ACAO:*, or a browser reports a bare "Failed to
 //      fetch" instead of surfacing the real HTTP status.
-//   2) express.text({ type: '*/*', limit: '2mb' }) — accepts both text/plain
+//   2) the capToken gate, POST-only, PINNED BETWEEN CORS AND THE PARSER. Both
+//      ends of that sandwich are requirements, not preferences:
+//        - AFTER CORS, because the commonest 404 here is an aged-out token and
+//          the page must be able to READ that 404. A gate above the CORS
+//          middleware turns the one error this route exists to explain into
+//          the bare "Failed to fetch" the design avoids.
+//        - BEFORE express.text, because the capToken lives in the URL PATH.
+//          Nothing about authenticating this request needs the body, so an
+//          anonymous caller must not get to make the server buffer up to 2mb
+//          first. It also makes the 404 unconditional: with the gate below the
+//          parser, a >2mb body from an unknown token was answered 413 by (4)
+//          and never reached the token check at all.
+//   3) express.text({ type: '*/*', limit: '2mb' }) - accepts both text/plain
 //      (the in-page extractor) and application/json (curl/manual testing).
-//   3) the POST handler.
-//   4) a router-level error middleware: express.text's PayloadTooLargeError
+//   4) the POST handler.
+//   5) a router-level error middleware: express.text's PayloadTooLargeError
 //      (err.type === 'entity.too.large') maps to a clean 413; anything else
 //      is handed to next(err) so the host server's own catch-all still owns
 //      truly unexpected failures (without this, the multi-tenant server's
-//      catch-all at server.ts turns oversize bodies into a bare 500).
+//      catch-all at server.ts turns oversize bodies into a bare 500). Still
+//      reached by an AUTHENTICATED oversize POST - the gate at (2) shortens
+//      the path for strangers, it does not lift the size limit for anyone.
 //
-// The core is the pure, dependency-injected `handleUpload` — JSON.parse ->
-// per-element DomSnapshotSchema.safeParse -> store.upload -> StoreError-to-HTTP
-// mapping — with no Express types in its signature, so it's unit-testable
-// without supertest (not a devDep here, and the brief says not to add it).
+// The core is the pure, dependency-injected `handleUpload`: store.hasToken ->
+// JSON.parse -> element-count cap -> per-element DomSnapshotSchema.safeParse ->
+// store.upload -> StoreError-to-HTTP mapping, with no Express types in its
+// signature, so it's unit-testable without supertest (not a devDep here, and
+// the brief says not to add it). That order is load-bearing, not stylistic:
+// each step is strictly more expensive than the one before it, and only the
+// first one authenticates the caller.
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import express from 'express';
 import type { Logger } from 'pino';
-import { DomSnapshotStore, StoreError } from './dom-snapshot-store.js';
+import { DomSnapshotStore, StoreError, MAX_SNAPSHOTS_PER_POST } from './dom-snapshot-store.js';
 import { DomSnapshotSchema, DOM_SNAPSHOT_SCHEMA_VERSION } from '../adapters/driving/tools/dom-snapshot-schema.js';
 import { EXTRACTOR_JS } from '../adapters/driving/tools/dom-extractor.js';
 import { widthNoiseTolerance } from '../domain/layout-spec/tolerance.js';
@@ -46,11 +63,33 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
+// The ONE wording for "your capToken is no good". Emitted by the pre-parse gate below AND by the
+// StoreError arm at the bottom, from this single constant, so the two are byte-for-byte identical:
+// a caller probing for live tokens must not be able to tell which of the two answered. Also the
+// reason it says "expired or unknown" and not which - the store cannot tell them apart either
+// (hasToken sweeps expired records away before it looks).
+const UNKNOWN_TOKEN_ERROR = 'upload token expired or unknown - re-run get_layout_spec';
+
 /**
  * Pure core of the upload endpoint: no Express types, no I/O beyond the
  * injected store. Returns an HTTP-shaped result the router just writes out.
  */
 export function handleUpload(store: DomSnapshotStore, capToken: string, rawBody: string): HandleUploadResult {
+  // AUTH FIRST. Everything below this line processes attacker-supplied bytes on a route that
+  // carries no HTTP-layer credential by design: the page being measured lives at an arbitrary
+  // origin, so the capToken in the path is the only thing standing in for one (see the header
+  // above, and the ACAO:* the router sets). Measured on the previous order: a 400KB body of
+  // 50,000 objects against a bogus token cost ~710ms of event loop and produced a 2.1MB
+  // per-element error response, all of it before the token was looked at.
+  //
+  // Over HTTP this is the SECOND gate: the router runs the same check ahead of the body parser,
+  // which is what actually spares the server the read. This one stays because handleUpload is a
+  // public pure function with its own contract (a direct caller gets the same 404), and because
+  // it keeps the check next to the work it guards rather than one file away.
+  if (!store.hasToken(capToken)) {
+    return { status: 404, body: { error: UNKNOWN_TOKEN_ERROR } };
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody);
@@ -62,6 +101,16 @@ export function handleUpload(store: DomSnapshotStore, capToken: string, rawBody:
     return { status: 400, body: { error: 'body must be { snapshots: [...] }' } };
   }
   const snapshots: unknown[] = parsed.snapshots;
+
+  // COUNT CAP BEFORE PER-ELEMENT VALIDATION. 50,000 tiny objects must cost one length read, not
+  // 50,000 zod safeParse calls plus a details array with 50,000 entries in the response.
+  // store.upload enforces the same constant and stays the authority.
+  if (snapshots.length > MAX_SNAPSHOTS_PER_POST) {
+    return {
+      status: 413,
+      body: { error: `at most ${MAX_SNAPSHOTS_PER_POST} snapshots per POST - send fewer per POST; upload_url accepts multiple POSTs under one capToken` },
+    };
+  }
 
   const details: { index: number; message: string }[] = [];
   for (let i = 0; i < snapshots.length; i++) {
@@ -108,8 +157,11 @@ export function handleUpload(store: DomSnapshotStore, capToken: string, rawBody:
   } catch (err) {
     if (err instanceof StoreError) {
       switch (err.code) {
+        // Unreachable in practice now that hasToken gates the top of this function - kept because
+        // the store is the authority on its own tokens, and a token that expires between the gate
+        // and this call must still get the same answer, not a 500.
         case 'unknown_token':
-          return { status: 404, body: { error: 'upload token expired or unknown — re-run get_layout_spec' } };
+          return { status: 404, body: { error: UNKNOWN_TOKEN_ERROR } };
         case 'too_many':
         case 'store_full':
           return { status: 413, body: { error: err.message } };
@@ -183,10 +235,35 @@ export function createDomSnapshotRoutes(deps: DomSnapshotRoutesDeps): Router {
     res.status(r.status).set('Content-Type', r.contentType).set('Cache-Control', r.cacheControl).send(r.body);
   });
 
-  // (2) text/plain-or-anything body parser, capped at 2mb.
+  // (2) capToken gate - the real one, ahead of the body parser. Route-scoped to POST so
+  // GET /extractor.js above is untouched; `next()` falls through to the parser and the handler
+  // below for a live token. The credential is the path segment, so this costs a Map lookup and
+  // reads none of the body.
+  router.post('/:capToken', (req: Request, res: Response, next: NextFunction) => {
+    if (store.hasToken(req.params.capToken)) {
+      next();
+      return;
+    }
+    // Prefix-only, same discipline as the handler's log line: the capToken is a write-only
+    // bearer credential. `declaredBytes` is the client's own Content-Length claim, NOT a
+    // measurement - we deliberately never read the body on this path.
+    logger.info(
+      { capTokenPrefix: req.params.capToken.slice(0, 8), declaredBytes: req.headers['content-length'] },
+      'dom_snapshot.upload_rejected',
+    );
+    res.status(404).json({ error: UNKNOWN_TOKEN_ERROR });
+    // Drain, do not destroy. The client is very likely still writing the body it was told
+    // nothing about yet; discarding the remainder lets it finish and READ the 404. Tearing the
+    // socket down instead surfaces in a browser as a network error, i.e. exactly the bare
+    // "Failed to fetch" the CORS-first rule above exists to prevent. resume() discards without
+    // buffering, so no snapshot bytes are retained.
+    req.resume();
+  });
+
+  // (3) text/plain-or-anything body parser, capped at 2mb.
   router.use(express.text({ type: '*/*', limit: '2mb' }));
 
-  // (3) POST handler.
+  // (4) POST handler.
   router.post('/:capToken', (req: Request, res: Response) => {
     const capToken = req.params.capToken;
     const rawBody = typeof req.body === 'string' ? req.body : '';
@@ -204,7 +281,7 @@ export function createDomSnapshotRoutes(deps: DomSnapshotRoutesDeps): Router {
     res.status(result.status).json(result.body);
   });
 
-  // (4) error middleware — MUST stay last so Express recognizes it (4-arity)
+  // (5) error middleware - MUST stay last so Express recognizes it (4-arity)
   // and routes express.text's PayloadTooLargeError here instead of falling
   // through to the host server's generic catch-all.
   router.use(domSnapshotErrorMiddleware);

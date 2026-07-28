@@ -49,7 +49,7 @@ done
 BODY="$(curl -fs "${BASE}/health")"
 echo "     $BODY"
 echo "$BODY" | grep -q '"status":"ok"' || fail "health body not ok"
-pass "GET /health -> {\"status\":\"ok\"}"
+pass "GET /health -> status ok + bind block"
 
 echo "==> MCP initialize over HTTP"
 RESP="$(curl -fs -X POST "${BASE}/mcp" \

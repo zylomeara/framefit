@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetDesignContextTool } from '../../src/adapters/driving/tools/get-design-context-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { SnapshotHit } from '../../src/multi-tenant/variable-snapshot-db.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -26,8 +26,7 @@ function harness(opts: {
   snapshot?: (ids: string[]) => Promise<Map<string, SnapshotHit>>;
   getVariablesLocal?: FigmaApi['getVariablesLocal'];
 } = {}) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -44,7 +43,7 @@ function harness(opts: {
     ...(opts.snapshot ? { variableSnapshot: { lookup: opts.snapshot } } : {}),
   };
   registerGetDesignContextTool(server, deps);
-  return handlers.get_design_context;
+  return (a: any): Promise<any> => call('get_design_context', a);
 }
 
 describe('get_design_context cross-library snapshot resolution', () => {
@@ -84,8 +83,7 @@ describe('get_design_context cross-library snapshot resolution', () => {
   it('prefers the LOCAL token name over the snapshot hex when the binding resolves locally', async () => {
     // Local index now DOES name the bound id (V:1); snapshot is present but must not win.
     const localFrame = { ...frame, boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } } };
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -101,7 +99,7 @@ describe('get_design_context cross-library snapshot resolution', () => {
       variableSnapshot: { lookup: async () => new Map([['V:1', { value: '#00ff00', resolved_type: 'COLOR', name: 'lib/green' }]]) },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4 });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4 });
     const text = res.content[0].text as string;
     expect(text).toContain('color/brand/primary');  // local name wins
     expect(text).not.toContain('#00ff00');           // snapshot hex must not appear
@@ -113,8 +111,7 @@ describe('get_design_context cross-library graph resolution', () => {
     // variableGraph is present and knows EXT_KEY → '#abcdef'; snapshot is also present
     // but must NOT be called (graph wins).
     const snapshotCalled: string[][] = [];
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -131,7 +128,7 @@ describe('get_design_context cross-library graph resolution', () => {
       variableSnapshot: { lookup: async (keys) => { snapshotCalled.push(keys); return new Map(); } },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4 });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4 });
     const text = res.content[0].text as string;
     expect(text).toContain('#abcdef');              // graph hex wins
     expect(text).not.toContain('#7b61f6');          // raw paint hex must NOT appear
@@ -139,8 +136,7 @@ describe('get_design_context cross-library graph resolution', () => {
   });
 
   it('falls back to raw paint hex when the graph has no hit for the external key', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -156,7 +152,7 @@ describe('get_design_context cross-library graph resolution', () => {
       variableGraph: { resolve: () => undefined },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4 });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4 });
     const text = res.content[0].text as string;
     expect(text).toContain('#7b61f6');              // raw paint hex fallback
   });
@@ -177,8 +173,7 @@ describe('get_design_context cross-library graph resolution', () => {
       },
     };
     const snapshotCalls: string[][] = [];
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -195,7 +190,7 @@ describe('get_design_context cross-library graph resolution', () => {
       variableSnapshot: { lookup: async (keys) => { snapshotCalls.push(keys); return new Map([[NEW_KEY, { value: '#cccccc', resolved_type: 'COLOR', name: 'lib/stroke' }]]); } },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4 });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4 });
     const text = res.content[0].text as string;
     // graph hex for fills (EXT_KEY resolved by graph)
     expect(text).toContain('#abcdef');
@@ -209,8 +204,7 @@ describe('get_design_context cross-library graph resolution', () => {
 
   it('snapshot path still works when no variableGraph is present (existing behaviour preserved)', async () => {
     const seen: string[][] = [];
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -226,7 +220,7 @@ describe('get_design_context cross-library graph resolution', () => {
       variableSnapshot: { lookup: async (keys) => { seen.push(keys); return new Map([[EXT_KEY, { value: '#00ff00', resolved_type: 'COLOR', name: 'lib/green' }]]); } },
     };
     registerGetDesignContextTool(server, deps);
-    const res = await handlers.get_design_context({ file: 'abc', node_id: '1-5', depth: 4 });
+    const res = await call('get_design_context', { file: 'abc', node_id: '1-5', depth: 4 });
     const text = res.content[0].text as string;
     expect(text).toContain('#00ff00');              // snapshot hex wins
     expect(text).not.toContain('#7b61f6');          // raw paint must NOT appear

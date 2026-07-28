@@ -6,7 +6,7 @@ import { getCommentsUseCase, clampToBudget, computeWarnings } from '../../../app
 import { formatMarkdown } from '../../../domain/format-markdown.js';
 import type { Thread } from '../../../domain/types.js';
 import { FilterSchema, toCriteria } from './shared-schemas.js';
-import { runTool, jsonResult, textResult } from './shared-error-handler.js';
+import { runTool, jsonResult, textResult, type ReadOnlyGate } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
 
 export type ToolDeps = {
@@ -50,8 +50,11 @@ export type ToolDeps = {
     // gate ancestor discovery precisely; when absent, callers fall back to `resolve().modesByName`.
     isMultiMode?(key: string): boolean;
   };
-  /** Multi-tenant write gate: resolves the user's read_only flag per request. Undefined → writes always allowed (single-tenant/stdio). */
-  readOnly?: { isReadOnly: () => Promise<boolean> };
+  /** Write gate. Multi-tenant resolves the user's read_only flag per request; single-tenant sets a
+   * constant gate when FRAMEFIT_READ_ONLY=true (buildToolDeps). Undefined → no read-only mode was
+   * configured, so writes are allowed. Carries its own remediation sentence because the two modes
+   * have different answers — see ReadOnlyGate. */
+  readOnly?: ReadOnlyGate;
   /** Multi-tenant: list the user's registered design-system team ids — the fallback for search_design_system when no team_id is given. Undefined → single-tenant/stdio. */
   registeredTeams?: { list(): Promise<string[]> };
   /** Multi-tenant: is this fileKey a registered variable-library file (library_files)? Drives the
@@ -72,17 +75,23 @@ export type ToolDeps = {
 const InputSchema = {
   ...FilterSchema,
   as_markdown: z.boolean().default(true).describe('Return markdown (default) vs structured JSON'),
-  node_depth: z.number().int().min(0).max(10).default(0).describe('Figma /nodes depth for fallback name resolution — 0 = name only (fast)'),
+  node_depth: z.number().int().min(0).max(10).default(0).describe('Figma /nodes depth for fallback name resolution - 0 = name only (fast)'),
   limit: z.number().int().min(1).max(200).default(50).describe('Max threads returned'),
   offset: z.number().int().min(0).default(0).describe('Skip first N matching threads (pagination)'),
   timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-call Figma request timeout in ms (default 90000). Raise toward the 120000 max for very large files if you still hit timeouts.'),
 };
 
 export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_comments',
-    'Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. Anchors resolve to node names/pages. Use summarize_comments first on large files.',
-    InputSchema,
+    {
+      description: 'Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. Anchors resolve to node names/pages. Use summarize_comments first on large files.',
+      inputSchema: InputSchema,
+      // Advisory metadata only. MCP clients are instructed to treat annotations as untrusted, and
+      // nothing in this server reads them - the only writability enforcement here is
+      // assertWritable (shared-error-handler.ts). This is a disclosure, not a gate.
+      annotations: { readOnlyHint: true },
+    },
     async (args) =>
       runTool('get_comments', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const r = await getCommentsUseCase(deps.buildApi(token, args.timeout_ms), deps.logger, {

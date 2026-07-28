@@ -83,6 +83,10 @@ export interface FigmaApi {
   postComment(fileKey: string, input: { message: string }): Promise<RawComment>;
   /** POST /v1/files/:key/comments with comment_id — reply under an existing thread. */
   replyComment(fileKey: string, commentId: string, input: { message: string }): Promise<RawComment>;
-  /** DELETE /v1/files/:key/comments/:id — remove (resolve) a comment/thread. Resolves on 2xx. */
-  resolveComment(fileKey: string, commentId: string): Promise<void>;
+  /**
+   * DELETE /v1/files/:key/comments/:id - permanently delete a comment. Figma has no endpoint that
+   * marks a thread resolved, so there is no "resolve" here to name; only the comment's author may
+   * delete it, and nothing restores it. Resolves on 2xx.
+   */
+  deleteComment(fileKey: string, commentId: string): Promise<void>;
 }

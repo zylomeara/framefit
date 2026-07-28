@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetVariablesTool } from '../../src/adapters/driving/tools/get-variables-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
@@ -8,12 +7,12 @@ import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-too
 import { CachingFigmaApiAdapter, type ReadCaches } from '../../src/adapters/driven/caching-figma-api.js';
 import { FileStructureCache } from '../../src/infrastructure/file-structure-cache.js';
 import { TtlCache } from '../../src/infrastructure/node-cache.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
 function harness(getVariablesLocal: FigmaApi['getVariablesLocal'], maxResultChars?: number) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -24,7 +23,7 @@ function harness(getVariablesLocal: FigmaApi['getVariablesLocal'], maxResultChar
     defaultToken: 'figd_x', logger, maxResultChars,
   };
   registerGetVariablesTool(server, deps);
-  return handlers.get_variables;
+  return (a: any): Promise<any> => call('get_variables', a);
 }
 
 describe('get_variables tool', () => {
@@ -38,11 +37,24 @@ describe('get_variables tool', () => {
     expect(res.content[0].text).toContain('16');
   });
 
-  it('maps a forbidden (non-Enterprise) error to a clear hint', async () => {
-    const run = harness(async () => { throw new FigmaApiError('forbidden', 403, 'no'); });
+  // REWRITTEN, not merely re-worded. The old row asserted /Enterprise/i on a 403 whose fixture
+  // carried the message 'no' - i.e. it pinned this tool's habit of REPLACING whatever Figma said
+  // with one fixed cause. Against the live body for this endpoint
+  // ({"status":403,"error":true,"message":"Invalid token"}) that assertion was green over a message
+  // telling a user with an expired PAT to buy a subscription. The contract now is: forward the
+  // mapped message, add the scope THIS endpoint needs, and name a plan only when the body does.
+  it('a forbidden error forwards the mapped message and never invents a plan cause', async () => {
+    const run = harness(async () => {
+      throw new FigmaApiError('forbidden', 403,
+        'Figma rejected the token (403). Figma\'s response said: "Invalid token".', undefined, 'Invalid token');
+    });
     const res = await run({ file: 'abc' });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/Enterprise/i);
+    const text = res.content[0].text as string;
+    expect(text).toContain('Invalid token');
+    expect(text).toContain('file_variables:read');
+    expect(text).not.toMatch(/Enterprise/i);
+    expect(text).not.toMatch(/\bplan\b/i);
   });
 
   // R8-F3: OBSOLETE BY DESIGN as originally written — that version fed a hand-built
@@ -51,15 +63,23 @@ describe('get_variables tool', () => {
   // verdict and is now NEVER negative-cached (a weak token's 403 must not poison a different,
   // possibly stronger token's call) — that reconstructed shape can no longer occur in practice.
   // Rewritten to pin the real (more honest) behavior through the REAL CachingFigmaApiAdapter:
-  // every repeated 403 reaches the real API again (never served from a marker), and the
-  // Enterprise hint still fires on each real call.
-  it('a forbidden (403) is never negative-cached: the second call reaches the real API and still gets the Enterprise hint', async () => {
+  // every repeated 403 reaches the real API again (never served from a marker).
+  //
+  // REWRITTEN AGAIN here: the two /Enterprise/i assertions pinned the replacement literal rather
+  // than the never-cached property this row exists for. What must repeat identically is the
+  // FORWARDED diagnosis, so that is what is asserted now - the row still fails if the 403 starts
+  // being served from a marker, and no longer passes only while the tool blames a subscription.
+  it('a forbidden (403) is never negative-cached: the second call reaches the real API and repeats the same forwarded diagnosis', async () => {
     let calls = 0;
     const inner: FigmaApi = {
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
       getDocumentRaw: async () => ({}) as any, getNodesRaw: async () => ({ nodes: {} }),
       getImages: async () => ({ images: {} }), getFileVersion: async () => ({ version: '1', name: 'F', lastModified: 'X' }),
-      getVariablesLocal: async () => { calls++; throw new FigmaApiError('forbidden', 403, 'Figma denied variables access'); },
+      getVariablesLocal: async () => {
+        calls++;
+        throw new FigmaApiError('forbidden', 403,
+          'Figma rejected the token (403). Figma\'s response said: "Invalid token".', undefined, 'Invalid token');
+      },
     } as unknown as FigmaApi;
     const readCaches: ReadCaches = {
       nodeCache: new TtlCache(300_000), variablesCache: new TtlCache(300_000),
@@ -67,8 +87,7 @@ describe('get_variables tool', () => {
       librariesCache: new TtlCache(300_000), componentCache: new TtlCache(300_000),
       docCache: new TtlCache(300_000), componentSetsCache: new TtlCache(300_000), imageFillsCache: new TtlCache(300_000),
     };
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: (_token: string, timeoutMs?: number) =>
         new CachingFigmaApiAdapter(inner, new FileStructureCache(300_000), logger, readCaches, { timeoutMs: timeoutMs ?? 90_000 }),
@@ -76,21 +95,21 @@ describe('get_variables tool', () => {
     };
     registerGetVariablesTool(server, deps);
 
-    const res1 = await handlers.get_variables({ file: 'abc' });
+    const res1 = await call('get_variables', { file: 'abc' });
     expect(res1.isError).toBe(true);
-    expect(res1.content[0].text).toMatch(/Enterprise/i);
+    expect(res1.content[0].text).toContain('Invalid token');
+    expect(res1.content[0].text).not.toMatch(/Enterprise/i);
 
-    const res2 = await handlers.get_variables({ file: 'abc' });
+    const res2 = await call('get_variables', { file: 'abc' });
     expect(res2.isError).toBe(true);
-    expect(res2.content[0].text).toMatch(/Enterprise/i);
+    expect(res2.content[0].text).toBe(res1.content[0].text);   // identical, and never prefixed 'cached: '
 
     expect(calls).toBe(2); // never cached — both calls reached the real (fake) API
   });
 
   it('passes timeout_ms through to buildApi', async () => {
     let seenTimeout: number | undefined;
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: (_t: string, timeoutMs?: number) => {
         seenTimeout = timeoutMs;
@@ -99,13 +118,12 @@ describe('get_variables tool', () => {
       defaultToken: 'figd_x', logger,
     };
     registerGetVariablesTool(server, deps);
-    await handlers.get_variables({ file: 'abc', timeout_ms: 90000 });
+    await call('get_variables', { file: 'abc', timeout_ms: 90000 });
     expect(seenTimeout).toBe(90000);
   });
 
   it('does not fail the tool when the snapshot lookup throws (degrades to honest aliases)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
         variableCollections: { 'VC': { id: 'VC', name: 'Theme', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
@@ -115,17 +133,16 @@ describe('get_variables tool', () => {
       variableSnapshot: { lookup: async () => { throw new Error('snapshot db down'); } },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
+    const res = await call('get_variables', { file: 'abc' });
     expect(res.isError).toBeFalsy();
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(textOf(res.content[0]));
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
     expect(t.value).toBeNull();
     expect(t.alias).toBe(true);
   });
 
   it('resolves cross-library aliases via the variableSnapshot lookup (by extracted published key)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
         variableCollections: { 'VC': { id: 'VC', name: 'Theme', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
@@ -135,16 +152,15 @@ describe('get_variables tool', () => {
       variableSnapshot: { lookup: async (keys) => new Map(keys.includes('abcdef0123456789abcdef0123456789abcdef01') ? [['abcdef0123456789abcdef0123456789abcdef01', { value: '#abcdef', resolved_type: 'COLOR', name: 'primitive/blue' }]] : []) },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
-    const body = JSON.parse(res.content[0].text);
+    const res = await call('get_variables', { file: 'abc' });
+    const body = JSON.parse(textOf(res.content[0]));
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
     expect(t.value).toBe('#abcdef');
     expect(t.resolved_via).toBe('snapshot');
   });
 
   it('resolves cross-library aliases via the library graph (resolved_via:graph + source_library)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
         variableCollections: { 'VC': { id: 'VC', name: 'Theme', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
@@ -154,8 +170,8 @@ describe('get_variables tool', () => {
       variableGraph: { resolve: (k) => k === 'abcdef0123456789abcdef0123456789abcdef01' ? { value: '#abcdef', sourceLibrary: 'LIBKEY' } : undefined },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
-    const body = JSON.parse(res.content[0].text);
+    const res = await call('get_variables', { file: 'abc' });
+    const body = JSON.parse(textOf(res.content[0]));
     const t = body.tokens.find((x: any) => x.name === 'bg/accent');
     expect(t.value).toBe('#abcdef');
     expect(t.resolved_via).toBe('graph');
@@ -230,8 +246,7 @@ describe('get_variables tool', () => {
   it('graph-first + per-key snapshot fallback: graph resolves aaaa key, snapshot resolves bbbb key; lookup called with only missed keys', async () => {
     const AAAA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // 40 hex chars
     const BBBB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; // 40 hex chars
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const lookupFn = vi.fn(async (keys: string[]) => new Map(
       keys.includes(BBBB) ? [[BBBB, { value: '#bbbbbb', resolved_type: 'COLOR', name: 'lib/blue' }]] : []
     ));
@@ -248,8 +263,8 @@ describe('get_variables tool', () => {
       variableSnapshot: { lookup: lookupFn },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
-    const body = JSON.parse(res.content[0].text);
+    const res = await call('get_variables', { file: 'abc' });
+    const body = JSON.parse(textOf(res.content[0]));
     const ta = body.tokens.find((x: any) => x.name === 'color/a');
     const tb = body.tokens.find((x: any) => x.name === 'color/b');
     // graph-resolved token
@@ -266,8 +281,7 @@ describe('get_variables tool', () => {
   });
 
   it('node_id mode returns only the variables the node subtree references', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getVariablesLocal: async () => ({ meta: {
@@ -282,8 +296,8 @@ describe('get_variables tool', () => {
       defaultToken: 'figd_x', logger,
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc', node_id: '1-5' });
-    const body = JSON.parse(res.content[0].text);
+    const res = await call('get_variables', { file: 'abc', node_id: '1-5' });
+    const body = JSON.parse(textOf(res.content[0]));
     expect(body.tokens.map((x: any) => x.name)).toEqual(['used/space']);
     expect(body.summary.total).toBe(1);
   });
@@ -299,8 +313,7 @@ describe('get_variables tool', () => {
   });
 
   it('emits modes + mode_dependent for a cross-library multi-mode token (via graph)', async () => {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const KEY = 'abcdef0123456789abcdef0123456789abcdef01';
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
@@ -314,8 +327,8 @@ describe('get_variables tool', () => {
         : undefined },
     };
     registerGetVariablesTool(server, deps);
-    const res = await handlers.get_variables({ file: 'abc' });
-    const body = JSON.parse(res.content[0].text);
+    const res = await call('get_variables', { file: 'abc' });
+    const body = JSON.parse(textOf(res.content[0]));
     const t = body.tokens.find((x: any) => x.name === 'text icon/accent');
     expect(t.mode_dependent).toBe(true);
     expect(t.modes).toEqual({ Default: '#a73afd', MonogramDark: '#8b6afb' });
@@ -348,8 +361,19 @@ describe('get_variables tool', () => {
     expect(out.returned).toBe(1);
   });
 
+  // REWRITTEN: the fixture used to be FigmaApiError('unknown_4xx', 400, 'Request too large') — a
+  // shape mapStatus never produces, since its message is the whole sentence and the reason lives in
+  // upstreamReason. Constructed that way the row exercised the no-reason path while reading like a
+  // test of the too-large path, and `not.toMatch(/Figma returned 400/)` passed only because the
+  // fixture had dropped the prefix the real error carries. The real message is used now, and the
+  // no-leak assertion pins what it was for: the bracketed kind tag runTool would print.
   it('maps Figma 400 (too large) to a retry/split error — NOT timeout_ms (wrong remedy for a server-side job limit)', async () => {
-    const tool = harness(async () => { throw new FigmaApiError('unknown_4xx', 400, 'Request too large'); });
+    const tool = harness(async () => {
+      throw new FigmaApiError('unknown_4xx', 400,
+        'Figma returned 400. Figma\'s response said: "Request too large".'
+        + ' Retrying this unchanged will get the same answer; change the request or the id it names.',
+        undefined, 'Request too large');
+    });
     const res = await tool({ file: 'ABC123' } as never);
     expect(res.isError).toBe(true);
     const text = res.content[0].text as string;
@@ -358,7 +382,7 @@ describe('get_variables tool', () => {
     expect(text).toMatch(/split/i);          // structural fix if it persists
     expect(text).not.toMatch(/timeout_ms/i); // 400 is Figma's job limit; timeout_ms does NOT help
     expect(text).not.toMatch(/node_id/i);    // node-scoping still fetches /local → same 400
-    expect(text).not.toMatch(/unknown_4xx|Figma returned 400/); // no generic kind leak
+    expect(text).not.toMatch(/\[unknown_4xx\]/); // no raw kind tag
   });
 
   it('maps a request-timeout to an actionable error that DOES steer to timeout_ms', async () => {

@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetDesignContextTool } from '../../src/adapters/driving/tools/get-design-context-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -17,8 +17,7 @@ const frame = {
 };
 
 function harness(over: Partial<FigmaApi> = {}, maxResultChars = 40000) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -34,7 +33,7 @@ function harness(over: Partial<FigmaApi> = {}, maxResultChars = 40000) {
     defaultToken: 'figd_x', logger, maxResultChars,
   };
   registerGetDesignContextTool(server, deps);
-  return handlers.get_design_context;
+  return (a: any): Promise<any> => call('get_design_context', a);
 }
 
 describe('get_design_context tool', () => {
@@ -91,8 +90,7 @@ describe('get_design_context tool', () => {
       fills: [{ type: 'SOLID', color: { r: 0.141, g: 0.141, b: 0.161 } }],
       boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: EXT_ALIAS_ID } },
     };
-    const handlers2: Record<string, (a: any) => Promise<any>> = {};
-    const srv2 = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers2[n] = h; } } as unknown as McpServer;
+    const { server: srv2, call: call2 } = makeFakeMcpServer();
     const deps2: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -107,7 +105,7 @@ describe('get_design_context tool', () => {
       },
     };
     registerGetDesignContextTool(srv2, deps2);
-    const run2 = handlers2.get_design_context;
+    const run2 = (a: any): Promise<any> => call2('get_design_context', a);
     const res2 = await run2({ file: 'abc', node_id: '3-1', depth: 4 });
     const text2 = res2.content[0].text as string;
     // name contains ) — must be escaped in the CSS var() name segment.
@@ -157,8 +155,7 @@ describe('get_design_context tool', () => {
       fills: [{ type: 'SOLID', color: { r: 0.141, g: 0.141, b: 0.161 } }],
       boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: EXT_ALIAS_ID } },
     };
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const srv = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server: srv, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -173,7 +170,7 @@ describe('get_design_context tool', () => {
       },
     };
     registerGetDesignContextTool(srv, deps);
-    const run = handlers.get_design_context;
+    const run = (a: any): Promise<any> => call('get_design_context', a);
     const res = await run({ file: 'abc', node_id: '2-1', depth: 4 });
     const text = res.content[0].text as string;
     expect(text).toContain('var(--neutral/fg/primary, #242429)');
@@ -375,8 +372,7 @@ describe('get_design_context tool', () => {
       }
 
       const runScenario = (withDeeperAlias: boolean, getDocumentRaw: ReturnType<typeof vi.fn>) => {
-        const handlers: Record<string, (a: any) => Promise<any>> = {};
-        const srv = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+        const { server: srv, call } = makeFakeMcpServer();
         const deps: ToolDeps = {
           buildApi: () => ({
             getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -390,7 +386,7 @@ describe('get_design_context tool', () => {
           variableGraph: { isMultiMode: (k: string) => k === EXT_KEY, resolve: () => undefined },
         };
         registerGetDesignContextTool(srv, deps);
-        return handlers.get_design_context;
+        return (a: any): Promise<any> => call('get_design_context', a);
       };
 
       const getDocumentRawWithout = vi.fn(async () => ({ document: { id: 'page', name: 'Page', type: 'CANVAS', children: [] } }));

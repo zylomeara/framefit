@@ -130,6 +130,20 @@ export class DomSnapshotStore {
     return this.tokens.get(capToken)?.meta;
   }
 
+  /**
+   * Existence probe used by the upload router BEFORE it parses the body. The capToken is the ONLY
+   * credential on that route, so an anonymous caller must cost a Map lookup, not a JSON.parse of
+   * up to 2MB plus N schema validations. `upload` re-checks and stays the authority; this is the
+   * cheap gate in front of it, never a replacement for it.
+   *
+   * Sweeps first, like getMeta/upload/touchRecord: an expired token must answer false, so that the
+   * router cannot hand a caller an expired-vs-never-existed distinction the 404 does not admit.
+   */
+  hasToken(capToken: string): boolean {
+    this.sweepTokens();
+    return this.tokens.has(capToken);
+  }
+
   upload(capToken: string, snapshots: unknown[]): SnapshotStoreEntry {
     this.sweepTokens();
     const token = this.tokens.get(capToken);

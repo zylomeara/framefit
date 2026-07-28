@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetCommentsTool } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
@@ -9,6 +8,7 @@ import type { RawDocumentNode } from '../../src/domain/file-structure.js';
 import { buildFileStructure } from '../../src/domain/file-structure.js';
 import fixture from '../fixtures/comments-sample.json';
 import structFixture from '../fixtures/file-structure-sample.json';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 const rawComments = fixture.comments as unknown as RawComment[];
@@ -35,11 +35,10 @@ function fakeApi(): Partial<FigmaApi> {
 }
 
 function harness(maxResultChars: number) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => fakeApi() as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars };
   registerGetCommentsTool(server, deps);
-  return handlers.get_comments;
+  return (a: any): Promise<any> => call('get_comments', a);
 }
 
 const base = { file: 'ABCXYZ', include_resolved: true, include_descendants: false, node_depth: 0, limit: 50, offset: 0 };

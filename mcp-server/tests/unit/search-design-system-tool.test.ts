@@ -1,16 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerSearchDesignSystemTool } from '../../src/adapters/driving/tools/search-design-system-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
 function harness(getTeamLibrary: FigmaApi['getTeamLibrary']) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -21,7 +20,7 @@ function harness(getTeamLibrary: FigmaApi['getTeamLibrary']) {
     defaultToken: 'figd_x', logger,
   };
   registerSearchDesignSystemTool(server, deps);
-  return handlers.search_design_system;
+  return (a: any): Promise<any> => call('search_design_system', a);
 }
 
 function mk(opts: {
@@ -30,8 +29,7 @@ function mk(opts: {
   getDocumentRaw?: FigmaApi['getDocumentRaw'];
   getComponent?: FigmaApi['getComponent'];
 }) {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const base = {
     getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
     getDocumentRaw: opts.getDocumentRaw ?? (async () => ({ name: 'F', lastModified: 'X', version: '1', document: { id: '0:0', name: 'D', type: 'DOCUMENT' } })),
@@ -47,7 +45,7 @@ function mk(opts: {
     ...(opts.registeredTeams ? { registeredTeams: { list: async () => opts.registeredTeams! } } : {}),
   };
   registerSearchDesignSystemTool(server, deps);
-  return handlers.search_design_system;
+  return (a: any): Promise<any> => call('search_design_system', a);
 }
 
 describe('search_design_system tool', () => {

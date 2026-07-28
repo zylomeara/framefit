@@ -13,10 +13,13 @@ const InputSchema = {
 };
 
 export function registerSummarizeCommentsTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'summarize_comments',
-    'Aggregate statistics for a Figma file\'s comments (counts by author/anchor/node/date, top threads, mentions) using the same filters as get_comments. Returns a compact ~1-2KB summary — use this first to scope large files before fetching full threads.',
-    InputSchema,
+    {
+      description: 'Aggregate statistics for a Figma file\'s comments (counts by author/anchor/node/date, top threads, mentions) using the same filters as get_comments. Returns a compact ~1-2KB summary - use this first to scope large files before fetching full threads.',
+      inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
+    },
     async (args) =>
       runTool('summarize_comments', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const summary = await summarizeCommentsUseCase(deps.buildApi(token, args.timeout_ms), deps.logger, {

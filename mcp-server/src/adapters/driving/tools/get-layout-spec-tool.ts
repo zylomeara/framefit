@@ -18,34 +18,37 @@ const InputSchema = {
   include_extractor: z.boolean().default(false)
     .describe('Include the canonical DOM extractor script (paste it VERBATIM into chrome-devtools evaluate_script).'),
   extractor_mode: z.enum(['loader', 'inline']).default('loader')
-    .describe('loader (default): a ≤7-line thunk that fetches the versioned extractor from the server ' +
-      '(GET /api/dom-snapshots/extractor.js) instead of inlining ~90 lines of JS every call — falls back to ' +
+    .describe('loader (default): a <=7-line thunk that fetches the versioned extractor from the server ' +
+      '(GET /api/dom-snapshots/extractor.js) instead of inlining ~90 lines of JS every call - falls back to ' +
       'inline automatically if the server has no public base URL configured. inline: always return the full ' +
       'extractor script (e.g. if the loader\'s script-tag injection is CSP-blocked).'),
   max_depth: z.number().int().min(1).max(8).optional()
     .describe('Capture depth for BOTH sides (Figma projection + emitted extractor); default 4. Drill into a ' +
-      'childrenTruncated branch by re-fetching it deeper (e.g. max_depth:6) — pass the SAME max_depth to ' +
+      'childrenTruncated branch by re-fetching it deeper (e.g. max_depth:6) - pass the SAME max_depth to ' +
       'compare_node_to_dom for that pair, or the Figma/DOM sides desync.'),
   text_leaves: z.boolean().default(false)
     .describe('Instead of the full spec tree, return a flat list of leaf TEXT nodes ' +
-      '(id/name/path/text_snippet/typography) under each node_id — one call to enumerate typography ' +
-      'for pair-building/inspection, no manual frame→children→text drill. Respects max_depth; ' +
+      '(id/name/path/text_snippet/typography) under each node_id - one call to enumerate typography ' +
+      'for pair-building/inspection, no manual frame->children->text drill. Respects max_depth; ' +
       'text_leaves_truncated flags leaves beyond the depth cut (raise max_depth to reach them).'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
 export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_layout_spec',
-    'Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, ' +
-    'typography, fill hex, component identity. Lightweight (shallow fetch) — use it to pick the target frame width ' +
-    'and build node↔selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor ' +
-    '(schema-versioned with the server) as extractor_js — by default a short loader thunk that fetches the ' +
-    'canonical script from the server rather than inlining it (extractor_mode:"inline" forces the full script, ' +
-    'e.g. if a CSP blocks the loader\'s script tag); when the server is configured for it, also returns an ' +
-    'upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to ' +
-    'compare_node_to_dom instead of pasting raw snapshot JSON.',
-    InputSchema,
+    {
+      description: 'Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, ' +
+      'typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width ' +
+      'and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor ' +
+      '(schema-versioned with the server) as extractor_js - by default a short loader thunk that fetches the ' +
+      'canonical script from the server rather than inlining it (extractor_mode:"inline" forces the full script, ' +
+      'e.g. if a CSP blocks the loader\'s script tag); when the server is configured for it, also returns an ' +
+      'upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to ' +
+      'compare_node_to_dom instead of pasting raw snapshot JSON.',
+      inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
+    },
     async (args) =>
       runTool('get_layout_spec', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);

@@ -1,6 +1,7 @@
 import 'express-async-errors';
 import express from 'express';
 import type { Server } from 'node:http';
+import { isIP, type AddressInfo } from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -8,6 +9,9 @@ import type { AppConfig } from './config.js';
 import type { Logger } from './logger.js';
 import { registerAllTools } from '../adapters/driving/tools/register-all.js';
 import type { ToolDeps } from '../adapters/driving/tools/get-comments-tool.js';
+import {
+  PORTAL_READ_ONLY_REMEDIATION, SINGLE_TENANT_READ_ONLY_REMEDIATION, type ReadOnlyGate,
+} from '../adapters/driving/tools/shared-error-handler.js';
 import { CachingFigmaApiAdapter } from '../adapters/driven/caching-figma-api.js';
 import type { ReadCaches } from '../adapters/driven/caching-figma-api.js';
 import { FileStructureCache } from './file-structure-cache.js';
@@ -45,12 +49,89 @@ import { syncUser } from '../multi-tenant/library-sync.js';
 import { createEnvGraphFromConfig } from './env-graph.js';
 import type { FigmaApi } from '../ports/figma-api.js';
 import type { Request, Response, NextFunction } from 'express';
+import { allowedOriginSet, makeOriginGuard } from './origin-guard.js';
 import { SERVER_INFO } from './version.js';
 
 export type ServerHandle = {
   port: number;
+  /**
+   * The address the socket ACTUALLY bound, read back from server.address(). Exposed because the
+   * only sound assertion about a bind is over this value: a config default is true with zero
+   * wiring, and this server has two listen sites.
+   */
+  address: string;
   close: () => Promise<void>;
 };
+
+/**
+ * The host a BROWSER can dial for a server bound to `bindHost`. A wildcard is not a dialable
+ * origin, so it maps to loopback; a concrete address is used as-is, which is what makes
+ * BIND_HOST=<lan-address> produce a working upload_url without PUBLIC_BASE_URL. IPv6 literals are
+ * bracketed for URL use.
+ */
+export function dialableHost(bindHost: string): string {
+  if (bindHost === '0.0.0.0' || bindHost === '::') return '127.0.0.1';
+  return isIP(bindHost) === 6 ? `[${bindHost}]` : bindHost;
+}
+
+/**
+ * Is this bind address a loopback address - one that answers ONLY inside its own network namespace?
+ * A container bound to loopback has a dead published port, which is exactly what the image
+ * healthcheck needs to know and cannot observe from outside.
+ *
+ * This lives in application code, and it NORMALISES before it classifies, because the alternative -
+ * pattern-matching the BIND_HOST string in shell - produced three separate false-green holes in
+ * review (`127.0.0.2`, then `0:0:0:0:0:0:0:1`, then the `::ffff:` family in four more spellings).
+ * A literal list reads complete and is not: `::1` alone has at least six spellings and the v4-mapped
+ * loopback block has both a dotted and a hex rendering.
+ *
+ * The WHATWG URL parser is a total, spec-defined IPv6 canonicaliser that ships with Node: every
+ * spelling of one address collapses to exactly one string (v4-mapped renders hex, so
+ * `::ffff:127.0.0.1` and `::ffff:7f00:1` both become `::ffff:7f00:1`). Over canonical values the
+ * loopback space is finite and provable - 127.0.0.0/8, `::1`, and that block mapped into IPv6 - so
+ * the classification below is complete rather than merely long.
+ *
+ * Unparseable input answers `true` (loopback), deliberately: the only caller is a health signal,
+ * where an unknown bind must degrade to a visible alarm and never to a silent pass.
+ */
+export function isLoopbackBind(address: string): boolean {
+  let host: string;
+  try {
+    host = new URL(isIP(address) === 6 ? `http://[${address}]/` : `http://${address}/`).hostname;
+  } catch {
+    return true;
+  }
+  if (host === 'localhost' || host.startsWith('127.') || host === '[::1]') return true;
+  // 127.0.0.0/8 mapped into IPv6, in the URL parser's hex rendering (::ffff:7f00:0 ..
+  // ::ffff:7fff:ffff). Anchored at the start of the host, so a global address that merely CONTAINS
+  // those bytes - 2001:db8::ffff:7f00:1, 7f00::1, 2001:7fab::5 - is not caught.
+  return /^\[::ffff:7f[0-9a-f]{2}:/.test(host);
+}
+
+/**
+ * The `bind` block of the /health payload: the CANONICAL address the socket bound (read back from
+ * server.address(), so the kernel has already normalised the operator's spelling) plus the loopback
+ * verdict computed here. The container healthcheck reads this instead of interpreting BIND_HOST,
+ * which is what keeps address classification out of shell patterns for good.
+ */
+function healthBind(address: string): { address: string; loopback: boolean } {
+  return { address, loopback: isLoopbackBind(address) };
+}
+
+/**
+ * The port/address the socket ACTUALLY bound. There is deliberately NO fallback to config.PORT /
+ * config.BIND_HOST: an else-branch that echoes configuration reintroduces the very false green the
+ * `address` field exists to close (a handle reporting the value we ASKED for, whatever the socket
+ * did). Unreachable for a TCP listener - inside the 'listening' callback address() is an
+ * AddressInfo - so the impossible branch fails loudly instead of degrading into a config echo.
+ */
+function boundAddressInfo(server: Server): AddressInfo {
+  const address = server.address();
+  if (typeof address !== 'object' || address === null) {
+    throw new Error(`server.address() is not an AddressInfo after listening: ${JSON.stringify(address)}`);
+  }
+  return address;
+}
 
 export interface MultiTenantContext {
   env: MultiTenantEnv;
@@ -148,7 +229,7 @@ export function makeReadCaches(config: AppConfig, logger?: Logger, budget?: Cach
  *   multi-tenant http  → env.publicBaseUrl ?? `https://${env.mcpHost}` (its own deps
  *                       are built per request in startMultiTenantHttpServer).
  */
-function buildToolDeps(config: AppConfig, logger: Logger, snapshotStore?: DomSnapshotStore): ToolDeps {
+export function buildToolDeps(config: AppConfig, logger: Logger, snapshotStore?: DomSnapshotStore): ToolDeps {
   const budget = new CacheBudget(config.CACHE_MAX_BYTES, logger);
   const fileStructureCache = new FileStructureCache(config.FILE_STRUCTURE_TTL_SEC * 1000); // count-capped, no budget
   const frameStore = new FrameHydrationStore(
@@ -174,6 +255,16 @@ function buildToolDeps(config: AppConfig, logger: Logger, snapshotStore?: DomSna
   // the sync goes through the same caching adapter. Undefined (no DS_TEAM_IDS, or DS_TEAM_IDS set but
   // no token) → the field is omitted and ToolDeps is byte-for-byte the prior no-graph shape.
   const variableGraph = createEnvGraphFromConfig(config, logger, buildApi);
+  // Read-only gate, single-tenant. This is the ONE place the stdio path can acquire one: without
+  // it assertWritable is handed undefined on every call and "Disabled in read-only mode", printed
+  // in three tool descriptions, is simply false. Absent unless the value is exactly "true" (any
+  // case), so an unset or mistyped value leaves today's behaviour byte-for-byte unchanged - and
+  // that default is itself locked by read-only-wiring.test.ts, so it cannot be flipped quietly.
+  const readOnly: ReadOnlyGate | undefined =
+    config.FRAMEFIT_READ_ONLY?.toLowerCase() === 'true'
+      ? { isReadOnly: async () => true, remediation: SINGLE_TENANT_READ_ONLY_REMEDIATION }
+      : undefined;
+
   return {
     buildApi,
     defaultToken: config.FIGMA_TOKEN,
@@ -182,6 +273,7 @@ function buildToolDeps(config: AppConfig, logger: Logger, snapshotStore?: DomSna
     toolTimeBudgetMs: config.FIGMA_TOOL_TIME_BUDGET_MS,
     snapshotStore,
     tenantId: 'local',
+    ...(readOnly ? { readOnly } : {}),
     ...(variableGraph ? { variableGraph } : {}),
   };
 }
@@ -214,6 +306,7 @@ async function startStdioServer(
 
   return {
     port: 0,
+    address: '', // stdio binds no socket; there is no address to report
     close: async () => {
       await transport.close();
       await mcp.close();
@@ -235,9 +328,39 @@ async function startHttpServer(
 
   const deps = buildToolDeps(config, logger, domSnapshotStore);
 
+  // Assigned in the listen callback below, before the socket accepts anything, so every request
+  // that can reach this handler sees the real bound address.
+  let boundAddress = '';
+
+  // `bind` reports the CANONICAL address this process bound and whether that address is loopback.
+  // It exists because the container healthcheck has no other honest way to know: it runs inside the
+  // container, cannot observe host-side port publication, and interpreting BIND_HOST in shell
+  // patterns produced repeated false greens (a loopback bind spelled 127.0.0.2 or
+  // 0:0:0:0:0:0:0:1 reported healthy while the published port was dead). The kernel normalises the
+  // spelling for us; the verdict is computed in isLoopbackBind, under unit test.
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', bind: healthBind(boundAddress) });
   });
+
+  // Browser origin gate for /mcp (see origin-guard.ts). A loopback bind is exactly the deployment
+  // DNS rebinding targets: a page on any domain that resolves to 127.0.0.1 reaches this socket, and
+  // without this the page completes a full initialize + tools/call under the operator's FIGMA_TOKEN.
+  // Built with config.PORT; when PORT=0 the advertised loopback origin is re-derived after listen
+  // (below) so an ephemeral-port test still admits its own origin. The guard is rebuilt per request
+  // so that re-derivation is actually seen by requests arriving after it.
+  //
+  // Keep this scoped to '/mcp' and keep it HERE. The tidy-looking cleanup - one path-less
+  // app.use(guard) hoisted to the top so "everything is covered" - breaks the browser extractor by
+  // construction: /api/dom-snapshots (mounted above) is called by the arbitrary-origin page being
+  // measured, is authorised by the capability token in its own path rather than by any credential a
+  // cross-origin script could carry, and deliberately answers Access-Control-Allow-Origin: *. A
+  // guard in front of it refuses that upload with a 403 the page cannot even read - the developer
+  // sees a bare "Failed to fetch" with nothing in it to debug.
+  let mcpOrigins = allowedOriginSet({
+    bindHost: config.BIND_HOST, port: config.PORT,
+    publicBaseUrl: config.PUBLIC_BASE_URL, extra: config.ALLOWED_ORIGINS,
+  });
+  app.all('/mcp', (req, res, next) => makeOriginGuard(mcpOrigins, logger)(req, res, next));
 
   app.all('/mcp', async (req, res) => {
     const mcp = new McpServer(SERVER_INFO, { instructions: SERVER_INSTRUCTIONS });
@@ -272,20 +395,37 @@ async function startHttpServer(
 
   return new Promise<ServerHandle>((resolve, reject) => {
     let server: Server;
-    server = app.listen(config.PORT, () => {
-      const address = server.address();
-      const port =
-        typeof address === 'object' && address ? address.port : config.PORT;
+    server = app.listen(config.PORT, config.BIND_HOST, () => {
+      let info: AddressInfo;
+      try {
+        info = boundAddressInfo(server);
+      } catch (err) {
+        reject(err as Error);
+        return;
+      }
+      const { port, address: bound } = info;
+      boundAddress = bound;
       // Single-tenant http chain: explicit PUBLIC_BASE_URL wins; otherwise the
-      // ACTUAL bound loopback origin — a real endpoint this same process serves, so the extractor
+      // ACTUAL bound origin — a real endpoint this same process serves, so the extractor
       // loader + browser-direct upload work on localhost out of the box. Resolved HERE, not in
       // the shared buildToolDeps: the fallback needs the bound port (PORT=0 → ephemeral), and
       // stdio shares buildToolDeps but must NOT inherit any fallback (dead-URL hazard). Assigning
       // before resolve() is race-free — connections are only accepted once 'listening' fired.
-      deps.publicBaseUrl = config.PUBLIC_BASE_URL ?? `http://127.0.0.1:${port}`;
-      logger.info({ port }, 'server.listening');
+      // dialableHost keeps a wildcard bind advertising loopback (0.0.0.0 is not an origin a
+      // browser can reach) while a concrete LAN bind advertises itself, so an operator who binds
+      // a LAN address no longer gets an upload_url pointing at the browser's own machine.
+      deps.publicBaseUrl =
+        config.PUBLIC_BASE_URL ?? `http://${dialableHost(config.BIND_HOST)}:${port}`;
+      // Re-derived against the port the socket ACTUALLY got: with PORT=0 the set built above
+      // advertises :0, which is nobody's origin, and the server would refuse its own page.
+      mcpOrigins = allowedOriginSet({
+        bindHost: config.BIND_HOST, port,
+        publicBaseUrl: config.PUBLIC_BASE_URL, extra: config.ALLOWED_ORIGINS,
+      });
+      logger.info({ port, bind_host: bound }, 'server.listening');
       resolve({
         port,
+        address: bound,
         close: () =>
           new Promise<void>((res, rej) => {
             server.close((err) => (err ? rej(err) : res()));
@@ -302,6 +442,8 @@ async function startMultiTenantHttpServer(
   mt: MultiTenantContext,
 ): Promise<ServerHandle> {
   const { env } = mt;
+  // Assigned in the listen callback below, before the socket accepts anything (see /health).
+  let boundAddress = '';
   const resolvePat = mt.resolvePat ?? ((userId: string) => getDefaultPat(userId, env.encryptionKey));
   const ping = mt.pingDb ?? defaultPingDb;
   const accountsDb: AccountsApiDeps['db'] = mt.accountsDb ?? {
@@ -507,12 +649,16 @@ async function startMultiTenantHttpServer(
   const requireJwtAccounts = makeRequireJwt(env.enforceAudience);
   const requireJwtMcp = makeRequireJwt(false);
 
+  // `bind` carries the same meaning as in the single-tenant server (see that handler): the canonical
+  // bound address plus the loopback verdict, for the container healthcheck. It rides BOTH branches -
+  // a degraded database does not change which interface the socket is on.
   app.get('/health', async (_req, res) => {
+    const bind = healthBind(boundAddress);
     try {
       await ping();
-      res.json({ status: 'ok' });
+      res.json({ status: 'ok', bind });
     } catch {
-      res.status(503).json({ status: 'degraded', db: 'unreachable' });
+      res.status(503).json({ status: 'degraded', db: 'unreachable', bind });
     }
   });
 
@@ -564,6 +710,17 @@ async function startMultiTenantHttpServer(
     }
     return rc;
   };
+
+  // Browser origin gate, mounted BEFORE requireJwtMcp on purpose: a rebinding page carries no JWT,
+  // so leaving the JWT layer to answer would turn every refusal into a 401 that confirms the
+  // endpoint exists. Same set-rebuild-per-request shape as the single-tenant site, and scoped to
+  // '/mcp' for the same reason: hoisting a path-less app.use above the /api/dom-snapshots mount
+  // refuses the arbitrary-origin extractor upload with an unreadable 403 (see that comment).
+  let mcpOrigins = allowedOriginSet({
+    bindHost: config.BIND_HOST, port: config.PORT,
+    publicBaseUrl: env.publicBaseUrl, mcpHost: env.mcpHost, extra: config.ALLOWED_ORIGINS,
+  });
+  app.all('/mcp', (req, res, next) => makeOriginGuard(mcpOrigins, logger)(req, res, next));
 
   app.all('/mcp', requireJwtMcp, async (req, res) => {
     const userId = res.locals.userId as string;
@@ -619,7 +776,10 @@ async function startMultiTenantHttpServer(
       maxResultChars: config.MAX_RESULT_CHARS,
       toolTimeBudgetMs: config.FIGMA_TOOL_TIME_BUDGET_MS,
       noTokenHint: hint,
-      readOnly: { isReadOnly: async () => (await settings.getUserSettings(userId)).read_only },
+      readOnly: {
+        isReadOnly: async () => (await settings.getUserSettings(userId)).read_only,
+        remediation: PORTAL_READ_ONLY_REMEDIATION,
+      },
       registeredTeams: { list: () => listTeams(userId) },
       libraryFiles: { has: (fk: string) => hasLibraryFile(userId, fk) },
       codeConnect: { lookup: (refs) => cc.lookupMappings(userId, refs) },
@@ -690,12 +850,25 @@ async function startMultiTenantHttpServer(
 
   return new Promise<ServerHandle>((resolve, reject) => {
     let server: Server;
-    server = app.listen(config.PORT, () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : config.PORT;
-      logger.info({ port, multi_tenant: true }, 'server.listening');
+    server = app.listen(config.PORT, config.BIND_HOST, () => {
+      let info: AddressInfo;
+      try {
+        info = boundAddressInfo(server);
+      } catch (err) {
+        reject(err as Error);
+        return;
+      }
+      const { port, address: bound } = info;
+      boundAddress = bound;
+      // See the single-tenant listen callback: PORT=0 makes the pre-listen set advertise :0.
+      mcpOrigins = allowedOriginSet({
+        bindHost: config.BIND_HOST, port,
+        publicBaseUrl: env.publicBaseUrl, mcpHost: env.mcpHost, extra: config.ALLOWED_ORIGINS,
+      });
+      logger.info({ port, bind_host: bound, multi_tenant: true }, 'server.listening');
       resolve({
         port,
+        address: bound,
         close: () =>
           new Promise<void>((res2, rej2) => {
             server.close((err) => (err ? rej2(err) : res2()));

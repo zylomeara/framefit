@@ -11,15 +11,18 @@ import { FigmaApiError } from '../../../ports/errors.js';
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
   node_ids: z.array(z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"')).min(1).max(50)
-    .describe('Instance node ids — top-level ("1:42") or nested ("I12:340;56:7890", copied from get_metadata/get_review_board). Resolved shallowly (depth 1); for a whole frame use get_design_context.'),
+    .describe('Instance node ids - top-level ("1:42") or nested ("I12:340;56:7890", copied from get_metadata/get_review_board). Resolved shallowly (depth 1); for a whole frame use get_design_context.'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
 export function registerGetCodeConnectMapTool(server: McpServer, deps: ToolDeps): void {
-  server.tool(
+  server.registerTool(
     'get_code_connect_map',
-    'Map Figma instance nodes to their Code Connect code snippets (component, imports, source) from mappings your CI uploaded (Figma exposes no Code Connect REST endpoint, so this reads CI-ingested mappings, not Figma directly). When the map is empty the response carries a `reason` (no_instances | components_unresolved | no_mappings | not_configured) and a `note` explaining why and how to populate mappings.',
-    InputSchema,
+    {
+      description: 'Map Figma instance nodes to their Code Connect code snippets (component, imports, source) from mappings your CI uploaded (Figma exposes no Code Connect REST endpoint, so this reads CI-ingested mappings, not Figma directly). When the map is empty the response carries a `reason` (no_instances | components_unresolved | no_mappings | not_configured) and a `note` explaining why and how to populate mappings.',
+      inputSchema: InputSchema,
+      annotations: { readOnlyHint: true },
+    },
     async (args) =>
       runTool('get_code_connect_map', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);

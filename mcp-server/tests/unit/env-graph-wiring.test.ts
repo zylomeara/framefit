@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   createEnvGraphFromConfig, multiTenantEnvGraphConflict, type EnvGraphConfig,
 } from '../../src/infrastructure/env-graph.js';
@@ -8,6 +7,7 @@ import { registerGetDesignContextTool } from '../../src/adapters/driving/tools/g
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -125,8 +125,7 @@ describe('multiTenantEnvGraphConflict (MULTI_TENANT + DS_TEAM_IDS boot error)', 
 // await turns this RED (graph empty on first read → the token stays alias:true / value:null).
 describe('get_variables + env graph: resolved_via:"graph" on the first call', () => {
   function harness(variableGraph: ToolDeps['variableGraph']) {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     // The CONSUMER file: one variable aliasing the library variable by the SAME LIB_KEY (four
     // conditions consistent: consumer alias_of = VariableID:<LIB_KEY>/<id>).
     const deps: ToolDeps = {
@@ -138,7 +137,7 @@ describe('get_variables + env graph: resolved_via:"graph" on the first call', ()
       defaultToken: 'figd_x', logger, variableGraph,
     };
     registerGetVariablesTool(server, deps);
-    return handlers.get_variables;
+    return (a: any): Promise<any> => call('get_variables', a);
   }
 
   it('the real env graph builds via ensureReady and resolves the alias on the first tool call', async () => {
@@ -199,8 +198,7 @@ describe('get_design_context: ensureReady await dominates the late mode-context 
   } };
 
   function handler(variableGraph: ToolDeps['variableGraph']) {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getNodesRaw: async () => ({ nodes: { F: { document: doc } } }),
@@ -214,7 +212,7 @@ describe('get_design_context: ensureReady await dominates the late mode-context 
       variableGraph,
     };
     registerGetDesignContextTool(server, deps);
-    return handlers.get_design_context;
+    return (a: any): Promise<any> => call('get_design_context', a);
   }
 
   it('a real env graph, built by the await before the scan, tracks the late node-scalar binding', async () => {

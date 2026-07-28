@@ -72,7 +72,7 @@ export function overridePreview(
 }
 
 // A purely-numeric query term skips text-content matching to avoid noise (e.g. "29" matching
-// "— 29 штук"); only the node name is checked for it. Short ALPHA terms ("OK") still match text.
+// "- 29 items"); only the node name is checked for it. Short ALPHA terms ("OK") still match text.
 function isNumericTerm(t: string): boolean {
   return /^\d+$/.test(t);
 }
@@ -83,7 +83,7 @@ function scoreNode(n: Node, terms: string[]): { score: number; matchedOn: Matche
   const nameHits = terms.filter((t) => name.includes(t)).length;
   if (nameHits === terms.length) return { score: 1, matchedOn: 'name' }; // full name → 1.0
 
-  // Purely-numeric terms skip text matching entirely to avoid noise (e.g. "29" in "— 29 штук")
+  // Purely-numeric terms skip text matching entirely to avoid noise (e.g. "29" in "- 29 items")
   const hasNumericTerm = terms.some(isNumericTerm);
   if (!hasNumericTerm) {
     const body = textOf(n);

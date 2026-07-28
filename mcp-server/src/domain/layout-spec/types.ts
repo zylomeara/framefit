@@ -286,7 +286,7 @@ export interface PairSource {
   // space (as in the metric rows). An array (not a Record) — same-named children ('card'×2) do not
   // collapse. The hint is taken from domKids2[i] (the matched node), not by the raw index of d.children.
   children?: Array<{ i: number; name: string; hint: SourceHint }>;
-  // label = the suffix of the typography row ('[tabs→"Популярное"]') — as in color[…] props; the hint is chosen
+  // label = the suffix of the typography row ('[tabs→"Popular"]') - as in color[...] props; the hint is chosen
   // from the ANCESTOR CHAIN of the DOM text (the nearest parseable one), not from the immediate parent.
   text?: Array<{ label: string; hint: SourceHint }>;
   // unmatched DOM children of a structure_mismatch (cap 10): navigation-to-INVESTIGATE (add pairs),

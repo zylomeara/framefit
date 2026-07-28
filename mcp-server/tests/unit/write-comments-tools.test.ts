@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerWriteCommentsTools } from '../../src/adapters/driving/tools/write-comments-tools.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { RawComment } from '../../src/domain/types.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
+import { SINGLE_TENANT_READ_ONLY_REMEDIATION } from '../../src/adapters/driving/tools/shared-error-handler.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -17,23 +18,6 @@ function makeComment(overrides: Partial<RawComment> = {}): RawComment {
     client_meta: { x: 0, y: 0 },
     ...overrides,
   };
-}
-
-// Minimal harness: captures the last registered tool handler by name.
-type Handler = (args: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[]; isError?: boolean }>;
-function makeServer() {
-  const tools = new Map<string, Handler>();
-  const server = {
-    tool: vi.fn((_name: string, _desc: string, _schema: unknown, handler: Handler) => {
-      tools.set(_name, handler);
-    }),
-  } as unknown as McpServer;
-  const call = async (name: string, args: Record<string, unknown>) => {
-    const h = tools.get(name);
-    if (!h) throw new Error(`Tool ${name} not registered`);
-    return h(args);
-  };
-  return { server, call };
 }
 
 function makeDeps(overrides: Partial<ToolDeps> & { apiOverride?: Partial<FigmaApi> } = {}): ToolDeps {
@@ -54,7 +38,7 @@ function makeDeps(overrides: Partial<ToolDeps> & { apiOverride?: Partial<FigmaAp
     getComponent: vi.fn(),
     postComment: vi.fn(async () => makeComment({ id: 'c-posted', message: 'ok' })),
     replyComment: vi.fn(async () => makeComment({ id: 'c-reply', parent_id: 'c-root', message: 'reply' })),
-    resolveComment: vi.fn(async () => undefined),
+    deleteComment: vi.fn(async () => undefined),
     ...apiOverride,
   } as FigmaApi;
   return {
@@ -67,26 +51,25 @@ function makeDeps(overrides: Partial<ToolDeps> & { apiOverride?: Partial<FigmaAp
 
 describe('write-comments tools', () => {
   it('post_comment posts a comment when writable and returns id', async () => {
-    const { server, call } = makeServer();
+    const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, makeDeps());
 
     const res = await call('post_comment', { file: 'abc123', message: 'LGTM' });
 
     expect(res.isError).toBeFalsy();
-    const text = res.content[0].text;
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(textOf(res.content[0]));
     expect(parsed.id).toBe('c-posted');
   });
 
   it('post_comment is REFUSED (read-only) with no REST call when read_only=true', async () => {
     let called = false;
     const deps = makeDeps({
-      readOnly: { isReadOnly: async () => true },
+      readOnly: { isReadOnly: async () => true, remediation: SINGLE_TENANT_READ_ONLY_REMEDIATION },
       apiOverride: {
         postComment: vi.fn(async () => { called = true; return makeComment(); }),
       },
     });
-    const { server, call } = makeServer();
+    const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, deps);
 
     const res = await call('post_comment', { file: 'abc123', message: 'x' });
@@ -106,25 +89,25 @@ describe('write-comments tools', () => {
         }),
       },
     });
-    const { server, call } = makeServer();
+    const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, deps);
 
     const res = await call('reply_to_comment', { file: 'abc123', comment_id: 'c-root', message: 'ack' });
 
     expect(res.isError).toBeFalsy();
     expect(capturedCommentId).toBe('c-root');
-    const parsed = JSON.parse(res.content[0].text);
+    const parsed = JSON.parse(textOf(res.content[0]));
     expect(parsed.parent_id).toBe('c-root');
   });
 
-  it('resolve_comment is refused when read_only=true', async () => {
+  it('delete_comment is refused when read_only=true', async () => {
     const deps = makeDeps({
-      readOnly: { isReadOnly: async () => true },
+      readOnly: { isReadOnly: async () => true, remediation: SINGLE_TENANT_READ_ONLY_REMEDIATION },
     });
-    const { server, call } = makeServer();
+    const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, deps);
 
-    const res = await call('resolve_comment', { file: 'abc123', comment_id: 'c-42' });
+    const res = await call('delete_comment', { file: 'abc123', comment_id: 'c-42' });
 
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/read-only/i);
@@ -132,13 +115,13 @@ describe('write-comments tools', () => {
 
   it('writes proceed when readOnly gate is undefined (single-tenant/stdio)', async () => {
     const deps = makeDeps({ readOnly: undefined });
-    const { server, call } = makeServer();
+    const { server, call } = makeFakeMcpServer();
     registerWriteCommentsTools(server, deps);
 
-    const res = await call('resolve_comment', { file: 'abc123', comment_id: 'c-99' });
+    const res = await call('delete_comment', { file: 'abc123', comment_id: 'c-99' });
 
     expect(res.isError).toBeFalsy();
-    const parsed = JSON.parse(res.content[0].text);
+    const parsed = JSON.parse(textOf(res.content[0]));
     expect(parsed.ok).toBe(true);
   });
 });

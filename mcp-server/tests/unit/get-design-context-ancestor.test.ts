@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetDesignContextTool, discoverAncestorModes } from '../../src/adapters/driving/tools/get-design-context-tool.js';
 import { createLogger, type Logger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import { buildGraph, resolveKeyInMode } from '../../src/domain/variable-graph.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
+import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 afterEach(() => vi.useRealTimers());
@@ -65,8 +65,7 @@ function harness(opts: {
   variables?: unknown;                                   // override getVariablesLocal payload
   variableGraph?: ToolDeps['variableGraph'];
 } = {}): Harness {
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const depthsSeen: number[] = [];
   const stacksSeen: Map<string, string>[] = [];
 
@@ -101,7 +100,7 @@ function harness(opts: {
     deps.variableGraph = { ...deps.variableGraph, resolveInMode: (key, stack) => { stacksSeen.push(new Map(stack)); return inner(key, stack); } };
   }
   registerGetDesignContextTool(server, deps);
-  return { handler: handlers.get_design_context, depthsSeen, stacksSeen };
+  return { handler: (a: any): Promise<any> => call('get_design_context', a), depthsSeen, stacksSeen };
 }
 
 describe('get_design_context ancestor-mode glue (FR-2 / FR-3a)', () => {
@@ -153,8 +152,7 @@ describe('get_design_context: cross-lib discovery gated on multi-mode top (perf)
       boundVariables: { strokes: [{ type: 'VARIABLE_ALIAS', id: EXT }] } }],
   };
   function build(resolveResult: { value: string; name?: string; modesByName?: Record<string, string> } | undefined, isMultiMode?: boolean) {
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     let docFetches = 0;
     const deps: ToolDeps = {
       buildApi: () => ({
@@ -178,7 +176,7 @@ describe('get_design_context: cross-lib discovery gated on multi-mode top (perf)
       },
     };
     registerGetDesignContextTool(server, deps);
-    return { handler: handlers.get_design_context, docFetches: () => docFetches };
+    return { handler: (a: any): Promise<any> => call('get_design_context', a), docFetches: () => docFetches };
   }
 
   it('single-mode cross-lib binding → discovery SKIPPED (no whole-file getDocumentRaw)', async () => {
@@ -535,8 +533,7 @@ describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest 
     const docsById = nodeDocsById(beyondCapTree);
 
     const depthsSeen: number[] = [];
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getDocumentRaw: async (_file: string, depth = 4) => { depthsSeen.push(depth); return { document: prune(beyondCapTree, depth) } as any; },
@@ -556,8 +553,8 @@ describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest 
     };
     registerGetDesignContextTool(server, deps);
 
-    const res = await handlers.get_design_context({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
-    const body = JSON.parse(res.content[0].text);
+    const res = await call('get_design_context', { file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
+    const body = JSON.parse(textOf(res.content[0]));
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
       token: 'text icon/accent', value: '#a73afd', mode: 'Default', mode_dependent: true, mode_source: 'default',
@@ -655,8 +652,7 @@ function collisionHarness(fullDoc: CNode, rootSubtree: CNode, rootId: string):
   { handler: (a: any) => Promise<any>; stacksSeen: Map<string, string>[] } {
   const { graph, stacksSeen } = collisionGraph();
   const ancDocs = ancestorDocMap(fullDoc);
-  const handlers: Record<string, (a: any) => Promise<any>> = {};
-  const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+  const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getNodesRaw: async (_f: string, ids: string[], depth?: number) => {
@@ -676,7 +672,7 @@ function collisionHarness(fullDoc: CNode, rootSubtree: CNode, rootId: string):
     defaultToken: 'figd_x', logger, maxResultChars: 40000, variableGraph: graph,
   };
   registerGetDesignContextTool(server, deps);
-  return { handler: handlers.get_design_context, stacksSeen };
+  return { handler: (a: any): Promise<any> => call('get_design_context', a), stacksSeen };
 }
 
 // The single mode-dependent cross-lib token in globalVars (dedup-flat across the whole tree).
@@ -792,8 +788,7 @@ describe('get_design_context: skipped discovery + downstream-alias multi-mode de
     };
 
     const docFetches: number[] = [];
-    const handlers: Record<string, (a: any) => Promise<any>> = {};
-    const server = { tool: (n: string, _d: string, _s: unknown, h: (a: any) => Promise<any>) => { handlers[n] = h; } } as unknown as McpServer;
+    const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
         getNodesRaw: async (_f: string, ids: string[], _depth?: number) => {
@@ -811,8 +806,8 @@ describe('get_design_context: skipped discovery + downstream-alias multi-mode de
     };
     registerGetDesignContextTool(server, deps);
 
-    const res = await handlers.get_design_context({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
-    const body = JSON.parse(res.content[0].text);
+    const res = await call('get_design_context', { file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
+    const body = JSON.parse(textOf(res.content[0]));
     const strokeRef = body.node.children[0].stroke;
     // The downstream alias hop into the unpinned multi-mode collection CD fell back to CD's DEFAULT
     // mode (#a73afd). Because discovery was SKIPPED, coverage is NOT complete → mode_source MUST stay
