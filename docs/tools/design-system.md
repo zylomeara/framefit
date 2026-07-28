@@ -100,8 +100,8 @@ kind, library file, node_id, page and source team_id - use `node_id` with
 
 ### get_libraries
 
-List the design-system libraries a Figma file publishes or consumes. `publishes` = components this
-file itself exports (`GET /files/:key/components`). `consumes` = external libraries the file
+List the design-system libraries a Figma file publishes or consumes. `"publishes"` = components this
+file itself exports (`GET /files/:key/components`). `"consumes"` = external libraries the file
 actually uses, detected from remote component references resolved to their source files (grouped
 by library file key with `component_count` + sample names). Best-effort: it surfaces libraries
 with USED components, not merely-subscribed-but-unused ones. Use a library file key with

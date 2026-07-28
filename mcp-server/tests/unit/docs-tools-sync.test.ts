@@ -79,3 +79,109 @@ describe('docs/tools ↔ live tool registration sync', () => {
     expect([...docSet].sort()).toEqual([...liveSet].sort());
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// The promise at docs/tools/README.md:3, made checkable.
+//
+// "Every description below is taken from the live `tools/list` output - the same text an MCP
+// client sees." The set-equality check above is about NAMES, so the sentence was un-failable: a
+// review inverted a mirrored description into its opposite ("There is an undo: Figma restores
+// deleted comments") and the whole 2796-test suite stayed green. That is the fifth gate of that
+// shape found on this branch, and the sentence is the useful promise, so it is made true here
+// rather than softened.
+//
+// Checked against tests/fixtures/tool-surface.json, which records what tools/list DELIVERS.
+// That is not a second-hand source: registration-shape.test.ts ("delivers every description
+// byte-for-byte as recorded") fails if the fixture and the live registration ever disagree, so a
+// doc gated against the fixture is transitively gated against the wire.
+// ---------------------------------------------------------------------------------------------
+
+const SURFACE = JSON.parse(readFileSync(
+  path.resolve(__dirname, '..', 'fixtures', 'tool-surface.json'), 'utf8',
+)) as Record<string, { description: string }>;
+
+/**
+ * Strip the three things markdown adds to the SAME words: code spans, bold, and link syntax
+ * (`[text](target)` keeps `text`). Whitespace is collapsed because the docs wrap at 100 columns
+ * and the delivered description is one long line.
+ *
+ * Nothing else is normalised, deliberately. An earlier draft also stripped quote characters, so
+ * that the docs' `resolved` could match the delivered `"resolved"`; that would have let a doc drop
+ * a character the client really sees. The four sections that relied on it were fixed instead -
+ * they now carry the quotes inside the code span - which is why this function is short enough to
+ * audit at a glance.
+ */
+function undecorate(md: string): string {
+  return md
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[`*]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** The body of every `### <tool>` section, keyed by tool name. */
+function toolSections(): Record<string, { page: string; body: string }> {
+  const out: Record<string, { page: string; body: string }> = {};
+  for (const f of readdirSync(DOCS_TOOLS_DIR).filter((n) => n.endsWith('.md') && n !== 'README.md')) {
+    const text = readFileSync(path.join(DOCS_TOOLS_DIR, f), 'utf8');
+    const marks = [...text.matchAll(/^###\s+([a-z0-9_]+)\s*$/gm)]
+      .map((m) => ({ name: m[1], start: m.index! + m[0].length }));
+    marks.forEach((mk, i) => {
+      out[mk.name] = { page: f, body: text.slice(mk.start, i + 1 < marks.length ? marks[i + 1].start : text.length) };
+    });
+  }
+  return out;
+}
+
+/** The section's opening paragraph - the part that mirrors the tool description. */
+function leadParagraph(body: string): string {
+  return undecorate(body.replace(/^\n+/, '').split(/\n\s*\n/)[0]);
+}
+
+describe('docs/tools mirrors the description a client is delivered', () => {
+  const sections = toolSections();
+
+  it("every section's opening paragraph is a VERBATIM prefix of the delivered description", () => {
+    const wrong: string[] = [];
+    for (const [name, entry] of Object.entries(SURFACE)) {
+      const sec = sections[name];
+      if (!sec) { wrong.push(`${name}: no ### section`); continue; }
+      const lead = leadParagraph(sec.body);
+      const delivered = undecorate(entry.description);
+      if (delivered.startsWith(lead)) continue;
+      // Name the character where the two part company; "does not match" over a 2000-character
+      // description is a failure nobody can act on.
+      let i = 0;
+      while (i < lead.length && i < delivered.length && lead[i] === delivered[i]) i++;
+      wrong.push(`${name} (${sec.page}) diverges at char ${i}:\n`
+        + `      docs: ...${lead.slice(Math.max(0, i - 30), i + 60)}\n`
+        + `      live: ...${delivered.slice(Math.max(0, i - 30), i + 60)}`);
+    }
+    expect(wrong, 'docs/tools/README.md promises this text is the live text').toEqual([]);
+  });
+
+  it('the sections that mirror the description IN FULL are exactly these 18', () => {
+    // A prefix rule alone lets a page shrink to one sentence and stay green. This is the
+    // exact-set ratchet that stops it: 18 sections carry the whole delivered description today,
+    // and moving in EITHER direction has to be a deliberate edit here. Growing the set is the
+    // direction to want.
+    const full = Object.entries(SURFACE)
+      .filter(([name, e]) => sections[name] && leadParagraph(sections[name].body) === undecorate(e.description))
+      .map(([name]) => name).sort();
+    expect(full).toEqual([
+      'compare_breakpoints', 'delete_comment', 'export_assets', 'find_breakpoint_variant',
+      'find_nodes', 'find_threads', 'get_code_connect_map', 'get_comments', 'get_figjam',
+      'get_libraries', 'get_metadata', 'get_node_ancestry', 'get_text_styles', 'get_view',
+      'post_comment', 'reply_to_comment', 'search_design_system', 'summarize_comments',
+    ]);
+  });
+
+  it('the promise these rows exist to keep is still on the page', () => {
+    // On its own this is a word search and proves nothing - it is here so that DELETING the
+    // sentence, rather than honouring it, is also visible. The two rows above are the substance.
+    const readme = readFileSync(path.join(DOCS_TOOLS_DIR, 'README.md'), 'utf8');
+    expect(undecorate(readme)).toContain(
+      'Every description below is taken from the live tools/list output - the same text an MCP client sees',
+    );
+  });
+});

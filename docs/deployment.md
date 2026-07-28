@@ -89,7 +89,7 @@ mcp.your-domain.com {
 
 	handle {
 		# /health is behind the credential too. An uptime monitor just sends it:
-		# `curl -fsS -u you:your-password https://mcp.your-domain.com/health` returns 200.
+		# `curl -fsS -u you:<password> https://mcp.your-domain.com/health` returns 200.
 		basic_auth {
 			you <bcrypt-hash-from-above>
 		}
@@ -114,7 +114,7 @@ auth header:
 
 ```bash
 claude mcp add --transport http framefit https://mcp.your-domain.com/mcp \
-  --header "Authorization: Basic $(printf 'you:your-password' | base64)"
+  --header "Authorization: Basic $(printf 'you:<password>' | base64)"
 ```
 
 **Never skip the `basic_auth` block.** An unauthenticated `/mcp` behind a public
@@ -123,7 +123,7 @@ domain is an open proxy to your Figma account. The one exception is
 `basic_auth` in front of it breaks the in-browser capture with an opaque "Failed to fetch" and does
 not make the deployment safer. Everything else is behind the credential, `/health` included: an
 uptime monitor sends it like any other client -
-`curl -fsS -u you:your-password https://mcp.your-domain.com/health` returns 200.
+`curl -fsS -u you:<password> https://mcp.your-domain.com/health` returns 200.
 
 That carve-out is not rate-limited anywhere in this project, and a stock Caddy cannot rate-limit it
 either: `rate_limit` is a third-party module, absent from the official binary (verified on 2.11.4 -

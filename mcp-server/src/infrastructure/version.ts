@@ -2,5 +2,5 @@
 // locks them together against the BUILT artifact). Deliberately a leaf: server.ts and the operator
 // CLI both import it, and pulling server.ts into the CLI would drag express (server.ts:1) and all
 // 26 tool registrations (server.ts:9) into every `framefit <command>` run.
-export const VERSION = '0.12.0';
+export const VERSION = '0.13.0';
 export const SERVER_INFO = { name: 'framefit', version: VERSION } as const;

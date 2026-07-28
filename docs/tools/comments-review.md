@@ -163,7 +163,7 @@ Reply to an existing comment thread in a Figma file. Disabled in read-only mode.
 Permanently delete a Figma comment. There is no undo: Figma does not restore deleted comments and
 file version history does not bring them back. This is NOT a way to resolve a thread - Figma has no
 API to mark a thread resolved, so resolution happens in the Figma UI only; `get_comments` reports a
-`resolved` flag it cannot change. Only the comment author may delete it. Disabled in read-only mode.
+`"resolved"` flag it cannot change. Only the comment author may delete it. Disabled in read-only mode.
 Pass the comment id from `get_comments`.
 
 **Parameters**

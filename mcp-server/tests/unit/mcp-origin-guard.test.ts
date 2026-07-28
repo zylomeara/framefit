@@ -34,6 +34,24 @@ describe('allowedOriginSet / isOriginAllowed (pure)', () => {
     const s = allowedOriginSet({ bindHost: '127.0.0.1', port: 3846 });
     expect([...s].sort()).toEqual(['http://127.0.0.1:3846', 'http://localhost:3846']);
   });
+  it('the localhost ALIAS is conditional: only a loopback or wildcard bind gets it', () => {
+    // Round 2 of the release review: mcp-server/.env.example and the release notes both said the
+    // server "always admits localhost:PORT" - unconditional prose over conditional code. The alias
+    // is added only when localhost and the bound socket are the same endpoint, and nothing pinned
+    // that, so the prose could not be checked against the behaviour it described.
+    for (const bindHost of ['127.0.0.1', '0.0.0.0', '::']) {
+      expect(allowedOriginSet({ bindHost, port: 3846 }).has('http://localhost:3846'),
+        `${bindHost} answers on the same endpoint as localhost, so the alias belongs`).toBe(true);
+    }
+    for (const bindHost of ['192.168.1.20', '10.0.0.7', '::1']) {
+      expect(allowedOriginSet({ bindHost, port: 3846 }).has('http://localhost:3846'),
+        `${bindHost} is not localhost - documenting the alias here would promise a door that is shut`)
+        .toBe(false);
+    }
+    // ::1 is the sharp one: it IS loopback, but the guard compares the Origin string verbatim and
+    // a browser dialling http://localhost:3846 sends that spelling, not the bracketed one.
+    expect([...allowedOriginSet({ bindHost: '::1', port: 3846 })]).toEqual(['http://[::1]:3846']);
+  });
   it('admits PUBLIC_BASE_URL and the multi-tenant MCP_HOST origin', () => {
     const s = allowedOriginSet({ bindHost: '0.0.0.0', port: 3846, publicBaseUrl: 'https://mcp.example', mcpHost: 'mcp.example' });
     expect(s.has('https://mcp.example')).toBe(true);

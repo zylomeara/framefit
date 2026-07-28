@@ -45,7 +45,7 @@ knowing node ids. Use this when node names are master-component placeholders rat
 (e.g. the label "Cart" lives in a node named "All genres") - it also matches
 the node's text (`characters`). Returns `node_id`, `name`, `type`, breadcrumb `path`, size, and
 `matched_on` (`name`|`text`|`property`). Component-instance text set as a property override (e.g.
-a DS section header) matches as `property`. Feed a `node_id` into `get_design_context` or
+a DS section header) matches as `'property'`. Feed a `node_id` into `get_design_context` or
 `get_text_styles`. Scope with `node_id` to search a single frame; omit it to search the whole file.
 
 **Parameters**
@@ -236,7 +236,9 @@ node as `raw_images:[{imageRef,url}]`.
 
 Extract a descriptive, code-oriented representation of a Figma node: layout (auto-layout), sizing,
 fills/strokes/effects (deduplicated into `globalVars`), text + typography, and component
-instances. This is the flagship design->code extraction tool; in a design-QA flow it complements
+instances.
+
+This is the flagship design->code extraction tool; in a design-QA flow it complements
 [`compare_node_to_dom`](design-qa.md#compare_node_to_dom) - see the
 [Design QA tutorial](../design-qa-tutorial.md).
 

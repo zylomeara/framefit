@@ -106,9 +106,21 @@ describe('the read-only gate refuses it in single-tenant, through the real wirin
 });
 
 describe('nothing in the repository still says resolve_comment', () => {
+  // The release notes are the ONE place the retired name belongs. A reader whose client config or
+  // agent prompt still says resolve_comment finds the entry by searching for exactly this string,
+  // and an entry that cannot name what was retired is useless to them. The name is not loose there:
+  // changelog.test.ts requires it to be absent from the LIVE registration and to be written as the
+  // OLD side of the rename, so it can never come back as the description of a tool that exists.
+  // That file is exempt for the same reason - it is where the retirement is declared.
+  //
+  // This exemption is why the assertion below is a file-set exclusion rather than a path prefix: a
+  // prefix like `docs/` would also exempt the catalog row and the anchor link, which are three of
+  // the four documentation lines this whole describe block exists to catch.
+  const ALLOWED = new Set([THIS_FILE, 'CHANGELOG.md', 'mcp-server/tests/unit/changelog.test.ts']);
+
   it('no tracked file contains the old tool name', () => {
     const files = execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8' })
-      .split('\n').filter(Boolean).filter((f) => f !== THIS_FILE);
+      .split('\n').filter(Boolean).filter((f) => !ALLOWED.has(f));
     const offenders: string[] = [];
     for (const f of files) {
       let text: string;
