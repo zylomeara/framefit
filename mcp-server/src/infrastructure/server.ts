@@ -46,6 +46,7 @@ import { syncUser } from '../multi-tenant/library-sync.js';
 import { createEnvGraphFromConfig } from './env-graph.js';
 import type { FigmaApi } from '../ports/figma-api.js';
 import type { Request, Response, NextFunction } from 'express';
+import { allowedOriginSet, makeOriginGuard } from './origin-guard.js';
 import { SERVER_INFO } from './version.js';
 
 export type ServerHandle = {
@@ -327,6 +328,26 @@ async function startHttpServer(
     res.json({ status: 'ok', bind: healthBind(boundAddress) });
   });
 
+  // Browser origin gate for /mcp (see origin-guard.ts). A loopback bind is exactly the deployment
+  // DNS rebinding targets: a page on any domain that resolves to 127.0.0.1 reaches this socket, and
+  // without this the page completes a full initialize + tools/call under the operator's FIGMA_TOKEN.
+  // Built with config.PORT; when PORT=0 the advertised loopback origin is re-derived after listen
+  // (below) so an ephemeral-port test still admits its own origin. The guard is rebuilt per request
+  // so that re-derivation is actually seen by requests arriving after it.
+  //
+  // Keep this scoped to '/mcp' and keep it HERE. The tidy-looking cleanup - one path-less
+  // app.use(guard) hoisted to the top so "everything is covered" - breaks the browser extractor by
+  // construction: /api/dom-snapshots (mounted above) is called by the arbitrary-origin page being
+  // measured, is authorised by the capability token in its own path rather than by any credential a
+  // cross-origin script could carry, and deliberately answers Access-Control-Allow-Origin: *. A
+  // guard in front of it refuses that upload with a 403 the page cannot even read - the developer
+  // sees a bare "Failed to fetch" with nothing in it to debug.
+  let mcpOrigins = allowedOriginSet({
+    bindHost: config.BIND_HOST, port: config.PORT,
+    publicBaseUrl: config.PUBLIC_BASE_URL, extra: config.ALLOWED_ORIGINS,
+  });
+  app.all('/mcp', (req, res, next) => makeOriginGuard(mcpOrigins, logger)(req, res, next));
+
   app.all('/mcp', async (req, res) => {
     const mcp = new McpServer(SERVER_INFO, { instructions: SERVER_INSTRUCTIONS });
 
@@ -381,6 +402,12 @@ async function startHttpServer(
       // a LAN address no longer gets an upload_url pointing at the browser's own machine.
       deps.publicBaseUrl =
         config.PUBLIC_BASE_URL ?? `http://${dialableHost(config.BIND_HOST)}:${port}`;
+      // Re-derived against the port the socket ACTUALLY got: with PORT=0 the set built above
+      // advertises :0, which is nobody's origin, and the server would refuse its own page.
+      mcpOrigins = allowedOriginSet({
+        bindHost: config.BIND_HOST, port,
+        publicBaseUrl: config.PUBLIC_BASE_URL, extra: config.ALLOWED_ORIGINS,
+      });
       logger.info({ port, bind_host: bound }, 'server.listening');
       resolve({
         port,
@@ -670,6 +697,17 @@ async function startMultiTenantHttpServer(
     return rc;
   };
 
+  // Browser origin gate, mounted BEFORE requireJwtMcp on purpose: a rebinding page carries no JWT,
+  // so leaving the JWT layer to answer would turn every refusal into a 401 that confirms the
+  // endpoint exists. Same set-rebuild-per-request shape as the single-tenant site, and scoped to
+  // '/mcp' for the same reason: hoisting a path-less app.use above the /api/dom-snapshots mount
+  // refuses the arbitrary-origin extractor upload with an unreadable 403 (see that comment).
+  let mcpOrigins = allowedOriginSet({
+    bindHost: config.BIND_HOST, port: config.PORT,
+    publicBaseUrl: env.publicBaseUrl, mcpHost: env.mcpHost, extra: config.ALLOWED_ORIGINS,
+  });
+  app.all('/mcp', (req, res, next) => makeOriginGuard(mcpOrigins, logger)(req, res, next));
+
   app.all('/mcp', requireJwtMcp, async (req, res) => {
     const userId = res.locals.userId as string;
     let stored: Awaited<ReturnType<typeof resolvePat>> = null;
@@ -805,6 +843,11 @@ async function startMultiTenantHttpServer(
       }
       const { port, address: bound } = info;
       boundAddress = bound;
+      // See the single-tenant listen callback: PORT=0 makes the pre-listen set advertise :0.
+      mcpOrigins = allowedOriginSet({
+        bindHost: config.BIND_HOST, port,
+        publicBaseUrl: env.publicBaseUrl, mcpHost: env.mcpHost, extra: config.ALLOWED_ORIGINS,
+      });
       logger.info({ port, bind_host: bound, multi_tenant: true }, 'server.listening');
       resolve({
         port,

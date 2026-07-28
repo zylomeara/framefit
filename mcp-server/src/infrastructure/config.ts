@@ -109,6 +109,20 @@ const ConfigSchema = z.object({
   // here would be dead) → upload_url is honestly never emitted; multi-tenant reads the same
   // variable via MultiTenantEnv.publicBaseUrl with `https://${mcpHost}` as its fallback.
   PUBLIC_BASE_URL: z.string().optional(),
+  // Extra origins the /mcp origin guard will not refuse, comma-separated. Exactly that, and the
+  // name invites the broader reading, so: this does NOT make cross-origin browser use of /mcp work.
+  // Two independent blockers sit outside this guard and are unaffected by it - nothing sets CORS
+  // response headers on /mcp, and StreamableHTTPServerTransport answers OPTIONS with 405. Measured
+  // against an ALLOWED origin: the preflight returns 405 with no Access-Control-Allow-Origin, and
+  // the POST returns 200 with no Access-Control-Allow-Origin either, so the page is stopped before
+  // the request and again after it. Serving a browser tool would take a CORS layer this server does
+  // not ship; listing an origin here is necessary but nowhere near sufficient.
+  // What it IS for: the server always admits its own advertised origins, and this is the escape
+  // hatch so the guard can never become an unopenable door. Given the CORS reality above, the
+  // caller it can actually rescue is a NON-browser one that sends an Origin anyway (some clients
+  // and proxies do), not a browser page. Requests with no Origin - every ordinary MCP client -
+  // never consult it. Empty means "no extras".
+  ALLOWED_ORIGINS: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
 }).refine((c) => c.CACHE_MAX_BYTES >= c.CACHE_MAX_ENTRY_BYTES, {
   // A per-entry cap ABOVE the aggregate ceiling is contradictory: a single legit ≤entry-cap response would
   // persistently overshoot the whole budget (the protect-guard keeps it honest/terminating, but the
