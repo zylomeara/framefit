@@ -21,16 +21,19 @@ call the built entrypoint directly.
 cd mcp-server
 # precondition: built-checkout
 set -o pipefail
-node dist/index.js status | tee /tmp/framefit-status.txt
-grep -qE '^[0-9]+ ok, [0-9]+ skipped, [0-9]+ failed' /tmp/framefit-status.txt
+report=$(mktemp)
+node dist/index.js status | tee "$report"
+grep -qE '^[0-9]+ ok, [0-9]+ skipped, [0-9]+ failed' "$report"
 ```
 
 `tee`, not a plain redirect: the six check lines are the answer you came here for, so they stay on
-your terminal and the copy exists only for the `grep`. That `grep` is the point of the last line -
-`status` exits 0 whenever no check FAILED, including a run in which almost everything was SKIPPED, so
-the exit status alone does not prove a report was produced. `set -o pipefail` keeps a real failure
-real: without it the pipeline reports `tee`'s status, and a `status` that exited 1 would read as
-success. The checks and the verdict line are on stdout; only the advisory `note:` goes to stderr.
+your terminal and the copy exists only for the `grep`. `mktemp`, not a fixed path: a named file in
+`/tmp` survives the run, so a later invocation that produced no report at all would still find the
+previous one and `grep` it green. That `grep` is the point of the last line - `status` exits 0
+whenever no check FAILED, including a run in which almost everything was SKIPPED, so the exit status
+alone does not prove a report was produced. `set -o pipefail` keeps a real failure real: without it
+the pipeline reports `tee`'s status, and a `status` that exited 1 would read as success. The checks
+and the verdict line are on stdout; only the advisory `note:` goes to stderr.
 
 **A deployed box whose container is RUNNING** - compose service `framefit`, or `framefit-local` under
 the local profile:
