@@ -78,10 +78,22 @@ For cross-library design tokens, add `--env DS_TEAM_IDS=<team-id>,…` (comma-se
 `figma.com/team/<id>` URLs): the named teams' published libraries sync into an in-memory graph so
 `get_variables` resolves those aliases headless (`resolved_via:"graph"`) — see
 [`docs/tools/design-system.md`](docs/tools/design-system.md#get_variables). Unset, aliases stay
-honestly unresolved. The first graph-needing call (`get_variables`, `get_design_context`, or
-`compare_node_to_dom`) after startup blocks while those libraries sync — several minutes on a large
-design system (measured ~11 libraries / 7000+ variables), one-time per process; later calls are
-fast and the call is not hung.
+honestly unresolved.
+
+The first graph-needing call (`get_variables`, `get_design_context`, or `compare_node_to_dom`)
+after startup blocks while those libraries sync — several minutes on a large design system (the
+~11 libraries / 7000+ variables figure is inherited from earlier notes and was not re-measured
+here). Calls that arrive during that sync do not skip it: they join the same in-flight build and
+block with it, so for those minutes every graph-needing call waits. None is hung — they all
+unblock together when the build finishes, and from then on the sync adds nothing to a call
+until the graph goes stale.
+
+The sync is not a one-off either: the graph rebuilds whenever the last confirmed build is older
+than `DS_LIBRARY_TTL_SEC` (default `86400` seconds — 24 hours), so on a long-lived server the
+first graph-needing call after the TTL lapses pays the same several minutes, roughly once a day.
+A build that throws, or that comes back with zero libraries, is not confirmed and does not start
+that clock: it is retried by the next graph-needing call past a fixed 60-second interval, so
+until one confirmed build lands the cadence is a minute, not a day.
 
 > An npm package is on the way - it will replace the clone-and-build step with a one-line
 > `claude mcp add framefit --env MCP_TRANSPORT=stdio -- npx -y framefit`. The transport flag is

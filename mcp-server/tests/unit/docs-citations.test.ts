@@ -54,7 +54,8 @@ const DOCS_DIR = path.join(REPO_ROOT, 'docs');
 // citation is path- and uniqueness-checked the moment it lands, floor or no floor. NOT an equality
 // assert: later work legitimately adds citations, and an equality assert would read correct work as
 // a regression.
-const CITATION_FLOOR = 3;
+// Raised to 4 by docs/deployment.md's citation of `mcp-server/.env.example`, `DS_LIBRARY_TTL_SEC=86400`.
+const CITATION_FLOOR = 4;
 
 // Ban, rule 1 -- a path-shaped token with a known extension followed by `:<digits>`. Existence is
 // NOT required here: `get-variables-tool.ts:141` cited a real file by bare basename, which resolves

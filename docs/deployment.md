@@ -100,7 +100,7 @@ mcp.your-domain.com {
 
 (`Caddyfile.example` in the repo root is the same configuration as a snippet for an existing
 Caddyfile, including the `/api/dom-snapshots/*` carve-out. Do not add `encode` to either: the MCP
-route is an SSE stream and gzip buffers it.) Two server-side settings to add in `docker/.env`:
+route is an SSE stream and gzip buffers it.) One server-side setting to add in `docker/.env`:
 
 ```dotenv
 # The origin browsers and clients actually reach — used in emitted URLs
@@ -140,10 +140,22 @@ Files that reference variables from *other* published libraries need `DS_TEAM_ID
 comma-separated team ids (or `figma.com/team/<id>` URLs) — set on the **server process**
 alongside `FIGMA_TOKEN`, so those teams' libraries sync into an in-memory graph and
 `get_variables` resolves the aliases headless (`resolved_via:"graph"`); unset, they stay
-honestly unresolved. The first graph-needing call (`get_variables`, `get_design_context`, or
-`compare_node_to_dom`) after startup blocks while those libraries sync — several minutes on a
-large design system (measured ~11 libraries / 7000+ variables), one-time per process; later
-calls are fast and the call is not hung.
+honestly unresolved.
+
+The first graph-needing call (`get_variables`, `get_design_context`, or `compare_node_to_dom`)
+after startup blocks while those libraries sync — several minutes on a large design system (the
+~11 libraries / 7000+ variables figure is inherited from earlier notes and was not re-measured
+here). Calls that arrive during that sync do not skip it: they join the same in-flight build and
+block with it, so for those minutes every graph-needing call waits. None is hung — they all
+unblock together when the build finishes, and from then on the sync adds nothing to a call
+until the graph goes stale.
+
+The sync is not a one-off either: the graph rebuilds whenever the last confirmed build is older
+than `DS_LIBRARY_TTL_SEC` (default `86400` seconds — 24 hours), so on a long-lived server the
+first graph-needing call after the TTL lapses pays the same several minutes, roughly once a day.
+A build that throws, or that comes back with zero libraries, is not confirmed and does not start
+that clock: it is retried by the next graph-needing call past a fixed 60-second interval, so
+until one confirmed build lands the cadence is a minute, not a day (see `mcp-server/.env.example`, `DS_LIBRARY_TTL_SEC=86400`).
 
 The `local` compose service passes `DS_TEAM_IDS` through to the container (the same bare
 pass-through as `FIGMA_TOKEN`), so just set it at startup — inline or in `docker/.env`:
