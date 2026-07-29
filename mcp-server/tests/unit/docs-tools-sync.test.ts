@@ -163,8 +163,22 @@ describe('docs/tools mirrors the description a client is delivered', () => {
   it('the sections that mirror the description IN FULL are exactly these 18', () => {
     // A prefix rule alone lets a page shrink to one sentence and stay green. This is the
     // exact-set ratchet that stops it: 18 sections carry the whole delivered description today,
-    // and moving in EITHER direction has to be a deliberate edit here. Growing the set is the
-    // direction to want.
+    // and moving in EITHER direction has to be a deliberate edit here.
+    //
+    // THE RULE, as the spec settled it: no sentence the audit disproved may remain in any
+    // delivered description, and this 18-name set is a FLOOR - it may be grown by a deliberate
+    // edit on this line and never shrunk.
+    //
+    // Growing it is NOT therefore the direction to want by default, and that is the correction.
+    // Raising a section into this set mechanically imports the delivered string onto the page, so
+    // it imports whatever that string says. Two delivered strings were false until this commit:
+    // search_design_system's "team_id is OPTIONAL" (true only on the multi-tenant server), which
+    // is IN this set and so was mirrored word for word onto docs/tools/design-system.md; and
+    // get_layout_spec's "by default a short loader thunk" (false wherever the server has no public
+    // base URL, which is every stdio deployment), which is NOT in this set - a blanket raise would
+    // have copied it verbatim onto docs/tools/design-qa.md, a page whose examples the settled scope
+    // requires to run on the stdio server the quickstart installs. Fix the description first;
+    // raise the section afterwards, if the description is then worth mirroring whole.
     const full = Object.entries(SURFACE)
       .filter(([name, e]) => sections[name] && leadParagraph(sections[name].body) === undecorate(e.description))
       .map(([name]) => name).sort();

@@ -10,7 +10,7 @@ import { styleForName } from '../../../domain/text-styles.js';
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
   node_ids: z.array(z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"')).min(2).max(8)
-    .describe('Breakpoint frame node ids - one per width (e.g. desktop/laptop/tablet/mob). Fetched in one call.'),
+    .describe('Breakpoint frame node ids - one per width (e.g. desktop/laptop/tablet/mobile), 2 to 8 per call. Fetched in one call.'),
   name: z.string().min(1).describe('Element name/role to compare across breakpoints (e.g. "tabs").'),
   fuzzy: z.boolean().default(false).describe('Typo-tolerant matching of the element name.'),
   include_color: z.boolean().default(true).describe('Include the element\'s text color per breakpoint.'),

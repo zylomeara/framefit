@@ -33,7 +33,8 @@ export const InputSchema = {
     'compare_node_to_dom.dom), not a stringified JSON. Pass exactly one of dom_snapshot | dom_ref.'),
   dom_ref: DomRefSchema.optional().describe(
     'Reference to a browser-uploaded snapshot (get_layout_spec upload_url flow) instead of inlining the ' +
-    'whole-frame DOM JSON - moves a large snapshot off the MCP wire onto the direct upload. ref = the ' +
+    'whole-frame DOM JSON - moves a large snapshot off the MCP wire onto the direct upload. Only the HTTP ' +
+    'servers construct the snapshot store this resolves against; on stdio pass dom_snapshot inline. ref = the ' +
     'snapshot_ref from the extractor POST; selector must match byte-for-byte the root selector passed to the ' +
     'extractor, OR index addresses it by position. Pass exactly one of dom_snapshot | dom_ref.'),
   max_depth: z.number().int().min(1).optional().describe('Bound matching depth (large frames - pair a subtree at a time)' +

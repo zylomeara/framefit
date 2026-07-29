@@ -14,6 +14,15 @@ To understand *how a node is built* (auto-layout, fills, tokens, component struc
 to verify it against a rendered page, use
 [`get_design_context`](navigation.md#get_design_context) — the code-oriented extraction tool.
 
+**Which deployment the examples on this page need.** Every request example below is shaped for the
+stdio server the [quickstart](../../README.md#quickstart) installs - substitute your own file key
+and node ids and it runs there. The one thing that does not run there is `dom_ref`: it, and the
+`upload_url` that mints it, need the DOM-snapshot store, which only the HTTP server paths construct.
+On stdio `suggest_pairs` throws `snapshot store unavailable on this server — pass dom_snapshot
+inline`, and `compare_node_to_dom` notes `snapshot store unavailable on this server — pass dom
+inline` on the pair. So the examples here pass the snapshot inline; switch to `dom_ref` once you run
+the server over HTTP.
+
 ---
 
 ### get_layout_spec
@@ -23,11 +32,14 @@ typography, fill hex, component identity. Lightweight (shallow fetch) - use it t
 frame width and build node<->selector pairs before `compare_node_to_dom`.
 
 `include_extractor:true` returns the DOM extractor (schema-versioned with the server) as
-`extractor_js` - by default a short loader thunk that fetches the canonical script from the server
-rather than inlining it (`extractor_mode:"inline"` forces the full script, e.g. if a CSP blocks
-the loader's script tag). When the server is configured for it, it also returns an `upload_url`
+`extractor_js`: the loader thunk that fetches the canonical script (`extractor_mode:"loader"`, the
+default) is returned only when the server has a public base URL to point the browser at -
+otherwise, and whenever `extractor_mode:"inline"` is passed, the full script comes back inline, with
+`extractor_note` saying so when the loader was asked for and was unavailable. That same public base
+URL, plus the snapshot store only the HTTP servers construct, is what also returns an `upload_url`
 the extractor can POST snapshots to directly from the browser, yielding a `dom_ref` to pass to
-`compare_node_to_dom` instead of pasting raw snapshot JSON.
+`compare_node_to_dom`; the stdio server has neither, so pass the snapshot inline as
+`compare_node_to_dom`'s `dom`.
 
 **Parameters**
 
@@ -52,11 +64,11 @@ the extractor can POST snapshots to directly from the browser, yielding a `dom_r
 }
 ```
 
-Response (abridged):
+Response (abridged), from the stdio server:
 
 ```jsonc
 {
-  "schema": 5,
+  "snapshot_schema": 5,
   "specs": [
     {
       "node_id": "12:340",
@@ -72,8 +84,11 @@ Response (abridged):
       }
     }
   ],
-  "extractor_js": "/* versioned loader thunk — run verbatim in the browser */",
-  "upload_url": "https://<server>/api/dom-snapshots/<capToken>"
+  "extractor_js": "/* the full extractor script, inline — run verbatim in the browser */",
+  "extractor_note": "loader unavailable without public base URL — inline returned"
+  /* On an HTTP server with a public base URL, extractor_js is the versioned loader thunk instead,
+     there is no extractor_note, and an "upload_url": "https://<server>/api/dom-snapshots/<capToken>"
+     is returned alongside it. */
 }
 ```
 
@@ -97,7 +112,7 @@ drill in by hand.
 | `file` | string, **required** | Figma file URL or raw key |
 | `frame_node_id` | string, **required** | Frame/root node to align against the DOM subtree |
 | `dom_snapshot` | object | `DomSnapshot` object from the canonical extractor (`get_layout_spec include_extractor:true`) - the WHOLE frame-root subtree (root selector), carrying per-node `path`. Pass the OBJECT (same shape as `compare_node_to_dom.dom`), not a stringified JSON. Pass exactly one of `dom_snapshot` \| `dom_ref`. |
-| `dom_ref` | object `{ ref, selector?, index? }` | Reference to a browser-uploaded snapshot (`get_layout_spec` `upload_url` flow) instead of inlining the whole-frame DOM JSON. `ref` = the `snapshot_ref` from the extractor POST; `selector` must match byte-for-byte the root selector passed to the extractor, OR `index` addresses it by position (safe on duplicate selectors). Pass exactly one of `dom_snapshot` \| `dom_ref`. |
+| `dom_ref` | object `{ ref, selector?, index? }` | Reference to a browser-uploaded snapshot (`get_layout_spec` `upload_url` flow) instead of inlining the whole-frame DOM JSON. Only the HTTP servers construct the snapshot store this resolves against; on stdio pass `dom_snapshot` inline. `ref` = the `snapshot_ref` from the extractor POST; `selector` must match byte-for-byte the root selector passed to the extractor, OR `index` addresses it by position (safe on duplicate selectors). Pass exactly one of `dom_snapshot` \| `dom_ref`. |
 | `max_depth` | integer ≥ 1 | Bound matching depth (large frames - pair a subtree at a time). Levels 0..max_depth inclusive are processed. |
 | `figma_token` | string | Override Figma PAT |
 
@@ -107,9 +122,30 @@ drill in by hand.
 {
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "frame_node_id": "12:340",
-  "dom_ref": { "ref": "snap_0f3a…", "index": 0 }
+  "dom_snapshot": {
+    "schema": 5,
+    "selector": ".card",
+    "innerWidth": 1280,
+    "rect": { "x": 0, "y": 0, "w": 320, "h": 420 },
+    "borders": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+    "paddings": { "top": 16, "right": 16, "bottom": 16, "left": 16 },
+    "scroll": { "top": 0, "left": 0 },
+    "children": [
+      {
+        "kind": "element",
+        "tag": "h3",
+        "classList": ["card__title"],
+        "path": "1",
+        "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
+        "text": "Product card"
+      }
+    ]
+  }
 }
 ```
+
+The `dom_snapshot` above is a two-node snapshot cut down to fit the page; the real one is whatever
+the extractor printed for the frame root, pasted whole.
 
 Response (abridged):
 
@@ -168,7 +204,21 @@ a `fix_plan` (grouped edits derived from fail rows). See the
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "frame_node_id": "12:340",
   "pairs": [
-    { "node_id": "12:341", "dom_ref": { "ref": "snap_0f3a…", "selector": ".card__title" }, "label": "title" }
+    {
+      "node_id": "12:341",
+      "dom": {
+        "schema": 5,
+        "selector": ".card__title",
+        "innerWidth": 1280,
+        "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
+        "borders": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+        "paddings": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+        "scroll": { "top": 0, "left": 0 },
+        "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 16 },
+        "children": []
+      },
+      "label": "title"
+    }
   ],
   "match_profile": "token-aware"
 }

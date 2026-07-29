@@ -14,7 +14,7 @@ import { clampSpecsToBudget, RESULT_BUDGET_BYTES } from './clamp-specs.js';
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
   node_ids: z.array(z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42" or nested "I…;…"')).min(1).max(20)
-    .describe('Node ids to project into diff-ready layout specs (batched in one REST call).'),
+    .describe('Node ids to project into diff-ready layout specs, up to 20 per call (batched in one REST call).'),
   include_extractor: z.boolean().default(false)
     .describe('Include the canonical DOM extractor script (paste it VERBATIM into chrome-devtools evaluate_script).'),
   extractor_mode: z.enum(['loader', 'inline']).default('loader')
@@ -41,11 +41,13 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
       description: 'Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, ' +
       'typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width ' +
       'and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor ' +
-      '(schema-versioned with the server) as extractor_js - by default a short loader thunk that fetches the ' +
-      'canonical script from the server rather than inlining it (extractor_mode:"inline" forces the full script, ' +
-      'e.g. if a CSP blocks the loader\'s script tag); when the server is configured for it, also returns an ' +
-      'upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to ' +
-      'compare_node_to_dom instead of pasting raw snapshot JSON.',
+      '(schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script ' +
+      '(extractor_mode:"loader", the default) is returned only when the server has a public base URL to point the ' +
+      'browser at - otherwise, and whenever extractor_mode:"inline" is passed, the full script comes back inline, ' +
+      'with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL, ' +
+      'plus the snapshot store only the HTTP servers construct, is what also returns an upload_url the extractor can ' +
+      'POST snapshots to directly from the browser, yielding a dom_ref to pass to compare_node_to_dom; the stdio ' +
+      'server has neither, so pass the snapshot inline as compare_node_to_dom\'s dom.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

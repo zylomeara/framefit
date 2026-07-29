@@ -191,7 +191,8 @@ export const PairSchema = z.object({
   dom: DomSnapshotSchema.optional().describe('DomSnapshot from the canonical extractor (get_layout_spec include_extractor:true). Pass exactly one of dom | dom_ref.'),
   dom_ref: DomRefSchema.optional().describe(
     'Reference to a browser-uploaded snapshot batch (get_layout_spec upload_url flow) instead of inlining raw ' +
-    'DOM JSON. ref = the snapshot_ref returned by the extractor POST; selector must match byte-for-byte the ' +
+    'DOM JSON. Only the HTTP servers construct the snapshot store this resolves against; on stdio pass dom ' +
+    'inline. ref = the snapshot_ref returned by the extractor POST; selector must match byte-for-byte the ' +
     'selector string passed to the extractor, OR index addresses the snapshot by its position in that batch ' +
     '(duplicate-selector-safe). Resolvable while the underlying ref is live: sliding 30-min TTL ' +
     "from the last touch, hard-capped at 2h from the ref's OWN createdAt - NOT from when upload_url was minted. " +
@@ -209,7 +210,7 @@ export const PairSchema = z.object({
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
-  pairs: z.array(PairSchema).min(1).max(20).describe('node_id <-> DOM snapshot pairs, all fetched in ONE REST call'),
+  pairs: z.array(PairSchema).min(1).max(20).describe('node_id <-> DOM snapshot pairs - up to 20 per call, all fetched in ONE REST call'),
   frame_node_id: z.string().regex(COMPOUND_NODE_ID_RE).optional()
     .describe('The breakpoint frame you resized the viewport to - enables the viewport guard'),
   expected_overlay_width: z.number().positive().optional()

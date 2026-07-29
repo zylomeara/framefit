@@ -72,22 +72,37 @@ without checking the node's mode (see
 ### search_design_system
 
 Search published design-system libraries (components, component sets, styles) by
-name/description. `team_id` is OPTIONAL: without it, the tool searches your registered DS teams.
-Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key,
-kind, library file, node_id, page and source team_id - use `node_id` with
+name/description. `team_id` is required on the stdio and single-tenant servers; only the
+multi-tenant server can omit it, and there it falls back to the design-system teams you
+registered. Pass a `file` to narrow results to the libraries that file consumes. Returns matches
+with key, kind, library file, node_id, page and source team_id - use `node_id` with
 [`get_design_context`](navigation.md#get_design_context). Lexical name search; run short queries.
 
 **Parameters**
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `team_id` | string | Figma team id OR a team URL (id is extracted). Optional: when omitted, falls back to your registered design-system teams. |
+| `team_id` | string | Figma team id OR a team URL (id is extracted). Optional only on the multi-tenant server, which falls back to the design-system teams you registered there; on stdio and single-tenant it is required. |
 | `query` | string, **required** | Search terms; spaces = AND. Matches component/style name, description, page. Lexical, not semantic - try short fragments ("button", "space", "toast"). |
 | `file` | string | Figma file URL/key - narrows results to the libraries this file actually consumes (does not add teams). |
 | `limit` | integer 1–50 (default 15) | Max matches |
 | `figma_token` | string | Override Figma PAT |
 
 **Example**
+
+```json
+{
+  "team_id": "1234567890123456789",
+  "query": "button primary",
+  "limit": 10
+}
+```
+
+Omitting `team_id` is the multi-tenant fallback: it searches the design-system teams that user
+registered. On the stdio server the quickstart installs, and on single-tenant, the same call fails
+with `team_id is required. Pass a Figma team id or a team URL`.
+
+**Example** (multi-tenant only)
 
 ```json
 {
