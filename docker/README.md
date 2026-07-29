@@ -7,7 +7,7 @@ so `docker compose up` with no `--profile` is a no-op. Pick one:
 | Profile | Command                                              | What you get                                                                 |
 |---------|------------------------------------------------------|------------------------------------------------------------------------------|
 | `local` | `docker compose --profile local up -d --build`       | Single-tenant server only. No DB, no auth, no secrets. Binds `127.0.0.1:3846`.|
-| `full`  | `COMPOSE_PROFILES=full docker compose up -d --build`  | The **production** service set: multi-tenant MCP + Postgres, authenticating against an **external** Keycloak (or any OIDC IdP). |
+| `full`  | `COMPOSE_PROFILES=full docker compose up -d --build` — **only after** § 2's one-time `mcp-server/.env` bootstrap; on a fresh checkout, without that file, compose refuses with `env file … not found` and exits `1` before building anything. | The **production** service set: multi-tenant MCP + Postgres, authenticating against an **external** Keycloak (or any OIDC IdP). |
 
 ---
 
@@ -44,10 +44,38 @@ MCP_PORT=4000 ./smoke-local.sh   # …on a different host port
 
 The production service set: the multi-tenant MCP server plus its Postgres, authenticating
 against an **external** Keycloak (or any OIDC identity provider). Production runs the exact
-same file; the only repo-side change vs. the historical deploy is that the compose literals
-are now `${VAR:-<localhost default>}`, so every prod-specific value comes from `docker/.env`
-(git-ignored) instead of being hard-coded. Set `COMPOSE_PROFILES=full` in `docker/.env` and
-the historical command is **byte-for-byte unchanged**:
+same file; the repo-side change vs. the historical deploy is that the prod-specific compose
+literals are now `${VAR:-<localhost default>}`, so the four IdP/host URLs and the Postgres
+password come from `docker/.env` (git-ignored) instead of being hard-coded. Not everything
+does, and the exceptions matter below: `ENCRYPTION_KEY` rides `mcp-server/.env` and must not go
+in `docker/.env` at all; `MULTI_TENANT` and `FIGMA_MAX_CONCURRENT_REQUESTS` are still literals
+in the compose file; and `DATABASE_URL` is assembled there, interpolating only
+`POSTGRES_PASSWORD`.
+
+### One-time, before the bring-up: `mcp-server/.env` and its encryption key
+
+The multi-tenant server encrypts stored Figma PATs (AES-256-GCM) with `ENCRYPTION_KEY`. It
+lives in `mcp-server/.env` (git-ignored) and compose delivers it via `env_file`. Do **not**
+put it in `docker/.env`: compose `environment` entries take precedence over `env_file`, so an
+env_file-supplied secret must never also be listed under `environment`.
+
+That `env_file` line is also why this step comes **first**. The `framefit` service declares
+`env_file: - ../mcp-server/.env`, and on a fresh checkout that file does not exist — so the
+bring-up below refuses before it builds anything:
+`env file …/mcp-server/.env not found: … no such file or directory`, exit `1`. Run this, and
+the same command exits `0`.
+
+```bash
+cd docker
+[ -f ../mcp-server/.env ] || cp ../mcp-server/.env.example ../mcp-server/.env
+grep -q '^ENCRYPTION_KEY=' ../mcp-server/.env || \
+  echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../mcp-server/.env
+```
+
+### Then bring it up
+
+Set `COMPOSE_PROFILES=full` in `docker/.env` and the historical command is
+**byte-for-byte unchanged**:
 
 ```bash
 cd docker
@@ -110,20 +138,6 @@ Bridge-tokens cannot be revoked, so keep the 30-minute default and mint on deman
 > **A running server keeps its graph in memory.** `sync` writes the fresh graph to Postgres, but a
 > live server holds the graph it built for the life of the process. Restart the `framefit` service
 > for a fresh sync to take effect.
-
-### One-time: the encryption key
-
-The multi-tenant server encrypts stored Figma PATs (AES-256-GCM) with `ENCRYPTION_KEY`. It
-lives in `mcp-server/.env` (git-ignored) and compose delivers it via `env_file`. Do **not**
-put it in `docker/.env`: compose `environment` entries take precedence over `env_file`, so an
-env_file-supplied secret must never also be listed under `environment`.
-
-```bash
-cd docker
-[ -f ../mcp-server/.env ] || cp ../mcp-server/.env.example ../mcp-server/.env
-grep -q '^ENCRYPTION_KEY=' ../mcp-server/.env || \
-  echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../mcp-server/.env
-```
 
 ### Required `docker/.env` on the production host
 
