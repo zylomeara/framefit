@@ -1,0 +1,198 @@
+{
+  "file": "AbCdEf012345",
+  "snapshot_schema": 5,
+  "specs": [
+    {
+      "node_id": "12:340",
+      "spec": {
+        "node": {
+          "id": "12:340",
+          "name": "Product card",
+          "type": "FRAME"
+        },
+        "children": [
+          {
+            "id": "12:341",
+            "name": "title",
+            "type": "TEXT",
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 288,
+              "h": 24
+            },
+            "text": {
+              "fontFamily": "Inter",
+              "fontWeight": 600,
+              "fontSize": 16
+            },
+            "textSnippet": "Product card",
+            "children": []
+          },
+          {
+            "id": "12:344",
+            "name": "price",
+            "type": "TEXT",
+            "rect": {
+              "x": 16,
+              "y": 52,
+              "w": 288,
+              "h": 20
+            },
+            "text": {
+              "fontFamily": "Inter",
+              "fontWeight": 400,
+              "fontSize": 14
+            },
+            "textSnippet": "$29.00",
+            "children": []
+          },
+          {
+            "id": "12:350",
+            "name": "list",
+            "type": "FRAME",
+            "rect": {
+              "x": 16,
+              "y": 84,
+              "w": 288,
+              "h": 304
+            },
+            "axis": "col",
+            "children": [
+              {
+                "id": "12:351",
+                "name": "item",
+                "type": "INSTANCE",
+                "rect": {
+                  "x": 16,
+                  "y": 84,
+                  "w": 288,
+                  "h": 30
+                },
+                "children": []
+              },
+              {
+                "id": "12:352",
+                "name": "item",
+                "type": "INSTANCE",
+                "rect": {
+                  "x": 16,
+                  "y": 122,
+                  "w": 288,
+                  "h": 30
+                },
+                "children": []
+              },
+              {
+                "id": "12:353",
+                "name": "item",
+                "type": "INSTANCE",
+                "rect": {
+                  "x": 16,
+                  "y": 160,
+                  "w": 288,
+                  "h": 30
+                },
+                "children": []
+              },
+              {
+                "id": "12:354",
+                "name": "item",
+                "type": "INSTANCE",
+                "rect": {
+                  "x": 16,
+                  "y": 198,
+                  "w": 288,
+                  "h": 30
+                },
+                "children": []
+              },
+              {
+                "id": "12:355",
+                "name": "item",
+                "type": "INSTANCE",
+                "rect": {
+                  "x": 16,
+                  "y": 236,
+                  "w": 288,
+                  "h": 30
+                },
+                "children": []
+              },
+              {
+                "id": "12:356",
+                "name": "item",
+                "type": "INSTANCE",
+                "rect": {
+                  "x": 16,
+                  "y": 274,
+                  "w": 288,
+                  "h": 30
+                },
+                "children": []
+              },
+              {
+                "id": "12:357",
+                "name": "item",
+                "type": "INSTANCE",
+                "rect": {
+                  "x": 16,
+                  "y": 312,
+                  "w": 288,
+                  "h": 30
+                },
+                "children": []
+              },
+              {
+                "id": "12:358",
+                "name": "item",
+                "type": "INSTANCE",
+                "rect": {
+                  "x": 16,
+                  "y": 350,
+                  "w": 288,
+                  "h": 30
+                },
+                "children": []
+              }
+            ]
+          }
+        ],
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 320,
+          "h": 420
+        },
+        "axis": "col",
+        "autoLayout": {
+          "gap": 12,
+          "padding": {
+            "top": 16,
+            "right": 16,
+            "bottom": 16,
+            "left": 16
+          }
+        }
+      }
+    }
+  ],
+  "hydration": [
+    {
+      "node_id": "12:340",
+      "held_depth": 5,
+      "hydrated": true,
+      "drill_free_upto": 4,
+      "cause_breakdown": {
+        "depth": 0,
+        "breadth": 0,
+        "budget": 0
+      }
+    }
+  ],
+  "extractor_js": {
+    "length": 50285,
+    "sha256": "3550b8ea03513a0e831163416d8a06452f970931f9e4f9d14d5b882fbf0db184"
+  },
+  "extractor_note": "loader unavailable without public base URL — inline returned"
+}

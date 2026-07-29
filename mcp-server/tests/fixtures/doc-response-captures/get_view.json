@@ -1,0 +1,58 @@
+{
+  "file": "AbCdEf012345",
+  "view": "skeleton",
+  "effective_max_depth": 6,
+  "node_id": "12:340",
+  "skeleton": {
+    "node_id": "12:340",
+    "type": "FRAME",
+    "name": "Product card",
+    "child_count": 3,
+    "axis": "col",
+    "children": [
+      {
+        "node_id": "12:341",
+        "type": "TEXT",
+        "name": "title",
+        "child_count": 0
+      },
+      {
+        "node_id": "12:344",
+        "type": "TEXT",
+        "name": "price",
+        "child_count": 0
+      },
+      {
+        "node_id": "12:350",
+        "type": "FRAME",
+        "name": "list",
+        "child_count": 8,
+        "axis": "col",
+        "children": [
+          {
+            "node_id": "12:351",
+            "type": "INSTANCE",
+            "name": "item",
+            "child_count": 0,
+            "repeated": {
+              "count": 8,
+              "of": "item",
+              "signature": "INSTANCE|item|"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "hydration": {
+    "node_id": "12:340",
+    "held_depth": 7,
+    "hydrated": true,
+    "drill_free_upto": 6,
+    "cause_breakdown": {
+      "depth": 0,
+      "breadth": 0,
+      "budget": 0
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "file": "AbCdEf012345",
+  "frame": {
+    "id": "12:340",
+    "name": "Product card",
+    "type": "FRAME"
+  },
+  "pairs": [
+    {
+      "node_id": "12:341",
+      "name": "title",
+      "type": "TEXT",
+      "dom_path": "1",
+      "confidence": "high",
+      "signals": [
+        "text-exact",
+        "size",
+        "order"
+      ],
+      "figma_text": "Product card",
+      "dom_text": "Product card"
+    }
+  ],
+  "unmatched_figma": [
+    {
+      "node_id": "12:344",
+      "name": "price",
+      "reason": "no DOM candidate"
+    },
+    {
+      "node_id": "12:350",
+      "name": "list",
+      "reason": "no DOM candidate"
+    }
+  ],
+  "unmatched_dom": [],
+  "summary": {
+    "paired": 1,
+    "ambiguous": 0,
+    "unmatched_figma": 2,
+    "unmatched_dom": 0
+  }
+}

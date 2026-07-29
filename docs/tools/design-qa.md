@@ -23,6 +23,15 @@ inline`, and `compare_node_to_dom` notes `snapshot store unavailable on this ser
 inline` on the pair. So the examples here pass the snapshot inline; switch to `dom_ref` once you run
 the server over HTTP.
 
+**Where the response examples come from.** Each one below is a real return of that tool's handler,
+captured from the request shown above it against a stub of one small Figma file (a `Product card`
+section holding a `Desktop` and a `Mobile` frame, the Desktop one holding the 320x420 card the other
+examples measure). They are then **trimmed, never edited**: an elided array or object tail is marked
+`/* ... */`, and two strings too long to print — the inline extractor and the report markdown — are
+replaced by a `<..., N chars - elided>` placeholder. Nothing is added.
+`mcp-server/tests/unit/docs-response-examples.test.ts` rebuilds every capture from the handler on
+each test run and fails if a key or a value on this page is not in it.
+
 ---
 
 ### get_layout_spec
@@ -68,23 +77,31 @@ Response (abridged), from the stdio server:
 
 ```jsonc
 {
+  "file": "AbCdEf012345",
   "snapshot_schema": 5,
   "specs": [
     {
       "node_id": "12:340",
       "spec": {
-        "id": "12:340", "name": "Product card", "type": "FRAME",
-        "rect": { "w": 320, "h": 420 },
-        "layout": { "axis": "vertical", "gap": 12, "padding": { "top": 16, "right": 16, "bottom": 16, "left": 16 } },
+        "node": { "id": "12:340", "name": "Product card", "type": "FRAME" },
         "children": [
-          { "id": "12:341", "name": "title", "type": "TEXT", "rect": { "w": 288, "h": 24 },
-            "typography": { "fontFamily": "Inter", "fontWeight": 600, "fontSize": 16 } }
-          /* … */
-        ]
+          { "id": "12:341", "name": "title", "type": "TEXT",
+            "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
+            "text": { "fontFamily": "Inter", "fontWeight": 600, "fontSize": 16 },
+            "textSnippet": "Product card", "children": [] }
+          /* ... then "price" (12:344) and the "list" frame (12:350) with its eight items */
+        ],
+        "rect": { "x": 0, "y": 0, "w": 320, "h": 420 },
+        "axis": "col",
+        "autoLayout": { "gap": 12, "padding": { "top": 16, "right": 16, "bottom": 16, "left": 16 } }
       }
     }
   ],
-  "extractor_js": "/* the full extractor script, inline — run verbatim in the browser */",
+  "hydration": [
+    { "node_id": "12:340", "held_depth": 5, "hydrated": true, "drill_free_upto": 4,
+      "cause_breakdown": { "depth": 0, "breadth": 0, "budget": 0 } }
+  ],
+  "extractor_js": "<full inline extractor script, 50285 chars - elided>",
   "extractor_note": "loader unavailable without public base URL — inline returned"
   /* On an HTTP server with a public base URL, extractor_js is the versioned loader thunk instead,
      there is no extractor_note, and an "upload_url": "https://<server>/api/dom-snapshots/<capToken>"
@@ -125,7 +142,7 @@ drill in by hand.
   "dom_snapshot": {
     "schema": 5,
     "selector": ".card",
-    "innerWidth": 1280,
+    "innerWidth": 320,
     "rect": { "x": 0, "y": 0, "w": 320, "h": 420 },
     "borders": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
     "paddings": { "top": 16, "right": 16, "bottom": 16, "left": 16 },
@@ -151,13 +168,19 @@ Response (abridged):
 
 ```jsonc
 {
+  "file": "AbCdEf012345",
+  "frame": { "id": "12:340", "name": "Product card", "type": "FRAME" },
   "pairs": [
-    { "node_id": "12:341", "selector": ".card__title", "confidence": "high", "matched_by": "text" },
-    { "node_id": "12:344", "selector": ".card__price", "confidence": "medium", "ambiguous": true }
+    { "node_id": "12:341", "name": "title", "type": "TEXT", "dom_path": "1",
+      "confidence": "high", "signals": ["text-exact", "size", "order"],
+      "figma_text": "Product card", "dom_text": "Product card" }
   ],
-  "unmatched_figma": [{ "id": "12:349", "name": "badge" }],
+  "unmatched_figma": [
+    { "node_id": "12:344", "name": "price", "reason": "no DOM candidate" }
+    /* ... then the "list" frame (12:350), same shape */
+  ],
   "unmatched_dom": [],
-  "summary": { "pairs": 2, "unmatched_figma": 1, "unmatched_dom": 0 }
+  "summary": { "paired": 1, "ambiguous": 0, "unmatched_figma": 2, "unmatched_dom": 0 }
 }
 ```
 
@@ -184,6 +207,13 @@ and an actionable `blocking` list - plus per-pair `source` hints (CSS-module fil
 a `fix_plan` (grouped edits derived from fail rows). See the
 [Design QA tutorial](../design-qa-tutorial.md) for how to read them.
 
+The example below submits one pair out of the frame's three children, so its receipt reports
+`complete: false` and names what is still unchecked. That is the gate doing its job, not the tool
+failing: a `false` here means the run measured less than the whole frame, and `blocking` says which
+action closes the gap. Note that pairing all three would still report `false` - a text pair carries
+no auto-layout, and an unmeasurable property is a coverage hole by construction rather than
+something more pairs can fix.
+
 **Parameters**
 
 | Parameter | Type | Description |
@@ -209,12 +239,13 @@ a `fix_plan` (grouped edits derived from fail rows). See the
       "dom": {
         "schema": 5,
         "selector": ".card__title",
-        "innerWidth": 1280,
+        "innerWidth": 320,
         "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
         "borders": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
         "paddings": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
         "scroll": { "top": 0, "left": 0 },
         "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 16 },
+        "componentHints": { "tag": "h3", "classList": ["ProductCard_title__a1b2c3"], "data": {} },
         "children": []
       },
       "label": "title"
@@ -224,33 +255,62 @@ a `fix_plan` (grouped edits derived from fail rows). See the
 }
 ```
 
+Two fields of that snapshot decide what comes back. `innerWidth` is the window width you captured
+at: it must match the `frame_node_id` frame's width (320 here), or the viewport guard turns every
+geometry row `unchecked` and adds a `fix_viewport` blocking item. `componentHints.classList` is what
+the code address is parsed from — a CSS-modules class gives you the `source` and `fix_plan[].target`
+below; without one there is no `source` key at all, `target` is `null`, and the plan can only say
+"address not resolved".
+
 Response (abridged — see the [tutorial](../design-qa-tutorial.md) for a full annotated example):
 
 ```jsonc
 {
+  "file": "AbCdEf012345",
   "tolerance_px": 1,
+  "frame": { "node_id": "12:340", "width": 320 },
   "pairs": [
     {
       "node_id": "12:341",
       "label": "title",
+      "selector": ".card__title",
       "rows": [
-        { "prop": "size.w", "figma": 288, "dom": 288, "delta": 0, "status": "pass" },
-        { "prop": "font-weight[title]", "figma": 600, "dom": 400, "delta": 200, "status": "fail" }
+        { "prop": "viewport", "figma": 320, "dom": 320, "status": "pass" },
+        { "prop": "size.w", "figma": 288, "dom": 288, "status": "pass" },
+        { "prop": "size.h", "figma": 24, "dom": 24, "status": "pass" },
+        { "prop": "children", "status": "skip", "note": "node without auto-layout — inter-element metrics are not computed" },
+        { "prop": "font-size", "figma": 16, "dom": 16, "status": "pass" },
+        { "prop": "font-weight", "figma": 600, "dom": 400, "status": "fail", "srcChannel": { "kind": "root", "editKind": "property" } },
+        { "prop": "font-family", "figma": "inter", "dom": "inter", "status": "pass" }
       ],
-      "summary": { "pass": 1, "fail": 1, "warn": 0, "skip": 0, "info": 0, "demoted": 0, "unchecked": 0, "review": 0 },
-      "coverage": { "measured": ["size", "typography"], "skipped": [] }
+      "summary": { "pass": 5, "fail": 1, "warn": 0, "skip": 1, "info": 0, "demoted": 0, "unchecked": 0, "review": 0 },
+      "coverage": { "measured": ["font-family", "font-size", "font-weight", "size", "viewport"], "skipped": [] },
+      "source": { "root": { "module": "ProductCard", "local": "title", "raw": "ProductCard_title__a1b2c3" } },
+      "fix_plan": [
+        { "target": { "module": "ProductCard", "local": "title", "raw": "ProductCard_title__a1b2c3" },
+          "channel": "root",
+          "edits": [{ "prop": "font-weight", "kind": "property", "expected": 600, "actual": 400 }] }
+      ]
     }
   ],
+  "summary": { "pass": 5, "fail": 1, "warn": 0, "skip": 1, "info": 0, "demoted": 0, "unchecked": 0, "review": 0 },
   "verification": {
     "complete": false,
     "scope": "frame",
     "pairs": { "checked": 1, "clean": 0 },
+    "match_profile": "token-aware",
+    "frame_coverage": { "worthy": 3, "covered": 1, "uncovered": ["12:344", "12:350"], "partial": [],
+      "enumeration_truncated": false, "enumeration_depth": 4, "enumeration_source": "pair_fetch" },
     "blocking": [
-      { "kind": "uncovered_region", "node_id": "12:344", "action": "add_pair", "detail": "child \"price\" has no pair" }
+      { "kind": "uncovered_region", "node_id": "12:344", "action": "add_pair",
+        "detail": "frame region unpaired — the region's layout is not verified" }
+      /* ... then the same for the "list" frame (12:350), and a resolve_skip item for the
+         skipped "children" row on 12:341 */
     ]
   },
+  /* a "hydration" receipt follows here, in the same shape as get_layout_spec's */
   "not_covered_by_tool": ["icons"],
-  "report_markdown": "…ready-to-paste verification block…"
+  "report_markdown": "<verification report markdown, 1257 chars - elided>"
 }
 ```
 
@@ -280,7 +340,7 @@ pass `parent_node_id` (a section or page) to scope the walk and avoid timing out
 {
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "query": "product card",
-  "render_width": 1280
+  "render_width": 320
 }
 ```
 
@@ -288,10 +348,18 @@ Response (abridged):
 
 ```jsonc
 {
-  "matches": [
-    { "node_id": "12:340", "name": "Desktop", "frame_width": 1280, "content_width": 1280, "container": "Product card" },
-    { "node_id": "12:400", "name": "Tablet", "frame_width": 768, "content_width": 768, "container": "Product card" }
-  ]
+  "query": "product card",
+  "render_width": 320,
+  "tolerance": 24,
+  "variants": [
+    { "node_id": "12:300", "name": "Desktop", "container": "Product card", "frame_w": 1280,
+      "content": [
+        { "node_id": "12:340", "name": "Product card", "w": 320, "isBestMatch": true }
+        /* ... then the "list" frame (12:350), w 288 */
+      ] }
+    /* ... then the "Mobile" variant (12:320), frame_w 375 */
+  ],
+  "match": { "node_id": "12:340", "w": 320, "variant_node_id": "12:300" }
 }
 ```
 
@@ -327,15 +395,23 @@ Response (abridged):
 
 ```jsonc
 {
-  "node_id": "12:340",
+  "file": "AbCdEf012345",
   "view": "skeleton",
-  "held_depth": 7,
-  "tree": {
-    "name": "Product card", "type": "FRAME",
+  "effective_max_depth": 6,
+  "node_id": "12:340",
+  "skeleton": {
+    "node_id": "12:340", "type": "FRAME", "name": "Product card", "child_count": 3, "axis": "col",
     "children": [
-      { "name": "title", "type": "TEXT" },
-      { "name": "item", "type": "INSTANCE", "repeated": 8 }
+      { "node_id": "12:341", "type": "TEXT", "name": "title", "child_count": 0 },
+      { "node_id": "12:344", "type": "TEXT", "name": "price", "child_count": 0 },
+      { "node_id": "12:350", "type": "FRAME", "name": "list", "child_count": 8, "axis": "col",
+        "children": [
+          { "node_id": "12:351", "type": "INSTANCE", "name": "item", "child_count": 0,
+            "repeated": { "count": 8, "of": "item", "signature": "INSTANCE|item|" } }
+        ] }
     ]
-  }
+  },
+  "hydration": { "node_id": "12:340", "held_depth": 7, "hydrated": true, "drill_free_upto": 6,
+    "cause_breakdown": { "depth": 0, "breadth": 0, "budget": 0 } }
 }
 ```
