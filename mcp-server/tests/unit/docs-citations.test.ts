@@ -55,7 +55,12 @@ const DOCS_DIR = path.join(REPO_ROOT, 'docs');
 // assert: later work legitimately adds citations, and an equality assert would read correct work as
 // a regression.
 // Raised to 4 by docs/deployment.md's citation of `mcp-server/.env.example`, `DS_LIBRARY_TTL_SEC=86400`.
-const CITATION_FLOOR = 4;
+// Raised to 6 by docs/status.md's two: `docker/Dockerfile`, `FROM node:20-alpine AS runtime` (the
+// runtime stage declares no ENTRYPOINT and inherits docker-entrypoint.sh from its base -- the page
+// used to claim the image was "CMD-only") and `mcp-server/src/infrastructure/env-graph.ts`,
+// `throws on a garbage id` (an unparseable DS_TEAM_IDS aborts boot, so it belongs in the
+// boot-aborts bullet and not the still-boots one).
+const CITATION_FLOOR = 6;
 
 // Ban, rule 1 -- a path-shaped token with a known extension followed by `:<digits>`. Existence is
 // NOT required here: `get-variables-tool.ts:141` cited a real file by bare basename, which resolves

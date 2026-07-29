@@ -4,8 +4,14 @@ Ready-to-copy configuration for connecting an MCP client (Claude Code and compat
 locally built framefit server over **stdio**. Build once first:
 
 ```bash
-cd mcp-server && pnpm install && pnpm build
+cd mcp-server
+pnpm install
+pnpm build
+node scripts/stdio-smoke.mjs
 ```
+
+The last line is the point of building: it speaks the MCP handshake to the server over stdio, so it
+fails if `dist/` came out unusable — which `pnpm build` exiting `0` does not by itself prove.
 
 In every example, replace `/absolute/path/to/framefit/...` with your real checkout path and
 `figd_your_token_here` with a [Figma personal access token](../../README.md#figma-token).
@@ -22,6 +28,7 @@ keep the secret out of version control).
 To make the server available in every project, register it globally instead of committing a file:
 
 ```bash
+# not-executed: requires-mcp-host,contains-placeholder
 claude mcp add --scope user framefit \
   --env MCP_TRANSPORT=stdio \
   --env FIGMA_TOKEN=figd_your_token_here \
@@ -61,6 +68,7 @@ Once the npm package is published, the clone-and-build step disappears and regis
 single line (no absolute paths):
 
 ```bash
+# not-executed: requires-mcp-host,unpublished-package,contains-placeholder
 claude mcp add framefit --env FIGMA_TOKEN=figd_your_token_here --env MCP_TRANSPORT=stdio -- npx -y framefit
 ```
 

@@ -17,20 +17,29 @@ Everything a contributor needs to see the server serve, with only Docker install
 
 ```bash
 cd docker
-docker compose --profile local up -d --build
-curl -s http://127.0.0.1:3846/health          # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
-# … MCP over HTTP at http://127.0.0.1:3846/mcp
-docker compose --profile local down
+# --wait is meaningful for this service: the compose file declares no healthcheck, but the image
+# does, so the container carries one and `up` returns only once /health answers.
+docker compose --profile local up -d --build --wait
+curl -fsS http://127.0.0.1:${MCP_PORT:-3846}/health   # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
+
+`-f` is not decoration: without it `curl` exits `0` on a `500`, so an unhealthy server reads as a
+green line. MCP over HTTP is then at `http://127.0.0.1:3846/mcp`; tear the stack down again with
+`docker compose --profile local down`, which is deliberately not part of the block above — the
+sequence ends on the health assertion, so nothing after it can mask a failed one.
 
 Or just run the smoke test, which does all of the above and tears down again:
 
 ```bash
+# not-executed: alternative-forms
 cd docker
-./smoke-local.sh          # build → health → MCP initialize → down
-KEEP_UP=1 ./smoke-local.sh   # …but leave it running
-MCP_PORT=4000 ./smoke-local.sh   # …on a different host port
+./smoke-local.sh          # build -> health -> MCP initialize -> down
+KEEP_UP=1 ./smoke-local.sh   # ...but leave it running
+MCP_PORT=4000 ./smoke-local.sh   # ...on a different host port
 ```
+
+Those three are alternatives, not a sequence: run one. Top to bottom they are three full image
+builds, and the middle one deliberately leaves the stack up.
 
 - **No token needed** for `/health` and MCP `initialize`. To make real Figma calls,
   supply a token: `FIGMA_TOKEN=figd_… docker compose --profile local up -d`, or put
@@ -70,6 +79,9 @@ cd docker
 [ -f ../mcp-server/.env ] || cp ../mcp-server/.env.example ../mcp-server/.env
 grep -q '^ENCRYPTION_KEY=' ../mcp-server/.env || \
   echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../mcp-server/.env
+# Both lines above are `||` chains, which exit 0 whether or not their right-hand side ran. Assert
+# the file compose will read actually carries the key:
+grep -q '^ENCRYPTION_KEY=' ../mcp-server/.env
 ```
 
 ### Then bring it up
@@ -80,15 +92,30 @@ Set `COMPOSE_PROFILES=full` in `docker/.env` and the historical command is
 ```bash
 cd docker
 docker compose up -d --build framefit        # multi-tenant MCP + Postgres (its dependency)
+sleep 5
+[ "$(docker compose ps --format '{{.State}}' framefit)" = running ]
 ```
+
+Naming the service is enough to enable its profile, so this runs before you have set
+`COMPOSE_PROFILES=full` anywhere. The state test is the assertion: `up -d` exits `0` once it has
+*started* the container, and under `restart: unless-stopped` that includes a container already
+crash-looping — its exit status is not arrival.
+
+What this does **not** give you is a working deployment. The server comes up on localhost defaults
+for the four IdP/host values, so it authenticates nothing until you set them in `docker/.env` (below)
+and point `KEYCLOAK_JWKS_URL` at your **external** Keycloak.
 
 `COMPOSE_PROFILES=full` makes compose resolve the profile itself, so no `--profile` flag is
 needed:
 
 ```bash
+cd docker
 COMPOSE_PROFILES=full docker compose config --services
 # framefit
-# figma-postgres        ← the multi-tenant server and its database, nothing else
+# figma-postgres        <- the multi-tenant server and its database, nothing else
+# `config` exits 0 whatever it resolves - and, unlike `up`, succeeds even when the env_file above
+# is still missing - so assert the profile named the service rather than reading the exit status:
+COMPOSE_PROFILES=full docker compose config --services | grep -qx framefit
 ```
 
 > **The admin portal is not in this repository.** The multi-tenant server exposes an
@@ -111,6 +138,9 @@ Start with `status`: it needs no prerequisites — it just reports whatever is a
 for what each of the six checks means.
 
 ```bash
+# not-executed: requires-running-deployment,contains-placeholder
+cd docker
+
 # Diagnose this instance - which subsystem, if any, is broken:
 docker compose exec framefit framefit status
 
@@ -123,7 +153,7 @@ docker compose exec framefit framefit teams list --user <keycloak-user-id>
 
 # Build that user's cross-library variable graph from the registered teams:
 docker compose exec framefit framefit sync --user <keycloak-user-id>
-# → synced user <id>: N libraries, M variables, K skipped
+# -> synced user <id>: N libraries, M variables, K skipped
 
 # Mint an upload token for the variable-snapshot ingest (capture it, don't redirect it into the repo):
 TOKEN=$(docker compose exec -T framefit framefit bridge-token --user <keycloak-user-id>)
@@ -201,11 +231,14 @@ Re-running a workflow, or tagging an already-published commit, moves it the same
 The host then **pulls instead of building** — no compile on the box:
 
 ```bash
+# not-executed: requires-registry-auth,contains-placeholder
+cd docker
+
 # resolve the tag you want to its digest (downloads nothing), then pin that
 docker buildx imagetools inspect ghcr.io/zylomeara/framefit:v0.11.0 --format '{{.Manifest.Digest}}'
 docker pull ghcr.io/zylomeara/framefit@sha256:<digest>
 # then REPLACE the service's `build:` block with `image: ghcr.io/zylomeara/framefit@sha256:<digest>`
-# — never keep both: a service with `image:` AND `build:` silently builds when a pull fails,
+# - never keep both: a service with `image:` AND `build:` silently builds when a pull fails,
 # which defeats the whole point of pinning. In this repo's compose the `full` service is
 # build-only by design; the image-consuming production compose lives in the author's private
 # deploy repo.

@@ -9,11 +9,12 @@ repo's testing norms, and how a PR gets merged.
 Node 20+ and [pnpm](https://pnpm.io/installation). Everything below runs from `mcp-server/`:
 
 ```bash
+# not-executed: long-running-process
 cd mcp-server
 pnpm install
 pnpm build       # tsc -> dist/
-pnpm dev         # http server on 127.0.0.1:3846, watches src/
-pnpm test        # unit suite (excludes tests/e2e)
+pnpm dev         # http server on 127.0.0.1:3846, watches src/ - runs until you stop it
+pnpm test        # unit suite (excludes tests/e2e) - in a second shell
 pnpm typecheck   # tsc --noEmit over src/ + tests/
 ```
 

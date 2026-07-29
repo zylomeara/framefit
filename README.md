@@ -52,6 +52,7 @@ No server to host, no database, no auth. Claude Code spawns and tears down the p
 Prerequisites: Node 20+ and [pnpm](https://pnpm.io/installation).
 
 ```bash
+# not-executed: requires-public-repo
 git clone https://github.com/zylomeara/framefit.git && cd framefit/mcp-server
 pnpm install
 pnpm build
@@ -65,6 +66,7 @@ Register it with Claude Code — replace the path with your absolute checkout pa
 [Figma token](#figma-token):
 
 ```bash
+# not-executed: requires-mcp-host,contains-placeholder
 claude mcp add framefit \
   --env MCP_TRANSPORT=stdio \
   --env FIGMA_TOKEN=figd_your_token_here \
@@ -107,8 +109,8 @@ external Keycloak):
 
 ```bash
 cd docker
-docker compose --profile local up -d --build   # single-tenant HTTP on 127.0.0.1:3846
-curl -s http://127.0.0.1:3846/health            # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
+docker compose --profile local up -d --build --wait   # single-tenant HTTP on 127.0.0.1:3846
+curl -fsS http://127.0.0.1:${MCP_PORT:-3846}/health    # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
 
 The compose file is profile-driven (`local` / `full`); prerequisites and production notes are in
@@ -218,11 +220,12 @@ Both build on the multi-tenant store; deployment shapes are in
 ## Development
 
 ```bash
+# not-executed: long-running-process
 cd mcp-server
 pnpm install
 cp .env.example .env      # fill FIGMA_TOKEN
-pnpm dev                  # http://127.0.0.1:3846
-pnpm test                 # unit tests   (pnpm typecheck for types)
+pnpm dev                  # http://127.0.0.1:3846 - runs until you stop it
+pnpm test                 # unit tests   (pnpm typecheck for types) - in a second shell
 ```
 
 The server is hexagonal (domain / ports / application / adapters); `MCP_TRANSPORT` selects `http`

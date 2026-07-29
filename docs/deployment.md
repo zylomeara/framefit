@@ -34,14 +34,16 @@ is *how you gate access*. Two safe answers:
 Run the server on the VPS exactly like the local path:
 
 ```bash
+# not-executed: requires-public-repo,contains-placeholder
 git clone https://github.com/zylomeara/framefit.git && cd framefit/docker
-FIGMA_TOKEN=figd_your_token docker compose --profile local up -d --build
-curl -s http://127.0.0.1:3846/health   # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
+FIGMA_TOKEN=figd_your_token docker compose --profile local up -d --build --wait
+curl -fsS http://127.0.0.1:${MCP_PORT:-3846}/health   # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
 
 On your workstation, forward the port over SSH:
 
 ```bash
+# not-executed: long-running-process,contains-placeholder
 ssh -N -L 3846:127.0.0.1:3846 you@your-vps
 ```
 
@@ -49,6 +51,7 @@ The server is now `http://127.0.0.1:3846` locally — connect the client exactly
 [examples/mcp-config — HTTP transport](../examples/mcp-config/README.md#http-transport):
 
 ```bash
+# not-executed: requires-mcp-host
 claude mcp add --transport http framefit http://127.0.0.1:3846/mcp
 ```
 
@@ -61,6 +64,7 @@ Prerequisites: a domain pointed at the VPS, Caddy installed (it provisions TLS
 automatically). Start the server as in Option A, then front it:
 
 ```bash
+# not-executed: requires-interactive-input
 caddy hash-password   # enter a password, copy the bcrypt hash
 ```
 
@@ -113,6 +117,7 @@ Restart (`docker compose --profile local up -d`), then connect the client with t
 auth header:
 
 ```bash
+# not-executed: requires-mcp-host,contains-placeholder
 claude mcp add --transport http framefit https://mcp.your-domain.com/mcp \
   --header "Authorization: Basic $(printf 'you:<password>' | base64)"
 ```
@@ -161,6 +166,8 @@ The `local` compose service passes `DS_TEAM_IDS` through to the container (the s
 pass-through as `FIGMA_TOKEN`), so just set it at startup — inline or in `docker/.env`:
 
 ```bash
+# not-executed: contains-placeholder
+cd docker
 FIGMA_TOKEN=figd_your_token DS_TEAM_IDS=1234567890,9876543210 \
   docker compose --profile local up -d --build
 ```
@@ -169,8 +176,10 @@ To sanity-check a sync without a database or restarting the server, run the diag
 the container (both `FIGMA_TOKEN` and `DS_TEAM_IDS` are already there from startup):
 
 ```bash
+# not-executed: requires-running-deployment
+cd docker
 docker compose exec framefit-local framefit graph check
-# → teams / libraries / variables counts; exit 1 if 0 libraries synced
+# -> teams / libraries / variables counts; exit 1 if 0 libraries synced
 ```
 
 Do **not** set `DS_TEAM_IDS` under the multi-tenant (`full`) profile — there the graph is
@@ -229,9 +238,12 @@ Run `framefit status` first — it names the failing subsystem instead of you gu
 checks below applies. See [docs/status.md](status.md) for what each check covers.
 
 ```bash
+# not-executed: alternative-forms,requires-running-deployment
+# Four alternatives, not a sequence - pick the row matching where you are. The first three run from
+# `docker/`; the last runs from `mcp-server/` in a checkout you have already built.
 docker compose exec framefit-local framefit status       # local profile (this page's Option A/B)
 docker compose exec framefit framefit status             # full profile (multi-tenant, below)
-docker compose run --rm framefit-local framefit status   # container NOT running (crash loop) — see last bullet
+docker compose run --rm framefit-local framefit status   # container NOT running (crash loop) - see last bullet
 node dist/index.js status                                # source checkout, from mcp-server/
 ```
 
@@ -259,12 +271,21 @@ node dist/index.js status                                # source checkout, from
   `restart: unless-stopped`, so a container that dies during boot sits in `Restarting` and `exec`
   has nothing to attach to. Ask the same question with `run` instead, which starts a throwaway
   container from the same image and service environment (`--rm` cleans it up, no host port is
-  published, and the image is CMD-only so the command replaces the server cleanly):
+  published, and the image's inherited `docker-entrypoint.sh` execs the arguments it is handed, so
+  the command replaces the server cleanly):
 
   ```bash
-  docker compose run --rm framefit-local framefit status   # or `framefit` under the full profile
+  cd docker
+  set -o pipefail
+  docker compose run --rm framefit-local framefit status | tee /tmp/framefit-crashloop.txt
   docker compose logs framefit-local --tail 20             # the crash itself, for cross-checking
+  grep -qE '^[0-9]+ ok, [0-9]+ skipped, [0-9]+ failed' /tmp/framefit-crashloop.txt
   ```
+
+  The `grep` is not ceremony. `docker compose logs` on a service with no container prints nothing
+  and exits `0`, so ending the block on it would make this recipe green in exactly the case it is
+  written for — measured: `logs framefit-local --tail 20` returned exit `0` and zero lines against a
+  tree where nothing had ever started. The assertion is that `run` produced a verdict.
 
 - A port that is **already taken** announces itself at `up` time, not at `exec` time: compose
   reports `Error response from daemon: ports are not available: ... bind: address already in use`
