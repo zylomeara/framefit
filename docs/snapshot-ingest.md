@@ -5,7 +5,8 @@
 On a very large design-system file `GET /v1/files/:key/variables/local` can answer
 `400 Request too large`. That failure is **intermittent, not permanent**: it is Figma's ~55s
 server-side job limit for the endpoint, so it is load-dependent. The remedies, in order — the same
-order the shipped error hint gives you (`get-variables-tool.ts:141-147`):
+order the shipped error hint gives you
+(see `mcp-server/src/adapters/driving/tools/get-variables-tool.ts`, `This is intermittent (load-dependent), so retry first`):
 
 1. **Retry.** It often succeeds on the next attempt. Do this first.
 2. **Split the design-system file** into smaller files if it keeps failing. The endpoint has no

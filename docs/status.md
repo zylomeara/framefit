@@ -11,7 +11,8 @@ Three invocation forms:
 
 ```bash
 # A source checkout. There is no `framefit` on PATH - the bin symlink exists only in the image
-# (docker/Dockerfile:21) - so call the built entrypoint directly.
+# (see `docker/Dockerfile`, `ln -s /app/dist/index.js /usr/local/bin/framefit`) - so call the built
+# entrypoint directly.
 node dist/index.js status
 
 # A deployed box whose container is RUNNING (compose service `framefit`, or `framefit-local` under
@@ -229,12 +230,14 @@ Exactly one JSON document on stdout. Fields:
 ## Scope: what status can and cannot see
 
 `status` reads the **process environment only**. It never loads a `.env` file - unlike `pnpm start`,
-which passes `--env-file-if-exists=.env` (`mcp-server/package.json:23`). Under `docker compose exec` it
-therefore sees exactly the service's environment, which is the environment the server itself booted
-with. Under `docker compose run` it sees that environment as compose renders it NOW - from the compose
-file, `env_file` and your shell - which is the right question to ask of a container that will not boot,
-but it is not proof of what the looping container started with if the config changed since. In a shell
-where you have only sourced a `.env` by hand, it sees whatever that shell exported and nothing more.
+which passes `--env-file-if-exists=.env`
+(see `mcp-server/package.json`, `"start": "node --env-file-if-exists=.env dist/index.js"`). Under
+`docker compose exec` it therefore sees exactly the service's environment, which is the environment
+the server itself booted with. Under `docker compose run` it sees that environment as compose renders
+it NOW - from the compose file, `env_file` and your shell - which is the right question to ask of a
+container that will not boot, but it is not proof of what the looping container started with if the
+config changed since. In a shell where you have only sourced a `.env` by hand, it sees whatever that
+shell exported and nothing more.
 
 It also cannot see a **running server's memory**. The single-tenant variable graph is built in the
 server process and held there for the life of that process, so a fresh `sync` is invisible to a running
