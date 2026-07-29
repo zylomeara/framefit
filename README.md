@@ -129,12 +129,44 @@ cycle automatically.
 ## Figma token
 
 The server authenticates to Figma with a personal access token (`FIGMA_TOKEN`). Generate one in
-Figma: **Settings → Security → Personal access tokens**, with scopes:
+Figma: **Settings → Security → Personal access tokens**, with the scopes for the tools you use:
 
-- `file_comments:read`
-- `file_content:read`
-- `file_variables:read` — Enterprise only; enables `get_variables` and token-name resolution in
-  design context. Everything else works without it.
+- `file_content:read` — every file-reading tool: the design-QA loop, navigation, screenshots,
+  asset export, and the review-board pair (`get_review_board`, `get_pin_detail`, which read pin
+  text from nodes and never call the comments endpoint).
+- `file_comments:read` — `get_comments`, `summarize_comments`, `find_threads`.
+- `file_comments:write` — `post_comment`, `reply_to_comment`, `delete_comment`.
+  `file_comments:read` is read-only and does not cover these; the server's own 403 names this
+  scope. Those three tools are the only ones that take no per-call `figma_token`, so they always
+  run on the server's token.
+- `file_variables:read` — Enterprise only. `get_variables` fails outright without it;
+  `get_design_context` reports the skipped stage in `degraded_stages`; `compare_node_to_dom`
+  **degrades quietly**, and its token rows read `unknown`.
+- `team_library_content:read` — `search_design_system`, which reads the published components,
+  component sets and styles of a team. A 403 is diagnosed per team and re-thrown carrying Figma's
+  own stated reason.
+- `library_content:read` — `get_libraries` fails outright without it. Component identity in
+  `get_layout_spec` / `suggest_pairs` / `compare_node_to_dom` / `get_view` **degrades quietly**
+  instead, to a `setUnresolved` info row.
+- `library_assets:read` — resolving a component key to the library file it came from. No caller
+  raises: `get_code_connect_map` returns empty with `reason:"components_unresolved"`;
+  `get_libraries` marks the result `degraded:true`; and `search_design_system`'s optional `file:`
+  narrowing **degrades quietly** — with no library keys to narrow by it stops filtering
+  altogether, still reporting `file` while returning the team's entire asset list.
+- `projects:read` — the `DS_TEAM_IDS` variable-graph sync recommended above, where it **degrades
+  quietly**: the sync logs and skips the team, so the advertised `resolved_via:"graph"` silently
+  never happens. On the multi-tenant `/accounts` team-discovery path it raises instead.
+- `current_user:read` — `framefit status`'s `figma` probe, which calls `GET /v1/me`.
+
+The design-QA loop (`get_layout_spec` → `suggest_pairs` → `compare_node_to_dom`) needs
+`file_content:read` and nothing else; each remaining scope unlocks the tools named beside it. Read
+each entry for its failure mode: the ones marked **degrades quietly** return an incomplete answer
+rather than an error, so a missing scope there looks like a result and not like a problem.
+
+Per-scope necessity is unverified. The mapping above is derived from the endpoints this server
+calls and from Figma's published scope table, not from minting one token per scope and observing
+403 against 200. The failure modes were read from the code path that emits them, per scope; they
+are not a closed list of everything a missing scope can affect.
 
 Keep the token in the client's env block (Tier 1) or `mcp-server/.env` — never in a committed
 config file. Note: Figma PATs now expire after at most 90 days.
