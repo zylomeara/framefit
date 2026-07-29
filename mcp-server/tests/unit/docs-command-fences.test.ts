@@ -121,8 +121,9 @@ const PRECONDITIONS = new Set(['built-checkout']);
 // it was tagged, so the untagged check was satisfied, and it was not `bash`, so it was never
 // classified at all. A whitelist inverts the default: an unknown tag is red until someone adds it
 // here deliberately, shell-ish or not, and the empty tag is red for the same reason. The corpus uses
-// exactly one shell spelling today (measured: 27 bash, 2 json, 2 dotenv, 1 caddyfile) and this keeps
-// it that way.
+// exactly one shell spelling today (measured 2026-07-29: 27 bash, 3 json, 2 dotenv, 1 caddyfile --
+// the third `json` is the live-iteration config `examples/mcp-config/README.md` gained, which
+// `mcp-server/scripts/stdio-smoke.mjs` reads and spawns) and this keeps it that way.
 const ALLOWED_LANGS = new Set(['bash', 'json', 'dotenv', 'caddyfile']);
 
 // A marker only counts INSIDE its fence. One line above it is a markdown comment on nothing, and in
