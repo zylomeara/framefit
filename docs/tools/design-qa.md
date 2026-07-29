@@ -34,7 +34,7 @@ the extractor can POST snapshots to directly from the browser, yielding a `dom_r
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `file` | string, **required** | Figma file URL or raw key |
-| `node_ids` | string[], **required** | Node ids to project into diff-ready layout specs (batched in one REST call). |
+| `node_ids` | string[], **required** | Node ids to project into diff-ready layout specs, up to 20 per call (batched in one REST call). |
 | `include_extractor` | boolean (default `false`) | Include the canonical DOM extractor script (paste it VERBATIM into chrome-devtools `evaluate_script`). |
 | `extractor_mode` | `"loader"` \| `"inline"` (default `"loader"`) | `loader`: a <=7-line thunk that fetches the versioned extractor from the server (`GET /api/dom-snapshots/extractor.js`) instead of inlining ~90 lines of JS every call - falls back to inline automatically if the server has no public base URL configured. `inline`: always return the full extractor script (e.g. if the loader's script-tag injection is CSP-blocked). |
 | `max_depth` | integer 1–8 (default 4) | Capture depth for BOTH sides (Figma projection + emitted extractor). Drill into a `childrenTruncated` branch by re-fetching it deeper (e.g. `max_depth:6`) - pass the SAME `max_depth` to `compare_node_to_dom` for that pair, or the Figma/DOM sides desync. |
@@ -153,7 +153,7 @@ a `fix_plan` (grouped edits derived from fail rows). See the
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `file` | string, **required** | Figma file URL or raw key |
-| `pairs` | array, **required** | `node_id` <-> DOM snapshot pairs, all fetched in ONE REST call. Each item: `{ node_id, dom?, dom_ref?, label?, expected_component? }` - pass `dom` (extractor snapshot object) or `dom_ref` (uploaded-snapshot reference). |
+| `pairs` | array, **required** | `node_id` <-> DOM snapshot pairs - up to 20 per call, all fetched in ONE REST call. Each item: `{ node_id, dom?, dom_ref?, label?, expected_component? }` - pass `dom` (extractor snapshot object) or `dom_ref` (uploaded-snapshot reference). |
 | `frame_node_id` | string | The breakpoint frame you resized the viewport to - enables the viewport guard |
 | `expected_overlay_width` | number | The actual rendered width of a fixed-width overlay (drawer/modal) whose DOM box does not scale with the viewport. Decouples `size.w` and the viewport guard from `frame_node_id`, adds a dedicated `overlay_width` row, and - when `frame_node_id` is ALSO given - a preflight check that the chosen breakpoint frame actually matches this width. |
 | `tolerance_px` | number 0–10 | A delta below this is a pass (px metrics); omitted -> 1 (token-aware/layout) or 0 (strict); an explicit >0 is rejected under strict |

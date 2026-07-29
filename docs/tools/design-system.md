@@ -138,7 +138,7 @@ explaining why and how to populate mappings.
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `file` | string, **required** | Figma file URL or raw key |
-| `node_ids` | string[], **required** | Instance node ids - top-level (`"1:42"`) or nested (`"I12:340;56:7890"`, copied from `get_metadata`/`get_review_board`). Resolved shallowly (depth 1); for a whole frame use `get_design_context`. |
+| `node_ids` | string[], **required** | Instance node ids - top-level (`"1:42"`) or nested (`"I12:340;56:7890"`, copied from `get_metadata`/`get_review_board`). Resolved shallowly (depth 1); for a whole frame use `get_design_context`. Up to 50 node ids per call. |
 | `figma_token` | string | Override Figma PAT |
 
 **Example**

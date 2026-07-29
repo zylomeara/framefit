@@ -144,7 +144,7 @@ frame by hand.
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `file` | string, **required** | Figma file URL or raw key |
-| `node_ids` | string[], **required** | Breakpoint frame node ids - one per width (e.g. desktop/laptop/tablet/mobile). Fetched in one call. |
+| `node_ids` | string[], **required** | Breakpoint frame node ids - one per width (e.g. desktop/laptop/tablet/mobile), 2 to 8 per call. Fetched in one call. |
 | `name` | string, **required** | Element name/role to compare across breakpoints (e.g. "tabs"). |
 | `fuzzy` | boolean (default `false`) | Typo-tolerant matching of the element name. |
 | `include_color` | boolean (default `true`) | Include the element's text color per breakpoint. |
