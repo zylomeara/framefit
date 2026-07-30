@@ -208,14 +208,15 @@ to its localhost defaults and auth breaks — treat the block as a required pre-
 ## 3. Deploying from a published image (instead of building on the host)
 
 CI (`.github/workflows/ci.yml`, job `publish-image`) builds `docker/Dockerfile` and pushes it
-to **`ghcr.io/zylomeara/framefit`** — only after `unit`, `integration`, `stdio-smoke` and
-`secrets-scan` are green. Tag scheme:
+to **`ghcr.io/zylomeara/framefit`** — only after `unit`, `integration`, `stdio-smoke`,
+`doc-sequences` and `secrets-scan` are green (`publish-image`'s `needs:` names all five). Tag
+scheme:
 
-| Tag                       | When                                | Use it for                                    |
-|---------------------------|-------------------------------------|-----------------------------------------------|
-| `sha-<short>`             | every push to `main`                | naming a commit's build — stable, but see below|
-| `main`                    | every push to `main`                | moving pointer — convenience, not a pin       |
-| `<x.y.z>`, `<x.y>`, `latest` | **only** on a `v*` git tag       | releases                                      |
+| Tag                          | When                                        | Use it for                                     |
+|------------------------------|---------------------------------------------|------------------------------------------------|
+| `sha-<short>`                | every push to `main` **and** every `v*` tag  | naming a commit's build — not a pin, see below |
+| `main`                       | every push to `main`                        | moving pointer — convenience, not a pin        |
+| `<x.y.z>`, `<x.y>`, `latest` | **only** on a `v*` git tag                  | releases — no `v`: `{{version}}` strips it     |
 
 The version numbers do **not** advance on every push — only a `v*` tag mints them. So a
 `main`/`sha-` image built after a release still reports the released version in its handshake;
@@ -224,9 +225,15 @@ the truth about what is deployed is the image **digest** plus the
 
 **Pin the digest, not the tag** — including `sha-<short>`, which looks immutable because it
 names a commit. It is not: each publish of that commit builds a fresh image and the builds are
-not bit-reproducible. On commit `28df820` the push-to-`main` run and the `v0.11.0` tag run each
-pushed `sha-28df820` with a different digest, so the tag names whichever finished last.
-Re-running a workflow, or tagging an already-published commit, moves it the same way.
+not bit-reproducible. Re-running a workflow, or tagging an already-published commit, publishes that
+same commit a second time — `type=sha` fires on `v*` tag runs too, not only on pushes to `main` —
+and `sha-<short>` then names whichever build finished last, not the one you saw.
+
+**Precondition: the image is private.** An anonymous GHCR token for `ghcr.io/zylomeara/framefit`
+carries no pull scope (measured: token length `0`, manifest `403`), so both commands below need
+`docker login ghcr.io` first, with a token carrying `read:packages` (see the first gotcha below for
+which kind). Building on the host — §§ 1 and 2 — stays the documented default; this section is the
+alternative for a box you would rather not compile on.
 
 The host then **pulls instead of building** — no compile on the box:
 
@@ -234,8 +241,9 @@ The host then **pulls instead of building** — no compile on the box:
 # not-executed: requires-registry-auth,contains-placeholder
 cd docker
 
-# resolve the tag you want to its digest (downloads nothing), then pin that
-docker buildx imagetools inspect ghcr.io/zylomeara/framefit:v0.11.0 --format '{{.Manifest.Digest}}'
+# resolve the tag you want to its digest (downloads nothing), then pin that.
+# <x.y.z> is an image tag from the table above — the `v` belongs to the git tag, not the image.
+docker buildx imagetools inspect ghcr.io/zylomeara/framefit:<x.y.z> --format '{{.Manifest.Digest}}'
 docker pull ghcr.io/zylomeara/framefit@sha256:<digest>
 # then REPLACE the service's `build:` block with `image: ghcr.io/zylomeara/framefit@sha256:<digest>`
 # - never keep both: a service with `image:` AND `build:` silently builds when a pull fails,
