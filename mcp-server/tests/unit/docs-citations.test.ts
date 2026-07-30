@@ -26,8 +26,10 @@
 //
 // FENCE RULE. Inside a fenced block, a line whose first non-space character is `#` or `//` is
 // PROSE -- for the ban and for the citation collector alike. (`//` because
-// `docs/design-qa-tutorial.md` annotates four `json` fences that way, and a banned citation there
-// would otherwise be invisible.) Only NON-COMMENT fence lines are exempt from the ban, and they are
+// `docs/design-qa-tutorial.md` opens each of its four request fences with a `// <tool>` line, and a
+// banned citation there would otherwise be invisible. The rule is tag-agnostic, which is why those
+// fences moving from `json` to `jsonc` changes nothing here.) Only NON-COMMENT fence lines are
+// exempt from the ban, and they are
 // never collected as citations, because a shell transcript may legitimately print `file:line` (a
 // grep result, a stack frame, a compiler error). That exemption is a FORWARD GUARD, not a hole: as
 // of this gate landing there are ZERO non-comment in-fence `file:line` tokens anywhere under
@@ -60,7 +62,12 @@ const DOCS_DIR = path.join(REPO_ROOT, 'docs');
 // used to claim the image was "CMD-only") and `mcp-server/src/infrastructure/env-graph.ts`,
 // `throws on a garbage id` (an unparseable DS_TEAM_IDS aborts boot, so it belongs in the
 // boot-aborts bullet and not the still-boots one).
-const CITATION_FLOOR = 6;
+// Raised to 7 by docs/design-qa-tutorial.md's citation of
+// `mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts`,
+// `useLoader = extractorMode === 'loader' && !!deps.publicBaseUrl` -- the condition that degrades the
+// default loader mode to the full inline script, which is why the stdio reader is handed an
+// `extractor_note` and never an `upload_url`.
+const CITATION_FLOOR = 7;
 
 // Ban, rule 1 -- a path-shaped token with a known extension followed by `:<digits>`. Existence is
 // NOT required here: `get-variables-tool.ts:141` cited a real file by bare basename, which resolves

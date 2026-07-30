@@ -12,9 +12,14 @@ This walkthrough shows the full design-QA cycle with the five tools from
 7. [Strictness profiles](#step-7--strictness-profiles)
 8. [What the tool does not check](#step-8--what-the-tool-does-not-check)
 
-All node ids, file keys and selectors below are neutral examples. The scenario: a `Product card`
-frame in Figma, rendered on a page as `.product-card`, driven from an agent that also controls a
-browser (e.g. via chrome-devtools MCP).
+All node ids, file keys and selectors below are neutral examples, and they are the same ones the
+[tool reference](tools/design-qa.md) uses, so the two pages describe one file. The scenario: a
+`Product card` frame in Figma, rendered on a page as `.card`, driven from an agent that also
+controls a browser (e.g. via chrome-devtools MCP).
+
+Every request example below is tagged `jsonc` rather than `json`: each opens with a `// <tool>` line
+naming the tool to call it on, and the DOM snapshots in steps 3 and 4 are trimmed with `/* ... */`
+markers. Drop the comments before sending one — nothing in them belongs to the argument object.
 
 The comparison is **deterministic**: it diffs numbers projected from the Figma REST API against
 numbers computed from the live DOM. No screenshots are compared, no model judgement is involved in
@@ -29,25 +34,25 @@ a `pass`/`fail` row.
 Your page is rendered at some viewport width; Figma usually has one frame per breakpoint. Rank the
 variants by how close their **content** width is to your render width:
 
-```json
+```jsonc
 // find_breakpoint_variant
 {
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "query": "product card",
-  "render_width": 1280
+  "render_width": 320
 }
 ```
 
-Take the best match (say `12:340`, "Desktop", width 1280) and resize the browser viewport to that
-width. Passing this id later as `frame_node_id` arms the **viewport guard**: if the window and the
-frame disagree, size rows are demoted to `unchecked` with a `fix_viewport` action instead of
-producing false reds.
+Take the best match — here the content frame `12:340` (`Product card`, 320 wide) inside the
+`Desktop` variant `12:300` — and resize the browser viewport to that width. Passing this id later as
+`frame_node_id` arms the **viewport guard**: if the window and the frame disagree, size rows are
+demoted to `unchecked` with a `fix_viewport` action instead of producing false reds.
 
 ## Step 2 — capture both sides
 
 One call projects the Figma side and hands you the DOM extractor:
 
-```json
+```jsonc
 // get_layout_spec
 {
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
@@ -57,34 +62,108 @@ One call projects the Figma side and hands you the DOM extractor:
 }
 ```
 
-The response contains:
+On the stdio server the [quickstart](../README.md#quickstart) installs, this call comes back with
+`file`, `snapshot_schema`, `specs`, `hydration`, `extractor_js` and `extractor_note`:
 
 - `specs[]` — the diff-ready Figma projection (rects, auto-layout axis/gap/padding, children
   geometry, typography, fills);
-- `extractor_js` — the canonical DOM extractor, schema-versioned with the server. Run it
-  **verbatim** in the browser (e.g. chrome-devtools `evaluate_script`). Do not write your own
-  `getComputedStyle` walker: the extractor and the server agree on a snapshot schema, and the
-  server rejects stale schemas honestly (`extractor_outdated`) instead of diffing garbage;
-- `upload_url` (when the server has a public base URL) — the extractor POSTs snapshots there
-  directly from the browser and returns a small `snapshot_ref`. You then pass
-  `dom_ref: { ref, selector | index }` instead of pasting megabytes of snapshot JSON through the
-  MCP wire. Without an upload URL, pass the snapshot object inline — both work.
+- `extractor_js` — the canonical DOM extractor, schema-versioned with the server. It is an **async
+  function expression, not a script**: it begins
+  `async (selectors, uploadUrl, depthLeft = 3, budget = 90) => {`. Evaluated as it stands it yields
+  a function object and captures nothing, and handing it to chrome-devtools `evaluate_script` on its
+  own calls it with no arguments, which throws a `TypeError` on the missing `selectors`. Wrap it in
+  a thunk that names every selector and awaits the call:
 
-Capture the frame root (here `.product-card`) so the whole subtree is available for pairing.
-`max_depth` applies to **both** sides — remember the value you used.
+  ```js
+  async () => {
+    const extract = <extractor_js VERBATIM>;
+    return await extract([".card", ".card__title", ".card__price"]);
+  }
+  ```
+
+  `extractor_js` goes into that one slot verbatim, and on stdio that is the whole inline script —
+  tens of kilobytes of it, which is more than you want to repeat per capture. **Paste it once and
+  keep the handle**: send one `evaluate_script` whose whole body is
+  `window.__extract = <extractor_js VERBATIM>;`, and every capture after that is the short
+  `async () => await window.__extract([".card", ".card__title", ".card__price"])`. The handle lives
+  on the page, so a reload or a navigation drops it and you paste again. Do not write your own
+  `getComputedStyle` walker instead: the extractor and the server agree on a snapshot schema, and the
+  server rejects a stale schema honestly (`extractor_outdated`) rather than diffing garbage;
+- `extractor_note` — `loader unavailable without public base URL — inline returned`. A loader is what
+  `extractor_mode` asks for by default, and it degrades to the inline script whenever the server has
+  no public base URL to point a browser at
+  (see `mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts`, `useLoader = extractorMode === 'loader' && !!deps.publicBaseUrl`).
+
+That key list is this call's, not the tool's: `extractor_mode: "inline"` returns no `extractor_note`
+(nothing degraded — you asked for inline), and `text_leaves: true`, or a `node_ids` entry the file
+does not hold, returns no `hydration`. What a stdio response never carries is an `upload_url` or an
+`upload_hint`.
+
+> **An HTTP deployment has two things stdio does not, and both come from the public base URL.**
+> First, the loader actually loads: `extractor_js` comes back as a short thunk that fetches the
+> versioned script from the server (`GET /api/dom-snapshots/extractor.js`), so nothing large is
+> pasted at all — and `extractor_mode: "inline"` forces the full script back when you want it (the
+> loader injects a script tag, which a strict CSP will block). Second, `get_layout_spec` also returns
+> an `upload_url`: the extractor POSTs the snapshots there straight from the browser, returns a short
+> `{snapshot_ref, summaries}` in their place, and you pass `dom_ref: { ref, selector | index }`
+> wherever this page passes a snapshot object. That second path needs the DOM-snapshot store, which
+> only the HTTP server paths construct, so on stdio it is not the other of two working options:
+> `suggest_pairs` fails outright with `snapshot store unavailable on this server — pass dom_snapshot
+> inline`, and `compare_node_to_dom` puts a `snapshot_ref` `warn` row and a `re_extract_dom` blocking
+> item on the pair and measures nothing.
+
+**Call the extractor once with every pair's selector, and hand `snapshots[i]` to `pairs[i].dom`.**
+With no upload URL the extractor returns a plain array — one snapshot per selector, in selector
+order — while `compare_node_to_dom` takes exactly one snapshot object per pair. So capture all three
+selectors step 4 declares pairs for, in the order it declares them: the frame root `.card` first
+(that snapshot carries the whole subtree, which is what step 3 needs), then `.card__title`, then
+`.card__price`. Capture the frame root alone and `snapshots[1]` and `snapshots[2]` are `undefined`,
+leaving two of the three pairs with nothing to pass. Under the inline form there is no
+`dom_ref.selector` resolved against the snapshot, so the question of which nesting level a selector
+addresses does not arise here.
+
+`max_depth` applies to **both** sides — remember the value you used. These examples pass
+`max_depth: 4`, which is exactly what the extractor's own defaults capture, so the two-argument call
+is enough. Raise it and that stops holding: nothing tells the extractor the new depth, so pass it
+yourself as the third and fourth arguments — `extract([...], undefined, depthLeft, budget)` — with
+`depthLeft = max_depth - 1` and `budget` from the server's own mapping: `max_depth` 4 gives
+`(3, 90)`, 6 gives `(5, 180)`, 8 gives `(7, 180)`. Re-running the two-argument call after raising
+`max_depth` captures the DOM three levels deep against a Figma projection that went deeper — which
+is the trap waiting for anyone working step 5's `raise_max_depth` action.
 
 ## Step 3 — build pairs
 
 Hand the frame root and the DOM snapshot to the pair proposer:
 
-```json
+```jsonc
 // suggest_pairs
 {
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "frame_node_id": "12:340",
-  "dom_ref": { "ref": "snap_0f3a…", "index": 0 }
+  "dom_snapshot": {
+    "schema": 5,
+    "status": "ok",
+    "selector": ".card",
+    "innerWidth": 320,
+    "rect": { "x": 0, "y": 0, "w": 320, "h": 420 },
+    "borders": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+    "paddings": { "top": 16, "right": 16, "bottom": 16, "left": 16 },
+    "scroll": { "top": 0, "left": 0 },
+    "componentHints": { "tag": "div", "classList": ["card", "ProductCard_card__e4f5a6"], "data": {} },
+    "children": [
+      { "kind": "element", "tag": "h3", "classList": ["card__title", "ProductCard_title__a1b2c3"],
+        "path": "> :nth-child(1)", "rect": { "x": 16, "y": 16, "w": 288, "h": 24 } /* ... */ }
+      /* ... then the price element and the list */
+    ]
+    /* ... */
+  }
 }
 ```
+
+That object is `snapshots[0]`, the frame-root snapshot the extractor printed, **trimmed to fit this
+page** — paste yours whole. `paddings` is not decoration: a snapshot missing it makes the diff report
+`extractor_outdated` and raise an `update_extractor` blocking item, so a hand-shortened snapshot has
+the tool telling you to repair an extractor that is fine.
 
 You get proposed `pairs` (each with a confidence and an `ambiguous` flag), plus honest
 `unmatched_figma` / `unmatched_dom` lists. Review the proposals — confirm the high-confidence
@@ -94,19 +173,33 @@ verification receipt as uncovered regions if you leave them unpaired.
 
 ## Step 4 — compare
 
-```json
+```jsonc
 // compare_node_to_dom
 {
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "frame_node_id": "12:340",
   "pairs": [
-    { "node_id": "12:340", "dom_ref": { "ref": "snap_0f3a…", "index": 0 }, "label": "card root" },
-    { "node_id": "12:341", "dom_ref": { "ref": "snap_0f3a…", "selector": ".product-card__title" }, "label": "title" },
-    { "node_id": "12:344", "dom_ref": { "ref": "snap_0f3a…", "selector": ".product-card__price" }, "label": "price" }
+    { "node_id": "12:340", "label": "card root",
+      "dom": { "schema": 5, "selector": ".card", "innerWidth": 320,
+               "rect": { "x": 0, "y": 0, "w": 320, "h": 420 },
+               "paddings": { "top": 16, "right": 16, "bottom": 16, "left": 16 } /* ... snapshots[0] */ } },
+    { "node_id": "12:341", "label": "title",
+      "dom": { "schema": 5, "selector": ".card__title", "innerWidth": 320,
+               "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
+               "paddings": { "top": 0, "right": 0, "bottom": 0, "left": 0 } /* ... snapshots[1] */ } },
+    { "node_id": "12:344", "label": "price",
+      "dom": { "schema": 5, "selector": ".card__price", "innerWidth": 320,
+               "rect": { "x": 16, "y": 52, "w": 288, "h": 20 },
+               "paddings": { "top": 0, "right": 0, "bottom": 0, "left": 0 } /* ... snapshots[2] */ } }
   ],
   "max_depth": 4
 }
 ```
+
+Every `dom` here is the matching `snapshots[i]` cut to its first few keys; pass each one whole, in
+the order the extractor returned them. `innerWidth` must equal the frame's width — 320 for `12:340`
+— or the viewport guard turns every geometry row `unchecked` and adds a `fix_viewport` blocking item
+per pair.
 
 Each pair yields rows `{ prop, figma, dom, delta, status }`. Row statuses:
 
@@ -124,7 +217,7 @@ Abridged sanitized output:
 ```jsonc
 {
   "tolerance_px": 1,
-  "frame": { "node_id": "12:340", "width": 1280 },
+  "frame": { "node_id": "12:340", "width": 320 },
   "pairs": [
     {
       "node_id": "12:341", "label": "title",
