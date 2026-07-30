@@ -1377,6 +1377,48 @@ describe('the corner radius is read from all four corners', () => {
     expect(snap.styles.borderRadius).toBe(8);
     expect(snap.styles.borderRadiusAsymmetric).toBeUndefined();
   });
+
+  // The corners are compared as STRINGS, and this is the case that forces it. `border-radius:
+  // 8px / 4px 40px 4px 40px` computes to four "h v" PAIRS, and parseFloat reads every one of them as
+  // the same 8 -- four visibly different corners passing against a Figma 8. Measured before the fix:
+  // borderRadius: 8, no flag, row `pass`.
+  it('the h/v pair trap: 8px 4px | 8px 40px | ... -> asymmetric (parseFloat reads all four as 8)', async () => {
+    const paired = { borderTopLeftRadius: '8px 4px', borderTopRightRadius: '8px 40px',
+      borderBottomRightRadius: '8px 4px', borderBottomLeftRadius: '8px 40px' };
+    const [snap]: any = await buildExtractor(paired)(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusAsymmetric).toBe(true);
+    const [child]: any = await buildExtractorPerEl(paired)(['main']);
+    expect(child.children[0].styles.borderRadius).toBeUndefined();
+    expect(child.children[0].styles.borderRadiusAsymmetric).toBe(true);
+  });
+
+  // Four IDENTICAL corners that parse to nothing are ONE radius, not four different ones. They must
+  // NOT raise the flag: `unchecked`'s note says "the four DOM corners differ", which would be a false
+  // statement about four identical `calc()`s. They take the uniform path, where num() leaves no
+  // number -- the pre-v6 behaviour -- and in particular no NaN reaches the wire.
+  it('uniform-but-unparseable corners: no borderRadius, NO flag, and no NaN on the wire', async () => {
+    for (const v of ['', 'calc(1rem + 2px)']) {
+      const same = { borderTopLeftRadius: v, borderTopRightRadius: v,
+        borderBottomRightRadius: v, borderBottomLeftRadius: v };
+      const [snap]: any = await buildExtractor(same)(['main']);
+      expect(snap.styles.borderRadius, `borderRadius for ${JSON.stringify(v)}`).toBeUndefined();
+      expect(snap.styles.borderRadiusAsymmetric).toBeUndefined();
+      expect(JSON.stringify(snap)).not.toContain('NaN');
+      expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+    }
+  });
+
+  // Pre-existing and deliberately unchanged: a percentage radius ships its bare number. It errs
+  // toward a false ALARM (50 vs a Figma 8), never a false green, and flagging every circular avatar
+  // as an unchecked blocking item would be worse than the disease. docs/coverage.md says so.
+  it('a percentage radius still ships its bare number (50% -> 50) -- unchanged on purpose', async () => {
+    const pct = { borderTopLeftRadius: '50%', borderTopRightRadius: '50%',
+      borderBottomRightRadius: '50%', borderBottomLeftRadius: '50%' };
+    const [snap]: any = await buildExtractor(pct)(['main']);
+    expect(snap.styles.borderRadius).toBe(50);
+    expect(snap.styles.borderRadiusAsymmetric).toBeUndefined();
+  });
 });
 
 describe('v5: the style bundle on children', () => {

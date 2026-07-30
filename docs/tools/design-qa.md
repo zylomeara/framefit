@@ -101,7 +101,7 @@ Response (abridged), from the stdio server:
     { "node_id": "12:340", "held_depth": 5, "hydrated": true, "drill_free_upto": 4,
       "cause_breakdown": { "depth": 0, "breadth": 0, "budget": 0 } }
   ],
-  "extractor_js": "<full inline extractor script, 51243 chars - elided>",
+  "extractor_js": "<full inline extractor script, 51705 chars - elided>",
   "extractor_note": "loader unavailable without public base URL — inline returned"
   /* On an HTTP server with a public base URL, extractor_js is the versioned loader thunk instead,
      there is no extractor_note, and an "upload_url": "https://<server>/api/dom-snapshots/<capToken>"

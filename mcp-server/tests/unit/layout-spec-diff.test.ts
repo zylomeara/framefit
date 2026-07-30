@@ -3070,4 +3070,22 @@ describe('D7: an asymmetric DOM corner radius never passes against a uniform Fig
     expect(r.status).toBe('unchecked');
     expect(r.dom).toBeNull();
   });
+
+  // The OTHER direction of the same wrapper, and the one the test above cannot see: the carrier is
+  // the CHILD, so the flag has to be read THROUGH the active anchor. Swapping the arms of
+  // `sRadiusAsym = a ? a.styles?... : d.styles?...` survives the rest of the suite -- with the arms
+  // swapped this fixture reads the flag off the empty wrapper root, falls through to sRadius (which
+  // an active anchor defaults to 0) and reports a fail 8 vs 0 about a rounded child.
+  it('read THROUGH the anchor: an asymmetric radius on the style carrier reaches the unchecked row', () => {
+    const carrier = { kind: 'element', tag: 'div', classList: ['carrier'],
+      rect: { x: 0, y: 0, w: 100, h: 40 },
+      styles: { borderRadiusAsymmetric: true }, children: [] };
+    const rows = diffPair(radiusSpec as any,
+      flatDom({}, { children: [carrier] }) as any, { tolerancePx: 1 });
+    expect(row(rows, 'style_anchor')?.status, 'the wrapper is transparent, so the anchor must be active').toBe('pass');
+    const r = row(rows, 'corner-radius');
+    expect(r, `the corner-radius row was ${JSON.stringify(r)}`).toBeDefined();
+    expect(r.status).toBe('unchecked');
+    expect(r.dom).toBeNull();
+  });
 });

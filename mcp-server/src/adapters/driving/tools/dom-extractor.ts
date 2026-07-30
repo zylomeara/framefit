@@ -13,15 +13,21 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   const rectOf = (r) => ({ x: round1(r.x), y: round1(r.y), w: round1(r.width), h: round1(r.height) });
   const padsOf = (cs) => ({ top: num(cs.paddingTop) || 0, right: num(cs.paddingRight) || 0,
     bottom: num(cs.paddingBottom) || 0, left: num(cs.paddingLeft) || 0 });
-  // A corner radius is FOUR numbers in CSS and ONE in Figma. Reading the top-left corner alone made
-  // border-radius: 8px 0 0 0 indistinguishable from a uniform 8px, so the diff issued a PASS over a
-  // difference it had never measured. Uniform (all four defined and equal) -> the same single number
-  // as before, byte for byte, which is the overwhelmingly common case. Otherwise -> no number at all
-  // and a flag: the diff has no per-corner axis to judge this on, and a number here would be a lie
-  // whichever way it went.
+  // A corner radius is FOUR values in CSS and ONE number in Figma. Reading the top-left corner alone
+  // made border-radius: 8px 0 0 0 indistinguishable from a uniform 8px, so the diff issued a PASS
+  // over a difference it had never measured.
+  // COMPARED AS STRINGS, never through num(): a computed corner may be an "h v" PAIR, and
+  // parseFloat('8px 4px') is 8 -- so border-radius: 8px / 4px 40px 4px 40px computes to
+  // '8px 4px' / '8px 40px' / '8px 4px' / '8px 40px', four visibly different corners that every
+  // parseFloat reads as the same 8. The strings are what actually differ.
+  // Four EQUAL strings are ONE radius even when they parse to nothing (calc(), '', an absent
+  // longhand): that is not "four different corners", so it takes the uniform path and num() simply
+  // leaves no number -- the pre-v6 behaviour, no field and no flag, and no NaN on the wire. Only
+  // genuinely differing corners raise the flag, which is what keeps the diff's note true of every
+  // input that can reach it.
   const radiusOf = (cs) => {
-    const c = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius].map(num);
-    return c.every((v) => v !== undefined && v === c[0]) ? { value: c[0] } : { asymmetric: true };
+    const c = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius];
+    return c.every((v) => v === c[0]) ? { value: num(c[0]) } : { asymmetric: true };
   };
   const toHex = (c) => {
     const m = /^rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)$/.exec(c || '');
