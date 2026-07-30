@@ -249,7 +249,8 @@ function uncheckedToBlocking(r: DiffRow, p: PairResult, depthLevels: number): Bl
       ? { ...base, kind: 'viewport', action: 'fix_viewport' }
       : { ...base, kind: 'skip', action: 'resolve_skip' };
   }
-  // corner-radius unchecked = the four DOM corners differ against ONE Figma radius. Left to fall through,
+  // corner-radius unchecked = the DOM radius is not one comparable px number (corners that differ, a
+  // percentage, an ellipse) against Figma's single px radius. Left to fall through,
   // the change that exists to stop a false pass would tell the reader to raise max_depth in order to fix a
   // border radius — the same false navigation the note above says was removed for the viewport case.
   // resolve_skip is the existing "a human must look" bucket; no fourteenth action is invented for this.

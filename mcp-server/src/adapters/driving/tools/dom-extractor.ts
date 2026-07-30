@@ -13,21 +13,30 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   const rectOf = (r) => ({ x: round1(r.x), y: round1(r.y), w: round1(r.width), h: round1(r.height) });
   const padsOf = (cs) => ({ top: num(cs.paddingTop) || 0, right: num(cs.paddingRight) || 0,
     bottom: num(cs.paddingBottom) || 0, left: num(cs.paddingLeft) || 0 });
-  // A corner radius is FOUR values in CSS and ONE number in Figma. Reading the top-left corner alone
-  // made border-radius: 8px 0 0 0 indistinguishable from a uniform 8px, so the diff issued a PASS
-  // over a difference it had never measured.
-  // COMPARED AS STRINGS, never through num(): a computed corner may be an "h v" PAIR, and
-  // parseFloat('8px 4px') is 8 -- so border-radius: 8px / 4px 40px 4px 40px computes to
-  // '8px 4px' / '8px 40px' / '8px 4px' / '8px 40px', four visibly different corners that every
-  // parseFloat reads as the same 8. The strings are what actually differ.
-  // Four EQUAL strings are ONE radius even when they parse to nothing (calc(), '', an absent
-  // longhand): that is not "four different corners", so it takes the uniform path and num() simply
-  // leaves no number -- the pre-v6 behaviour, no field and no flag, and no NaN on the wire. Only
-  // genuinely differing corners raise the flag, which is what keeps the diff's note true of every
-  // input that can reach it.
+  // THE RULE: the DOM side either yields ONE comparable px number, or it says so.
+  // Figma carries a single px cornerRadius, so that is the only shape there is anything to compare
+  // against. Everything else -- four differing corners, a percentage, an ellipse -- has no axis on
+  // the other side, and a number emitted for it is a verdict about something nobody measured.
+  // Three shapes reached PASS before this test existed, each a false green:
+  //   border-radius: 8px 0 0 0            -> reading the top-left corner alone gave a uniform 8
+  //   border-radius: 8px / 4px 40px ...   -> four "h v" PAIRS, and parseFloat('8px 4px') is 8, so
+  //                                          comparing parsed numbers made four different corners equal
+  //   border-radius: 50%                  -> 50 compared as px; on a 300x20 box the real corners are
+  //                                          150px and 10px, and it passed a Figma cornerRadius of 50
+  //   border-radius: 8px / 4px            -> one uniform ELLIPSE, 8 horizontal by 4 vertical, passing
+  //                                          a Figma 8 that describes a circle
+  // Hence: compare the four as STRINGS (that is what actually differs), and accept the value only
+  // when it is a bare px length. num() is never asked to interpret anything else.
+  // The one deliberate silence: four EQUAL corners that carry no number at all (a percentage-bearing
+  // calc(), an empty computed value) are not four different corners and not a visible radius we can
+  // describe -- they take the uniform path, num() leaves no number, and nothing is emitted. That is
+  // the pre-v6 behaviour, no field and no flag and no NaN on the wire.
+  const PX_ONLY = /^-?[0-9.]+px$/;
   const radiusOf = (cs) => {
     const c = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius];
-    return c.every((v) => v === c[0]) ? { value: num(c[0]) } : { asymmetric: true };
+    if (!c.every((v) => v === c[0])) return { uncomparable: true };
+    if (PX_ONLY.test(c[0])) return { value: num(c[0]) };
+    return num(c[0]) === undefined ? {} : { uncomparable: true };
   };
   const toHex = (c) => {
     const m = /^rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)$/.exec(c || '');
@@ -188,7 +197,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         child.styles.backgroundColorToken = classifyColor(n, 'background-color', cbg);
       }
       const crad = radiusOf(cs);
-      if (crad.asymmetric) child.styles.borderRadiusAsymmetric = true;
+      if (crad.uncomparable) child.styles.borderRadiusUncomparable = true;
       else if (crad.value > 0) child.styles.borderRadius = crad.value;
       const cop = num(cs.opacity);
       if (cop !== undefined && cop < 1) child.styles.opacity = cop;
@@ -683,7 +692,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       transformed: cs.transform !== 'none',
       fontsLoaded: document.fonts ? document.fonts.status === 'loaded' : undefined,
       styles: Object.assign({ display: cs.display, backgroundColor: toHex(cs.backgroundColor) },
-        rrad.asymmetric ? { borderRadiusAsymmetric: true } : { borderRadius: rrad.value },
+        rrad.uncomparable ? { borderRadiusUncomparable: true } : { borderRadius: rrad.value },
         { opacity: num(cs.opacity), justifyContent: cs.justifyContent,
           colorToken: classifyColor(el, 'color', toHex(cs.color)),
           backgroundColorToken: classifyColor(el, 'background-color', toHex(cs.backgroundColor)),

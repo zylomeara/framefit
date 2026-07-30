@@ -151,7 +151,7 @@ export interface DomChild {
   path?: string;            // `:nth-child` chain from the captured root — the CSS selector for compare; for a text node = the parent element's path
   // v5: the child's styles are extended with a style bundle (compactly: a field is present ONLY when the
   // value is meaningful; absence at schema>=5 = there is no style — the capture guarantee for styleAnchor)
-  styles?: DomTypography & { borderRadius?: number; borderRadiusAsymmetric?: true; opacity?: number; gradient?: GradientModel; bgImage?: true }; // for kind:'text' — the parent's computed styles (typography is inherited); borderRadiusAsymmetric = the four CSS corners differ, so borderRadius is absent (v6); bgImage = a raster url background (invisible to the gradient detector)
+  styles?: DomTypography & { borderRadius?: number; borderRadiusUncomparable?: true; opacity?: number; gradient?: GradientModel; bgImage?: true }; // for kind:'text' — the parent's computed styles (typography is inherited); borderRadiusUncomparable = the DOM radius is not one comparable px number (corners differ, or a %/elliptical radius), so borderRadius is absent (v6); bgImage = a raster url background (invisible to the gradient detector)
   shadow?: DomShadow;          // v5
   borders?: Edges;             // v5 (non-zero only)
   borderColors?: { top?: string; right?: string; bottom?: string; left?: string };      // v5
@@ -187,7 +187,7 @@ export interface DomSnapshotOk {
   scroll: { top: number; left: number };
   transformed?: boolean;    // computed transform !== 'none'
   fontsLoaded?: boolean;    // document.fonts.status === 'loaded'
-  styles?: DomTypography & { display?: string; borderRadius?: number; borderRadiusAsymmetric?: true; opacity?: number; justifyContent?: string; gradient?: GradientModel };
+  styles?: DomTypography & { display?: string; borderRadius?: number; borderRadiusUncomparable?: true; opacity?: number; justifyContent?: string; gradient?: GradientModel };
   state?: Record<string, string | boolean>; // checked/disabled/…
   componentHints?: { tag: string; classList: string[]; data: Record<string, string> };
   children: DomChild[];     // visible in-flow (including bare text nodes), in DOM order

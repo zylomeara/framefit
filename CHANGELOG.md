@@ -203,14 +203,18 @@ snapshot now gets a `snapshot_schema` warn row and a `re_extract_dom` blocking i
 the upgrade are equally stale.
 
 The version had to move because the change is not additive - it redefines an existing field.
-`styles.borderRadius` now means "all four CSS corners are this value"; a node whose corners differ
-omits it and sets `styles.borderRadiusAsymmetric: true` instead. Older extractors read the top-left
-corner alone and emitted `borderRadius: 8` for `border-radius: 8px 0 0 0` with no flag at all, so on
-the wire their output is indistinguishable from a genuinely uniform 8 and the server has no way to
-tell the two apart. Without the version bump the `corner-radius` row would have kept passing over an
-unmeasured difference on every stale capture - the same defect this release removes from the code,
-displaced onto the wire. Same reasoning as the v4 bump, where old extractors truncated text without
-flagging it.
+`styles.borderRadius` now means "all four CSS corners are this ONE px number", which is the only
+shape Figma's single px `cornerRadius` can be compared against. Any other radius omits the field and
+sets `styles.borderRadiusUncomparable: true` instead: corners that differ, a percentage, or an
+elliptical `8px / 4px`.
+
+Older extractors emitted a plain number for all of them - `borderRadius: 8` for
+`border-radius: 8px 0 0 0`, `50` for `border-radius: 50%` - with no flag at all, so on the wire their
+output is indistinguishable from a genuinely uniform 8px or 50px and the server has no way to tell
+the two apart. Each of those passed a matching Figma `cornerRadius`. Without the version bump the
+`corner-radius` row would have kept passing over an unmeasured difference on every stale capture -
+the same defect this release removes from the code, displaced onto the wire. Same reasoning as the
+v4 bump, where old extractors truncated text without flagging it.
 
 ### Added
 

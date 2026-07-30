@@ -1343,81 +1343,115 @@ function buildExtractorPerEl(childStyles: Record<string, string>,
   return run;
 }
 
-// A corner radius is FOUR numbers in CSS and ONE in Figma. Reading the top-left corner alone made
-// `border-radius: 8px 0 0 0` indistinguishable from a uniform 8px, so the diff answered `pass` about a
-// difference it had never measured. Both emitting sites are locked here -- the child style bundle and
-// the root styles -- because the false pass was reachable through either one.
-describe('the corner radius is read from all four corners', () => {
+// THE RULE: the DOM side either yields ONE comparable px number, or it says so. Figma carries a single
+// px cornerRadius, so that is the only shape there is anything to compare against. Three separate
+// inputs reached `pass` before these cases existed, each a false green, each locked below at BOTH
+// emitting sites (the child style bundle and the root styles) because each was reachable through
+// either one: a lone corner (`8px 0 0 0`), an h/v pair whose parseFloat collapses four different
+// corners onto one number, and a percentage compared as px.
+describe('the corner radius is one comparable px number, or it says so', () => {
   const asym = { borderTopLeftRadius: '8px', borderTopRightRadius: '0px',
     borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px' };
   const uniform = { borderTopLeftRadius: '8px', borderTopRightRadius: '8px',
     borderBottomRightRadius: '8px', borderBottomLeftRadius: '8px' };
 
-  it('child: 8px 0 0 0 -> no borderRadius at all, and borderRadiusAsymmetric true', async () => {
+  it('child: 8px 0 0 0 -> no borderRadius at all, and borderRadiusUncomparable true', async () => {
     const [snap]: any = await buildExtractorPerEl(asym)(['main']);
     const c = snap.children[0];
     expect(c.styles.borderRadius).toBeUndefined(); // NOT 8 -- a lone corner is not the radius
-    expect(c.styles.borderRadiusAsymmetric).toBe(true);
+    expect(c.styles.borderRadiusUncomparable).toBe(true);
     expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
   });
   it('child: 8px 8px 8px 8px -> borderRadius 8 and no flag (the uniform case is untouched)', async () => {
     const [snap]: any = await buildExtractorPerEl(uniform)(['main']);
     const c = snap.children[0];
     expect(c.styles.borderRadius).toBe(8);
-    expect(c.styles.borderRadiusAsymmetric).toBeUndefined();
+    expect(c.styles.borderRadiusUncomparable).toBeUndefined();
   });
-  it('root: 8px 0 0 0 -> no borderRadius at all, and borderRadiusAsymmetric true', async () => {
+  it('root: 8px 0 0 0 -> no borderRadius at all, and borderRadiusUncomparable true', async () => {
     const [snap]: any = await buildExtractor(asym)(['main']);
     expect(snap.styles.borderRadius).toBeUndefined();
-    expect(snap.styles.borderRadiusAsymmetric).toBe(true);
+    expect(snap.styles.borderRadiusUncomparable).toBe(true);
     expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
   });
   it('root: 8px 8px 8px 8px -> borderRadius 8 and no flag (the uniform case is untouched)', async () => {
     const [snap]: any = await buildExtractor(uniform)(['main']);
     expect(snap.styles.borderRadius).toBe(8);
-    expect(snap.styles.borderRadiusAsymmetric).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBeUndefined();
   });
 
   // The corners are compared as STRINGS, and this is the case that forces it. `border-radius:
   // 8px / 4px 40px 4px 40px` computes to four "h v" PAIRS, and parseFloat reads every one of them as
   // the same 8 -- four visibly different corners passing against a Figma 8. Measured before the fix:
   // borderRadius: 8, no flag, row `pass`.
-  it('the h/v pair trap: 8px 4px | 8px 40px | ... -> asymmetric (parseFloat reads all four as 8)', async () => {
+  it('the h/v pair trap: 8px 4px | 8px 40px | ... -> uncomparable (parseFloat reads all four as 8)', async () => {
     const paired = { borderTopLeftRadius: '8px 4px', borderTopRightRadius: '8px 40px',
       borderBottomRightRadius: '8px 4px', borderBottomLeftRadius: '8px 40px' };
     const [snap]: any = await buildExtractor(paired)(['main']);
     expect(snap.styles.borderRadius).toBeUndefined();
-    expect(snap.styles.borderRadiusAsymmetric).toBe(true);
+    expect(snap.styles.borderRadiusUncomparable).toBe(true);
     const [child]: any = await buildExtractorPerEl(paired)(['main']);
     expect(child.children[0].styles.borderRadius).toBeUndefined();
-    expect(child.children[0].styles.borderRadiusAsymmetric).toBe(true);
+    expect(child.children[0].styles.borderRadiusUncomparable).toBe(true);
   });
 
-  // Four IDENTICAL corners that parse to nothing are ONE radius, not four different ones. They must
-  // NOT raise the flag: `unchecked`'s note says "the four DOM corners differ", which would be a false
-  // statement about four identical `calc()`s. They take the uniform path, where num() leaves no
-  // number -- the pre-v6 behaviour -- and in particular no NaN reaches the wire.
-  it('uniform-but-unparseable corners: no borderRadius, NO flag, and no NaN on the wire', async () => {
-    for (const v of ['', 'calc(1rem + 2px)']) {
+  // A UNIFORM ellipse is the same false green with nothing asymmetric about it: `border-radius:
+  // 8px / 4px` computes to four identical '8px 4px', and the number that survived parseFloat was 8 --
+  // an 8-by-4 ellipse passing a Figma cornerRadius of 8, which describes a circle. Equal strings are
+  // not enough; the value must be a bare px length.
+  it('the uniform ellipse: 8px / 4px on all four corners -> uncomparable, not a bare 8', async () => {
+    const ellipse = { borderTopLeftRadius: '8px 4px', borderTopRightRadius: '8px 4px',
+      borderBottomRightRadius: '8px 4px', borderBottomLeftRadius: '8px 4px' };
+    const [snap]: any = await buildExtractor(ellipse)(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBe(true);
+    expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+  });
+
+  // A percentage is not a comparable px number and Figma has no percentage radius, so there is nothing
+  // on the other side of that comparison. Measured before this case existed: `border-radius: 50%` on a
+  // 300x20 box -- real corners 150px and 10px -- emitted borderRadius: 50 and PASSED a Figma
+  // cornerRadius of 50. Same false green as the two above, reached without a single asymmetry.
+  it('a percentage is not px: 50% x4 -> uncomparable, never a bare 50', async () => {
+    const pct = { borderTopLeftRadius: '50%', borderTopRightRadius: '50%',
+      borderBottomRightRadius: '50%', borderBottomLeftRadius: '50%' };
+    const [snap]: any = await buildExtractor(pct)(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBe(true);
+    const [child]: any = await buildExtractorPerEl(pct)(['main']);
+    expect(child.children[0].styles.borderRadiusUncomparable).toBe(true);
+  });
+
+  // The ONE deliberate silence, and the values are what a real browser actually computes. Chrome
+  // resolves `calc(1rem + 2px)` to `18px` and an unset longhand to `0px` -- both comparable px numbers,
+  // NOT unreadable. Only a percentage-bearing calc survives computation unresolved, because the
+  // percentage cannot be resolved until the box is laid out. Four identical unreadable corners are ONE
+  // radius, not four different ones and not a radius we can describe, so they raise no flag: the
+  // `unchecked` note names three concrete shapes and would be false about them. They take the uniform
+  // path where num() leaves no number -- the pre-v6 behaviour -- and no NaN reaches the wire.
+  it('uniform unreadable corners (calc with a %, an empty computed value): no number, NO flag, no NaN', async () => {
+    for (const v of ['calc(10% + 2px)', '']) {
       const same = { borderTopLeftRadius: v, borderTopRightRadius: v,
         borderBottomRightRadius: v, borderBottomLeftRadius: v };
       const [snap]: any = await buildExtractor(same)(['main']);
       expect(snap.styles.borderRadius, `borderRadius for ${JSON.stringify(v)}`).toBeUndefined();
-      expect(snap.styles.borderRadiusAsymmetric).toBeUndefined();
+      expect(snap.styles.borderRadiusUncomparable, `flag for ${JSON.stringify(v)}`).toBeUndefined();
       expect(JSON.stringify(snap)).not.toContain('NaN');
       expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
     }
   });
 
-  // Pre-existing and deliberately unchanged: a percentage radius ships its bare number. It errs
-  // toward a false ALARM (50 vs a Figma 8), never a false green, and flagging every circular avatar
-  // as an unchecked blocking item would be worse than the disease. docs/coverage.md says so.
-  it('a percentage radius still ships its bare number (50% -> 50) -- unchanged on purpose', async () => {
-    const pct = { borderTopLeftRadius: '50%', borderTopRightRadius: '50%',
-      borderBottomRightRadius: '50%', borderBottomLeftRadius: '50%' };
-    const [snap]: any = await buildExtractor(pct)(['main']);
-    expect(snap.styles.borderRadius).toBe(50);
-    expect(snap.styles.borderRadiusAsymmetric).toBeUndefined();
+  // The control for the case above: what Chrome ACTUALLY computes for those two authored values is a
+  // plain px length, and those are ordinary comparable radii, not silences.
+  it('what a browser really computes for calc(1rem + 2px) and an unset longhand is px: 18 and 0', async () => {
+    const four = (v: string) => ({ borderTopLeftRadius: v, borderTopRightRadius: v,
+      borderBottomRightRadius: v, borderBottomLeftRadius: v });
+    const [calcSnap]: any = await buildExtractor(four('18px'))(['main']);
+    expect(calcSnap.styles.borderRadius).toBe(18);
+    expect(calcSnap.styles.borderRadiusUncomparable).toBeUndefined();
+    const [unsetSnap]: any = await buildExtractor(four('0px'))(['main']);
+    expect(unsetSnap.styles.borderRadius).toBe(0);
+    expect(unsetSnap.styles.borderRadiusUncomparable).toBeUndefined();
   });
 });
 

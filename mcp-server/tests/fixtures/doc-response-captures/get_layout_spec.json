@@ -191,8 +191,8 @@
     }
   ],
   "extractor_js": {
-    "length": 51705,
-    "sha256": "963d4cb439acad2a81cda0bddb489a45f65b9ed41a56cb894ebf24e05532f05c"
+    "length": 52537,
+    "sha256": "2e23cba0be9412f412c06796892d863d64cda3ffba7e639bafa3f96fff671cfa"
   },
   "extractor_note": "loader unavailable without public base URL — inline returned"
 }
