@@ -100,17 +100,24 @@ It deliberately says nothing about what deleting a thread root does to its repli
 reference documents the author-only rule and no cascade, and the only experiment that would settle
 it destroys real comments.
 
-**6. The structured log surface changed: one field renamed, one field added, three new events.**
+**6. The structured log surface changed: one field renamed, one field added, five new events.**
 
 `use_case.start` and `tool.error` lines now carry `tool: "delete_comment"`. A log query, alert or
 dashboard pinned to `resolve_comment` matches nothing.
 
 Two more things an operator parsing these lines will see. `server.listening` gained `bind_host`,
-carrying the address the socket actually bound (see item 1). And three `info` events are new, one
-per tool that now degrades instead of failing when a render is unavailable:
+carrying the address the socket actually bound (see item 1). And five events are new. Three of them
+are `info`, one per tool that now degrades instead of failing when a render is unavailable:
 `review_board.screenshots_unavailable`, `get_screenshot.tiles_unavailable` and
 `get_pin_detail.full_res_unavailable`. They fire on calls that used to either fail outright or succeed
 silently.
+
+The other two are refusals, one for each refusal this release adds. `mcp.origin_rejected` (`warn`,
+item 4) is one line per request turned away for its `Origin`, carrying that origin truncated to 64
+characters plus `origin_truncated`. `dom_snapshot.upload_rejected` (`info`, item 8) is one line per
+404 on an unknown or expired capability token, carrying `capTokenPrefix` and the client's declared
+`content-length` - which is a claim rather than a measurement, since that path deliberately never
+reads the body. Both fire on paths that logged nothing at all before.
 
 **7. `FRAMEFIT_READ_ONLY` now actually refuses writes on the single-tenant and stdio paths.**
 
@@ -245,8 +252,11 @@ v4 bump, where old extractors truncated text without flagging it.
 - **`search_design_system`'s `skipped_teams` is ordered by input, not by completion.** The team
   requests run concurrently and the array used to be appended in whatever order they settled, so a
   positional join against your own team list was unreliable - and silently so, since with one slow
-  team it was usually right. It is built by index now: entry `n` is the `n`th team you asked
-  about.
+  team it was usually right. Each failure is now recorded at its own index and the array is
+  compacted before it is returned, so it carries only the teams that failed, in the order you
+  passed them. A positional join against your own team list still does not work - the entry at
+  position `n` is the `n`th team that FAILED, not the `n`th team you asked about. Read `team_id`
+  off each entry.
 - **A repeated failure is no longer diagnosed differently from the first one.** The negative cache
   dropped the upstream reason on the way in and out, so a cached 400 lost the quote and fell back
   to generic advice.
@@ -258,5 +268,10 @@ v4 bump, where old extractors truncated text without flagging it.
 - **Both documented `npx -y framefit` one-liners now set `MCP_TRANSPORT=stdio`.** The server
   defaults to the HTTP transport, so the documented line used to boot an HTTP server the MCP host
   never spoke to.
-- **`framefit status` names a command you can actually run** for the deployment you are in: a
-  source checkout, an installed bin, or a container.
+- **`get_variables` and `search_design_system` now end a refusal at a command you can actually
+  run.** Every branch of their 403 diagnosis used to end in Figma's web UI and at nothing runnable
+  against this instance. Both now append a `framefit status` line derived from how this process was
+  started - a source checkout, an installed bin, or a container - together with the caveat that
+  makes it answerable in the mode you are in: which credential that run would probe, and whether it
+  would probe one at all. This is a change to those two tool errors only; what `status` itself
+  prints changed for its own reasons, in item 11 above.
