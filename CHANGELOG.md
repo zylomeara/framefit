@@ -100,7 +100,8 @@ It deliberately says nothing about what deleting a thread root does to its repli
 reference documents the author-only rule and no cascade, and the only experiment that would settle
 it destroys real comments.
 
-**6. The structured log surface changed: one field renamed, one field added, five new events.**
+**6. The structured log surface changed: one field's value changed, one field added, five new
+events.**
 
 `use_case.start` and `tool.error` lines now carry `tool: "delete_comment"`. A log query, alert or
 dashboard pinned to `resolve_comment` matches nothing.
@@ -174,8 +175,8 @@ field next to a reason that names something else - produced kind `auth`. It now 
 The same applies to a reason naming both an account-type limit and a scope: plan outranks scope,
 so that is `forbidden` too.
 
-Nothing Figma really sends moved: measured over a 476-case matrix, the 16 cases that changed are
-all bodies Figma does not produce. But if you alert on `error_kind: "auth"`, or branch on the
+Nothing Figma really sends moved: measured over a 476-case matrix - 17 bodies x 7 statuses x 4 call
+shapes - the 16 cases that changed are all bodies Figma does not produce. But if you alert on `error_kind: "auth"`, or branch on the
 `[auth]` prefix, those cases now arrive as `forbidden`. The point of the change is that an
 intermediary can no longer choose the kind by writing one word into a body.
 
@@ -253,10 +254,11 @@ v4 bump, where old extractors truncated text without flagging it.
   requests run concurrently and the array used to be appended in whatever order they settled, so a
   positional join against your own team list was unreliable - and silently so, since with one slow
   team it was usually right. Each failure is now recorded at its own index and the array is
-  compacted before it is returned, so it carries only the teams that failed, in the order you
-  passed them. A positional join against your own team list still does not work - the entry at
-  position `n` is the `n`th team that FAILED, not the `n`th team you asked about. Read `team_id`
-  off each entry.
+  compacted before it is returned, so it carries only the teams that failed, in the order the
+  teams were searched. That order is not necessarily your array: the searched list is your ids
+  deduplicated and capped at the first 5, and if you passed no `team_id` at all it is your
+  registered teams, which you never passed. So a positional join still does not work - the entry
+  at position `n` is the `n`th team that FAILED. Read `team_id` off each entry.
 - **A repeated failure is no longer diagnosed differently from the first one.** The negative cache
   dropped the upstream reason on the way in and out, so a cached 400 lost the quote and fell back
   to generic advice.
