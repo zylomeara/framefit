@@ -106,6 +106,15 @@ describe('.env.example sync with BOTH env schemas', () => {
 // second home for the quote, and the next invented form would simply be added to both -- the gate
 // would then be checking that this file agrees with itself. Whatever the bullet quotes is what
 // every integration file must contain, so the page is the only home.
+//
+// Ceiling: only the spans mentioning `skipIf` or `TEST_DATABASE_URL` are checked, so a rotted quote
+// in any OTHER span of this bullet passes green -- the same failure that made this gate necessary,
+// one span over. The filter is what makes the assertion true rather than absurd: the bullet also
+// quotes a directory, a service image and a command, and measured across the nine files
+// `tests/integration/` is in 0, `postgres:16` in 0 and `pnpm test` in 1. Widening to every span
+// would go red on quotes that were never meant to be greppable inside a test file. Widening to a
+// named list of the two skip forms is what the paragraph above refuses. Anything better needs the
+// gate to know which spans are claims ABOUT the files, which is per-span work, not a filter.
 describe('CONTRIBUTING.md quotes the integration tier as it actually is', () => {
   const bullet = /^- \*\*Integration\*\*[\s\S]*?(?=\n- \*\*)/m.exec(read('../CONTRIBUTING.md'))?.[0] ?? '';
   const quoted = [...bullet.matchAll(/`([^`]+)`/g)].map((m) => m[1])
