@@ -40,8 +40,8 @@ Call `get_layout_spec` with the node_ids under check + the frame id, `include_ex
   `emulate` (CDP).
 - **Fixed-width overlays (drawers/modals)**: pass `expected_overlay_width:
   <content-frame width>` to compare — size.w stops false-failing (becomes info), the
-  `overlay_width` row reads like "app 390 / overlay 400 (Δ10, within tolerance)" as a positive
-  signal, and you can KEEP `frame_node_id` (the viewport guard is decoupled; preflight checks the
+  `overlay_width` row carries both widths and their Δ (app 390 vs overlay 400, Δ10 within
+  tolerance) as a positive signal, and you can KEEP `frame_node_id` (the viewport guard is decoupled; preflight checks the
   frame against the overlay). The old workaround "omit frame_node_id" is no longer needed.
 - **Not sure which variant frame matches your render** (dozens of same-named breakpoint
   variants)? One call `find_breakpoint_variant {file, query: "<screen name>", render_width:
@@ -180,7 +180,7 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
   only the container INSETS unverified): there is no automated action — verify those axes BY EYE
   (or add a container pair for a full green) — then you may proceed.
 - `frame_coverage` carries enumeration provenance: `enumeration_source`/`enumeration_depth`
-  (in the report: `"enumeration: <source>@<depth>"`, e.g. `enumeration: deep@8`). `deep` = coverage
+  (in the report: `"· enumeration: <source>@<depth>"`, e.g. `· enumeration: deep@8`). `deep` = coverage
   was enumerated from depth 8 regardless
   of your `max_depth` (a free re-slice from the frame cache) — raising `max_depth` for COVERAGE
   is no longer needed (only for the depth of the pairs/text themselves).
@@ -222,10 +222,10 @@ pass; the final "verified against the design" can only come from `token-aware` o
 modes including the default `token-aware`, not only when passed explicitly); `layout` additionally
 prints a warning right under the title that typography/colors/styles are OUT of scope. Profile
 skips (axes deliberately excluded by the profile) render as ONE summary `⏭` row
-(`"outside profile scope: <dims> — verify with the token-aware/strict profile"`) — distinguishable
+(`"⏭ outside profile scope: <dims> — verify with the token-aware/strict profile"`) — distinguishable
 from a regular environmental `⏭` skip, which stays per-row with its own env reason (e.g.
 `"scroll container: content height <N>px — comparing the frame height is uninformative"`) and never
-carries the `"outside profile scope"` wording.
+carries the `"⏭ outside profile scope"` wording.
 
 ⚠️ **RECONNECT NOTE**: `match_profile` and the adjusted `tolerance_px` semantics (now `.optional()`
 without a zod default — the default is applied in code AFTER profile parsing) become visible in the
@@ -323,8 +323,8 @@ read ❌ as defects:
   **A color with a "do not port the hex" note** — the design color is bound to a token
   (library default mode): a hex mismatch ≠ defect; verify the SEMANTIC token in the app (which
   CSS var/token is applied), not the value.
-- ℹ️ info — a reference/diagnostic row, not a defect (`overlay_width` on a fixed overlay:
-  "app 390 / overlay 400 (Δ10, within tolerance)" — a positive signal).
+- ℹ️ info — a reference/diagnostic row, not a defect (`overlay_width` on a fixed overlay carries
+  both widths and their Δ — a positive signal).
 - 🟰 demoted — would be ❌ but is structurally EXPLAINED (the number is visible, not hidden): a
   `justify-content` spacer distributes free space (the padding edge is informative, not a defect);
   hug-width text (`size.w`/`padding-end` = the text's natural width); fixed-overlay `size.w`.
@@ -333,7 +333,7 @@ read ❌ as defects:
 - 👁 unchecked — there IS something to check but it was NOT REACHED: typography below the capture
   cut (raise `max_depth` to 8 OR add a pair on the nested TEXT) or the environment is not ready
   (viewport≠frame / transform≠none / rotated → fix the window / wait out the animation). NOT
-  "all good" — verify by eye. In the summary verdict this counts as "not verified (out of reach)".
+  "all good" — verify by eye. In the summary verdict this counts as `"<N> not verified (out of reach)"`.
 - ⏭ skip — there is physically NOTHING to compare (inapplicable): a scroll container (frame
   height uninformative) / a node without auto-layout (no inter-element metrics). Not a defect and
   not "unverified" — reads clean.

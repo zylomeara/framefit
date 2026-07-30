@@ -1275,11 +1275,28 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
 //   otherwise = resolve in source, or appear in NOT_SERVER_OUTPUT with a reason from the closed
 //               vocabulary below.
 //
-// A candidate that resolves by accident (`"done"`, `"pairs"` -- short words that occur in some
-// literal) is absorbed into the checked bucket and never examined. That is the cost of resolving
-// first, and it is paid on strings too short to be the load-bearing quote an agent matches on. The
-// failure it can cause is a FALSE RED later (a source edit removes the accidental match and a prose
-// quote suddenly demands an exemption), which is loud.
+// THE PREDICATE IS ANCHORED, because containment admitted the INVERSE OF THE TRUTH. Round 2 resolved
+// a quote by searching each interpolation-split segment with `indexOf` anywhere in a literal, so
+// `"<N> verified (demoted)"` -- the exact opposite of report.ts:195's `${n} not verified (demoted)`
+// -- resolved happily, marked or not, and the suite stayed green. A gate whose predicate admits the
+// negation of what the server prints is worse than the wrong-quote defect it was built to catch,
+// because it now carries authority. Round 2's comment here called the residual failure a false red
+// later; the measurement said false green today, and a comment that misstates which way a gate fails
+// is the same defect class as the quotes it checks.
+//
+// The rule now: `${...}` in a source literal and `<...>` in a page quote both normalise to ONE hole
+// character, and the quote must be a PREFIX of a source literal. Anchoring at the start is what makes
+// a dropped word fatal -- `\0 verified (demoted)` is not a prefix of `\0 not verified (demoted)`,
+// and neither is the unanchored `verified (demoted)`, which containment also accepted. A quote that
+// normalises to holes alone (`"<screen name>"`) matches nothing rather than every interpolated
+// literal.
+//
+// THE RESIDUAL HOLE, NAMED: a prefix that drops a TRAILING qualifier still resolves -- quoting
+// `"the DOM radius is not one comparable px number"` off a note that goes on to qualify it is green.
+// Nothing here reads meaning, so that is not closed, only bounded: the inversion has to be reachable
+// by truncating the END of a note, never by cutting into its front. And a quote of a note's MIDDLE is
+// now red BY CONSTRUCTION. If one is ever genuinely needed, add a named exemption table for it here
+// rather than loosening the anchor -- the anchor is the entire predicate.
 //
 // THE POPULATION SEARCHED IS THE MODULE, NOT TWO FILENAMES. The spec said report.ts +
 // verification.ts. Measured: the env-skip note quoted one line below the profile skip is authored in
@@ -1314,13 +1331,17 @@ const LAYOUT_SPEC_DIR = path.join(SRC_DIR, 'domain', 'layout-spec');
  * marks off the offending line, which fixes the gate and not the page.
  */
 const MARKED_QUOTES: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 12,
+  'docs/agents/design-qa-skill.md': 13,
   'docs/coverage.md': 2,
 };
-/** The over-inclusive sweep must stay over-inclusive: measured 50 and 6 at HEAD. */
-const CANDIDATE_FLOOR: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 40,
-  'docs/coverage.md': 5,
+/**
+ * Unmarked candidates per page, EXACT for the same reason as its neighbour. A floor with slack lets
+ * the sweep quietly stop seeing candidates down to the floor, and a detector that sees fewer excuses
+ * more; there is no reason for this one to be looser than the marked count beside it.
+ */
+const CANDIDATE_COUNT: Record<string, number> = {
+  'docs/agents/design-qa-skill.md': 47,
+  'docs/coverage.md': 6,
 };
 
 /**
@@ -1333,6 +1354,11 @@ type ExemptionReason =
   | 'agent-speech'
   // Text the READER supplies or names in the request it builds: a field, a selector, a placeholder.
   | 'readers-input'
+  // Genuinely printed by the server, but by code OUTSIDE src/domain/layout-spec. Round 2 had no
+  // member for this and filed two upload-response keys under `readers-input`, which was simply
+  // untrue: the module boundary's ceiling was being absorbed under a wrong reason, and a table whose
+  // whole job is to be true cannot carry a false one.
+  | 'emitted-outside-the-module'
   // An imperative aimed at the reader, not a string it will ever see in a response.
   | 'instruction-to-the-reader'
   // A value the page invented to illustrate with, not copied from any output.
@@ -1341,8 +1367,8 @@ type ExemptionReason =
   | 'english-emphasis';
 
 const EXEMPTION_REASONS: ExemptionReason[] = [
-  'agent-speech', 'readers-input', 'instruction-to-the-reader', 'page-invented-example',
-  'english-emphasis',
+  'agent-speech', 'readers-input', 'emitted-outside-the-module', 'instruction-to-the-reader',
+  'page-invented-example', 'english-emphasis',
 ];
 
 /**
@@ -1354,23 +1380,31 @@ const EXEMPTION_REASONS: ExemptionReason[] = [
 const NOT_SERVER_OUTPUT: Record<string, ExemptionReason> = {
   'check against the design': 'agent-speech',
   'verify spacing/typography against Figma': 'agent-speech',
+  'verified against the design': 'agent-speech',
   'verified against the design / matches the design': 'agent-speech',
   'screen verified': 'agent-speech',
   'is it done per the design?': 'agent-speech',
+  'is it verified?': 'agent-speech',
   "don't report done until `complete !== true`": 'agent-speech',
   'the final run was non-layout': 'agent-speech',
   'all good': 'agent-speech',
   'verified blindly': 'agent-speech',
   'Is the pair fully verified?': 'agent-speech',
-  'is it verified?': 'agent-speech',
   'in your head': 'agent-speech',
+  done: 'agent-speech',
+  verified: 'agent-speech',
+  unverified: 'agent-speech',
 
   '<screen name>': 'readers-input',
   '<local path>.json': 'readers-input',
   '<string>': 'readers-input',
+  // The POST body the reader assembles, not something the endpoint prints back.
   snapshots: 'readers-input',
-  selectors: 'readers-input',
-  expires_at: 'readers-input',
+
+  // dom-snapshot-routes.ts:151-153 returns { snapshot_ref, selectors, expires_at }. Real output, and
+  // outside the swept module -- which is the ceiling this reason exists to name rather than hide.
+  selectors: 'emitted-outside-the-module',
+  expires_at: 'emitted-outside-the-module',
 
   'omit frame_node_id': 'instruction-to-the-reader',
   'saw a ❌, re-read the spec, re-ran the pair': 'instruction-to-the-reader',
@@ -1380,15 +1414,17 @@ const NOT_SERVER_OUTPUT: Record<string, ExemptionReason> = {
   'do not port the hex': 'instruction-to-the-reader',
   'not confirmed until the file is actually found': 'instruction-to-the-reader',
 
-  'app 390 / overlay 400 (Δ10, within tolerance)': 'page-invented-example',
   'Heading…': 'page-invented-example',
+  '...': 'page-invented-example',
+  '…': 'page-invented-example',
 
   'skeleton first': 'english-emphasis',
   'padding-inner': 'english-emphasis',
   baked: 'english-emphasis',
   "doesn't exist": 'english-emphasis',
   "not found ≠ doesn't exist": 'english-emphasis',
-  unverified: 'english-emphasis',
+  'not found': 'english-emphasis',
+  probably: 'english-emphasis',
   'Strictness profiles': 'english-emphasis',
   'split by size': 'english-emphasis',
   'disable copying/exporting/sharing': 'english-emphasis',
@@ -1418,6 +1454,13 @@ const looseQuotes = (body: string): string[] =>
   [...body.replace(/`"[^`]*"`/g, ' ').matchAll(/"([^"\n]*(?:\n(?!\s*\n)[^"\n]*)?)"/g)]
     .map((m) => oneLine(m[1])).filter((s) => s !== '');
 
+/**
+ * The one character an interpolated value becomes on BOTH sides: `${...}` in a source literal and
+ * `<...>` in a page quote. Comparing through it is what makes a dropped word fatal instead of
+ * invisible -- the page's placeholder has to sit where the source's does.
+ */
+const HOLE = '\u0000';
+
 /** Every string and template literal under the layout-spec module, with its file. */
 function emittedLiterals(): { file: string; text: string }[] {
   const out: { file: string; text: string }[] = [];
@@ -1428,33 +1471,35 @@ function emittedLiterals(): { file: string; text: string }[] {
       // a string -- a URL -- must not be treated as the start of a comment.
       .replace(/^[ \t]*\/\/.*$/gm, ' ');
     for (const m of src.matchAll(/`(?:[^`\\]|\\.)*`|'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g)) {
-      out.push({ file: path.basename(full), text: oneLine(m[0].slice(1, -1)) });
+      out.push({ file: path.basename(full), text: oneLine(m[0].slice(1, -1).replace(/\$\{[^{}]*\}/g, HOLE)) });
     }
   }
   return out;
 }
 
-/** The literal a page quote resolves to, or null when the module emits no such string. */
+/**
+ * The literal a page quote is a PREFIX of, or null.
+ *
+ * Not containment. A quote that merely OCCURS somewhere in a literal can be the literal's opposite:
+ * `verified (demoted)` occurs inside `not verified (demoted)`, and so did the reviewer's probe
+ * `<N> verified (demoted)` once its placeholder was thrown away. Anchoring at the literal's start
+ * makes a word dropped from the front fatal, which is the direction a negation is dropped from.
+ */
 function emitterOf(
   quote: string,
   literals: { file: string; text: string }[],
 ): { file: string; text: string } | null {
-  const segments = oneLine(quote).split(/<[^<>]*>/).map(oneLine).filter((s) => s !== '');
-  if (segments.length === 0) return null;
-  for (const lit of literals) {
-    let at = 0;
-    const hit = segments.every((s) => {
-      const i = lit.text.indexOf(s, at);
-      at = i + s.length;
-      return i >= 0;
-    });
-    if (hit) return lit;
-  }
-  return null;
+  const wanted = oneLine(oneLine(quote).replace(/<[^<>]*>/g, HOLE));
+  // All holes and no text matches every literal that starts with an interpolation, which is not a
+  // claim about anything.
+  if (wanted.split(HOLE).join('').trim() === '') return null;
+  return literals.find((lit) => lit.text.startsWith(wanted)) ?? null;
 }
 
 describe('Gate 5C: every quoted run on a doc page is emitted by the module, or excused by name', () => {
-  const PROFILE_SKIP = 'outside profile scope: <dims> — verify with the token-aware/strict profile';
+  // U+23ED then U+2014, both quoted exactly as report.ts:125 writes them: the leading glyph is part
+  // of the emitted line, and quoting from it is what anchors the page's quote to the literal's start.
+  const PROFILE_SKIP = '⏭ outside profile scope: <dims> — verify with the token-aware/strict profile';
   const ENV_SKIP = 'scroll container: content height <N>px — comparing the frame height is uninformative';
 
   it('sweeps over-inclusively, and cannot pass by sweeping nothing', () => {
@@ -1469,9 +1514,10 @@ describe('Gate 5C: every quoted run on a doc page is emitted by the module, or e
       ).toBe(MARKED_QUOTES[page]);
       expect(
         loose.length,
-        `${page}: the sweep found ${loose.length} unmarked quoted runs, floor ${CANDIDATE_FLOOR[page]} `
-        + '-- a detector that stopped seeing them would excuse everything by seeing nothing',
-      ).toBeGreaterThanOrEqual(CANDIDATE_FLOOR[page]);
+        `${page}: the sweep found ${loose.length} unmarked quoted runs, expected `
+        + `${CANDIDATE_COUNT[page]} -- a detector that stopped seeing them would excuse everything `
+        + 'by seeing nothing, and a page that grew a quote must account for it',
+      ).toBe(CANDIDATE_COUNT[page]);
     }
     // By name, with the em dash the page must carry: a hyphen here is a red, which is the policy.
     expect(markedQuotes(pageBody(QUOTED_PAGES[0])), 'the profile-skip line is what W8 exists for')
@@ -1540,7 +1586,7 @@ describe('Gate 5C: every quoted run on a doc page is emitted by the module, or e
 
   it('tells a quote the module emits from one it does not', () => {
     const literals = emittedLiterals();
-    // The three pre-fix strings, each reported missing -- this is the red end of the gate.
+    // The pre-fix strings, each reported missing -- this is the red end of the gate.
     for (const stale of [
       'out of profile scope: <dims> — verify with token-aware/strict',
       'matching not attempted',
@@ -1549,7 +1595,27 @@ describe('Gate 5C: every quoted run on a doc page is emitted by the module, or e
       expect(emitterOf(stale, literals), `${JSON.stringify(stale)} must be reported missing`).toBeNull();
     }
     expect(emitterOf(PROFILE_SKIP, literals)?.text, 'resolved against the emitter, interpolation and all')
-      .toContain('${dims}');
+      .toContain(HOLE);
+  });
+
+  it('refuses a quote that INVERTS what the module prints', () => {
+    // report.ts:195 emits `${total.demoted} not verified (demoted)`. Under containment, both of these
+    // resolved -- the first is the reviewer's probe, the second is what it degrades to once the
+    // placeholder is dropped -- and the whole suite stayed green over a page telling an agent to
+    // match on the opposite of the truth.
+    const literals = emittedLiterals();
+    for (const inverted of ['<N> verified (demoted)', 'verified (demoted)']) {
+      expect(
+        emitterOf(inverted, literals),
+        `${JSON.stringify(inverted)} is the inverse of an emitted note and must not resolve`,
+      ).toBeNull();
+    }
+    // The truthful form still resolves, so the rule refuses the inversion and not the axis.
+    expect(emitterOf('<N> not verified (demoted)', literals)?.file).toBe('report.ts');
+    // A quote that is all placeholder claims nothing and matches nothing.
+    expect(emitterOf('<anything>', literals)).toBeNull();
+    // And a quote of a literal's MIDDLE is red by construction, which is what the anchor buys.
+    expect(emitterOf('verify with the token-aware/strict profile', literals)).toBeNull();
   });
 
   it('needs the module-wide population, not the two files the spec named', () => {
