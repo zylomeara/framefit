@@ -1443,11 +1443,13 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   // per-corner, percentage or elliptical radius against. Nor is the row dropped: an omitted row makes the
   // pair clean with no trace, and a reader cannot tell "measured and fine" from "not present". unchecked
   // is the honest third answer, and verification.ts routes it to resolve_skip (a human must look).
-  // The note has to be true of EVERY input that reaches it, which is why it names all three shapes
-  // rather than only the per-corner one the flag was first built for.
+  // The note has to be true of EVERY input that reaches it. The set of such inputs has widened twice
+  // already (the ellipse and the percentage, then the browser-unresolved clamp()/min()/max()), so the
+  // note leads with the branch condition itself and offers the shapes as examples — a closed
+  // enumeration would go stale the next time a fourth thing turns out to reach this row.
   if (spec.cornerRadius !== undefined && sRadiusUncomparable === true) {
     rows.push({ prop: 'corner-radius', figma: spec.cornerRadius, dom: null, status: 'unchecked',
-      note: 'the DOM radius is not one comparable px number - the corners differ, or it is a percentage or an ellipse; Figma carries a single px cornerRadius, so there is no axis to judge it on - verify by eye' });
+      note: 'the DOM radius is not one comparable px number - e.g. the corners differ, or it is a percentage, an ellipse, or a value the browser left unresolved such as clamp()/min()/max(); Figma carries a single px cornerRadius, so there is no axis to judge it on - verify by eye' });
   } else if (spec.cornerRadius !== undefined && sRadius !== undefined) {
     rows.push(numRow('corner-radius', spec.cornerRadius, sRadius, opts.tolerancePx, undefined, SRC_ANCHOR_PROP));
   }

@@ -1050,9 +1050,9 @@ describe('Gate 5B: both pages that enumerate the blocking actions name all thirt
     // A SHAPE-AGNOSTIC denominator. Round 2 asserted `plain === 18` using the same regex that read
     // the values, so it could not count a site that regex could not see -- measured, a camel-case
     // literal left it at 18. This number comes from a rule that never looks at a value at all.
-    // 24 -> 25, 19 -> 20, 20 -> 21: uncheckedToBlocking gained a `corner-radius` branch, so an
-    // asymmetric DOM radius is routed to the existing resolve_skip instead of falling through to
-    // "raise max_depth", which fixes no border radius. It REUSES an action rather than inventing a
+    // 24 -> 25, 19 -> 20, 20 -> 21: uncheckedToBlocking gained a `corner-radius` branch, so a DOM
+    // radius that is not one comparable px number is routed to the existing resolve_skip instead of
+    // falling through to "raise max_depth", which fixes no border radius. It REUSES an action rather than inventing a
     // fourteenth, so these three counters move and the vocabulary below does not.
     expect(sites.length, 'the number of `action` keys under src/ changed').toBe(25);
     expect(vocabularySites.length, `the number of \`action\` value sites in ${VERIFICATION_FILE} changed`).toBe(20);

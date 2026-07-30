@@ -25,18 +25,28 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   //                                          150px and 10px, and it passed a Figma cornerRadius of 50
   //   border-radius: 8px / 4px            -> one uniform ELLIPSE, 8 horizontal by 4 vertical, passing
   //                                          a Figma 8 that describes a circle
+  //   border-radius: clamp(4px, 10%, 12px) -> left VERBATIM by the browser, so it parsed to nothing and
+  //                                          emitted nothing at all: no row, empty blocking,
+  //                                          verification.complete TRUE over a corner that is painted
   // Hence: compare the four as STRINGS (that is what actually differs), and accept the value only
   // when it is a bare px length. num() is never asked to interpret anything else.
-  // The one deliberate silence: four EQUAL corners that carry no number at all (a percentage-bearing
-  // calc(), an empty computed value) are not four different corners and not a visible radius we can
-  // describe -- they take the uniform path, num() leaves no number, and nothing is emitted. That is
-  // the pre-v6 behaviour, no field and no flag and no NaN on the wire.
-  const PX_ONLY = /^-?[0-9.]+px$/;
+  // WHATEVER THE BROWSER COMPUTED IS A RADIUS, even when we cannot read it. min()/max()/clamp() and
+  // calc() carrying a percentage all survive computation verbatim (measured in Chrome), and they
+  // PAINT: hit-tested, the corner pixel of a clamp(4px, 10%, 12px) box is clipped exactly as for 8px,
+  // while a no-radius control keeps it. Emitting nothing for those is the silent-omission lie this
+  // change already rejected twice, so an unreadable computed value is uncomparable, not absent.
+  // The ONLY silence left is an empty computed value -- nothing was computed, so there is nothing to
+  // report; that is the pre-v6 behaviour and it keeps NaN off the wire.
+  // PX_ONLY accepts the exponent form: measured in Chrome, 999999px stays 999999px but 1000000px
+  // computes to '1e+06px' (and large values saturate at '1.67772e+07px'). Those are ordinary
+  // comparable radii -- parseFloat reads them correctly -- and rejecting them would flag a genuine px
+  // radius with a note whose named shapes are all false about it.
+  const PX_ONLY = /^-?[0-9.]+(e[+-]?[0-9]+)?px$/;
   const radiusOf = (cs) => {
     const c = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius];
     if (!c.every((v) => v === c[0])) return { uncomparable: true };
     if (PX_ONLY.test(c[0])) return { value: num(c[0]) };
-    return num(c[0]) === undefined ? {} : { uncomparable: true };
+    return c[0] ? { uncomparable: true } : {};
   };
   const toHex = (c) => {
     const m = /^rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)$/.exec(c || '');

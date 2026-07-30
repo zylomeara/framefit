@@ -27,9 +27,10 @@ function buildExtractor(styleOverrides: Record<string, string> = {}): (selectors
     borderTopColor: 'rgb(0, 0, 0)', borderRightColor: 'rgb(0, 0, 0)',
     borderBottomColor: 'rgb(0, 0, 0)', borderLeftColor: 'rgb(0, 0, 0)', boxShadow: 'none',
     paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-    // All FOUR corners, here and in every other fake getComputedStyle below. The extractor now reads
-    // the radius as four numbers, and a fixture that defines only the top-left one is a DOM whose
-    // corners it cannot compare — it would read as asymmetric and change what these cases assert.
+    // All FOUR corners, here and in every other fake getComputedStyle below. The extractor compares
+    // the four computed STRINGS, and a fixture that defines only the top-left one leaves the other
+    // three undefined -- that is a DOM whose radius it cannot compare, so it would read as
+    // borderRadiusUncomparable and change what these cases assert.
     borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
     borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     ...styleOverrides,
@@ -1422,36 +1423,63 @@ describe('the corner radius is one comparable px number, or it says so', () => {
     expect(child.children[0].styles.borderRadiusUncomparable).toBe(true);
   });
 
-  // The ONE deliberate silence, and the values are what a real browser actually computes. Chrome
-  // resolves `calc(1rem + 2px)` to `18px` and an unset longhand to `0px` -- both comparable px numbers,
-  // NOT unreadable. Only a percentage-bearing calc survives computation unresolved, because the
-  // percentage cannot be resolved until the box is laid out. Four identical unreadable corners are ONE
-  // radius, not four different ones and not a radius we can describe, so they raise no flag: the
-  // `unchecked` note names three concrete shapes and would be false about them. They take the uniform
-  // path where num() leaves no number -- the pre-v6 behaviour -- and no NaN reaches the wire.
-  it('uniform unreadable corners (calc with a %, an empty computed value): no number, NO flag, no NaN', async () => {
-    for (const v of ['calc(10% + 2px)', '']) {
+  // A value the browser LEFT UNRESOLVED is still a painted radius, and this case previously asserted
+  // the opposite: that those corners emit nothing. Measured in Chrome, `min()`, `max()` and `clamp()`
+  // carrying a percentage survive computation verbatim exactly as a percentage-bearing `calc()` does,
+  // and they PAINT -- hit-tested, the corner pixel of a `clamp(4px, 10%, 12px)` box is clipped just as
+  // it is for `8px`, while a no-radius control keeps it. Emitting nothing for them produced no row,
+  // empty blocking and `verification.complete: true` over a visibly rounded corner -- the same silent
+  // omission this describe block exists to refuse. They are uncomparable, not absent.
+  it('a radius the browser left unresolved is uncomparable, not absent (calc/min/max/clamp with a %)', async () => {
+    for (const v of ['calc(10% + 2px)', 'min(8px, 50%)', 'max(8px, 10%)', 'clamp(4px, 10%, 12px)']) {
       const same = { borderTopLeftRadius: v, borderTopRightRadius: v,
         borderBottomRightRadius: v, borderBottomLeftRadius: v };
       const [snap]: any = await buildExtractor(same)(['main']);
-      expect(snap.styles.borderRadius, `borderRadius for ${JSON.stringify(v)}`).toBeUndefined();
-      expect(snap.styles.borderRadiusUncomparable, `flag for ${JSON.stringify(v)}`).toBeUndefined();
+      expect(snap.styles.borderRadius, `borderRadius for ${v}`).toBeUndefined();
+      expect(snap.styles.borderRadiusUncomparable, `flag for ${v}`).toBe(true);
       expect(JSON.stringify(snap)).not.toContain('NaN');
       expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
     }
   });
 
-  // The control for the case above: what Chrome ACTUALLY computes for those two authored values is a
-  // plain px length, and those are ordinary comparable radii, not silences.
-  it('what a browser really computes for calc(1rem + 2px) and an unset longhand is px: 18 and 0', async () => {
+  // The ONE silence left: nothing was computed at all, so there is no radius to report. Only an empty
+  // computed value reaches it -- a real getComputedStyle on a rendered element always returns a string.
+  it('an empty computed value is the only silence: no number, no flag, no NaN', async () => {
+    const [snap]: any = await buildExtractor({ borderTopLeftRadius: '', borderTopRightRadius: '',
+      borderBottomRightRadius: '', borderBottomLeftRadius: '' })(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBeUndefined();
+    expect(JSON.stringify(snap)).not.toContain('NaN');
+    expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+  });
+
+  // The control: what Chrome ACTUALLY computes for these authored values is a plain px length, so they
+  // are ordinary comparable radii and must not be caught by any of the cases above. Measured:
+  // `calc(1rem + 2px)` -> `18px`, an unset longhand -> `0px`, `min(8px, 12px)` -> `8px` (all-absolute
+  // arguments resolve; it is the percentage that survives), `1em` -> `16px`.
+  it('values that a browser resolves to px stay comparable: 18, 0, 8, 16', async () => {
     const four = (v: string) => ({ borderTopLeftRadius: v, borderTopRightRadius: v,
       borderBottomRightRadius: v, borderBottomLeftRadius: v });
-    const [calcSnap]: any = await buildExtractor(four('18px'))(['main']);
-    expect(calcSnap.styles.borderRadius).toBe(18);
-    expect(calcSnap.styles.borderRadiusUncomparable).toBeUndefined();
-    const [unsetSnap]: any = await buildExtractor(four('0px'))(['main']);
-    expect(unsetSnap.styles.borderRadius).toBe(0);
-    expect(unsetSnap.styles.borderRadiusUncomparable).toBeUndefined();
+    for (const [computed, expected] of [['18px', 18], ['0px', 0], ['8px', 8], ['16px', 16]] as const) {
+      const [snap]: any = await buildExtractor(four(computed))(['main']);
+      expect(snap.styles.borderRadius, `borderRadius for ${computed}`).toBe(expected);
+      expect(snap.styles.borderRadiusUncomparable).toBeUndefined();
+    }
+  });
+
+  // Chrome switches to exponent notation for a large px length: measured, 999999px stays 999999px and
+  // 1000000px computes to '1e+06px', with large values saturating at '1.67772e+07px'. Those are
+  // genuinely comparable radii, and a px-only test that rejected them would be the one input for which
+  // BOTH the flag and every shape its note names are false.
+  it('the exponent form of a px length is still a px length (1e+06px, 1.67772e+07px)', async () => {
+    const four = (v: string) => ({ borderTopLeftRadius: v, borderTopRightRadius: v,
+      borderBottomRightRadius: v, borderBottomLeftRadius: v });
+    for (const [computed, expected] of [['999999px', 999999], ['1e+06px', 1000000],
+      ['1e+07px', 10000000], ['1.67772e+07px', 16777200]] as const) {
+      const [snap]: any = await buildExtractor(four(computed))(['main']);
+      expect(snap.styles.borderRadius, `borderRadius for ${computed}`).toBe(expected);
+      expect(snap.styles.borderRadiusUncomparable, `flag for ${computed}`).toBeUndefined();
+    }
   });
 });
 
