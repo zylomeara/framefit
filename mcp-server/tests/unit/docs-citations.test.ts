@@ -24,6 +24,42 @@
 // sanctioned form` closes that: anything that opens `(see` and reaches for a backticked or linked
 // source must match the sanctioned form exactly or be named.
 //
+// THE WRAP WAS THE ONE VARIANT LEFT OPEN, AND IT WAS REACHED. Round 1 closed the doubled space and
+// the markdown-link path and left the WRAP -- because every row here read the corpus LINE BY LINE,
+// and a line that ends on `(see` holds no backtick, so the near-miss row took its "ordinary prose"
+// branch and the collector never saw a citation at all. Reproduced, not argued: appending
+//
+//     The mode table is derived from the resolver (see
+//     `mcp-server/src/nowhere-at-all.ts`, `a literal that exists nowhere in this repository`).
+//
+// to docs/coverage.md left all four rows GREEN -- a citation naming a file that does not exist and a
+// literal that exists nowhere. That is the exact defect this gate was built for, one line break away.
+// Two citations landed in it before it was noticed.
+//
+// SO A WRAPPED OPENER IS FOLDED BEFORE ANY ROW READS IT. `foldWrappedOpeners` joins a prose line that
+// ends on `(see` (optional trailing whitespace) with the line after it, keeping the FIRST line's
+// number, and both the collector and the near-miss row read the folded text. A wrapped citation is
+// therefore either sanctioned -- and then path-checked, uniqueness-checked and counted like any other
+// -- or reported. It cannot be neither, which is what it was.
+//
+// THE COLLECTOR IS WHERE THAT BLINDNESS WAS SHARED. `path exists` and `literal occurs exactly once`
+// consume whatever `collectCitations` produced, so a collector that missed a citation silenced all
+// three rows at once, and only the FLOOR noticed -- by counting 7 where 9 were expected. Folding at
+// the collector is what makes those two rows see a wrapped citation at all.
+//
+// WHAT COUNTS AS REACHING FOR A SOURCE, once the fold is in place. On a single line the round-1 rule
+// is unchanged (a backtick or a `](` in the head). For a FOLDED opener it cannot be: measured over
+// docs/, all three real wrapped openers are markdown CROSS-REFERENCES -- two plain links, and
+// `docs/tools/design-system.md`'s `` [`get_design_context`](navigation.md#get_design_context) ``,
+// whose head carries both a backtick and a `](` while being ordinary prose. So a folded opener is a
+// citation attempt when its head reaches for a SOURCE: a token shaped like a source file
+// (SOURCE_PATH_SHAPED -- the ban's extension vocabulary minus `md`, plus Dockerfile/Caddyfile,
+// existence NOT required, so a nonexistent `.ts` is still an attempt), or a BACKTICKED token that
+// resolves to a file in this repository (which reaches `LICENSE` and a `.md` page without making the
+// extension list decide it). Residual, stated rather than discovered later: a wrapped near-miss whose
+// path is neither source-shaped nor an existing repo file -- a misspelled `.md` page, say -- is not
+// reported. No citation in this corpus targets a `.md` page, and the floor still catches deletion.
+//
 // FENCE RULE. Inside a fenced block, a line whose first non-space character is `#` or `//` is
 // PROSE -- for the ban and for the citation collector alike. (`//` because
 // `docs/design-qa-tutorial.md` opens each of its four request fences with a `// <tool>` line, and a
@@ -67,7 +103,14 @@ const DOCS_DIR = path.join(REPO_ROOT, 'docs');
 // `useLoader = extractorMode === 'loader' && !!deps.publicBaseUrl` -- the condition that degrades the
 // default loader mode to the full inline script, which is why the stdio reader is handed an
 // `extractor_note` and never an `upload_url`.
-const CITATION_FLOOR = 7;
+// Raised to 9 by docs/design-qa-tutorial.md's two, both added where the page had been asserting
+// something a reader could not check: `mcp-server/src/adapters/driving/tools/dom-snapshot-schema.ts`,
+// `borders: EdgesSchema,` (the required keys a trimmed step-4 snapshot was missing, which had the
+// page printing a request the handler refuses) and
+// `mcp-server/src/domain/layout-spec/verification.ts`,
+// `frame_node_id given, but the frame node was not found in the file` (the only site that emits
+// `fix_frame_id`, the thirteenth blocking action, which occurred nowhere under docs/ before).
+const CITATION_FLOOR = 9;
 
 // Ban, rule 1 -- a path-shaped token with a known extension followed by `:<digits>`. Existence is
 // NOT required here: `get-variables-tool.ts:141` cited a real file by bare basename, which resolves
@@ -82,6 +125,21 @@ const BANNED_BY_EXTENSION =
 // `max_depth:6`) down to ZERO, measured over every prose line under `docs/`.
 const PATH_SHAPED_TOKEN = /([A-Za-z0-9_][A-Za-z0-9_./-]*):[0-9]+/g;
 
+// A token shaped like a SOURCE file: the ban's extension vocabulary minus `md`, plus the
+// extensionless family. `md` is excluded deliberately and it is the whole reason this constant is
+// separate from BANNED_BY_EXTENSION: every citation in this corpus names a source file (`.ts`,
+// `.json`, `.example`, `Dockerfile`) and every markdown link in it names a `.md` page, so including
+// `md` would classify all three of the corpus' real wrapped cross-references as broken citations.
+// Existence is NOT required, exactly as in the ban above: a citation naming a `.ts` that does not
+// exist is still a citation and still wrong.
+const SOURCE_PATH_SHAPED =
+  /[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|yml|yaml|toml|sh|example)\b|(?:[A-Za-z0-9_.-]+\/)*(?:Dockerfile|Caddyfile)[A-Za-z0-9_.-]*/;
+
+// A prose line whose LAST content is the opener. `[ \t]*` and not `\s*`: the line has already been
+// split, so a `\s` class could only match the same trailing spaces, and being explicit says that a
+// wrap is what is being detected rather than any whitespace run.
+const WRAPPED_OPENER = /\(see[ \t]*$/i;
+
 // The sanctioned form. `[^`]+` on the literal is how "the literal must not itself contain a
 // backtick" is enforced -- structurally, so a backticked literal simply is not a citation.
 const CITATION = /\(see `([^`]+)`, `([^`]+)`\)/g;
@@ -95,6 +153,13 @@ interface ProseLine {
   page: string;
   line: number;
   text: string;
+  /**
+   * Offsets, within `text`, of the `(see` openers that sat at a FOLD point -- i.e. the ones that were
+   * wrapped in the file. Empty on an unfolded line. Recorded rather than re-derived because a folded
+   * line can hold several openers and only some of them were wrapped, and the two get different
+   * near-miss rules.
+   */
+  wrapOffsets: number[];
 }
 
 interface Citation {
@@ -136,7 +201,7 @@ function proseLines(): { lines: ProseLine[]; pages: string[] } {
         return;
       }
       if (inFence && !/^\s*(?:#|\/\/)/.test(raw)) return;
-      lines.push({ page, line: i + 1, text: raw });
+      lines.push({ page, line: i + 1, text: raw, wrapOffsets: [] });
     });
     // `inFence` is a bare parity toggle, so ONE stray delimiter silently exempts the whole rest of
     // a page from both the ban and the collector. Fail loudly rather than go quiet.
@@ -148,6 +213,36 @@ function proseLines(): { lines: ProseLine[]; pages: string[] } {
   return { lines, pages: files.map((f) => path.relative(REPO_ROOT, f)) };
 }
 
+/**
+ * Prose lines with every WRAPPED opener joined to the line that follows it.
+ *
+ * The joined line keeps the FIRST line's number, so an offender is reported where its `(see` is
+ * written rather than where the wrap happened to land. Folding is iterative, because a line that ends
+ * on `(see` may be followed by one that does too; it terminates because each step consumes a line.
+ * The join is a single space: the two halves were separate lines, so nothing else can have been meant,
+ * and it is what makes `(see` + `` `path`, `literal`) `` read as the one-line sanctioned form.
+ *
+ * NOT used by the ban row, and that is a decision: folding would join a `foo.ts` at the end of one
+ * line with a `:12` at the start of the next into a `file:line` token that nobody wrote, and it would
+ * report tokens from the second line under the first line's number. Concatenation cannot HIDE a
+ * banned token, so the ban row loses nothing by reading the raw lines.
+ */
+function foldWrappedOpeners(lines: ProseLine[]): ProseLine[] {
+  const out: ProseLine[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const { page, line } = lines[i];
+    let text = lines[i].text;
+    const wrapOffsets: number[] = [];
+    while (WRAPPED_OPENER.test(text) && i + 1 < lines.length && lines[i + 1].page === page) {
+      wrapOffsets.push(text.search(WRAPPED_OPENER));
+      i += 1;
+      text = `${text.replace(/[ \t]+$/, '')} ${lines[i].text.trim()}`;
+    }
+    out.push({ page, line, text, wrapOffsets });
+  }
+  return out;
+}
+
 function collectCitations(lines: ProseLine[]): Citation[] {
   const out: Citation[] = [];
   for (const { page, line, text } of lines) {
@@ -156,6 +251,52 @@ function collectCitations(lines: ProseLine[]): Citation[] {
     }
   }
   return out;
+}
+
+/**
+ * Every citation-shaped fragment that is not the sanctioned form, given FOLDED prose lines.
+ *
+ * Extracted from the row that asserts it so the classification can be driven by fixtures too: the
+ * variant that shipped open was one nobody had written, and a rule proved only against today's corpus
+ * cannot be shown to handle a case today's corpus lacks.
+ *
+ * Two rules, by whether the opener was WRAPPED:
+ *   - NOT wrapped: round 1's rule, unchanged -- a backtick or a `](` in the head is a citation
+ *     attempt. (Measured: on the current corpus this reports nothing, and every case it used to
+ *     report still reports.)
+ *   - WRAPPED: the head must reach for a SOURCE, because a wrapped opener is overwhelmingly a
+ *     markdown cross-reference in this corpus and all three real ones carry a `](` (one of them a
+ *     backtick as well). Reaching for a source means a source-shaped path token, or a backticked
+ *     token that is a file in this repo.
+ */
+function nearMissOffenders(lines: ProseLine[]): string[] {
+  const offenders: string[] = [];
+  for (const { page, line, text, wrapOffsets } of lines) {
+    for (const m of text.matchAll(CITATION_OPENER)) {
+      const at = m.index ?? 0;
+      CITATION_AT.lastIndex = at;
+      // The sanctioned form starting exactly here is the escape, folded or not -- which is what makes
+      // a wrapped-but-well-formed citation legal, and then collected and path-checked like any other.
+      if (CITATION_AT.test(text)) continue;
+      const rest = text.slice(at);
+      const close = rest.indexOf(')');
+      const head = close === -1 ? rest : rest.slice(0, close);
+      const wrapped = wrapOffsets.includes(at);
+      const reaches = wrapped
+        ? SOURCE_PATH_SHAPED.test(head)
+          || [...head.matchAll(/`([^`]+)`/g)].some((b) => resolvesInRepo(b[1]) !== undefined)
+        : head.includes('`') || head.includes('](');
+      // `(see below)` and `(see limits)` are ordinary prose, and so is a wrapped opener before a
+      // markdown link to another page. What is NOT ordinary prose is reaching for a source right
+      // here: that is a citation, and it either matches the sanctioned form or it is broken.
+      if (!reaches) continue;
+      offenders.push(
+        `${page}:${line}: citation-shaped but not the sanctioned form (see \`<repo-relative-path>\`, \`<literal>\`)`
+        + `${wrapped ? ' [wrapped over two lines, folded before this check]' : ''}: ${rest.slice(0, 90)}`,
+      );
+    }
+  }
+  return offenders;
 }
 
 // A token is banned by rule 2 if the token itself, or any of its path suffixes, is a file in the
@@ -198,31 +339,103 @@ describe('docs citations resolve to a path plus a literal that occurs once', () 
   });
 
   it('reports citation-shaped prose that misses the sanctioned form', () => {
+    const offenders = nearMissOffenders(foldWrappedOpeners(proseLines().lines));
+    expect(offenders).toEqual([]);
+  });
+
+  it('classifies a wrapped opener: sanctioned or reported, and cross-references stay prose', () => {
+    // The fold is the fix, so the fold's CLASSIFICATION is checked against fixtures rather than
+    // against the corpus alone. A corpus-only proof would have said nothing about the case that was
+    // open, because the case that was open was one nobody had written yet.
+    const cases: { name: string; body: string[]; reported: boolean }[] = [
+      {
+        name: "the reproduction: wrapped, well-formed, nonexistent path -- sanctioned HERE and caught by `path exists`",
+        body: ['A sentence (see', '`mcp-server/src/nowhere-at-all.ts`, `a literal that exists nowhere`).'],
+        reported: false,
+      },
+      {
+        name: 'wrapped, missing the literal -- a near miss, and now named',
+        body: ['A sentence (see', '`mcp-server/src/domain/layout-spec/verification.ts`).'],
+        reported: true,
+      },
+      {
+        name: 'wrapped, doubled space before the path -- a near miss, and now named',
+        body: ['A sentence (see', ' `mcp-server/package.json`,  `"start"`).'],
+        reported: true,
+      },
+      {
+        name: 'wrapped, path written as a markdown link -- a near miss, and now named',
+        body: ['A sentence (see', '[mcp-server/src/index.ts](x), `a literal`).'],
+        reported: true,
+      },
+      {
+        name: 'wrapped before a plain markdown link -- an ordinary cross-reference',
+        body: ['A sentence (see', '[docker/README](../../docker/README.md)).'],
+        reported: false,
+      },
+      {
+        name: 'wrapped before a link whose LABEL is backticked -- still an ordinary cross-reference',
+        body: ['A sentence (see', '[`get_design_context`](navigation.md#get_design_context)).'],
+        reported: false,
+      },
+      {
+        // Wrapped at a DIFFERENT point: the line does not end on `(see`, so nothing is folded and
+        // round 1's unchanged rule is what names it. Present so the fold cannot be mistaken for the
+        // only thing standing between this gate and a wrapped citation.
+        name: 'wrapped after the path instead -- no fold, and round 1\'s rule names it',
+        body: ['A sentence (see `mcp-server/package.json`,', '`"start"`).'],
+        reported: true,
+      },
+      { name: '`(see below)` is prose', body: ['A sentence (see below) and more.'], reported: false },
+      { name: '`(see limits)` is prose', body: ['A sentence (see limits).'], reported: false },
+    ];
+    const wrong: string[] = [];
+    for (const c of cases) {
+      const lines: ProseLine[] = c.body.map((text, i) => ({ page: 'fixture.md', line: i + 1, text, wrapOffsets: [] }));
+      const got = nearMissOffenders(foldWrappedOpeners(lines));
+      if ((got.length > 0) !== c.reported) {
+        wrong.push(`${c.name}: expected ${c.reported ? 'reported' : 'prose'}, got ${JSON.stringify(got)}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+    // The fold itself, separately: a wrapped opener must end up on ONE line carrying the FIRST line's
+    // number, or every rule above is being applied to text nobody reads.
+    const folded = foldWrappedOpeners([
+      { page: 'p.md', line: 7, text: 'left (see', wrapOffsets: [] },
+      { page: 'p.md', line: 8, text: '  `a/b.ts`, `lit`) right', wrapOffsets: [] },
+    ]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0].line).toBe(7);
+    expect(folded[0].text).toBe('left (see `a/b.ts`, `lit`) right');
+    expect(folded[0].wrapOffsets).toEqual([5]);
+  });
+
+  it('leaves the ban row nothing to be blind to: no banned token is split across a line break', () => {
+    // The blindness the wrap exposed was SHARED -- every row read the corpus line by line -- so the one
+    // row deliberately left on RAW lines has to answer for itself. It is left raw because folding
+    // could JOIN a `foo.ts` at the end of one line with a `:12` at the start of the next into a
+    // `file:line` token nobody wrote, and would report second-line tokens under the first line's
+    // number. The cost of that decision is this: a banned token written across a line break would not
+    // be seen. Measured at zero, and asserted so it stays a forward guard rather than becoming a hole
+    // the way the wrap did.
     const { lines } = proseLines();
     const offenders: string[] = [];
-    for (const { page, line, text } of lines) {
-      for (const m of text.matchAll(CITATION_OPENER)) {
-        const at = m.index ?? 0;
-        CITATION_AT.lastIndex = at;
-        if (CITATION_AT.test(text)) continue;
-        // `(see below)` and `(see limits)` are ordinary prose, and so is a line that ends on a
-        // wrapped `(see` before a markdown link on the next line. What is NOT ordinary prose is
-        // reaching for a backticked or linked source right here: that is a citation, and it either
-        // matches the sanctioned form or it is broken.
-        const rest = text.slice(at);
-        const close = rest.indexOf(')');
-        const head = close === -1 ? rest : rest.slice(0, close);
-        if (!head.includes('`') && !head.includes('](')) continue;
-        offenders.push(
-          `${page}:${line}: citation-shaped but not the sanctioned form (see \`<repo-relative-path>\`, \`<literal>\`): ${rest.slice(0, 90)}`,
-        );
+    for (let i = 0; i + 1 < lines.length; i += 1) {
+      const here = lines[i];
+      const next = lines[i + 1];
+      if (here.page !== next.page) continue;
+      if (!/^\s*:[0-9]+/.test(next.text)) continue;
+      // A path-shaped tail, with or without an extension: `LICENSE` and `Makefile` are as citable as
+      // `foo.ts`, and the ban's rule 2 reaches them by existence rather than by extension.
+      if (/[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(here.text.replace(/\s+$/, ''))) {
+        offenders.push(`${here.page}:${here.line}: a path-shaped token ends this line and \`:<digits>\` opens the next -- a file:line citation the ban row reads as two harmless halves`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
   it('resolves every citation: path exists and the literal occurs exactly once', () => {
-    const citations = collectCitations(proseLines().lines);
+    const citations = collectCitations(foldWrappedOpeners(proseLines().lines));
     const offenders: string[] = [];
     for (const { page, line, citedPath, literal } of citations) {
       if (path.isAbsolute(citedPath) || citedPath.split('/').includes('..')) {
@@ -245,7 +458,7 @@ describe('docs citations resolve to a path plus a literal that occurs once', () 
   });
 
   it('keeps at least CITATION_FLOOR distinct citations in the corpus', () => {
-    const citations = collectCitations(proseLines().lines);
+    const citations = collectCitations(foldWrappedOpeners(proseLines().lines));
     // DISTINCT (path, literal) pairs. Counting occurrences would let one citation repeated three
     // times -- or three copies of it inside an HTML comment -- hold the floor up while every real
     // one is deleted.

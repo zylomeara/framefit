@@ -128,7 +128,14 @@ The response carries a machine `verification { complete, scope, pairs, frame_cov
 It is a GATE, not a footnote — do not report "verified against the design / matches the design" until:
 - `complete: true` — the check is complete WITHIN scope. Only then say "verified".
 - `complete: false` — do NOT say "done". Work through `blocking` (exactly what remains; each item
-  is `{ action, node_id|selector, detail }` — perform the `action`, re-run the affected steps):
+  is `{ action, node_id|selector, detail }` — perform the `action`, re-run the affected steps).
+  These THIRTEEN are every `action` the server can emit, so there is no default branch to write.
+  `mcp-server/tests/unit/docs-complete-lists.test.ts` compares the TOKENS that open these bullets
+  against the set read out of the server's own source, failing in either direction, and checks every
+  `kind` a bullet names against the kinds the code pairs with that bullet's action. It does NOT check
+  the prose after the token — that is a claim about meaning, and no cheap check reads meaning, so
+  treat a description that contradicts your run as the thing that is wrong:
+  <!-- blocking-actions:begin -->
   - `add_pair` / `add_container_pair` — a frame region/container WITHOUT a pair. `add_container_pair`
     arrives under TWO different `kind`s: `unchecked_spacing` (between-children spacing NOT verified —
     the older meaning) and `spacing_mismatch` (the gap WAS measured by the spacing audit and
@@ -147,6 +154,20 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
     carries `places[]` (ALL nodes with this token/reason; `node_id` is just the first place,
     `places_capped` — how many were cut) — confirm EVERY place in `places`; the reasons in `detail`
     differ (e.g. `not-captured` = the DOM token was not read there).
+  - `fix_viewport` — `kind: 'viewport'`: the window width you captured at and the `frame_node_id`
+    frame's width disagree, so geometry was demoted to `unchecked` rather than reported as red.
+    Resize to the frame's width (or pass `expected_overlay_width` for a fixed overlay) and re-capture
+    — do NOT read the demoted rows as passes.
+  - `fix_frame_id` — `kind: 'frame_missing'`: `frame_node_id` was given, but no such node exists in
+    this file. `scope` still reads `"frame"` and there is NO `frame_coverage` key at all, while
+    `complete` is forced `false` — the tool refuses to downgrade a missing frame into a green
+    pairs-scope run. A coverage gate that did not run is worse than a red one: re-run step 1 and pass
+    the id it returns.
+  - `run_token_aware` — `kind: 'scope_incomplete'`: the run used `match_profile: 'layout'`, whose
+    scope excludes typography/colors/styles/component. It is inserted as the FIRST blocking item and
+    keeps `complete` at `false` by construction — finish with `token-aware` or `strict`. See
+    "Strictness profiles" below.
+  <!-- blocking-actions:end -->
 - `blocking: []` with `complete:false` — only INHERENT items remain: hug/fill demotes, out-of-coverage,
   OR a clean spacing audit (`spacing_audit[].fully_clean` — between-children gaps verified and equal,
   only the container INSETS unverified): there is no automated action — verify those axes BY EYE

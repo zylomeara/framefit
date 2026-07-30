@@ -1,0 +1,458 @@
+{
+  "file": "AbCdEf012345",
+  "tolerance_px": 1,
+  "frame": {
+    "node_id": "12:340",
+    "width": 320
+  },
+  "pairs": [
+    {
+      "node_id": "12:340",
+      "label": "card root",
+      "selector": ".card",
+      "rows": [
+        {
+          "prop": "viewport",
+          "figma": 320,
+          "dom": 320,
+          "status": "pass"
+        },
+        {
+          "prop": "size.w",
+          "figma": 320,
+          "dom": 320,
+          "status": "pass"
+        },
+        {
+          "prop": "size.h",
+          "figma": 420,
+          "dom": 420,
+          "status": "pass"
+        },
+        {
+          "prop": "gap[0] title↔price",
+          "figma": 12,
+          "dom": 12,
+          "status": "pass"
+        },
+        {
+          "prop": "gap[1] price↔list",
+          "figma": 12,
+          "dom": 12,
+          "status": "pass"
+        },
+        {
+          "prop": "padding-top",
+          "figma": 0,
+          "dom": 0,
+          "status": "pass"
+        },
+        {
+          "prop": "padding-bottom",
+          "figma": 16,
+          "dom": 16,
+          "status": "pass"
+        },
+        {
+          "prop": "offset-cross[0] title",
+          "figma": 0,
+          "dom": 0,
+          "status": "pass"
+        },
+        {
+          "prop": "offset-cross[1] price",
+          "figma": 0,
+          "dom": 0,
+          "status": "pass"
+        },
+        {
+          "prop": "offset-cross[2] list",
+          "figma": 0,
+          "dom": 0,
+          "status": "pass"
+        },
+        {
+          "prop": "font-size[title]",
+          "figma": 16,
+          "dom": 16,
+          "status": "pass"
+        },
+        {
+          "prop": "font-weight[title]",
+          "figma": 600,
+          "dom": 400,
+          "status": "fail",
+          "srcChannel": {
+            "kind": "child",
+            "i": 0,
+            "editKind": "property"
+          }
+        },
+        {
+          "prop": "font-family[title]",
+          "figma": "inter",
+          "dom": "inter",
+          "status": "pass"
+        },
+        {
+          "prop": "font-size[price]",
+          "figma": 14,
+          "dom": 14,
+          "status": "pass"
+        },
+        {
+          "prop": "font-weight[price]",
+          "figma": 400,
+          "dom": 400,
+          "status": "pass"
+        },
+        {
+          "prop": "font-family[price]",
+          "figma": "inter",
+          "dom": "inter",
+          "status": "pass"
+        }
+      ],
+      "summary": {
+        "pass": 15,
+        "fail": 1,
+        "warn": 0,
+        "skip": 0,
+        "info": 0,
+        "demoted": 0,
+        "unchecked": 0,
+        "review": 0
+      },
+      "coverage": {
+        "measured": [
+          "font-family",
+          "font-size",
+          "font-weight",
+          "gap",
+          "offset-cross",
+          "padding",
+          "size",
+          "viewport"
+        ],
+        "skipped": []
+      },
+      "source": {
+        "root": {
+          "module": "ProductCard",
+          "local": "card",
+          "raw": "ProductCard_card__e4f5a6"
+        },
+        "children": [
+          {
+            "i": 0,
+            "name": "title",
+            "hint": {
+              "module": "ProductCard",
+              "local": "title",
+              "raw": "ProductCard_title__a1b2c3"
+            }
+          },
+          {
+            "i": 1,
+            "name": "price",
+            "hint": {
+              "module": "ProductCard",
+              "local": "price",
+              "raw": "ProductCard_price__b7c8d9"
+            }
+          },
+          {
+            "i": 2,
+            "name": "list",
+            "hint": {
+              "module": "ProductCard",
+              "local": "list",
+              "raw": "ProductCard_list__c1d2e3"
+            }
+          }
+        ]
+      },
+      "fix_plan": [
+        {
+          "target": {
+            "module": "ProductCard",
+            "local": "title",
+            "raw": "ProductCard_title__a1b2c3"
+          },
+          "channel": "child",
+          "edits": [
+            {
+              "prop": "font-weight[title]",
+              "kind": "property",
+              "expected": 600,
+              "actual": 400
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "node_id": "12:341",
+      "label": "title",
+      "selector": ".card__title",
+      "rows": [
+        {
+          "prop": "viewport",
+          "figma": 320,
+          "dom": 320,
+          "status": "pass"
+        },
+        {
+          "prop": "size.w",
+          "figma": 288,
+          "dom": 288,
+          "status": "pass"
+        },
+        {
+          "prop": "size.h",
+          "figma": 24,
+          "dom": 24,
+          "status": "pass"
+        },
+        {
+          "prop": "children",
+          "status": "skip",
+          "note": "node without auto-layout — inter-element metrics are not computed"
+        },
+        {
+          "prop": "font-size",
+          "figma": 16,
+          "dom": 16,
+          "status": "pass"
+        },
+        {
+          "prop": "font-weight",
+          "figma": 600,
+          "dom": 400,
+          "status": "fail",
+          "srcChannel": {
+            "kind": "root",
+            "editKind": "property"
+          }
+        },
+        {
+          "prop": "font-family",
+          "figma": "inter",
+          "dom": "inter",
+          "status": "pass"
+        }
+      ],
+      "summary": {
+        "pass": 5,
+        "fail": 1,
+        "warn": 0,
+        "skip": 1,
+        "info": 0,
+        "demoted": 0,
+        "unchecked": 0,
+        "review": 0
+      },
+      "coverage": {
+        "measured": [
+          "font-family",
+          "font-size",
+          "font-weight",
+          "size",
+          "viewport"
+        ],
+        "skipped": []
+      },
+      "source": {
+        "root": {
+          "module": "ProductCard",
+          "local": "title",
+          "raw": "ProductCard_title__a1b2c3"
+        }
+      },
+      "fix_plan": [
+        {
+          "target": {
+            "module": "ProductCard",
+            "local": "title",
+            "raw": "ProductCard_title__a1b2c3"
+          },
+          "channel": "root",
+          "edits": [
+            {
+              "prop": "font-weight",
+              "kind": "property",
+              "expected": 600,
+              "actual": 400
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "node_id": "12:344",
+      "label": "price",
+      "selector": ".card__price",
+      "rows": [
+        {
+          "prop": "viewport",
+          "figma": 320,
+          "dom": 320,
+          "status": "pass"
+        },
+        {
+          "prop": "size.w",
+          "figma": 288,
+          "dom": 288,
+          "status": "pass"
+        },
+        {
+          "prop": "size.h",
+          "figma": 20,
+          "dom": 20,
+          "status": "pass"
+        },
+        {
+          "prop": "children",
+          "status": "skip",
+          "note": "node without auto-layout — inter-element metrics are not computed"
+        },
+        {
+          "prop": "font-size",
+          "figma": 14,
+          "dom": 14,
+          "status": "pass"
+        },
+        {
+          "prop": "font-weight",
+          "figma": 400,
+          "dom": 400,
+          "status": "pass"
+        },
+        {
+          "prop": "font-family",
+          "figma": "inter",
+          "dom": "inter",
+          "status": "pass"
+        }
+      ],
+      "summary": {
+        "pass": 6,
+        "fail": 0,
+        "warn": 0,
+        "skip": 1,
+        "info": 0,
+        "demoted": 0,
+        "unchecked": 0,
+        "review": 0
+      },
+      "coverage": {
+        "measured": [
+          "font-family",
+          "font-size",
+          "font-weight",
+          "size",
+          "viewport"
+        ],
+        "skipped": []
+      },
+      "source": {
+        "root": {
+          "module": "ProductCard",
+          "local": "price",
+          "raw": "ProductCard_price__b7c8d9"
+        }
+      }
+    }
+  ],
+  "summary": {
+    "pass": 26,
+    "fail": 2,
+    "warn": 0,
+    "skip": 2,
+    "info": 0,
+    "demoted": 0,
+    "unchecked": 0,
+    "review": 0
+  },
+  "verification": {
+    "complete": false,
+    "scope": "frame",
+    "pairs": {
+      "checked": 3,
+      "clean": 0
+    },
+    "match_profile": "token-aware",
+    "frame_coverage": {
+      "worthy": 3,
+      "covered": 2,
+      "uncovered": [
+        "12:350"
+      ],
+      "partial": [],
+      "enumeration_truncated": false,
+      "enumeration_depth": 4,
+      "enumeration_source": "pair_fetch"
+    },
+    "blocking": [
+      {
+        "kind": "uncovered_region",
+        "node_id": "12:350",
+        "action": "add_pair",
+        "detail": "frame region unpaired — the region's layout is not verified"
+      },
+      {
+        "node_id": "12:341",
+        "selector": ".card__title",
+        "detail": "node without auto-layout — inter-element metrics are not computed",
+        "kind": "skip",
+        "action": "resolve_skip"
+      },
+      {
+        "node_id": "12:344",
+        "selector": ".card__price",
+        "detail": "node without auto-layout — inter-element metrics are not computed",
+        "kind": "skip",
+        "action": "resolve_skip"
+      }
+    ]
+  },
+  "hydration": [
+    {
+      "node_id": "12:340",
+      "held_depth": 5,
+      "hydrated": true,
+      "drill_free_upto": 4,
+      "cause_breakdown": {
+        "depth": 0,
+        "breadth": 0,
+        "budget": 0
+      }
+    },
+    {
+      "node_id": "12:341",
+      "held_depth": 5,
+      "hydrated": true,
+      "drill_free_upto": 4,
+      "cause_breakdown": {
+        "depth": 0,
+        "breadth": 0,
+        "budget": 0
+      }
+    },
+    {
+      "node_id": "12:344",
+      "held_depth": 5,
+      "hydrated": true,
+      "drill_free_upto": 4,
+      "cause_breakdown": {
+        "depth": 0,
+        "breadth": 0,
+        "budget": 0
+      }
+    }
+  ],
+  "not_covered_by_tool": [
+    "icons"
+  ],
+  "report_markdown": "Verified against Figma (file AbCdEf012345, frame 12:340 (320px), tolerance 1px, profile token-aware):\n\n**card root** (node 12:340 ↔ .card): ✅15 ❌1 ⚠️0 ⏭0 ℹ️0\n- ❌ font-weight[title]: Figma 600 / DOM 400\ncode: gap/spacing → ProductCard (root); title → ProductCard, price → ProductCard, list → ProductCard\nEdits (target = class candidate, confirm by resolving):\n- ≈ ProductCard (.title): font-weight[title] 600 ← 400\n\n**title** (node 12:341 ↔ .card__title): ✅5 ❌1 ⚠️0 ⏭1 ℹ️0\n- ⏭ children: Figma — / DOM — — node without auto-layout — inter-element metrics are not computed\n- ❌ font-weight: Figma 600 / DOM 400\ncode: gap/spacing → ProductCard (root)\nEdits (target = class candidate, confirm by resolving):\n- ≈ ProductCard (.title): font-weight 600 ← 400\n\n**price** (node 12:344 ↔ .card__price): ✅6 ❌0 ⚠️0 ⏭1 ℹ️0\n- ⏭ children: Figma — / DOM — — node without auto-layout — inter-element metrics are not computed\ncode: gap/spacing → ProductCard (root)\n\nTotal: ✅26 ❌2 ⚠️0 ⏭2 ℹ️0 — discrepancies found\n\nCheck: INCOMPLETE (scope frame, coverage 2/3): pairs 0/3 clean; regions unpaired 1 — do NOT say \"done\" until this is closed. · enumeration: pair_fetch@4\nRemaining (blocking, 3):\n- [add_pair] node 12:350 — frame region unpaired — the region's layout is not verified\n- [resolve_skip] node 12:341 — node without auto-layout — inter-element metrics are not computed\n- [resolve_skip] node 12:344 — node without auto-layout — inter-element metrics are not computed\n\n⚠️ NOT covered by this tool (verify visually): icons\nℹ️ icons: size/position are measured geometrically, the diff does not check glyph/shape — verify visually or get_screenshot focus-crop\nℹ️ typography checked to 4 nesting levels — TEXT deeper: raise max_depth (up to 8) and rerun, or add a separate pair on the TEXT node"
+}

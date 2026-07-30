@@ -745,6 +745,412 @@ describe('Gate 5A3: the figma_token bullet names exactly the tools that lack the
 });
 
 // =================================================================================================
+// INSTANTIATION B -- the blocking actions a `verification` receipt can ask for.
+//
+// TWO pages present this list as complete, and both were wrong. `docs/design-qa-tutorial.md` named
+// 12 of 13 (no `fix_frame_id`); `docs/agents/design-qa-skill.md`'s dispatch table named 10 of 13 (no
+// `fix_frame_id`, no `fix_viewport`, and no `run_token_aware` -- which the skill mentioned only in
+// its strictness-profiles prose, OUTSIDE the table, so a whole-file grep would have called the table
+// complete while an agent following it had no branch for the token). `fix_frame_id` occurred nowhere
+// under docs/ at all, and it is the common first-run mistake: a `frame_node_id` that names no node in
+// the file, which turns the coverage gate off rather than red.
+//
+// THE CODE SIDE IS EVERY `action` KEY UNDER src/, RESOLVED. The 13th value, `add_text_pair`, is
+// assigned only through a CONDITIONAL, so the 18 sites matching `action: '<lower_snake>'` yield 12
+// names: an implementer who extracted 12, found 13 on the page and deleted the extra would have
+// satisfied a naive spec while removing a correct entry. Both names are therefore asserted present BY
+// NAME below. How the set is derived, and why it is a denominator rather than a pattern, is written
+// out above `actionKeySites`.
+//
+// types.ts's `action` union COMMENT is FORBIDDEN as a source. It carried this very defect (12 values,
+// no `fix_frame_id`), which is how both pages inherited it; it is corrected in the same commit, and a
+// gate that read it would only prove that a comment and a page agree.
+//
+// THE PROSE SIDE IS DELIMITED, and the marker pair must exist AND BE UNIQUE. Uniqueness is not a
+// nicety: the slice reads the FIRST pair, so a decoy pair earlier on the page shadows the real list
+// and the real `fix_frame_id` bullet can then be deleted with this gate green -- measured.
+//
+// Collecting every code span in a slice cannot work in either direction: measured at HEAD, the
+// tutorial's slice holds 26 distinct spans and the skill's 42, against a 13-element code side. (Those
+// numbers are re-measured whenever this list is edited; they move with the prose, which is why the
+// rule is structural and not a subtraction.) Hence: only the DISPATCH HEAD of each bullet -- the run
+// of code spans at its start separated by nothing but `/` and whitespace. That rule is ASCII and
+// structural, stops at the first span whose preceding gap carries prose, and is what lets both pages
+// keep explaining `kind`s and `detail` fields freely.
+//
+// WHAT THIS INSTANTIATION CANNOT SEE, stated because leaving it unstated is how a page came to claim
+// otherwise. Only the bullet's HEAD tokens and the `kind`s it names are gated. A bullet BODY can be
+// replaced with an actively false statement -- inverted advice, the wrong remediation -- and every row
+// here stays green, because that is a claim about MEANING and no cheap check reads meaning. Round 3
+// added the action/kind pairing row, which stops a body re-attributing a kind to the wrong action, and
+// corrected BOTH pages, which had told the reader this test "fails if these bullets and that set
+// differ either way" -- a false claim about this gate, printed on the pages this gate exists to keep
+// honest. They now describe what is checked and say plainly what is not.
+// =================================================================================================
+
+const SRC_DIR = path.join(__dirname, '..', '..', 'src');
+/** The one module the blocking vocabulary may be written in. */
+const VERIFICATION_FILE = 'src/domain/layout-spec/verification.ts';
+
+/**
+ * Occurrences whose `action` is a TYPE MEMBER and so emits nothing -- there is no literal to resolve.
+ * Declared as `<file> <value text>` and compared as a sorted LIST, not by a predicate, so a genuinely
+ * unexplained site cannot hide in this bucket.
+ */
+const ACTION_TYPE_MEMBER_SITES = [
+  'src/domain/layout-spec/types.ts string',
+  'src/multi-tenant/accounts-api.ts string',
+  'src/multi-tenant/accounts-api.ts string',
+  'src/multi-tenant/audit-db.ts string',
+  'src/multi-tenant/audit-db.ts string',
+];
+
+interface ActionSite { file: string; line: number; value: string }
+
+const tsFilesUnder = (dir: string): string[] =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const full = path.join(dir, e.name);
+    return e.isDirectory() ? tsFilesUnder(full) : e.isFile() && full.endsWith('.ts') ? [full] : [];
+  });
+
+/**
+ * The value expression of a property as source text: from the colon to the `,`, `;` or closing
+ * bracket that ends it at depth 0, with string and template literals skipped whole.
+ *
+ * A conditional's own `:` is deliberately NOT a terminator -- it is part of the value, which is the
+ * shape round 2 nearly dropped.
+ */
+function valueTextAt(src: string, from: number): string {
+  let depth = 0;
+  let i = from;
+  for (; i < src.length; i += 1) {
+    const c = src[i];
+    if (c === "'" || c === '"' || c === '`') {
+      const quote = c;
+      i += 1;
+      while (i < src.length && src[i] !== quote) i += src[i] === '\\' ? 2 : 1;
+      continue;
+    }
+    if ('([{'.includes(c)) { depth += 1; continue; }
+    if (')]}'.includes(c)) { if (depth === 0) break; depth -= 1; continue; }
+    if (depth === 0 && (c === ',' || c === ';')) break;
+  }
+  return src.slice(from, i).trim();
+}
+
+/** Every `action` OBJECT KEY under src/, found without looking at a single value. */
+function actionKeySites(): ActionSite[] {
+  const out: ActionSite[] = [];
+  for (const full of tsFilesUnder(SRC_DIR).sort()) {
+    const file = path.relative(path.join(__dirname, '..', '..'), full).split(path.sep).join('/');
+    const text = readFileSync(full, 'utf8');
+    // The identifier `action` (not the tail of a longer one), an optional `?`, a colon. This rule
+    // never inspects a value, which is exactly why no value shape can hide from it.
+    for (const m of text.matchAll(/(?<![A-Za-z0-9_$])action\s*\??\s*:/g)) {
+      const at = (m.index ?? 0) + m[0].length;
+      out.push({ file, line: text.slice(0, m.index).split('\n').length, value: valueTextAt(text, at) });
+    }
+  }
+  return out;
+}
+
+/** The branches of a conditional expression, or null. Nested conditionals are handled by counting. */
+function splitConditional(expr: string): { whenTrue: string; whenFalse: string } | null {
+  const skipString = (s: string, i: number): number => {
+    const quote = s[i];
+    let j = i + 1;
+    while (j < s.length && s[j] !== quote) j += s[j] === '\\' ? 2 : 1;
+    return j;
+  };
+  let depth = 0;
+  let q = -1;
+  for (let i = 0; i < expr.length; i += 1) {
+    const c = expr[i];
+    if (c === "'" || c === '"' || c === '`') { i = skipString(expr, i); continue; }
+    if ('([{'.includes(c)) { depth += 1; continue; }
+    if (')]}'.includes(c)) { depth -= 1; continue; }
+    if (depth !== 0) continue;
+    // `?.` is optional chaining and `??` is nullish coalescing; neither opens a conditional.
+    if (c === '?' && expr[i + 1] !== '.' && expr[i + 1] !== '?' && expr[i - 1] !== '?') { q = i; break; }
+  }
+  if (q === -1) return null;
+  let depth2 = 0;
+  let pending = 0;
+  for (let i = q + 1; i < expr.length; i += 1) {
+    const c = expr[i];
+    if (c === "'" || c === '"' || c === '`') { i = skipString(expr, i); continue; }
+    if ('([{'.includes(c)) { depth2 += 1; continue; }
+    if (')]}'.includes(c)) { depth2 -= 1; continue; }
+    if (depth2 !== 0) continue;
+    if (c === '?' && expr[i + 1] !== '.' && expr[i + 1] !== '?') { pending += 1; continue; }
+    if (c === ':') {
+      if (pending > 0) { pending -= 1; continue; }
+      return { whenTrue: expr.slice(q + 1, i).trim(), whenFalse: expr.slice(i + 1).trim() };
+    }
+  }
+  return null;
+}
+
+/**
+ * Every string literal an `action` value can evaluate to, or [] when it is not a value at all.
+ *
+ * Quote style is irrelevant (single, double, backtick), conditional nesting depth is irrelevant, and
+ * a `const` reference is followed -- in its own file first, then anywhere under src/, which is how an
+ * identifier IMPORTED from another module resolves to the literal it was given there.
+ */
+function resolveActionLiterals(expr: string, file: string, seen = new Set<string>()): string[] {
+  const e = expr.trim();
+  const lit = /^'([^'\\]*)'$|^"([^"\\]*)"$|^`([^`$\\]*)`$/.exec(e);
+  if (lit) return [lit[1] ?? lit[2] ?? lit[3]];
+  const cond = splitConditional(e);
+  if (cond) {
+    return [
+      ...resolveActionLiterals(cond.whenTrue, file, seen),
+      ...resolveActionLiterals(cond.whenFalse, file, seen),
+    ];
+  }
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(e) && !seen.has(e)) {
+    seen.add(e);
+    const decl = new RegExp(`(?<![A-Za-z0-9_$])const\\s+${e}\\s*(?::[^=]*)?=`);
+    const own = path.join(__dirname, '..', '..', file);
+    for (const f of [own, ...tsFilesUnder(SRC_DIR).filter((x) => x !== own)]) {
+      const text = readFileSync(f, 'utf8');
+      const m = decl.exec(text);
+      if (m === null) continue;
+      const rel = path.relative(path.join(__dirname, '..', '..'), f).split(path.sep).join('/');
+      const found = resolveActionLiterals(valueTextAt(text, (m.index ?? 0) + m[0].length), rel, seen);
+      if (found.length > 0) return found;
+    }
+  }
+  return [];
+}
+
+/** The blocking vocabulary, plus the accounting that says every site was explained. */
+function actionCodeSide(): {
+  values: Set<string>; sites: ActionSite[]; vocabularySites: ActionSite[];
+  literals: number; offenders: string[];
+} {
+  const sites = actionKeySites();
+  const values = new Set<string>();
+  const vocabularySites: ActionSite[] = [];
+  const typeMembers: string[] = [];
+  const offenders: string[] = [];
+  let literals = 0;
+  for (const s of sites) {
+    const lits = resolveActionLiterals(s.value, s.file);
+    // The key is file + the value's FIRST LINE, truncated. Truncated because an `action:` written
+    // inside a comment has no property terminator, so its "value" runs to the end of the enclosing
+    // block and a failure would otherwise print a page of source instead of naming a site. No line
+    // number in the key: a declaration keyed by line rots on the next edit above it, which is the
+    // defect docs-citations exists to ban -- the line is carried in the message instead.
+    if (lits.length === 0) { typeMembers.push(`${s.file} ${s.value.split('\n')[0].slice(0, 40)}`); continue; }
+    literals += lits.length;
+    if (s.file !== VERIFICATION_FILE) {
+      offenders.push(
+        `${s.file}:${s.line}: an \`action\` VALUE outside ${VERIFICATION_FILE} (${JSON.stringify(lits)})`
+        + ' -- the blocking vocabulary must be written in ONE module, or a documented list cannot be'
+        + ' compared against it',
+      );
+      continue;
+    }
+    vocabularySites.push(s);
+    for (const l of lits) values.add(l);
+  }
+  const found = [...typeMembers].sort();
+  const declared = [...ACTION_TYPE_MEMBER_SITES].sort();
+  if (JSON.stringify(found) !== JSON.stringify(declared)) {
+    offenders.push(
+      `an \`action\` key resolves to no literal and is not a declared type member: found ${JSON.stringify(found)},`
+      + ` declared ${JSON.stringify(declared)} -- an unexplained site is a failure whatever shape it is written in`,
+    );
+  }
+  return { values, sites, vocabularySites, literals, offenders };
+}
+
+/** `<action>/<kind>` for every kind co-located with an action in one blocking-item object literal. */
+function actionKindPairs(): Set<string> {
+  const text = readFileSync(path.join(__dirname, '..', '..', VERIFICATION_FILE), 'utf8');
+  const pairs = new Set<string>();
+  for (const m of text.matchAll(/(?<![A-Za-z0-9_$])action\s*\??\s*:/g)) {
+    const at = m.index ?? 0;
+    // The enclosing object literal, found by scanning outward to the unmatched braces on each side.
+    let depth = 0;
+    let start = at;
+    for (; start > 0; start -= 1) {
+      if (text[start] === '}') depth += 1;
+      else if (text[start] === '{') { if (depth === 0) break; depth -= 1; }
+    }
+    depth = 0;
+    let end = at;
+    for (; end < text.length; end += 1) {
+      if (text[end] === '{') depth += 1;
+      else if (text[end] === '}') { if (depth === 0) break; depth -= 1; }
+    }
+    const actions = resolveActionLiterals(valueTextAt(text, at + m[0].length), VERIFICATION_FILE);
+    for (const km of text.slice(start, end).matchAll(/(?<![A-Za-z0-9_$])kind\s*:\s*'([a-z_]+)'/g)) {
+      for (const a of actions) pairs.add(`${a}/${km[1]}`);
+    }
+  }
+  return pairs;
+}
+
+/**
+ * The text between two markers, as the bullets it holds -- continuation lines folded into their
+ * bullet. A missing marker throws: a slice that quietly comes back empty would satisfy set equality
+ * against nothing, and "the check found nothing to check" has already been mistaken for a pass here.
+ */
+function markedBullets(page: string, marker: string): string[] {
+  const text = readFileSync(path.join(REPO_ROOT, page), 'utf8');
+  const open = `<!-- ${marker}:begin -->`;
+  const close = `<!-- ${marker}:end -->`;
+  const from = text.indexOf(open);
+  const to = text.indexOf(close);
+  expect(from, `${page} has no \`${open}\` marker`).toBeGreaterThan(-1);
+  expect(to, `${page} has no \`${close}\` marker`).toBeGreaterThan(from);
+  // UNIQUE, not merely present. The slice reads the FIRST pair, so a second pair earlier on the page
+  // shadows the real list entirely: measured, a decoy pair holding the thirteen tokens lets the real
+  // `fix_frame_id` bullet be deleted outright with this gate green. Existence was half the rule.
+  expect(text.split(open).length - 1, `${page} carries more than one \`${open}\` marker, so the slice reads whichever comes first`).toBe(1);
+  expect(text.split(close).length - 1, `${page} carries more than one \`${close}\` marker`).toBe(1);
+  const bullets: string[] = [];
+  for (const line of text.slice(from + open.length, to).split('\n')) {
+    if (/^\s*[-*]\s/.test(line)) bullets.push(line.trim().replace(/^[-*]\s+/, ''));
+    else if (/^\s+\S/.test(line) && bullets.length > 0) bullets[bullets.length - 1] += ` ${line.trim()}`;
+  }
+  expect(bullets.length, `${page}'s \`${marker}\` slice holds no bullet`).toBeGreaterThan(0);
+  return bullets;
+}
+
+/**
+ * The DISPATCH HEAD of a bullet: the run of code spans at its start, separated by nothing but `/`
+ * and whitespace. `` `a` / `b` -- prose about `c` `` yields a and b, never c.
+ */
+function dispatchHead(bullet: string): string[] {
+  const out: string[] = [];
+  let at = 0;
+  for (const m of bullet.matchAll(/`([^`]+)`/g)) {
+    const gap = bullet.slice(at, m.index);
+    if (!/^[\s/]*$/.test(gap)) break;
+    out.push(m[1]);
+    at = m.index + m[0].length;
+  }
+  return out;
+}
+
+describe('Gate 5B: both pages that enumerate the blocking actions name all thirteen', () => {
+  const ACTION_PAGES = ['docs/design-qa-tutorial.md', 'docs/agents/design-qa-skill.md'];
+
+  const codeSide = (): Set<string> => actionCodeSide().values;
+
+  it('accounts for EVERY `action` key under src/, so no value shape can walk past', () => {
+    const { values, sites, vocabularySites, literals, offenders } = actionCodeSide();
+    // The offenders check runs FIRST and by name: an unexplained site is the failure this row exists
+    // for, and a size assert firing instead would say a number where it could say a file and a line.
+    expect(offenders, 'an `action` key under src/ was not explained').toEqual([]);
+    // A SHAPE-AGNOSTIC denominator. Round 2 asserted `plain === 18` using the same regex that read
+    // the values, so it could not count a site that regex could not see -- measured, a camel-case
+    // literal left it at 18. This number comes from a rule that never looks at a value at all.
+    expect(sites.length, 'the number of `action` keys under src/ changed').toBe(24);
+    expect(vocabularySites.length, `the number of \`action\` value sites in ${VERIFICATION_FILE} changed`).toBe(19);
+    expect(ACTION_TYPE_MEMBER_SITES).toHaveLength(5);
+    // 19 sites yielding 20 literals: one site is a conditional and contributes both of its branches.
+    expect(literals, 'the resolved literal count changed -- a conditional branch gained or lost').toBe(20);
+    expect(values.size, 'the extractor no longer finds thirteen distinct actions').toBe(13);
+    // By name, both directions of the recipe's failure. `add_text_pair` is reachable ONLY through the
+    // conditional, and `fix_frame_id` is the value both pages were missing.
+    expect([...values], 'add_text_pair is emitted only through the conditional -- a parser that skips it drops the thirteenth action')
+      .toContain('add_text_pair');
+    expect([...values], 'fix_frame_id is what this instantiation exists for').toContain('fix_frame_id');
+  });
+
+  it('resolves the value shapes a parser can be evaded with', () => {
+    // Six shapes were measured walking past round 2's two regexes. Each is checked here directly, so
+    // the resolver is proved able to see them without waiting for one to appear in production code.
+    const f = VERIFICATION_FILE;
+    expect(resolveActionLiterals("'fix_pair'", f)).toEqual(['fix_pair']);
+    expect(resolveActionLiterals('"fix_pair"', f)).toEqual(['fix_pair']);
+    expect(resolveActionLiterals('`fix_pair`', f)).toEqual(['fix_pair']);
+    expect(resolveActionLiterals("'fixTokenMap2'", f), 'a literal that is not lower_snake is still a literal')
+      .toEqual(['fixTokenMap2']);
+    expect(resolveActionLiterals("a < 8 ? 'one' : 'two'", f)).toEqual(['one', 'two']);
+    expect(resolveActionLiterals("a ? 'one' : b ? 'two' : 'three'", f), 'a third conditional branch')
+      .toEqual(['one', 'two', 'three']);
+    expect(resolveActionLiterals('SOME_UNDECLARED_CONST', f), 'an unresolvable value is reported, never guessed')
+      .toEqual([]);
+    // A const reference resolved out of a real module: NOT_COVERED_BY_TOOL is exported from diff.ts,
+    // so this exercises the cross-module path an imported identifier takes.
+    expect(resolveActionLiterals('SOURCE_NOTE_NO_PARSE', f).length, 'a const reference must resolve across modules')
+      .toBe(1);
+  });
+
+  it('every `kind` a bullet names is one the code really pairs with that bullet\'s action', () => {
+    // A SECOND AXIS over the bullet BODY, added because only the dispatch head was gated and a review
+    // showed a body can be replaced with an actively false statement while the suite stays green.
+    // This does not close that -- meaning is not checkable by tokens -- but it does stop a body from
+    // re-attributing a `kind` to the wrong action, and it is what lets both pages state what is
+    // checked without overclaiming. See the pages' own wording, which was corrected in the same
+    // commit from "fails if these bullets and that set differ" to what this file actually does.
+    const pairs = actionKindPairs();
+    const kinds = new Set([...pairs].map((p) => p.split('/')[1]));
+    expect(kinds.size, 'no kinds were extracted, so this row would assert nothing').toBeGreaterThan(10);
+    const wrong: string[] = [];
+    let checked = 0;
+    for (const page of ACTION_PAGES) {
+      for (const bullet of markedBullets(page, 'blocking-actions')) {
+        const heads = dispatchHead(bullet);
+        if (heads.length === 0) continue;
+        for (const span of [...bullet.matchAll(/`([^`]+)`/g)].map((m) => m[1])) {
+          // `kind: 'viewport'` and a bare `viewport` are the same claim written two ways.
+          const named = /^kind:\s*'([a-z_]+)'$/.exec(span)?.[1] ?? span;
+          if (!kinds.has(named)) continue;
+          checked += 1;
+          if (!heads.some((a) => pairs.has(`${a}/${named}`))) {
+            wrong.push(`${page}: the bullet for ${JSON.stringify(heads)} names kind \`${named}\`, which the code pairs with ${JSON.stringify([...pairs].filter((p) => p.endsWith(`/${named}`)))}`);
+          }
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
+    expect(checked, 'no bullet named a kind, so this row asserted nothing').toBeGreaterThanOrEqual(7);
+  });
+
+  it('the dispatch-head rule reads heads and not every span', () => {
+    // The rule itself is checked, because it is the one thing a green set equality cannot vouch for:
+    // a head reader that swallowed the whole bullet would make both pages fail, but one that
+    // returned nothing would make them pass against a code side of 13 only by accident.
+    expect(dispatchHead('`add_pair` / `add_container_pair` — a region with `kind` set'))
+      .toEqual(['add_pair', 'add_container_pair']);
+    expect(dispatchHead('`resolve_skip` — environment (viewport/scroll) or `node_id` trouble'))
+      .toEqual(['resolve_skip']);
+    expect(dispatchHead('prose first, then a `span`')).toEqual([]);
+  });
+
+  for (const page of ACTION_PAGES) {
+    it(`${page} enumerates exactly the actions the server emits`, () => {
+      const proseSide = new Set(markedBullets(page, 'blocking-actions').flatMap(dispatchHead));
+      assertCompleteList({
+        label: `${page}'s blocking-action enumeration (dispatch head of each bullet)`,
+        codeSide: codeSide(),
+        proseSide,
+        expectedCodeSize: 13,
+      });
+    });
+  }
+
+  it('neither page reaches for the union comment in types.ts, which carried the same defect', () => {
+    // A forward guard with a live reason: that comment omitted `fix_frame_id` until this commit, and
+    // it is the shape a future reader is most likely to copy from. It is now correct; a page that
+    // pointed AT it would still be restating a comment rather than the emitted set.
+    const forbidden = 'types.ts';
+    for (const page of ACTION_PAGES) {
+      const slice = markedBullets(page, 'blocking-actions').join(' ');
+      expect(slice, `${page}'s enumeration cites ${forbidden} as the source of the action list`)
+        .not.toContain(forbidden);
+    }
+  });
+});
+
+// =================================================================================================
 // INSTANTIATION A4 -- the fence-tag convention.
 //
 // The code side here is the DOC CORPUS rather than the server: the bullet declares the complete

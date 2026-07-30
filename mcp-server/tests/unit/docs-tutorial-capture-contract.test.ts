@@ -293,7 +293,8 @@ describe('the tutorial captures exactly what its next step consumes, in order', 
     // blocking item per pair. Measured: at innerWidth 1280 against frame 12:340, three fix_viewport
     // items and three `unchecked` rows.
     //
-    // The receipt fence is docs task 11's to regenerate. This assertion reads only its frame width,
+    // The step-4 response fence has since been regenerated from a captured three-pair run and is
+    // compared field by field by docs-response-examples. This assertion reads only its frame width,
     // which the handler returns as 320 for this frame; if a regeneration disagrees, that is the
     // number to look at rather than this row.
     const text = pageText();

@@ -51,8 +51,8 @@
 // WHY THE CORPUS IS NOT KEYED BY LINE NUMBER. Sibling tasks on this line move these fences (one
 // rewrites prose above them, one adds a bullet, one edits a paragraph). A shifted `fenceLine` slices
 // a partial object, and "skip-on-parse-error is forbidden" then turns that into a failure the moving
-// task is not authorised to fix. Each entry is therefore SELF-LOCATING: page + exact heading text +
-// which fence under that heading. Fence reading is tag-agnostic (read to the next ```), so this gate
+// task is not authorised to fix. Each entry is therefore SELF-LOCATING: page + a heading prefix that
+// selects exactly one heading + which fence under that heading. Fence reading is tag-agnostic (read to the next ```), so this gate
 // can never go red for a fence-tag reason while a fabrication passes.
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
@@ -77,10 +77,10 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const CAPTURE_DIR = path.join(__dirname, '..', 'fixtures', 'doc-response-captures');
 
 // =================================================================================================
-// THE STUBBED FIGMA FILE. One document, shared by all five captures, so the five examples on the
-// page describe ONE world rather than five: a page holding a "Product card" section with a Desktop
-// and a Mobile breakpoint frame, the Desktop one holding the card the other four examples measure.
-// The ids and names are the neutral ones the request examples already use.
+// THE STUBBED FIGMA FILE. One document, shared by every capture, so the examples on both pages
+// describe ONE world rather than one per fence: a page holding a "Product card" section with a
+// Desktop and a Mobile breakpoint frame, the Desktop one holding the card the other examples
+// measure. The ids and names are the neutral ones the request examples already use.
 //
 // NO NETWORK, NO TOKEN. Every capture comes from this stub through the real handler; the test opens
 // no socket, and no Figma token exists in this environment or is needed.
@@ -167,7 +167,22 @@ async function callTool(register: Registrar, tool: string, args: Record<string, 
   const { server, call } = makeFakeMcpServer();
   register(server, deps());
   const res = await call(tool, args);
-  return JSON.parse(textOf(res.content[0])) as Record<string, unknown>;
+  const text = textOf(res.content[0]);
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    // A request the handler cannot answer is the most likely reason a capture cannot be built, and a
+    // bare `SyntaxError: Unexpected token 'C'` names neither the fence nor the refusal. Measured
+    // while adding the tutorial's entries: its step-4 fence, printed with `borders`, `scroll` and
+    // `children` trimmed away, came back `isError: true` with `Cannot read properties of undefined
+    // (reading 'top')` -- the page's own request could not run at all. Those three keys are REQUIRED
+    // by OkSchema (see `mcp-server/src/adapters/driving/tools/dom-snapshot-schema.ts`,
+    // `borders: EdgesSchema,`), so over the real protocol the SDK refuses the call before the handler
+    // is reached; this fake server does not validate, so the same defect arrives as a crash.
+    throw new Error(
+      `${tool} returned no JSON for the documented request (isError: ${String(res.isError)}): ${text.slice(0, 300)}`,
+    );
+  }
 }
 
 // THE ARGUMENTS COME FROM THE PAGE, NOT FROM CONSTANTS HERE. Fence #1 of each section IS that
@@ -206,6 +221,42 @@ function documentedRequest(heading: string): Record<string, unknown> {
   return parsed;
 }
 
+// -------------------------------------------------------------------------------------------------
+// THE TUTORIAL'S OWN COMPARE RUN, and why it needs a capture of its own.
+//
+// docs/design-qa-tutorial.md submits THREE pairs (the card root plus two text children) while
+// docs/tools/design-qa.md submits ONE. Those are two different runs of one tool: a three-pair
+// receipt counts three checked pairs, covers a different set of frame regions and emits a different
+// blocking list. Reading the tutorial's fences off the one-pair capture would be exactly the defect
+// they carried at HEAD -- pairs[0] naming 12:341 while the page's own request declares 12:340 first,
+// and per-pair counts belonging to a run the page does not show. So: same stubbed file, same
+// handler, second request, second capture.
+//
+// The tutorial's request fences are JSONC and not strict JSON -- each opens with a `// <tool>` line
+// naming the tool, which the page tells the reader to drop before sending. That first line is
+// asserted here rather than assumed: it is the only thing tying the fence this capture is built from
+// to the tool the page says to call it on.
+const TUTORIAL_PAGE = 'docs/design-qa-tutorial.md';
+const TUTORIAL_COMPARE = 'compare_node_to_dom_tutorial';
+
+function tutorialRequest(tool: string, heading: string, nth: number): Record<string, unknown> {
+  const raw = fenceBody(readPage(TUTORIAL_PAGE), heading, nth);
+  const first = (raw.split('\n')[0] ?? '').trim();
+  if (first !== `// ${tool}`) {
+    throw new Error(`${TUTORIAL_PAGE} "${heading}" fence #${nth} must open \`// ${tool}\`, it opens ${JSON.stringify(first)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonc(raw));
+  } catch (err) {
+    throw new Error(`${TUTORIAL_PAGE} "${heading}" fence #${nth} does not parse as JSONC: ${(err as Error).message}`);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error(`${TUTORIAL_PAGE} "${heading}" fence #${nth} is not an object`);
+  }
+  return parsed;
+}
+
 /** Tool <-> the section whose request fence calls it <-> the production registrar. */
 const TOOL_SECTIONS: { tool: string; heading: string; registrar: Registrar }[] = [
   { tool: 'get_layout_spec', heading: 'get_layout_spec', registrar: registerGetLayoutSpecTool },
@@ -216,10 +267,17 @@ const TOOL_SECTIONS: { tool: string; heading: string; registrar: Registrar }[] =
 ];
 
 /** One builder per capture, each driven by the request fence printed above its response. */
-const BUILDERS: Record<string, () => Promise<Record<string, unknown>>> = Object.fromEntries(
-  TOOL_SECTIONS.map(({ tool, heading, registrar }) =>
-    [tool, () => callTool(registrar, tool, documentedRequest(heading))]),
-);
+const BUILDERS: Record<string, () => Promise<Record<string, unknown>>> = {
+  ...Object.fromEntries(
+    TOOL_SECTIONS.map(({ tool, heading, registrar }) =>
+      [tool, () => callTool(registrar, tool, documentedRequest(heading))]),
+  ),
+  [TUTORIAL_COMPARE]: () => callTool(
+    registerCompareNodeToDomTool,
+    'compare_node_to_dom',
+    tutorialRequest('compare_node_to_dom', 'Step 4', 1),
+  ),
+};
 
 // `extractor_js` is a single 50,285-character string on stdio. Stored verbatim it would be 50 KB of
 // literal source in a committed fixture; stored as {length, sha256} the live-equality assert below
@@ -236,26 +294,37 @@ function normalizeCapture(out: Record<string, unknown>): Record<string, unknown>
 }
 
 // =================================================================================================
-// THE CORPUS. Five today -- the response fences of docs/tools/design-qa.md, the only page this task
-// owns. Task 11 (W5) RAISES it to 8 in the same commit that corrects docs/design-qa-tutorial.md's
-// three response fences; those three are red against this gate at HEAD (`source.root.file` and
-// `fix_plan[].target.file` -- SourceHint is {module?, local, raw}, there is no `file`;
-// `frame_coverage.total`, which FrameCoverage does not have; two more `delta: 0` rows), so landing
-// them here would leave this gate live-but-red until that commit. The count is a FLOOR raised by a
-// deliberate edit, never a number that drifts: a fence dropping out of the corpus is red.
+// THE CORPUS. EIGHT: the five response fences of docs/tools/design-qa.md, plus the three of
+// docs/design-qa-tutorial.md, added here by Task 11 (W5) in the same commit that makes them true.
+//
+// What those three carried at HEAD, every one of them a field a reader writes code against:
+// `source.root.file` and `fix_plan[].target.file` (SourceHint is {module?, local, raw} -- there is no
+// `file`, and `raw` is mandatory); `frame_coverage.total` (FrameCoverage's denominator is `worthy`,
+// and the report renderer prints `covered/worthy`); four `delta`s, two of them `0` on pass rows,
+// which `numRow` omits at zero, and two on the `font-weight` row and its fix_plan edit, which is an
+// EXACT-equality row (diff.ts compares 600 !== 400 and never subtracts) and can carry no `delta` at
+// any value; and a `report_markdown` whose elision stated no length. And one defect larger than a
+// field name: the
+// step-4 fence showed a ONE-pair run -- pairs[0] as 12:341 with a 3-row `rows` and a
+// `{pass:2,fail:1}` summary -- under a request fence that declares THREE pairs starting at 12:340.
+// Renaming four keys would have left that standing, so the three fences are REGENERATED from the
+// capture rather than patched.
+//
+// The count is a FLOOR raised by a deliberate edit, never a number that drifts: a fence dropping out
+// of the corpus is red.
 // =================================================================================================
 interface CorpusEntry {
   /** The capture this fence is compared against -- also the fixture basename. */
   tool: string;
   page: string;
-  /** Exact heading text (without the leading `#`s) whose section holds the fence. */
+  /** Prefix of the heading text (without the leading `#`s) whose section holds the fence; must select exactly one heading on that page. */
   heading: string;
   /** 1-based index of the fence within that section, counting every fence whatever its tag. */
   nthFenceInSection: number;
   /**
-   * Where in the capture this fence's object lives: '' for a whole response. A fragment (e.g. a
-   * lone FixPlanGroup, which lives at pairs[].fix_plan[]) carries its own path -- the tutorial's
-   * fences need this at Task 11; all five here are whole responses.
+   * Where in the capture this fence's object lives: '' for a whole response. A fragment (a lone
+   * VerificationReceipt, or a lone FixPlanGroup, which lives at pairs[].fix_plan[]) carries its own
+   * path -- which is what lets one capture back three fences that show three views of one return.
    */
   rootPath: string;
   /** Top-level keys the fence carries after regeneration. A fence gutted to {} would otherwise pass a missing-key-tolerant check in silence. */
@@ -268,6 +337,13 @@ const CORPUS: CorpusEntry[] = [
   { tool: 'compare_node_to_dom', page: 'docs/tools/design-qa.md', heading: 'compare_node_to_dom', nthFenceInSection: 2, rootPath: '', minTopLevelKeys: 8 },
   { tool: 'find_breakpoint_variant', page: 'docs/tools/design-qa.md', heading: 'find_breakpoint_variant', nthFenceInSection: 2, rootPath: '', minTopLevelKeys: 5 },
   { tool: 'get_view', page: 'docs/tools/design-qa.md', heading: 'get_view', nthFenceInSection: 2, rootPath: '', minTopLevelKeys: 6 },
+  // The tutorial, three views of ONE three-pair compare return. Fence #1 of Step 4 is the request
+  // this capture is built from, so #2 is its response; Step 5 prints the `verification` value and
+  // Step 6 one `FixPlanGroup` of the pair that has a fail row -- each addressed by rootPath, so a
+  // fence moved to a different pair or a different plan entry is red instead of coincidentally true.
+  { tool: TUTORIAL_COMPARE, page: TUTORIAL_PAGE, heading: 'Step 4', nthFenceInSection: 2, rootPath: '', minTopLevelKeys: 8 },
+  { tool: TUTORIAL_COMPARE, page: TUTORIAL_PAGE, heading: 'Step 5', nthFenceInSection: 1, rootPath: 'verification', minTopLevelKeys: 6 },
+  { tool: TUTORIAL_COMPARE, page: TUTORIAL_PAGE, heading: 'Step 6', nthFenceInSection: 1, rootPath: 'pairs.1.fix_plan.0', minTopLevelKeys: 3 },
 ];
 
 // The two over-long strings a page may elide. Asserted non-growing below: an escape list that can be
@@ -281,7 +357,16 @@ const PLACEHOLDER_RE = /^<.+, (\d+) chars - elided>$/;
 // READING A FENCE
 // =================================================================================================
 
-/** Lines of the section introduced by `heading`, up to the next heading of the same or higher level. Fence-aware, so a `#` inside a fence cannot end a section. */
+/**
+ * Lines of the section whose heading STARTS WITH `heading`, up to the next heading of the same or
+ * higher level. Fence-aware, so a `#` inside a fence cannot end a section.
+ *
+ * A PREFIX, and it must still select exactly one heading. The tutorial's headings carry an em dash
+ * (`## Step 4 - compare` is really `## Step 4 <U+2014> compare`), and a gate that has to contain the
+ * non-ASCII character of the page it checks is one bad copy-paste from matching nothing -- which on
+ * this line is how "the check found nothing" becomes "the check passed". Uniqueness is what keeps
+ * the prefix from being a loosening: `Step 4` selects one heading on that page or this throws.
+ */
 function sectionLines(pageText: string, heading: string): string[] {
   const lines = pageText.split('\n');
   const starts: number[] = [];
@@ -290,7 +375,7 @@ function sectionLines(pageText: string, heading: string): string[] {
     if (/^\s*```/.test(line)) { inFence = !inFence; return; }
     if (inFence) return;
     const m = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (m && m[2].trim() === heading) starts.push(i);
+    if (m && m[2].trim().startsWith(heading)) starts.push(i);
   });
   if (starts.length !== 1) {
     throw new Error(`expected exactly one heading "${heading}", found ${starts.length}`);
@@ -443,21 +528,21 @@ function documentedObject(e: CorpusEntry): unknown {
 }
 
 describe('Gate 1: every documented response example is a real handler return', () => {
-  it('the corpus is the five response fences of docs/tools/design-qa.md', () => {
-    // Raised to 8 by Task 11 (W5), in the commit that corrects docs/design-qa-tutorial.md's three
-    // response fences. A fence added under a new heading, or dropped, is red rather than silent.
-    expect(CORPUS).toHaveLength(5);
-    expect([...new Set(CORPUS.map((e) => e.page))]).toEqual(['docs/tools/design-qa.md']);
+  it('the corpus is every response fence of the two design-QA pages', () => {
+    // 5 -> 8 in Task 11 (W5), the commit that corrects docs/design-qa-tutorial.md's three response
+    // fences. A fence added under a new heading, or dropped, is red rather than silent.
+    expect(CORPUS).toHaveLength(8);
+    expect([...new Set(CORPUS.map((e) => e.page))].sort())
+      .toEqual(['docs/design-qa-tutorial.md', 'docs/tools/design-qa.md']);
     // Every capture is documented somewhere, and every entry points at a capture that exists.
-    // A set, not a list: one capture can back several fences (the tutorial shows two views of the
-    // compare return), which is what Task 11 needs.
+    // A set, not a list: one capture backs several fences (the tutorial shows three views of one
+    // compare return), so the tools are compared as a set and the fences as a count.
     expect([...new Set(CORPUS.map((e) => e.tool))].sort()).toEqual(Object.keys(BUILDERS).sort());
   });
 
   it('every request fence is strict JSON and is what its capture was built from', () => {
     // Named separately from the capture tests so a malformed request fence says so, instead of
-    // surfacing as an unrelated-looking capture mismatch. Iterates TOOL_SECTIONS and not CORPUS:
-    // Task 11's tutorial entries have request fences of their own shape and are not driven here.
+    // surfacing as an unrelated-looking capture mismatch.
     for (const { tool, heading } of TOOL_SECTIONS) {
       const req = documentedRequest(heading);
       expect(Object.keys(req).length, `${heading}'s request fence is empty`).toBeGreaterThan(0);
@@ -465,6 +550,19 @@ describe('Gate 1: every documented response example is a real handler return', (
         .toBe('https://www.figma.com/design/AbCdEf012345/Product-Page');
       expect(BUILDERS[tool], `${tool} has no builder`).toBeTypeOf('function');
     }
+  });
+
+  it("the tutorial's compare request fence is JSONC, names the same file, and declares three pairs", () => {
+    // The tutorial's request fence is checked here rather than above because it is JSONC by design:
+    // its first line is the `// <tool>` comment the page tells the reader to drop, so the strict-JSON
+    // rule above would be a rule it cannot keep. Three pairs is the number the page's instruction states
+    // and docs-tutorial-capture-contract locks as an ORDERED list; it is asserted here too because
+    // it is what makes this capture a different run from the tool reference's one-pair example.
+    const req = tutorialRequest('compare_node_to_dom', 'Step 4', 1);
+    expect(req.file, "the tutorial's compare fence must name the neutral file")
+      .toBe('https://www.figma.com/design/AbCdEf012345/Product-Page');
+    expect(req.frame_node_id, 'the tutorial passes frame_node_id, which is what upgrades the scope to "frame"').toBe('12:340');
+    expect(req.pairs, "the tutorial's compare fence must declare three pairs").toHaveLength(3);
   });
 
   it('the JSONC reader keeps strings intact and drops only comments and elision commas', () => {

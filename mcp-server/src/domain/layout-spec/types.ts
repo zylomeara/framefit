@@ -314,7 +314,13 @@ export interface BlockingItem {
   kind: string;        // structure_mismatch | children_truncated | snapshot | not_found | extractor_outdated | skip | truncated_text | uncovered_region | unchecked_spacing | viewport | frame_missing | unconfirmed_token | scope_incomplete
   node_id?: string;
   selector?: string;
-  action: string;      // machine token of the next step: add_pairs_on_children | raise_max_depth | re_extract_dom | fix_pair | update_extractor | resolve_skip | add_text_pair | add_pair | add_container_pair | fix_viewport | confirm_token | run_token_aware
+  // machine token of the next step. THIRTEEN values, spelled out for a reader and explicitly NOT a
+  // source of truth: this comment used to list 12 and omit fix_frame_id, and both documentation
+  // pages that restated it inherited that omission. docs-complete-lists.test.ts derives the set from
+  // the `action` property assignments in verification.ts instead (including the ternary at the
+  // truncated_text site, which is the only place add_text_pair is emitted) and forbids this line as
+  // a source.
+  action: string;      // add_pairs_on_children | raise_max_depth | re_extract_dom | fix_pair | update_extractor | resolve_skip | add_text_pair | add_pair | add_container_pair | fix_viewport | fix_frame_id | confirm_token | run_token_aware
   detail: string;      // human-readable (R3 hybrid)
   // aggregated confirm_token records: a list of places, truncated by the PLACES_CAP cap (the detailed ×N is in detail)
   places?: { node_id: string; prop: string }[];
