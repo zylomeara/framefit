@@ -1,10 +1,12 @@
 // mcp-server/tests/unit/layout-spec-diff.test.ts
 import { describe, it, expect } from 'vitest';
 import { diffPair, summarize, widthNoiseTolerance, deriveCoverage, coverageHoleRows } from '../../src/domain/layout-spec/diff.js';
+import { buildVerification } from '../../src/domain/layout-spec/verification.js';
 import { buildLayoutSpec } from '../../src/domain/layout-spec/projector.js';
 import type { LayoutSpec, DomSnapshotOk, SpecChild, DomChild } from '../../src/domain/layout-spec/types.js';
 import { SNIPPET_CAP } from '../../src/domain/layout-spec/types.js';
 import { domContentUnknown } from '../../src/domain/layout-spec/pair-matcher.js';
+import { DOM_SNAPSHOT_SCHEMA_VERSION } from '../../src/adapters/driving/tools/dom-snapshot-schema.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
 
 const spec = (over: Partial<LayoutSpec> = {}): LayoutSpec => ({
@@ -2533,7 +2535,7 @@ describe('paint-style tokenization reaches colorVerdict', () => {
 
 describe('review rows carry structural token/tokenReason (confirm_token aggregation)', () => {
   const base = { node: { id: '1', name: 'n', type: 'FRAME' }, rect: { x: 0, y: 0, w: 10, h: 10 }, children: [] };
-  const dom = (styles: any) => ({ schema: 5, innerWidth: 100, rect: { x: 0, y: 0, w: 10, h: 10 },
+  const dom = (styles: any) => ({ schema: 6, innerWidth: 100, rect: { x: 0, y: 0, w: 10, h: 10 },
     borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 }, children: [], styles });
   const fillRow = (spec: any, d: any) => diffPair(spec as any, d as any, { tolerancePx: 1 }).find((r) => r.prop === 'fill')!;
 
@@ -2823,7 +2825,7 @@ describe('style anchor (v5): style axes are read from the carrier through transp
     styles: { borderRadius: 24, gradient: { kind: 'conic', stops: [], whole: { literal: true } } },
     data: { component: 'Banner' }, children: [], ...over });
   const wrapPair = (childOver: any = {}, rootOver: any = {}) => ({
-    schema: 5, innerWidth: 1920, rect: { x: 0, y: 0, w: 1280, h: 148 },
+    schema: 6, innerWidth: 1920, rect: { x: 0, y: 0, w: 1280, h: 148 },
     borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
     children: [bannerChild(childOver)], ...rootOver });
   // rect added to the verbatim brief: without spec.rect the geometry gate (:250 'no bbox') suppresses
@@ -2990,5 +2992,82 @@ describe('style anchor (v5): style axes are read from the carrier through transp
   it('F6: a spec without style axes + a transparent wrapper → no style_anchor row', () => {
     const bareSpec = { node: { id: '1', name: 'x', type: 'FRAME' }, rect: { x: 0, y: 0, w: 1280, h: 148 }, children: [] };
     expect(row(diffPair(bareSpec as any, wrapPair() as any, { tolerancePx: 1 }), 'style_anchor')).toBeUndefined();
+  });
+});
+
+// =================================================================================================
+// D7 -- THE INVARIANT, stated once and verbatim:
+//   an asymmetric DOM radius against a uniform Figma radius does not return `status: "pass"`.
+//
+// WHY NOT A FAIL, AND WHY NOT AN OMISSION. The Figma side carries ONE `cornerRadius` number, so
+// there is no per-corner axis to compare four DOM corners against: a fail would be an alarm about a
+// difference nobody measured. And dropping the row is not neutral either -- an absent row makes the
+// pair clean with no trace, and a reader cannot tell "measured and fine" from "not present", which
+// is the same false green wearing a different coat (docs/coverage.md's headline promise is that a
+// green verdict never includes what was not measured). `unchecked` is the third status this project
+// keeps for exactly this: measured enough to know we cannot judge it, and a human must look.
+// =================================================================================================
+describe('D7: an asymmetric DOM corner radius never passes against a uniform Figma radius', () => {
+  const row = (rows: any[], p: string) => rows.find((r) => r.prop === p);
+  const radiusSpec = { node: { id: '1:1', name: 'card', type: 'FRAME' },
+    rect: { x: 0, y: 0, w: 100, h: 40 }, cornerRadius: 8, children: [] };
+  const flatDom = (styles: any, over: any = {}) => ({ schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok',
+    innerWidth: 400, rect: { x: 0, y: 0, w: 100, h: 40 },
+    borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
+    children: [], styles, ...over });
+
+  it('the flag alone (what the extractor emits): an unchecked corner-radius row, not a silent omission', () => {
+    const rows = diffPair(radiusSpec as any, flatDom({ borderRadiusAsymmetric: true }) as any, { tolerancePx: 1 });
+    const r = row(rows, 'corner-radius');
+    expect(r, 'no corner-radius row at all: an omitted row is a false green of its own').toBeDefined();
+    expect(r.status).toBe('unchecked');
+    expect(r.figma).toBe(8);
+    expect(r.dom).toBeNull();
+    expect(r.note).toContain('per-corner');
+  });
+
+  it('a uniform radius is untouched: 8 vs 8 still passes, 8 vs 4 still fails', () => {
+    // The control the fix must not cost: the overwhelmingly common uniform case keeps its verdict.
+    expect(row(diffPair(radiusSpec as any, flatDom({ borderRadius: 8 }) as any, { tolerancePx: 1 }), 'corner-radius').status).toBe('pass');
+    expect(row(diffPair(radiusSpec as any, flatDom({ borderRadius: 4 }) as any, { tolerancePx: 1 }), 'corner-radius').status).toBe('fail');
+  });
+
+  it('flag AND number together: the flag wins, exactly one row, and it is not a pass', () => {
+    // The pre-fix extractor emitted `borderRadius: 8` for `border-radius: 8px 0 0 0` -- the number is
+    // a lie the flag corrects, so the branch order (asymmetric BEFORE numRow, no fallthrough) is
+    // itself the invariant. Written as a lock, not as a shape that can occur in a live capture.
+    const rows = diffPair(radiusSpec as any, flatDom({ borderRadius: 8, borderRadiusAsymmetric: true }) as any, { tolerancePx: 1 });
+    const all = rows.filter((r) => r.prop === 'corner-radius');
+    expect(all, `corner-radius rows: ${JSON.stringify(all)}`).toHaveLength(1);
+    expect(all[0].status, `the corner-radius row was ${JSON.stringify(all[0])}`).not.toBe('pass');
+  });
+
+  it('the unchecked row routes to resolve_skip -- raising max_depth fixes no border radius', () => {
+    const rows = diffPair(radiusSpec as any, flatDom({ borderRadiusAsymmetric: true }) as any, { tolerancePx: 1 });
+    const v = buildVerification([{ node_id: '1:1', rows, summary: summarize(rows), coverage: deriveCoverage(rows) }],
+      { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    // Addressed by DETAIL, not by kind alone: `resolve_skip` is a busy bucket, and a blocking item
+    // that happens to be there for another reason would make this assertion true about nothing.
+    const mine = v.blocking.filter((b: any) => String(b.detail).includes('per-corner'));
+    expect(mine, `blocking was ${JSON.stringify(v.blocking)}`).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ kind: 'skip', action: 'resolve_skip', node_id: '1:1' });
+    expect(v.blocking.map((b: any) => b.action)).not.toContain('raise_max_depth');
+  });
+
+  // The wrapper shape (g): once an asymmetric radius OMITS borderRadius, the transparency test at
+  // diff.ts:1246 stops disqualifying a visibly rounded wrapper, styleAnchor descends past it, and the
+  // flag -- read through the anchor -- never fires. The receipt then prints a style_anchor row
+  // asserting "no styles" about a node with a visible rounded corner.
+  it('the wrapper shape: an asymmetric radius disqualifies transparency, so no descent past the rounded wrapper', () => {
+    const inner = { kind: 'element', tag: 'div', classList: ['inner'],
+      rect: { x: 0, y: 0, w: 100, h: 40 }, styles: {}, children: [] };
+    const rows = diffPair(radiusSpec as any,
+      flatDom({ borderRadiusAsymmetric: true }, { children: [inner] }) as any, { tolerancePx: 1 });
+    expect(row(rows, 'style_anchor'), 'the anchor descended past a wrapper with a visible rounded corner').toBeUndefined();
+    const r = row(rows, 'corner-radius');
+    expect(r).toBeDefined();
+    expect(r.status).toBe('unchecked');
+    expect(r.dom).toBeNull();
   });
 });

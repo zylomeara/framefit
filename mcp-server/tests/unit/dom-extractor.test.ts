@@ -27,7 +27,11 @@ function buildExtractor(styleOverrides: Record<string, string> = {}): (selectors
     borderTopColor: 'rgb(0, 0, 0)', borderRightColor: 'rgb(0, 0, 0)',
     borderBottomColor: 'rgb(0, 0, 0)', borderLeftColor: 'rgb(0, 0, 0)', boxShadow: 'none',
     paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-    borderTopLeftRadius: '0px', opacity: '1',
+    // All FOUR corners, here and in every other fake getComputedStyle below. The extractor now reads
+    // the radius as four numbers, and a fixture that defines only the top-left one is a DOM whose
+    // corners it cannot compare — it would read as asymmetric and change what these cases assert.
+    borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     ...styleOverrides,
   });
   const fakeDoc = {
@@ -156,7 +160,8 @@ function buildExtractorCSS(opts: {
     borderTopColor: 'rgb(0, 0, 0)', borderRightColor: 'rgb(0, 0, 0)',
     borderBottomColor: 'rgb(0, 0, 0)', borderLeftColor: 'rgb(0, 0, 0)', boxShadow: opts.boxShadow ?? 'none',
     paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-    borderTopLeftRadius: '0px', opacity: '1',
+    borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     getPropertyValue: (name: string) => vars[name] ?? '',
   });
   const fakeDoc = {
@@ -253,7 +258,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     });
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -289,7 +295,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     });
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -336,7 +343,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     });
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -392,7 +400,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     });
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -430,7 +439,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     };
     // fakeCS must read style FROM THE NODE (n.__cs), not be arg-blind — otherwise
     // per-child display/position (case b's absolute descendant) can't be expressed at all.
@@ -1316,7 +1326,8 @@ function buildExtractorPerEl(childStyles: Record<string, string>,
     borderTopColor: 'rgb(0, 0, 0)', borderRightColor: 'rgb(0, 0, 0)',
     borderBottomColor: 'rgb(0, 0, 0)', borderLeftColor: 'rgb(0, 0, 0)', boxShadow: 'none',
     paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-    borderTopLeftRadius: '0px', opacity: '1', justifyContent: 'normal',
+    borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1', justifyContent: 'normal',
   };
   let sheetsReads = 0;
   const fakeDoc = {
@@ -1332,9 +1343,48 @@ function buildExtractorPerEl(childStyles: Record<string, string>,
   return run;
 }
 
+// A corner radius is FOUR numbers in CSS and ONE in Figma. Reading the top-left corner alone made
+// `border-radius: 8px 0 0 0` indistinguishable from a uniform 8px, so the diff answered `pass` about a
+// difference it had never measured. Both emitting sites are locked here -- the child style bundle and
+// the root styles -- because the false pass was reachable through either one.
+describe('the corner radius is read from all four corners', () => {
+  const asym = { borderTopLeftRadius: '8px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px' };
+  const uniform = { borderTopLeftRadius: '8px', borderTopRightRadius: '8px',
+    borderBottomRightRadius: '8px', borderBottomLeftRadius: '8px' };
+
+  it('child: 8px 0 0 0 -> no borderRadius at all, and borderRadiusAsymmetric true', async () => {
+    const [snap]: any = await buildExtractorPerEl(asym)(['main']);
+    const c = snap.children[0];
+    expect(c.styles.borderRadius).toBeUndefined(); // NOT 8 -- a lone corner is not the radius
+    expect(c.styles.borderRadiusAsymmetric).toBe(true);
+    expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+  });
+  it('child: 8px 8px 8px 8px -> borderRadius 8 and no flag (the uniform case is untouched)', async () => {
+    const [snap]: any = await buildExtractorPerEl(uniform)(['main']);
+    const c = snap.children[0];
+    expect(c.styles.borderRadius).toBe(8);
+    expect(c.styles.borderRadiusAsymmetric).toBeUndefined();
+  });
+  it('root: 8px 0 0 0 -> no borderRadius at all, and borderRadiusAsymmetric true', async () => {
+    const [snap]: any = await buildExtractor(asym)(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusAsymmetric).toBe(true);
+    expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+  });
+  it('root: 8px 8px 8px 8px -> borderRadius 8 and no flag (the uniform case is untouched)', async () => {
+    const [snap]: any = await buildExtractor(uniform)(['main']);
+    expect(snap.styles.borderRadius).toBe(8);
+    expect(snap.styles.borderRadiusAsymmetric).toBeUndefined();
+  });
+});
+
 describe('v5: the style bundle on children', () => {
   it("a child's significant styles are emitted: radius/gradient/bg/data", async () => {
-    const run = buildExtractorPerEl({ borderTopLeftRadius: '24px', backgroundColor: 'rgb(246, 246, 249)',
+    // All four corners at 24px: an override that set only the top-left one over the four-corner base
+    // would describe an ASYMMETRIC child, and the toBe(24) below would be asserting the wrong thing.
+    const run = buildExtractorPerEl({ borderTopLeftRadius: '24px', borderTopRightRadius: '24px',
+      borderBottomRightRadius: '24px', borderBottomLeftRadius: '24px', backgroundColor: 'rgb(246, 246, 249)',
       backgroundImage: 'conic-gradient(rgb(0,0,0), rgb(255,255,255))' });
     const [snap]: any = await run(['main']);
     const c = snap.children[0];
@@ -1363,16 +1413,17 @@ describe('v5: the style bundle on children', () => {
     const flat = buildExtractorPerEl({});
     await flat(['main']);
     const flatReads = (flat as any).__sheetsReads();
-    const styled = buildExtractorPerEl({ borderTopLeftRadius: '24px', backgroundColor: 'rgb(1, 2, 3)' });
+    const styled = buildExtractorPerEl({ borderTopLeftRadius: '24px', borderTopRightRadius: '24px',
+      borderBottomRightRadius: '24px', borderBottomLeftRadius: '24px', backgroundColor: 'rgb(1, 2, 3)' });
     await styled(['main']);
     const styledReads = (styled as any).__sheetsReads();
     expect(styledReads).toBeGreaterThan(flatReads); // classify was called ONLY for the styled child
   });
-  it('schema = 5', async () => {
+  it('schema = 6', async () => {
     const run = buildExtractorPerEl({});
     const [snap]: any = await run(['main']);
-    expect(snap.schema).toBe(5);
-    expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(5);
+    expect(snap.schema).toBe(6);
+    expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(6);
   });
 
   // F2: a raster background-image: url(...) is invisible to the gradient detector

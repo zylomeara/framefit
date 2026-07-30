@@ -12,10 +12,17 @@ import type { DomSnapshot, DomChild } from '../../../domain/layout-spec/types.js
 // - an 'invalid_selector' status (currently conflated with not_found)
 // - the fate of the `state` field (declared, but neither emitted nor compared)
 // - modern colors in toHex (oklch()/color() → currently undefined → a false background warn)
-export const DOM_SNAPSHOT_SCHEMA_VERSION = 5;   // v3: styles.gradient added
+export const DOM_SNAPSHOT_SCHEMA_VERSION = 6;   // v3: styles.gradient added
 // v4 — SNIPPET_CAP 120: old extractors truncate text at 40 WITHOUT a flag; at the server's 120
 // threshold their cuts are indistinguishable from full text → mis-anchor; the version rejects them at both matcher inputs.
 // v5 (style-anchor): a style bundle on children — radius/opacity/gradient in styles, shadow/borders/borderColors/data on the node; compact "no field = no style" semantics
+// v6 (four-corner radius): styles.borderRadius now means "all four CSS corners are this number", and an
+// asymmetric radius omits it and sets styles.borderRadiusAsymmetric instead. The bump is the SAME shape as
+// v4's, and for the same reason: a pre-v6 extractor emits borderRadius: 8 for `border-radius: 8px 0 0 0`
+// WITHOUT a flag, so on the wire that snapshot is byte-indistinguishable from a genuinely uniform 8 — the
+// server cannot tell them apart, and the corner-radius row would pass over an unmeasured difference. The
+// field is additive, the MEANING of an existing field is not: without the version, the false green this
+// release removes from the code would survive on every stale capture, silently.
 
 // v2: authored-binding state per captured color — value-anchored token / literal / honest
 // unknown (cross-origin | inherited). Consumed by colorVerdict; never claims literal when a
@@ -59,6 +66,7 @@ const Typo = z.object({
 // v5 (style-anchor): a child's styles are extended with a style bundle (radius/opacity/gradient) — compact
 const ChildTypo = Typo.extend({
   borderRadius: z.number().optional(),
+  borderRadiusAsymmetric: z.literal(true).optional(), // v6: the four CSS corners differ — borderRadius is then ABSENT, never a lone corner
   opacity: z.number().optional(),
   gradient: GradientSchema.optional(),
   bgImage: z.literal(true).optional(),   // raster url background (invisible to the gradient detector) — a transparentChild disqualifier
@@ -98,7 +106,7 @@ export const OkSchema = z.object({
   scroll: z.object({ top: z.number(), left: z.number() }),
   transformed: z.boolean().optional(),
   fontsLoaded: z.boolean().optional(),
-  styles: Typo.extend({ display: z.string().optional(), borderRadius: z.number().optional(), opacity: z.number().optional(), justifyContent: z.string().optional(), gradient: GradientSchema.optional() }).optional(),
+  styles: Typo.extend({ display: z.string().optional(), borderRadius: z.number().optional(), borderRadiusAsymmetric: z.literal(true).optional(), opacity: z.number().optional(), justifyContent: z.string().optional(), gradient: GradientSchema.optional() }).optional(),
   state: z.record(z.union([z.string(), z.boolean()])).optional(),
   componentHints: z.object({ tag: z.string(), classList: z.array(z.string()), data: z.record(z.string()) }).optional(),
   children: z.array(DomChildSchema).max(30),

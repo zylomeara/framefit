@@ -1244,6 +1244,12 @@ function transparentChild(node: AnchorNode, tol: number): DomChild | undefined {
   if (Math.abs(c.rect.w - node.rect.w) > tol || Math.abs(c.rect.h - node.rect.h) > tol) return undefined;
   const s = node.styles;
   if (s?.backgroundColor !== undefined || s?.gradient !== undefined || (s?.borderRadius ?? 0) > 0) return undefined;
+  // an asymmetric radius (v6) OMITS borderRadius, so the `> 0` test above stops seeing a visibly rounded
+  // wrapper: it would read as transparent, the descent would move every style axis to the child,
+  // sRadiusAsym (read THROUGH the anchor) would never fire, and the receipt would print a style_anchor row
+  // asserting "no styles" about a node with a visible rounded corner. Same disqualification as bgImage below,
+  // for the same reason — a real visible paint the transparency test cannot see as a number.
+  if (s?.borderRadiusAsymmetric === true) return undefined;
   // a raster url background (F2): invisible to the gradient detector, but it is a REAL visible background — the wrapper is opaque.
   if (s?.bgImage === true) return undefined;
   if ((s?.opacity ?? 1) < 1) return undefined; // a semi-transparent wrapper actually darkens the render — a carrier
@@ -1291,6 +1297,7 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   const sBgToken   = a ? a.styles?.backgroundColorToken       : d.styles?.backgroundColorToken;
   const sGradient  = a ? a.styles?.gradient                   : d.styles?.gradient;
   const sRadius    = a ? (a.styles?.borderRadius ?? 0)        : d.styles?.borderRadius;
+  const sRadiusAsym = a ? a.styles?.borderRadiusAsymmetric    : d.styles?.borderRadiusAsymmetric;
   const sOpacity   = a ? (a.styles?.opacity ?? 1)             : d.styles?.opacity;   // default 1, NOT 0
   const sShadow    = a ? a.shadow                             : d.shadow;
   const sBorders   = a ? (a.borders ?? { top: 0, right: 0, bottom: 0, left: 0 }) : d.borders;
@@ -1429,7 +1436,16 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     }
   }
 
-  if (spec.cornerRadius !== undefined && sRadius !== undefined) {
+  // The asymmetric branch comes FIRST and there is no fallthrough: with an active anchor sRadius
+  // defaults to 0, so an asymmetric carrier would otherwise emit a fail — an alarm about a difference
+  // nobody measured, since the Figma side carries ONE number and there is no per-corner axis to compare
+  // against. Nor is the row dropped: an omitted row makes the pair clean with no trace, and a reader
+  // cannot tell "measured and fine" from "not present". unchecked is the honest third answer, and
+  // verification.ts routes it to resolve_skip (a human must look).
+  if (spec.cornerRadius !== undefined && sRadiusAsym === true) {
+    rows.push({ prop: 'corner-radius', figma: spec.cornerRadius, dom: null, status: 'unchecked',
+      note: 'the four DOM corners differ; the Figma side carries one radius and the diff has no per-corner axis - verify by eye' });
+  } else if (spec.cornerRadius !== undefined && sRadius !== undefined) {
     rows.push(numRow('corner-radius', spec.cornerRadius, sRadius, opts.tolerancePx, undefined, SRC_ANCHOR_PROP));
   }
   if (spec.opacity !== undefined && sOpacity !== undefined) {

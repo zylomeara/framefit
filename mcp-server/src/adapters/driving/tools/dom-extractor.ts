@@ -7,12 +7,22 @@
 // doesn't get raw nodes any deeper — see projector.ts:12). Move all three in sync.
 // The build has no browser types — which is why this is a string, not a function.
 export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget = 90) => {
-  const SCHEMA = 5;
+  const SCHEMA = 6;
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : undefined; };
   const round1 = (n) => Math.round(n * 10) / 10;
   const rectOf = (r) => ({ x: round1(r.x), y: round1(r.y), w: round1(r.width), h: round1(r.height) });
   const padsOf = (cs) => ({ top: num(cs.paddingTop) || 0, right: num(cs.paddingRight) || 0,
     bottom: num(cs.paddingBottom) || 0, left: num(cs.paddingLeft) || 0 });
+  // A corner radius is FOUR numbers in CSS and ONE in Figma. Reading the top-left corner alone made
+  // border-radius: 8px 0 0 0 indistinguishable from a uniform 8px, so the diff issued a PASS over a
+  // difference it had never measured. Uniform (all four defined and equal) -> the same single number
+  // as before, byte for byte, which is the overwhelmingly common case. Otherwise -> no number at all
+  // and a flag: the diff has no per-corner axis to judge this on, and a number here would be a lie
+  // whichever way it went.
+  const radiusOf = (cs) => {
+    const c = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius].map(num);
+    return c.every((v) => v !== undefined && v === c[0]) ? { value: c[0] } : { asymmetric: true };
+  };
   const toHex = (c) => {
     const m = /^rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)$/.exec(c || '');
     if (!m) return undefined;
@@ -171,8 +181,9 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         child.styles.backgroundColor = cbg;
         child.styles.backgroundColorToken = classifyColor(n, 'background-color', cbg);
       }
-      const crad = num(cs.borderTopLeftRadius);
-      if (crad > 0) child.styles.borderRadius = crad;
+      const crad = radiusOf(cs);
+      if (crad.asymmetric) child.styles.borderRadiusAsymmetric = true;
+      else if (crad.value > 0) child.styles.borderRadius = crad.value;
       const cop = num(cs.opacity);
       if (cop !== undefined && cop < 1) child.styles.opacity = cop;
       if (cs.backgroundImage && cs.backgroundImage !== 'none') {
@@ -644,6 +655,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     pruneToBudget(children, { n: 0 }, budget);
     const shadow = parseShadow(cs.boxShadow);
     if (shadow) shadow.colorToken = classifyColor(el, 'box-shadow', shadow.colorHex);
+    const rrad = radiusOf(cs);
     return {
       schema: SCHEMA, status: 'ok', selector,
       innerWidth: window.innerWidth,
@@ -664,11 +676,12 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       scroll: { top: el.scrollTop, left: el.scrollLeft },
       transformed: cs.transform !== 'none',
       fontsLoaded: document.fonts ? document.fonts.status === 'loaded' : undefined,
-      styles: Object.assign({ display: cs.display, backgroundColor: toHex(cs.backgroundColor),
-        borderRadius: num(cs.borderTopLeftRadius), opacity: num(cs.opacity), justifyContent: cs.justifyContent,
-        colorToken: classifyColor(el, 'color', toHex(cs.color)),
-        backgroundColorToken: classifyColor(el, 'background-color', toHex(cs.backgroundColor)),
-        gradient: classifyGradient(el, cs) }, typo(cs)),
+      styles: Object.assign({ display: cs.display, backgroundColor: toHex(cs.backgroundColor) },
+        rrad.asymmetric ? { borderRadiusAsymmetric: true } : { borderRadius: rrad.value },
+        { opacity: num(cs.opacity), justifyContent: cs.justifyContent,
+          colorToken: classifyColor(el, 'color', toHex(cs.color)),
+          backgroundColorToken: classifyColor(el, 'background-color', toHex(cs.backgroundColor)),
+          gradient: classifyGradient(el, cs) }, typo(cs)),
       componentHints: { tag: el.tagName.toLowerCase(), classList: Array.from(el.classList).slice(0, 10),
         data: Object.fromEntries(Object.entries(el.dataset || {}).slice(0, 10)) },
       children,

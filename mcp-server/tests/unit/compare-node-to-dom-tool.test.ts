@@ -52,7 +52,7 @@ const cardWithText: RawSceneNode = {
   ],
 };
 const okDomWithText = {
-  schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+  schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false,
   children: [
@@ -62,7 +62,7 @@ const okDomWithText = {
 };
 
 const okDom = {
-  schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+  schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false,
   children: [
@@ -92,7 +92,7 @@ const manyTextCard: RawSceneNode = {
   })),
 };
 const manyTextDom = {
-  schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+  schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 600 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false,
   children: Array.from({ length: MANY_TEXT_N }, (_, i) => ({
@@ -128,7 +128,7 @@ const cardExtBoundFill: RawSceneNode = {
 // resolved token, BUT authored as a hardcoded literal (backgroundColorToken {literal:true}).
 // colorVerdict group D → fail "tokenize" (never-false-green).
 const okDomLiteralFill = {
-  schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+  schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 100, h: 40 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false,
   styles: { display: 'block', backgroundColor: '#ffffff', backgroundColorToken: { literal: true } },
@@ -145,7 +145,7 @@ const FILE = 'abc';
 function domFor(node: RawSceneNode): DomSnapshotOk {
   const box = node.absoluteBoundingBox!;
   return {
-    schema: 5, innerWidth: 375,
+    schema: 6, innerWidth: 375,
     rect: { x: box.x, y: box.y, w: box.width, h: box.height },
     borders: { top: 0, right: 0, bottom: 0, left: 0 },
     scroll: { top: 0, left: 0 },
@@ -1548,7 +1548,7 @@ describe('compare_node_to_dom tool', () => {
     // → fix_plan_capped is present (the lock "stripping removes fix_plan AND fix_plan_capped together"). Typography
     // matched → bulk-pass (condensable).
     const manyTextDomNarrow = {
-      schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+      schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
       rect: { x: 0, y: 0, w: 300, h: 555 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
       scroll: { top: 0, left: 0 }, transformed: false,
       children: Array.from({ length: MANY_TEXT_N }, (_, i) => ({
@@ -1788,7 +1788,7 @@ describe('compare_node_to_dom tool', () => {
     const frame464: RawSceneNode = { id: '9:2', name: 'f464', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 464, height: 900 } };
 
     const overlayDom = (innerWidth: number, rectW: number) => ({
-      schema: 5, status: 'ok', selector: '.drawer', innerWidth,
+      schema: 6, status: 'ok', selector: '.drawer', innerWidth,
       rect: { x: 0, y: 0, w: rectW, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
       paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: rectW, clientHeight: 120, scrollHeight: 120,
       scroll: { top: 0, left: 0 }, transformed: false, children: [],
@@ -1866,7 +1866,7 @@ describe('compare_node_to_dom tool', () => {
     const cardA: RawSceneNode = { id: '1:1', name: 'cardA', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 343, height: 120 } };
     const cardB: RawSceneNode = { id: '1:2', name: 'cardB', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 343, height: 120 } };
     const narrowDom = (selector: string) => ({
-      schema: 5, status: 'ok', selector, innerWidth: 1429,
+      schema: 6, status: 'ok', selector, innerWidth: 1429,
       rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
       paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 343, clientHeight: 120, scrollHeight: 120,
       scroll: { top: 0, left: 0 }, transformed: false, children: [],
@@ -1970,7 +1970,7 @@ describe('compare_node_to_dom tool', () => {
     const cardDepth3 = cardFor(l3ItemTruncated);
 
     const domL4 = {
-      schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+      schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
       rect: { x: 0, y: 0, w: 343, h: 90 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
       paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 343, clientHeight: 90, scrollHeight: 90,
       scroll: { top: 0, left: 0 }, transformed: false,
@@ -2056,7 +2056,7 @@ describe('compare_node_to_dom tool', () => {
         layoutMode: 'VERTICAL', children: [l1Wrap],
       };
       const domDeep = {
-        schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+        schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
         rect: { x: 0, y: 0, w: 343, h: 90 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
         paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 343, clientHeight: 90, scrollHeight: 90,
         scroll: { top: 0, left: 0 }, transformed: false,
@@ -2128,7 +2128,7 @@ describe('compare_node_to_dom tool', () => {
       const domSub = { kind: 'element' as const, tag: 'div', rect: { x: 16, y: 170, w: 311, h: 170 }, children: nums.filter((n) => n > 10).map(domText) };
       const domList = { kind: 'element' as const, tag: 'div', rect: { x: 16, y: 8, w: 311, h: 380 }, children: [...nums.filter((n) => n <= 10).map(domText), domSub] };
       const wideDom = {
-        schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+        schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
         rect: { x: 0, y: 0, w: 343, h: 400 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
         paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 343, clientHeight: 400, scrollHeight: 400,
         scroll: { top: 0, left: 0 }, transformed: false,
@@ -2342,7 +2342,7 @@ describe('compare_node_to_dom tool', () => {
         kind: 'element' as const, tag: 'div', rect: { x: 0, y: i * 10, w: 100, h: 8 },
       }));
       const bigDom = {
-        schema: 5, status: 'ok' as const, selector: '.big', innerWidth: 375,
+        schema: 6, status: 'ok' as const, selector: '.big', innerWidth: 375,
         rect: { x: 0, y: 0, w: 400, h: 320 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
         scroll: { top: 0, left: 0 }, transformed: false,
         children: domManyChildren(30), // the same count as the truncated 30 figma children — avoids the structure_mismatch salvage branch
@@ -2366,7 +2366,7 @@ describe('compare_node_to_dom hydration receipt (Phase 1, Figma-side only)', () 
     for (let i = levels - 1; i >= 1; i -= 1) cur = mk('L' + i, [cur]);
     return { id: '1:1', name: 'card', type: 'FRAME', layoutMode: 'VERTICAL', absoluteBoundingBox: box(0, 0, 100, 100), children: [cur] };
   };
-  const dom = { schema: 5, status: 'ok' as const, selector: '.card', innerWidth: 375,
+  const dom = { schema: 6, status: 'ok' as const, selector: '.card', innerWidth: 375,
     rect: { x: 0, y: 0, w: 100, h: 100 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
     scroll: { top: 0, left: 0 }, transformed: false, children: [] as unknown[] };
 
@@ -2391,13 +2391,13 @@ describe('compare_node_to_dom spacing_audit wiring', () => {
   // scenario in verification.ts) with frame_node_id:'1:1'. innerWidth:343 == frameWidth (card width) —
   // we avoid the viewport-mismatch reason (geometry:unchecked) 24px/5% tolerance trap.
   const titleDom = {
-    schema: 5, status: 'ok' as const, selector: '.title', innerWidth: 343,
+    schema: 6, status: 'ok' as const, selector: '.title', innerWidth: 343,
     rect: { x: 16, y: 12, w: 200, h: 24 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
     paddings: { top: 0, right: 0, bottom: 0, left: 0 },
     scroll: { top: 0, left: 0 }, transformed: false, children: [],
   };
   const listDom = {
-    schema: 5, status: 'ok' as const, selector: '.list', innerWidth: 343,
+    schema: 6, status: 'ok' as const, selector: '.list', innerWidth: 343,
     rect: { x: 16, y: 56, w: 311, h: 40 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
     paddings: { top: 0, right: 0, bottom: 0, left: 0 },
     scroll: { top: 0, left: 0 }, transformed: false, children: [],
@@ -2565,7 +2565,7 @@ describe('style-anchor v5 through the handler (integration lock) + v4 hard-rejec
     // value args.tolerance_px===undefined → numRow's `delta <= tol` compares against undefined →
     // always false → an artifactual fail even at 0-delta. The only deviation from the base fixture.
     const res = await run({ file: FILE, tolerance_px: 1, pairs: [{ node_id: '1:1', dom: {
-      schema: 5, innerWidth: 1920, rect: { x: 0, y: 0, w: 1280, h: 148 },
+      schema: 6, innerWidth: 1920, rect: { x: 0, y: 0, w: 1280, h: 148 },
       borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
       children: [{ kind: 'element', tag: 'div', classList: ['preference-questionnaire-banner'],
         rect: { x: 0, y: 0, w: 1280, h: 148 }, styles: { borderRadius: 24 }, children: [] }],

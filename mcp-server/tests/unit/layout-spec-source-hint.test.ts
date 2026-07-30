@@ -35,7 +35,7 @@ const BUTTON = 'button-module-scss-module__Bt1__root';  // button.module.scss / 
 const SHELL = 'shell-module-scss-module__Rt0__root';    // shell.module.scss / root  (root / componentHints)
 
 const baseDom = (over: Partial<DomSnapshotOk>): DomSnapshotOk => ({
-  schema: 5, status: 'ok', selector: '.root', innerWidth: 375,
+  schema: 6, status: 'ok', selector: '.root', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 200 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false,
   paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 343, clientHeight: 200, scrollHeight: 200,

@@ -92,10 +92,13 @@ go through; the page is still open, NO re-navigation needed):
      -H 'Content-Type: application/json' --data-binary @body.json
    ```
    The response `{"snapshot_ref": "...", "selectors": [...], "expires_at": "..."}` — carry
-   `snapshot_ref` into compare. Any Content-Type is accepted; a batch over 2 MB → split into
-   several POSTs to the same upload_url (the limit is per POST, not per session). Each POST mints
-   its own `snapshot_ref`, and `dom_ref.index` restarts from 0 within that ref — track (ref, index)
-   pairs per POST, never one ref with global indices.
+   `snapshot_ref` into compare. Any Content-Type is accepted; a batch over 2 MB **or over 20
+   snapshots** is answered 413, so split into several POSTs to the same upload_url — both limits are
+   per POST, not per session, and size alone is not the whole rule. Each POST mints its own
+   `snapshot_ref`, and `dom_ref.index` restarts from 0 within that ref — track (ref, index) pairs
+   per POST, never one ref with global indices. A ref lives 30 minutes on a SLIDING TTL under a
+   non-extendable 2-hour ceiling from creation: re-reading it keeps it alive, nothing keeps it past
+   two hours.
 3. Only for a genuinely tiny snapshot — last resort: inline (`dom:` as before).
 
 ### Step 4 — one compare_node_to_dom

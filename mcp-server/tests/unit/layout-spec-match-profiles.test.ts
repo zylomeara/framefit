@@ -71,7 +71,7 @@ const spec = (over: Partial<LayoutSpec> = {}): LayoutSpec => ({
   ...over,
 });
 const snap = (over: Partial<DomSnapshotOk> = {}): DomSnapshotOk => ({
-  schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+  schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 120 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 }, transformed: false,
   paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 343, clientHeight: 120, scrollHeight: 120,
@@ -179,7 +179,7 @@ const card: RawSceneNode = {
   ],
 };
 const okDom = {
-  schema: 5, status: 'ok', selector: '.card', innerWidth: 375,
+  schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false,
   paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 343, clientHeight: 120, scrollHeight: 120,

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DomSnapshotSchema, DOM_SNAPSHOT_SCHEMA_VERSION, OkSchema } from '../../src/adapters/driving/tools/dom-snapshot-schema.js';
 
 const okSnapshot = {
-  schema: 5, status: 'ok', selector: '.reason', innerWidth: 375,
+  schema: 6, status: 'ok', selector: '.reason', innerWidth: 375,
   rect: { x: 16, y: 100, w: 343, h: 120 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,
@@ -32,7 +32,7 @@ describe('DomSnapshotSchema', () => {
   });
 
   it('schema version is a positive int and matches the sample', () => {
-    expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(5);
+    expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(6);
     expect(okSnapshot.schema).toBe(DOM_SNAPSHOT_SCHEMA_VERSION);
   });
 
@@ -49,7 +49,7 @@ describe('DomSnapshotSchema', () => {
     const parsed = DomSnapshotSchema.safeParse(s);
     expect(parsed.success).toBe(true);
     expect((parsed as { data: { paddings?: unknown } }).data.paddings).toBeDefined();
-    expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(5);
+    expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(6);
   });
 
   it('v2: accepts authored-binding token state on styles / borderColorsToken / shadow.colorToken / text child', () => {
@@ -151,7 +151,7 @@ describe('DomSnapshotSchema', () => {
   });
 
   it('v5: DomChild accepts the style bundle (radius/gradient/shadow/borders/data)', () => {
-    const snap = { schema: 5, innerWidth: 100, rect: { x: 0, y: 0, w: 10, h: 10 },
+    const snap = { schema: 6, innerWidth: 100, rect: { x: 0, y: 0, w: 10, h: 10 },
       borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
       children: [{ kind: 'element', rect: { x: 0, y: 0, w: 10, h: 10 },
         styles: { borderRadius: 24, opacity: 0.5, gradient: { kind: 'conic', stops: [], whole: { literal: true } } },
@@ -163,9 +163,9 @@ describe('DomSnapshotSchema', () => {
 });
 
 describe('gradient schema', () => {
-  it('version bumped to 5', () => { expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(5); });
+  it('version bumped to 6', () => { expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(6); });
   it('accepts a valid gradient in styles', () => {
-    const snap = { schema: 5, status: 'ok', innerWidth: 1200, rect: { x:0,y:0,w:10,h:10 },
+    const snap = { schema: 6, status: 'ok', innerWidth: 1200, rect: { x:0,y:0,w:10,h:10 },
       borders: { top:0,right:0,bottom:0,left:0 }, scroll: { top:0,left:0 }, children: [],
       styles: { gradient: { kind: 'linear', angleDeg: 270,
         stops: [{ position: 0, hex: '#20a1b0', token: { literal: true } },
@@ -174,7 +174,7 @@ describe('gradient schema', () => {
     expect(OkSchema.safeParse(snap).success).toBe(true);
   });
   it('rejects gradient without kind', () => {
-    const bad = { schema: 5, status: 'ok', innerWidth: 1, rect:{x:0,y:0,w:1,h:1}, borders:{top:0,right:0,bottom:0,left:0}, scroll:{top:0,left:0}, children:[],
+    const bad = { schema: 6, status: 'ok', innerWidth: 1, rect:{x:0,y:0,w:1,h:1}, borders:{top:0,right:0,bottom:0,left:0}, scroll:{top:0,left:0}, children:[],
       styles: { gradient: { stops: [], whole: { literal: true } } } };
     expect(OkSchema.safeParse(bad).success).toBe(false);
   });

@@ -1,6 +1,6 @@
 {
   "file": "AbCdEf012345",
-  "snapshot_schema": 5,
+  "snapshot_schema": 6,
   "specs": [
     {
       "node_id": "12:340",
@@ -191,8 +191,8 @@
     }
   ],
   "extractor_js": {
-    "length": 50285,
-    "sha256": "3550b8ea03513a0e831163416d8a06452f970931f9e4f9d14d5b882fbf0db184"
+    "length": 51243,
+    "sha256": "03455011d49c4f73ebe487f5e35fef64798ba97008c747a967f1c58ef1036a5d"
   },
   "extractor_note": "loader unavailable without public base URL — inline returned"
 }
