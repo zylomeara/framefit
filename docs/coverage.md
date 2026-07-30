@@ -22,7 +22,7 @@ See the [Design QA tutorial](design-qa-tutorial.md) for the workflow and
 | Typography | font-size, font-weight, font-family, line-height, letter-spacing, text color | direct TEXT children + auto-descent into containers with several texts; text below the capture cut is flagged 👁 unchecked, never assumed |
 | Colors (token-aware) | solid fills and text colors with token provenance on BOTH sides | Figma variable vs DOM CSS-var: hex-match under an unconfirmed mode → `review` (confirm the semantic token), token-vs-hardcoded-literal → ❌ fail even when hexes match; mode-aware resolution with graph + snapshot fallback |
 | Borders | border-color + border-width on the pair root | per-side asymmetries and partial borders (Figma stroke is whole-perimeter) → ⚠️ warn, not silence |
-| Shadows | the FIRST box-shadow: x/y/blur/spread/color/inset | spread is a regular axis (Figma REST provides it); >1 shadow → ⚠️ warn "matching not attempted" |
+| Shadows | the FIRST box-shadow: x/y/blur/spread/color/inset | spread is a regular axis (Figma REST provides it); >1 shadow → ⚠️ warn `"the shadow list was not matched (single-shadow-first) — verify visually"` |
 | Corner radius | one uniform px corner radius | the DOM side yields ONE comparable px number or it says so: all four CSS corners equal **and** a px length → diffed as that number (including the exponent form, which is not a size threshold but Chrome's six-significant-digit serialization: measured, `999999.4px` reads back as `999999px`, and `999999.5px` — seven digits once rounded — as `1e+06px`); **anything else the browser computed** → 👁 unchecked, never a pass (see limits). The corners are compared as strings rather than parsed values, because `parseFloat('8px 4px')` is 8 and would read an 8×4 ellipse as a circle. The one silence left is an empty computed value: nothing was computed, so no number and no row |
 | Gradients | kind (linear/radial/conic), per-stop colors and positions (equal stop counts), linear angle (±3°), token provenance per stop and whole | radial/conic geometry is NOT measured — flagged 👁 unchecked (see below); unequal stop counts → ⚠️ warn, no guessed matching |
 | Opacity | node opacity | delta-gated like other numeric axes |
@@ -38,7 +38,7 @@ See the [Design QA tutorial](design-qa-tutorial.md) for the workflow and
 | Icon glyphs (WHICH icon is drawn; box size/position ARE measured) | listed in the report footer as not covered by the tool (`not_covered_by_tool: ['icons']`) |
 | Radial/conic gradient geometry (center/radius/shape/rotation) | dedicated 👁 unchecked `gradient-geometry` row — counted as a coverage hole, blocks terminal green |
 | Second and further background layers | only the first layer is compared; a `gradient-layers` ℹ️ info row surfaces both sides |
-| Multi-shadow stacks (>1 shadow) | ⚠️ warn "shadow list matching not attempted" |
+| Multi-shadow stacks (>1 shadow) | ⚠️ warn `"the shadow list was not matched (single-shadow-first) — verify visually"` |
 | Raster effects (layer blur, background blur) | not projected at all — only DROP_SHADOW/INNER_SHADOW reach the diff |
 | Image/video fill CONTENT (the pixels) | node geometry is measured; content is not compared — image-like layers are counted into the multi-layer flag |
 | Animations / transitions | the workflow disables them before capture (step 2); motion itself is never diffed |

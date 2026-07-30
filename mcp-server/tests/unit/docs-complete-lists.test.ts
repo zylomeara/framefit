@@ -1248,36 +1248,57 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
 });
 
 // =================================================================================================
-// INSTANTIATION C (W8) -- every string the skill page quotes as VERBATIM tool output.
+// INSTANTIATION C (W8) -- every string a page presents as VERBATIM server output.
 //
-// An agent reads this page and then STRING-MATCHES on what it quotes. A quote that is off by a word
-// therefore does not merely misinform, it sends the reader looking for text that is never printed:
-// the profile-skip line was quoted as "out of profile scope: <dims> - verify with
-// token-aware/strict" against an emitted `outside profile scope: ${dims} - verify with the
-// token-aware/strict profile`, and the sentence around it told the reader to tell the two skip kinds
-// apart BY that wording.
+// An agent reads these pages and then STRING-MATCHES on what they quote. A quote off by a word does
+// not merely misinform, it sends the reader looking for text that is never printed. Three shipped:
 //
-// THE CONVENTION, declared on the page and read here: a code span whose whole content is one
-// double-quoted string (`"..."`) claims the server prints exactly that, with `<...>` marking an
-// interpolated value. Nothing else counts. Bare double quotes carry ordinary emphasis all over this
-// page ("done", "screen verified", "skeleton first"), so a convention built on them would be
-// comparing English against source.
+//   report.ts:125  `outside profile scope: ${dims} - verify with the token-aware/strict profile`
+//   page           "out of profile scope: <dims> - verify with token-aware/strict"
+//   diff.ts:1414   `the shadow list was not matched (single-shadow-first) - verify visually`
+//   page           "matching not attempted"          (and twice more on docs/coverage.md)
+//   diff.ts:1102   `TEXT descendants remained unpaired (content bijection and ordinal matching ...)`
+//   page           "left unpaired"
 //
-// THE POPULATION IS THE MODULE, NOT TWO FILENAMES. The spec said report.ts + verification.ts.
-// Measured: the environmental-skip note the page quotes one line below the profile skip is authored
-// in diff.ts -- report.ts only renders the row it sits in -- so that boundary would have called a
-// byte-correct quote missing. It is therefore src/domain/layout-spec/**.ts: a rule about what
-// composes a compare_node_to_dom response, rather than a list someone extends whenever a red
-// appears. The row below pins that the widening is load-bearing and not decoration.
+// THE POPULATION IS SWEPT, NOT SELF-SELECTED -- this is the part round 1 got wrong. Round 1 checked
+// the strings an author chose to MARK, so it could not fail for a string nobody marked, and two of
+// the three defects above sat outside it while it was green. The shape borrowed here is Task 5's
+// command-fence gate: an OVER-INCLUSIVE detector plus a CLOSED set of named exemption reasons, so
+// every candidate is either checked against source or excused by name, and a new candidate is red
+// until someone does one or the other.
 //
-// EM DASH: quoted EXACTLY, never folded. report.ts:125 and diff.ts:491 both join with U+2014 and the
-// page carries the same character. A comparison that folded dashes would let the page print a hyphen
-// while an agent matching the page's bytes finds nothing -- the very failure this row exists for.
+//   candidate = EVERY double-quoted run on the page, outside fenced blocks. Deliberately
+//               over-inclusive: `"done"`, `"skeleton first"` and `"baked"` are all candidates.
+//   marked    = a candidate that is ALSO wrapped in a code span (`"..."`), which is the page's
+//               declared way of saying "the server prints exactly this". A marked candidate MUST
+//               resolve in source and may NOT be exempted -- marking is a claim, not a hint.
+//   otherwise = resolve in source, or appear in NOT_SERVER_OUTPUT with a reason from the closed
+//               vocabulary below.
+//
+// A candidate that resolves by accident (`"done"`, `"pairs"` -- short words that occur in some
+// literal) is absorbed into the checked bucket and never examined. That is the cost of resolving
+// first, and it is paid on strings too short to be the load-bearing quote an agent matches on. The
+// failure it can cause is a FALSE RED later (a source edit removes the accidental match and a prose
+// quote suddenly demands an exemption), which is loud.
+//
+// THE POPULATION SEARCHED IS THE MODULE, NOT TWO FILENAMES. The spec said report.ts +
+// verification.ts. Measured: the env-skip note quoted one line below the profile skip is authored in
+// diff.ts -- report.ts only renders the row it sits in -- and so are the shadow and unpaired-text
+// notes above, so that boundary would call three byte-correct quotes missing. It is
+// src/domain/layout-spec/**.ts: a rule about what composes a compare_node_to_dom response rather
+// than a list someone extends whenever a red appears. A row below pins that the widening is
+// load-bearing. It is principled but NOT closed -- a note authored in a tool module (e.g.
+// get-layout-spec-tool.ts's `loader unavailable ...`) would read as missing; that direction is a
+// false red, which is safe, and the page quoting one would have to widen this deliberately.
+//
+// EM DASH: quoted EXACTLY, never folded. The emitting lines join with U+2014 and the pages carry the
+// same character. A comparison that folded dashes would let a page print a hyphen while an agent
+// matching its bytes finds nothing -- the very failure this gate exists for.
 //
 // INTERPOLATION: a whole-string `includes()` cannot work, and not because of any defect -- the source
-// reads `${dims}` where the page reads `<dims>`. Each page quote is split on its `<...>` spans and
-// every literal segment must occur, IN ORDER, inside ONE source literal. Whitespace is collapsed on
-// both sides: the page wraps at 100 columns mid-quote and the source does not.
+// reads `${dims}` where the page reads `<dims>`. Each quote is split on its `<...>` spans and every
+// literal segment must occur, IN ORDER, inside ONE source literal. Whitespace is collapsed on both
+// sides: a page wraps mid-quote at 100 columns and the source does not.
 //
 // CEILING: "one source literal" comes from a regex over comment-stripped source, not from a tokenizer
 // that can tell a string from a regex literal. A mis-read literal costs a FALSE RED -- a real quote
@@ -1285,24 +1306,117 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
 // must find and one it must not.
 // =================================================================================================
 
-const SKILL_PAGE = 'docs/agents/design-qa-skill.md';
+const QUOTED_PAGES = ['docs/agents/design-qa-skill.md', 'docs/coverage.md'];
 const LAYOUT_SPEC_DIR = path.join(SRC_DIR, 'domain', 'layout-spec');
 
 /**
- * EXACT, not a lower bound. A floor alone lets a red be cleared by deleting the quote marks off the
- * offending line, which fixes the gate and not the page.
+ * Marked quotes per page: EXACT, not a floor. A floor lets a red be cleared by deleting the quote
+ * marks off the offending line, which fixes the gate and not the page.
  */
-const QUOTED_OUTPUT_COUNT = 5;
-/** The module holds thousands of literals; a reader returning near-nothing has broken, not shrunk. */
-const SOURCE_LITERAL_FLOOR = 200;
+const MARKED_QUOTES: Record<string, number> = {
+  'docs/agents/design-qa-skill.md': 12,
+  'docs/coverage.md': 2,
+};
+/** The over-inclusive sweep must stay over-inclusive: measured 50 and 6 at HEAD. */
+const CANDIDATE_FLOOR: Record<string, number> = {
+  'docs/agents/design-qa-skill.md': 40,
+  'docs/coverage.md': 5,
+};
+
+/**
+ * The closed vocabulary of reasons a quoted run may decline to be server output. Extended
+ * DELIBERATELY, here, by a candidate that needs one -- `no dead vocabulary` below refuses a reason
+ * nothing uses, so a speculative one fails rather than sitting here inviting misuse.
+ */
+type ExemptionReason =
+  // The AGENT's own words: what it should or must not say. Never text the server prints.
+  | 'agent-speech'
+  // Text the READER supplies or names in the request it builds: a field, a selector, a placeholder.
+  | 'readers-input'
+  // An imperative aimed at the reader, not a string it will ever see in a response.
+  | 'instruction-to-the-reader'
+  // A value the page invented to illustrate with, not copied from any output.
+  | 'page-invented-example'
+  // Ordinary scare quotes on an English, CSS or Figma term.
+  | 'english-emphasis';
+
+const EXEMPTION_REASONS: ExemptionReason[] = [
+  'agent-speech', 'readers-input', 'instruction-to-the-reader', 'page-invented-example',
+  'english-emphasis',
+];
+
+/**
+ * Every candidate that is NOT server output, by name. This table is the whole point of the sweep:
+ * a new quoted run is red until it either resolves in source or is written here, and writing
+ * `agent-speech` next to a string the page plainly presents as a printed note is a visible lie in a
+ * diff rather than an invisible omission.
+ */
+const NOT_SERVER_OUTPUT: Record<string, ExemptionReason> = {
+  'check against the design': 'agent-speech',
+  'verify spacing/typography against Figma': 'agent-speech',
+  'verified against the design / matches the design': 'agent-speech',
+  'screen verified': 'agent-speech',
+  'is it done per the design?': 'agent-speech',
+  "don't report done until `complete !== true`": 'agent-speech',
+  'the final run was non-layout': 'agent-speech',
+  'all good': 'agent-speech',
+  'verified blindly': 'agent-speech',
+  'Is the pair fully verified?': 'agent-speech',
+  'is it verified?': 'agent-speech',
+  'in your head': 'agent-speech',
+
+  '<screen name>': 'readers-input',
+  '<local path>.json': 'readers-input',
+  '<string>': 'readers-input',
+  snapshots: 'readers-input',
+  selectors: 'readers-input',
+  expires_at: 'readers-input',
+
+  'omit frame_node_id': 'instruction-to-the-reader',
+  'saw a ❌, re-read the spec, re-ran the pair': 'instruction-to-the-reader',
+  're-run the extractor': 'instruction-to-the-reader',
+  '×K places, check': 'instruction-to-the-reader',
+  'fix the layout RULE': 'instruction-to-the-reader',
+  'do not port the hex': 'instruction-to-the-reader',
+  'not confirmed until the file is actually found': 'instruction-to-the-reader',
+
+  'app 390 / overlay 400 (Δ10, within tolerance)': 'page-invented-example',
+  'Heading…': 'page-invented-example',
+
+  'skeleton first': 'english-emphasis',
+  'padding-inner': 'english-emphasis',
+  baked: 'english-emphasis',
+  "doesn't exist": 'english-emphasis',
+  "not found ≠ doesn't exist": 'english-emphasis',
+  unverified: 'english-emphasis',
+  'Strictness profiles': 'english-emphasis',
+  'split by size': 'english-emphasis',
+  'disable copying/exporting/sharing': 'english-emphasis',
+};
 
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
-/** Every `"..."` code span on the skill page: outer quotes dropped, wrapping folded. */
-function quotedOutputStrings(): string[] {
-  const text = readFileSync(path.join(REPO_ROOT, SKILL_PAGE), 'utf8');
-  return [...text.matchAll(/`"([^"`]*)"`/g)].map((m) => oneLine(m[1]));
+/** A page with fenced blocks blanked: a fence is a call example, gated by docs-response-examples. */
+function pageBody(page: string): string {
+  let inFence = false;
+  return readFileSync(path.join(REPO_ROOT, page), 'utf8').split('\n').map((line) => {
+    if (/^\s*```/.test(line)) { inFence = !inFence; return ''; }
+    return inFence ? '' : line;
+  }).join('\n');
 }
+
+/**
+ * A code span whose content is wrapped in double quotes. The inner text may itself carry quotes --
+ * emitted row props embed them by construction (`font-weight[plates→"A"]`), and a convention that
+ * cannot express the output most likely to be matched on is not a convention.
+ */
+const markedQuotes = (body: string): string[] =>
+  [...body.matchAll(/`"([^`]*)"`/g)].map((m) => oneLine(m[1]));
+
+/** Every OTHER double-quoted run, at most one line wrap wide. Over-inclusive on purpose. */
+const looseQuotes = (body: string): string[] =>
+  [...body.replace(/`"[^`]*"`/g, ' ').matchAll(/"([^"\n]*(?:\n(?!\s*\n)[^"\n]*)?)"/g)]
+    .map((m) => oneLine(m[1])).filter((s) => s !== '');
 
 /** Every string and template literal under the layout-spec module, with its file. */
 function emittedLiterals(): { file: string; text: string }[] {
@@ -1326,6 +1440,7 @@ function emitterOf(
   literals: { file: string; text: string }[],
 ): { file: string; text: string } | null {
   const segments = oneLine(quote).split(/<[^<>]*>/).map(oneLine).filter((s) => s !== '');
+  if (segments.length === 0) return null;
   for (const lit of literals) {
     let at = 0;
     const hit = segments.every((s) => {
@@ -1338,43 +1453,101 @@ function emitterOf(
   return null;
 }
 
-describe('Gate 5C: every string the skill quotes as tool output is one the module emits', () => {
+describe('Gate 5C: every quoted run on a doc page is emitted by the module, or excused by name', () => {
   const PROFILE_SKIP = 'outside profile scope: <dims> — verify with the token-aware/strict profile';
   const ENV_SKIP = 'scroll container: content height <N>px — comparing the frame height is uninformative';
 
-  it('reads the page quotes, and cannot pass by reading none', () => {
-    expect(QUOTED_OUTPUT_COUNT, 'the expected quote count is zero, so this gate asserts nothing')
-      .toBeGreaterThan(0);
-    const quotes = quotedOutputStrings();
-    expect(
-      quotes.length,
-      `${SKILL_PAGE}: the \`"…"\` code-span reader found ${quotes.length} quotes, expected `
-      + `${QUOTED_OUTPUT_COUNT} -- a quote lost its marks, or a new one was added without measuring it`,
-    ).toBe(QUOTED_OUTPUT_COUNT);
+  it('sweeps over-inclusively, and cannot pass by sweeping nothing', () => {
+    for (const page of QUOTED_PAGES) {
+      const body = pageBody(page);
+      const marked = markedQuotes(body);
+      const loose = looseQuotes(body);
+      expect(
+        marked.length,
+        `${page}: ${marked.length} marked quotes, expected ${MARKED_QUOTES[page]} -- a quote lost `
+        + 'its marks, or one was added without measuring it',
+      ).toBe(MARKED_QUOTES[page]);
+      expect(
+        loose.length,
+        `${page}: the sweep found ${loose.length} unmarked quoted runs, floor ${CANDIDATE_FLOOR[page]} `
+        + '-- a detector that stopped seeing them would excuse everything by seeing nothing',
+      ).toBeGreaterThanOrEqual(CANDIDATE_FLOOR[page]);
+    }
     // By name, with the em dash the page must carry: a hyphen here is a red, which is the policy.
-    expect(quotes, 'the profile-skip line is what W8 exists for').toContain(PROFILE_SKIP);
+    expect(markedQuotes(pageBody(QUOTED_PAGES[0])), 'the profile-skip line is what W8 exists for')
+      .toContain(PROFILE_SKIP);
   });
 
-  it('finds a source literal for every one of them', () => {
+  it('accounts for EVERY candidate: emitted by the module, or exempted by name', () => {
     const literals = emittedLiterals();
-    expect(literals.length, 'the source-side reader returned almost nothing, so every quote would `find` a match against an empty haystack')
-      .toBeGreaterThan(SOURCE_LITERAL_FLOOR);
-    const missing = quotedOutputStrings().filter((q) => emitterOf(q, literals) === null);
     expect(
-      missing,
-      `${SKILL_PAGE} presents these as verbatim tool output and nothing under `
-      + 'src/domain/layout-spec emits them, so an agent string-matching on the page finds nothing',
+      literals.length,
+      'the source-side reader returned almost nothing, so nothing could resolve and everything '
+      + 'would demand an exemption',
+    ).toBeGreaterThan(200);
+    const unexplained: string[] = [];
+    for (const page of QUOTED_PAGES) {
+      const body = pageBody(page);
+      for (const q of [...markedQuotes(body), ...looseQuotes(body)]) {
+        if (emitterOf(q, literals) !== null) continue;
+        if (q in NOT_SERVER_OUTPUT) continue;
+        unexplained.push(`${page}: ${JSON.stringify(q)}`);
+      }
+    }
+    expect(
+      unexplained,
+      'these quoted runs are neither emitted by src/domain/layout-spec nor listed in '
+      + 'NOT_SERVER_OUTPUT -- fix the quote, or excuse it there with a reason',
     ).toEqual([]);
+  });
+
+  it('a MARKED quote may not be excused, only resolved', () => {
+    // Otherwise the sweep buys nothing: marking a false string and exempting it in the same commit
+    // would be green, which is round 1's defect wearing the new mechanism's clothes.
+    const literals = emittedLiterals();
+    const bad: string[] = [];
+    for (const page of QUOTED_PAGES) {
+      for (const q of markedQuotes(pageBody(page))) {
+        if (q in NOT_SERVER_OUTPUT) bad.push(`${page}: ${JSON.stringify(q)} is marked AND exempted`);
+        if (emitterOf(q, literals) === null) bad.push(`${page}: ${JSON.stringify(q)} is marked and unemitted`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it('carries no dead vocabulary: every exemption and every reason is in use', () => {
+    const candidates = new Set(QUOTED_PAGES.flatMap((p) => looseQuotes(pageBody(p))));
+    const unused = Object.keys(NOT_SERVER_OUTPUT).filter((k) => !candidates.has(k));
+    expect(
+      unused,
+      'these exemptions match no quoted run on either page -- a stale excuse is an invitation to '
+      + 'file the next real defect under it',
+    ).toEqual([]);
+    const used = new Set(Object.values(NOT_SERVER_OUTPUT));
+    expect(EXEMPTION_REASONS.filter((r) => !used.has(r)), 'a declared reason nothing uses').toEqual([]);
+    expect([...used].filter((r) => !EXEMPTION_REASONS.includes(r)), 'a reason outside the closed set').toEqual([]);
+  });
+
+  it('the reader can express an emitted row prop, quotes and all', () => {
+    // Emitted props embed quotes by construction (`color[X→"…"]`, `font-weight[plates→"A"]`), and
+    // round 1's reader forbade an internal `"` -- it could not have expressed the output a reader is
+    // most likely to string-match on, whatever the page had written.
+    expect(markedQuotes('a row `"font-weight[plates→"A"]"` in the report'))
+      .toEqual(['font-weight[plates→"A"]']);
+    expect(markedQuotes('`scope:"pairs"` is not a marked quote'), 'the span must START with a quote')
+      .toEqual([]);
   });
 
   it('tells a quote the module emits from one it does not', () => {
     const literals = emittedLiterals();
-    // The pre-fix text of the line this gate was written for. Three differences from report.ts:125 --
-    // `out of` for `outside`, and a tail missing both `the` and `profile`.
-    expect(
-      emitterOf('out of profile scope: <dims> — verify with token-aware/strict', literals),
-      'the pre-fix quote must be reported missing, or this gate could not have gone red',
-    ).toBeNull();
+    // The three pre-fix strings, each reported missing -- this is the red end of the gate.
+    for (const stale of [
+      'out of profile scope: <dims> — verify with token-aware/strict',
+      'matching not attempted',
+      'left unpaired',
+    ]) {
+      expect(emitterOf(stale, literals), `${JSON.stringify(stale)} must be reported missing`).toBeNull();
+    }
     expect(emitterOf(PROFILE_SKIP, literals)?.text, 'resolved against the emitter, interpolation and all')
       .toContain('${dims}');
   });

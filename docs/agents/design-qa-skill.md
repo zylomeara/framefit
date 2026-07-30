@@ -180,7 +180,8 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
   only the container INSETS unverified): there is no automated action — verify those axes BY EYE
   (or add a container pair for a full green) — then you may proceed.
 - `frame_coverage` carries enumeration provenance: `enumeration_source`/`enumeration_depth`
-  (in the report: "enumeration: deep@8"). `deep` = coverage was enumerated from depth 8 regardless
+  (in the report: `"enumeration: <source>@<depth>"`, e.g. `enumeration: deep@8`). `deep` = coverage
+  was enumerated from depth 8 regardless
   of your `max_depth` (a free re-slice from the frame cache) — raising `max_depth` for COVERAGE
   is no longer needed (only for the depth of the pairs/text themselves).
 - `verification.spacing_audit[]` — between-children gap measurement WITHOUT a container pair: works
@@ -306,10 +307,11 @@ read ❌ as defects:
    (false padding-end / offset-cross); an inset "baked" into a child's padding that the gap sees
    as 0 (border-box) — the diff SKIPS such deltas.
 3. Typography: direct TEXT children are checked as usual, and containers with several texts get
-   AUTO-DESCENT — rows like `font-size[chip→"Heading…"]` with a note "auto-descent: by content /
-   by order" (content binding is the more reliable). A separate TEXT pair is needed ONLY when the
-   descent honestly gave up: warn `typography_descent[...]` ("left unpaired" — content bijection
-   and order both failed) OR 👁 unchecked `typography[...]` / `typography_descent[...]` (out of
+   AUTO-DESCENT — rows like `font-size[chip→"Heading…"]` with a note `"auto-descent: by content"`
+   or `"auto-descent: by order"` (content binding is the more reliable). A separate TEXT pair is
+   needed ONLY when the descent honestly gave up: warn `typography_descent[...]`
+   (`"TEXT descendants remained unpaired (content bijection and ordinal matching did not work)"`)
+   OR 👁 unchecked `typography[...]` / `typography_descent[...]` (out of
    reach: text below the capture cut — raise `max_depth` to 8 OR aim a pair lower, e.g. at the
    chip instead of the card).
 
@@ -337,8 +339,9 @@ read ❌ as defects:
   not "unverified" — reads clean.
 
 **"Is the pair fully verified?"** = `fail===0 && demoted===0 && unchecked===0`. `skip>0` (only
-inapplicable axes) does NOT block it. The summary is honest: `🟰N`/`👁N` in the header + "N not
-verified (demoted)/(out of reach) — verify by eye" ⇒ green ≠ everything-visible-verified.
+inapplicable axes) does NOT block it. The summary is honest: `🟰N`/`👁N` in the header, and the
+verdict line carries `"<N> not verified (demoted)"` / `"<N> not verified (out of reach)"`
+⇒ green ≠ everything-visible-verified.
 **The machine readiness gate is `verification.complete` (Step 6):** it aggregates this across ALL
 pairs AND frame coverage (uncovered regions / unverified between-children spacing / truncation).
 Do not report "verified" until `complete !== true` is resolved; on `false` work the `blocking`
@@ -359,7 +362,7 @@ terminal `no discrepancies above tolerance` is the green.
   drawn is not; verify by eye / get_screenshot focus crop), radial/conic gradient GEOMETRY
   (center/radius/shape — flagged 👁 unchecked), second-and-further background layers (only the
   first layer is compared; a `gradient-layers` info row flags the rest), and multi-shadow stacks
-  (>1 shadow → `⚠️ box-shadow` "matching not attempted").
+  (>1 shadow → `⚠️ box-shadow` `"the shadow list was not matched (single-shadow-first) — verify visually"`).
 - offset-cross is measured on the child's BOX edges: internal cross-axis alignment of CONTENT
   inside the child (e.g. text pushed down by the child's own padding) is invisible to the pair's
   diff — check it with a separate pair on that child.
