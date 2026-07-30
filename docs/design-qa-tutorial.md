@@ -47,8 +47,9 @@ variants by how close their **content** width is to your render width:
 
 Take the best match — here the content frame `12:340` (`Product card`, 320 wide) inside the
 `Desktop` variant `12:300` — and resize the browser viewport to that width. Passing this id later as
-`frame_node_id` arms the **viewport guard**: if the window and the frame disagree, size rows are
-demoted to `unchecked` with a `fix_viewport` action instead of producing false reds.
+`frame_node_id` arms the **viewport guard**: if the window and the frame disagree, every geometry
+row comes back `unchecked` with a `fix_viewport` action instead of producing false reds. Not
+`demoted` — nothing on that axis was measured at all; see the status table in step 4.
 
 ## Step 2 — capture both sides
 
@@ -230,7 +231,8 @@ would drop are exactly the ones that decide what comes back:
   before a single row is measured
   (see `mcp-server/src/adapters/driving/tools/dom-snapshot-schema.ts`, `borders: EdgesSchema,`);
 - `paddings` is not decoration either — see step 3;
-- `innerWidth` must equal the frame's width — 320 for `12:340` — or the viewport guard turns every
+- `innerWidth` must be within `max(24, 5% of the frame width)` of the frame's width — for the 320
+  of `12:340` that is 24px of slack, so 296 through 344 — or the viewport guard turns every
   geometry row `unchecked` and adds a `fix_viewport` blocking item per pair;
 - `styles` is where the typography rows come from, and `componentHints.classList` is the only thing
   a code address is parsed from: without a CSS-modules class there is no `source` key and
@@ -247,8 +249,8 @@ So the absence of `delta` is not the absence of a diff — read `status`. Row st
 | `fail` | Measured, out of tolerance — a real diff |
 | `warn` | Suspicious but not provably wrong (e.g. component identity hints) |
 | `review` | A token-name divergence a human/agent must judge (see below) |
-| `skip` / `unchecked` | Could not be measured in this environment — with the reason attached |
-| `info` / `demoted` | Measured, but a known legitimate cause downgraded it (e.g. hug/fill sizing, viewport mismatch) |
+| `skip` / `unchecked` | Could not be measured in this environment — with the reason attached. A viewport mismatch lands HERE, not one row below: every geometry row goes `unchecked` and each pair gets a `fix_viewport` blocking item, so nothing about the geometry was measured |
+| `info` / `demoted` | Measured, but a known legitimate cause downgraded it (e.g. hug/fill sizing) |
 
 The response to exactly that request, abridged (`/* ... */` marks an elided tail):
 

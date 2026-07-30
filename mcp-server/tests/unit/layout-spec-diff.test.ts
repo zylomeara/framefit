@@ -107,6 +107,39 @@ describe('diffPair — guards & structure & gaps', () => {
     expect(geo).toMatchObject({ status: 'unchecked', figma: 1920, dom: 1429 });
   });
 
+  // PREMISE LOCK for docs/coverage.md's "Viewport must match the frame width" row. That row now
+  // states the guard is SYMMETRIC: diff.ts computes
+  // `Math.abs(d.innerWidth - opts.frameWidth) > widthNoiseTolerance(opts.frameWidth)`, so a 1920px
+  // window against a 1440px frame is 480 over a tolerance of max(24, 72) = 72 and is refused exactly
+  // like a narrower one. Before this commit the row claimed the opposite -- "a WIDER window with a
+  // centered layout is fine" -- which describes the upload-time viewport_warning in
+  // dom-snapshot-routes.ts (asymmetric by an explicit `iw <= Math.max(...widths)`), not this guard.
+  // Green by construction today; it exists so the sentence cannot quietly become wrong.
+  //
+  // IT TAKES BOTH ROWS. The row above measures a NARROWER window, this one a WIDER window, and each
+  // one-directional rewrite of the guard is caught by exactly one of them -- measured, not assumed:
+  // rewriting it as `opts.frameWidth - d.innerWidth > ...` (fire only when narrower, the shape the
+  // old prose described) fails THIS row and leaves the one above green, while
+  // `d.innerWidth - opts.frameWidth > ...` fails the one above and leaves this one green. Deleting
+  // either row therefore reopens one direction of the claim.
+  //
+  // A wider window WAS already present in this file before this row -- the collapse test at the top
+  // of this block passes innerWidth 1280 against frameWidth 375 -- but it is not a premise lock: it
+  // also sets `transformed` and a non-zero scroll, and either of those produces the unchecked
+  // geometry row on its own, so it locks only the substring "viewport" in the joined note. It would
+  // stay green if the viewport reason stopped demoting geometry entirely. This row carries no other
+  // reason, so the demotion itself is what it asserts.
+  it('(b) premise lock: a WIDER window is refused exactly like a narrower one -- the guard is symmetric', () => {
+    const rows = diffPair(spec(), snap({ innerWidth: 1920 }), { tolerancePx: 1, frameWidth: 1440 });
+    const geo = row(rows, 'geometry');
+    expect(geo).toMatchObject({ prop: 'geometry', status: 'unchecked', figma: 1440, dom: 1920 });
+    // The note names the viewport, which is what verification.ts branches on to emit fix_viewport.
+    expect(geo?.note).toMatch(/viewport 1920 vs frame 1440/);
+    // Not measured at all -- no geometry row survives, which is the half of the claim that makes the
+    // tutorial's status table file this under `skip`/`unchecked` rather than `info`/`demoted`.
+    expect(row(rows, 'size.w')).toBeUndefined();
+  });
+
   it('(b) control: a scroll reason (not viewport) → geometry row WITHOUT figma/dom fields', () => {
     const rows = diffPair(spec(), snap({ scroll: { top: 40, left: 0 } }), { tolerancePx: 1 });
     const geo = row(rows, 'geometry');

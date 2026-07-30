@@ -256,8 +256,9 @@ something more pairs can fix.
 ```
 
 Two fields of that snapshot decide what comes back. `innerWidth` is the window width you captured
-at: it must match the `frame_node_id` frame's width (320 here), or the viewport guard turns every
-geometry row `unchecked` and adds a `fix_viewport` blocking item. `componentHints.classList` is what
+at: it must come within `max(24, 5% of the frame width)` of the `frame_node_id` frame's width (320
+here, so 296 through 344), or the viewport guard turns every geometry row `unchecked` and adds a
+`fix_viewport` blocking item. `componentHints.classList` is what
 the code address is parsed from — a CSS-modules class gives you the `source` and `fix_plan[].target`
 below; without one there is no `source` key at all, `target` is `null`, and the plan can only say
 "address not resolved".

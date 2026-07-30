@@ -110,7 +110,13 @@ const DOCS_DIR = path.join(REPO_ROOT, 'docs');
 // `mcp-server/src/domain/layout-spec/verification.ts`,
 // `frame_node_id given, but the frame node was not found in the file` (the only site that emits
 // `fix_frame_id`, the thirteenth blocking action, which occurred nowhere under docs/ before).
-const CITATION_FLOOR = 9;
+// Raised to 10 by docs/coverage.md's citation of `mcp-server/src/domain/layout-spec/diff.ts`,
+// `Math.abs(d.innerWidth - opts.frameWidth)` -- the viewport guard's own comparison, on the row that
+// used to call that guard asymmetric. It is the only mechanical tie the corrected sentence has to
+// the code: drop the `Math.abs` and this gate reports the literal as occurring 0 times, naming
+// coverage.md. (The direction claim itself is locked separately, in
+// tests/unit/layout-spec-diff.test.ts.)
+const CITATION_FLOOR = 10;
 
 // Ban, rule 1 -- a path-shaped token with a known extension followed by `:<digits>`. Existence is
 // NOT required here: `get-variables-tool.ts:141` cited a real file by bare basename, which resolves
