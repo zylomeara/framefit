@@ -3,7 +3,7 @@
 // env.* reads) so ADDING a variable to either schema without documenting it in .env.example
 // goes RED, and DELETING a line from .env.example goes RED (mutation "delete a line" → RED).
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -93,6 +93,42 @@ describe('.env.example sync with BOTH env schemas', () => {
   it('no personal or internal hosts in examples (localhost/example.com only)', () => {
     const foreignHosts = [...example.matchAll(/https?:\/\/([\w.-]+)/gi)].map((m) => m[1].toLowerCase()).filter((h) => h !== 'localhost' && h !== '127.0.0.1' && !h.endsWith('example.com'));
     expect(foreignHosts).toEqual([]);
+  });
+});
+
+// CONTRIBUTING.md's integration-tier bullet QUOTES code out of tests/integration/, and the form it
+// carried until 59d7ffd was in 0 of the 9 files: `describe.skipIf(!process.env.TEST_DATABASE_URL)`,
+// a plausible composite nobody had ever grepped for. The behaviour claim wrapped around it was
+// TRUE, which is why nothing noticed for so long -- only the copy-paste was dead. Four quoted forms
+// on this branch had rotted the same way, which is the base rate that makes this worth gating.
+//
+// The literals are READ OUT OF THE PAGE rather than restated here. A list in this file would be a
+// second home for the quote, and the next invented form would simply be added to both -- the gate
+// would then be checking that this file agrees with itself. Whatever the bullet quotes is what
+// every integration file must contain, so the page is the only home.
+describe('CONTRIBUTING.md quotes the integration tier as it actually is', () => {
+  const bullet = /^- \*\*Integration\*\*[\s\S]*?(?=\n- \*\*)/m.exec(read('../CONTRIBUTING.md'))?.[0] ?? '';
+  const quoted = [...bullet.matchAll(/`([^`]+)`/g)].map((m) => m[1])
+    .filter((s) => s.includes('skipIf') || s.includes('TEST_DATABASE_URL'));
+  const files = readdirSync(join(root, 'tests', 'integration')).filter((f) => f.endsWith('.test.ts'));
+
+  it('has a bullet, code spans inside it, and files to check them against', () => {
+    // The assertion below quantifies over `quoted` x `files`. Either one empty -- a renamed bullet,
+    // a filter that stops matching, a moved directory -- and it passes over nothing, which is this
+    // branch's most common false green. These three floors are what stop that.
+    expect(bullet, 'no `- **Integration**` bullet in CONTRIBUTING.md; the reader is broken, and a '
+      + 'broken reader passes everything').not.toBe('');
+    expect(quoted.length, 'the Integration bullet quotes no skip/DB code spans')
+      .toBeGreaterThanOrEqual(2);
+    expect(files.length, 'no *.test.ts under tests/integration/').toBeGreaterThanOrEqual(9);
+  });
+
+  it('every form it quotes is in every integration file, so a reader who greps finds it', () => {
+    const missing = quoted.flatMap((lit) => files
+      .filter((f) => !read(`tests/integration/${f}`).includes(lit))
+      .map((f) => `${f} lacks \`${lit}\``));
+    expect(missing, 'CONTRIBUTING.md quotes a form these files do not contain -- either the page '
+      + 'invented it, or the files moved on without it').toEqual([]);
   });
 });
 
