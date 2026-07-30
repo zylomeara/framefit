@@ -38,7 +38,10 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   // The ONLY silence left is an empty computed value -- nothing was computed, so there is nothing to
   // report; that is the pre-v6 behaviour and it keeps NaN off the wire.
   // PX_ONLY accepts the exponent form: measured in Chrome, 999999px stays 999999px but 1000000px
-  // computes to '1e+06px' (and large values saturate at '1.67772e+07px'). Those are ordinary
+  // computes to '1e+06px' (and large values saturate at '1.67772e+07px'). The NEGATIVE exponent is
+  // just as real and just as reachable: measured, '0.0001px' stays verbatim and '0.00009px' computes
+  // to '9e-05px' -- it is six-significant-digit serialization, not a size threshold, so [+-] here is
+  // load-bearing and not defensive. Those are ordinary
   // comparable radii -- parseFloat reads them correctly -- and rejecting them would flag a genuine px
   // radius with a note whose named shapes are all false about it.
   // The mantissa is a NUMBER, not a run of digits-and-dots: [0-9.]+ also accepted '.px' and '..px',

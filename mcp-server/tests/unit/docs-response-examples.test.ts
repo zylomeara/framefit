@@ -287,9 +287,9 @@ const BUILDERS: Record<string, () => Promise<Record<string, unknown>>> = {
 //
 // The EXACT length is deliberately not written here. It lives in the capture, which is regenerated,
 // and in the elision on docs/tools/design-qa.md, which PLACEHOLDER_RE compares against the live
-// value. This comment said "50,285-character" through four lengths on this branch, checked by
-// nothing -- a number restated where it could have been read is the defect the gates around it
-// exist to catch.
+// value. This comment carried a hardcoded character count through four lengths on this branch,
+// checked by nothing -- a number restated where it could have been read is the defect the gates
+// around it exist to catch, so the stale figure is not repeated here, not even as narration.
 const NORMALIZED_PATH = 'extractor_js';
 function normalizeCapture(out: Record<string, unknown>): Record<string, unknown> {
   const v = out[NORMALIZED_PATH];
