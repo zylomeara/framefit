@@ -536,7 +536,10 @@ function documentedObject(e: CorpusEntry): unknown {
 describe('Gate 1: every documented response example is a real handler return', () => {
   it('the corpus is every response fence of the two design-QA pages', () => {
     // 5 -> 8 in Task 11 (W5), the commit that corrects docs/design-qa-tutorial.md's three response
-    // fences. A fence added under a new heading, or dropped, is red rather than silent.
+    // fences. What this length actually catches: a fence DROPPED, or moved out from under the
+    // heading its entry names, fails to resolve and is red. A fence ADDED under a NEW heading is
+    // INVISIBLE until someone writes it into CORPUS by hand -- the corpus is a maintained list, not
+    // a sweep, and saying otherwise was claiming a power this gate does not have.
     expect(CORPUS).toHaveLength(8);
     expect([...new Set(CORPUS.map((e) => e.page))].sort())
       .toEqual(['docs/design-qa-tutorial.md', 'docs/tools/design-qa.md']);

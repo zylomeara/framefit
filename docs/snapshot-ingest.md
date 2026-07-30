@@ -140,7 +140,7 @@ uploader, check what origin your client actually sends and adjust the header in
 `mcp-server/src/multi-tenant/variable-snapshot-ingest.ts` to match your deployment.
 
 ```bash
-curl -sS -X POST "$BASE/api/variables/snapshot" \
+curl -sS --fail-with-body -X POST "$BASE/api/variables/snapshot" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   --data-binary @entries.json
 ```

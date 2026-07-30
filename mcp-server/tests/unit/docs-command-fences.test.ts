@@ -32,6 +32,7 @@
 // as unrunnable.
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,6 +59,29 @@ const FENCE_FLOOR: Record<string, number> = {
   'CONTRIBUTING.md': 1,
 };
 const PAGES = Object.keys(FENCE_FLOOR);
+
+// PAGES WAS SELF-SELECTED, and a page escaped it. `docs/snapshot-ingest.md` carried two shell fences
+// nobody swept, one of them the `curl` without `-f` this gate bans by name; a probe fence appended to
+// a page outside PAGES passed the whole suite. So the population is now CLOSED the way Gate 5's is:
+// an over-inclusive detector -- every TRACKED `*.md` holding a fence tagged with a shell language --
+// and a closed table of named excuses. A page is swept or it is written here; there is no third state
+// and no way to be neither.
+//
+// The excuses are true of these two pages TODAY, and each says what would revoke it. Note what the
+// exclusion does NOT do: the `curl -f` ban applies to EXECUTABLE fences, and every fence on both
+// pages carries a placeholder or a caller-set variable, so it could never have been executable and
+// the ban would not have reached it even inside PAGES. The fix to that curl is therefore a fix to
+// what the page TEACHES, and this table is about who sweeps the page, not about whether it was right.
+const PAGES_NOT_SWEPT: Record<string, string> = {
+  // Operator runbook: every fence substitutes `<keycloak-user-id>` or a `$BASE`/`$TOKEN` the reader
+  // exports first, so none of them runs as written. Revoked the day it grows a copy-paste recipe.
+  'docs/snapshot-ingest.md':
+    'every fence needs a placeholder or an exported variable substituted first',
+  // An agent workflow, not a setup recipe: its one fence is the mid-workflow upload, whose URL comes
+  // from a previous tool call (`<upload_url>`). Revoked if it ever tells a HUMAN to run something.
+  'docs/agents/design-qa-skill.md':
+    'its one fence is a workflow step whose URL comes from a previous tool call',
+};
 
 // The EXECUTABLE side needs its own floor, and this is what makes the partition mean anything.
 // `executable + excluded === total` is satisfied by an EMPTY executable side: mark every fence
@@ -231,11 +255,14 @@ function markers(fence: Fence, key: 'not-executed' | 'precondition'): string[] {
 // Every executable fence ends in an ASSERTION of the page's promise, never in the last command --
 // because the last command's exit 0 is routinely compatible with the page's claim being false.
 
-// Does a command carry `-f` / `--fail`? (`-fsS` is a cluster, so scan the letters.)
+// Does a command carry `-f` / `--fail` / `--fail-with-body`? (`-fsS` is a cluster, so scan the
+// letters.) `--fail-with-body` is `--fail` that still prints the response, which is what a POST
+// wants and what docs/snapshot-ingest.md and the skill page both use -- reading it as "no fail flag"
+// would be a false red the day either page is swept.
 function hasFailFlag(cmd: string): boolean {
   return cmd
     .split(/\s+/)
-    .some((t) => t === '--fail' || (/^-[A-Za-z]+$/.test(t) && t.includes('f')));
+    .some((t) => t === '--fail' || t === '--fail-with-body' || (/^-[A-Za-z]+$/.test(t) && t.includes('f')));
 }
 
 const firstWord = (cmd: string): string => cmd.trim().split(/\s+/)[0];
@@ -321,6 +348,34 @@ function classify(page: string): { all: Fence[]; bash: Classified[] } {
 const at = (f: Fence): string => `${f.page}:${f.startLine}`;
 
 describe('Gate 3 (static): every bash fence is classified, and every executable one is shaped to run', () => {
+  it('leaves no tracked page with a shell fence outside both PAGES and the excuse table', () => {
+    // The detector is deliberately WIDER than ALLOWED_LANGS. That whitelist decides what a SWEPT page
+    // may use; this one decides which pages get swept at all, and the tag nobody thought of is
+    // exactly the one that would escape -- which is how `docs/snapshot-ingest.md` escaped.
+    const SHELLISH = /^(bash|sh|shell|zsh|console|shell-session|terminal|command)$/;
+    const tracked = execFileSync('git', ['ls-files', '*.md'], { cwd: REPO_ROOT, encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+    expect(tracked.length, 'git listed no markdown, so this row would sweep nothing')
+      .toBeGreaterThan(10);
+    const withShell = tracked.filter((page) => readFileSync(path.join(REPO_ROOT, page), 'utf8')
+      .split('\n').some((line) => SHELLISH.test((/^\s*```(\S*)/.exec(line)?.[1] ?? '').toLowerCase())));
+    expect(withShell.length, 'no page carries a shell fence, so the accounting below is vacuous')
+      .toBeGreaterThan(PAGES.length);
+    expect(
+      withShell.filter((page) => !PAGES.includes(page) && !(page in PAGES_NOT_SWEPT)).sort(),
+      'these tracked pages carry a shell fence and are neither swept nor excused -- add them to '
+      + 'FENCE_FLOOR, or to PAGES_NOT_SWEPT with a reason',
+    ).toEqual([]);
+    // Both directions, so the table cannot rot: an excuse for a page that no longer has a fence (or
+    // no longer exists) is a stale entry inviting the next real escapee to be filed under it.
+    expect(
+      Object.keys(PAGES_NOT_SWEPT).filter((page) => !withShell.includes(page)).sort(),
+      'these excuses match no tracked page carrying a shell fence',
+    ).toEqual([]);
+    expect(Object.keys(PAGES_NOT_SWEPT).filter((page) => PAGES.includes(page)),
+      'a page cannot be both swept and excused').toEqual([]);
+  });
+
   it('keeps every page at or above its measured fence floor', () => {
     const offenders: string[] = [];
     for (const page of PAGES) {
@@ -397,11 +452,11 @@ describe('Gate 3 (static): every bash fence is classified, and every executable 
       const { bash } = classify(page);
       const executable = bash.filter((c) => c.executable);
       const excluded = bash.filter((c) => !c.executable);
-      // The identity the classification rests on. It can genuinely fail: an excluded fence whose
-      // marker carries no reason at all is neither -- it is caught by the reason assertion below,
-      // and this one keeps the two partitions covering the whole census meanwhile.
-      expect(executable.length + excluded.length, `${page}: partition does not cover the census`)
-        .toBe(bash.length);
+      // No coverage identity here: `excluded` is `bash.filter(not executable)`, so
+      // `executable + excluded === bash` is arithmetic, not a check, and the comment that used to sit
+      // here claiming it "can genuinely fail" was simply false. What the classification actually
+      // rests on is below -- an excluded fence must carry a REASON, and the reason must be one of the
+      // declared ones.
       for (const c of excluded) {
         if (c.reasons.length === 0) offenders.push(`${at(c.fence)}: \`# not-executed:\` with no reason`);
       }

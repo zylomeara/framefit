@@ -395,8 +395,11 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
 
   if (reasons.length) {
     // (b) viewport ergonomics: for a viewport reason the row carries STRUCTURAL
-    // numbers (the header/verification do not parse the note's prose — a text drift does not
-    // break the numbers). Other geometry reasons carry no fields (nothing to carry).
+    // numbers, so nothing has to read the prose to get THEM. The note is not prose-free, though, and
+    // the blanket claim that used to sit here was wrong: verification.ts:248 tests
+    // `(r.note ?? '').includes('viewport')` to route this row to fix_viewport rather than
+    // resolve_skip, so that ONE word is load-bearing — drop it from the reason text and the blocking
+    // item silently changes kind. Other geometry reasons carry no fields (nothing to carry).
     rows.push({ prop: 'geometry', status: 'unchecked', note: reasons.join('; '),
       ...(viewportOff && opts.expectedOverlayWidth === undefined
         ? { figma: opts.frameWidth, dom: d.innerWidth } : {}) });
