@@ -19,8 +19,12 @@ pnpm typecheck   # tsc --noEmit over src/ + tests/
 ```
 
 `cp .env.example .env` and fill `FIGMA_TOKEN` to exercise the server against real Figma files
-locally. `.env.example` documents the full config surface and is machine-checked against the
-config schema, so an undocumented env var fails CI.
+locally. `tests/unit/publication-metadata.test.ts` checks `.env.example` against two sources —
+every `config.ts` schema variable and every `multi-tenant/env.ts` variable — so a variable in
+either source that is missing from `.env.example` fails CI. A variable read straight off
+`process.env` is in neither source, so nothing catches it: `MCP_PRETTY_JSON`, read in
+`src/adapters/driving/tools/serialize.ts`, is live and in no schema. Add one of those and you
+must document it by hand — `.env.example` is not a complete list of what the server reads.
 
 ## Repo layout
 

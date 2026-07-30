@@ -57,6 +57,35 @@ describe('.env.example sync with BOTH env schemas', () => {
     expect(stale).toEqual([]);
   });
 
+  // ---- the blind spot of the sync assertions above, which CONTRIBUTING.md now names ----
+  // Both scrapers read a source file, so a variable read straight off `process.env` is in neither
+  // and `.env.example` is NOT a complete list of what the server reads. CONTRIBUTING.md points
+  // readers at MCP_PRETTY_JSON as the live instance of that gap. Move it into ConfigSchema, into
+  // multi-tenant/env.ts, or into .env.example and the prose keeps naming an example that stopped
+  // being one — with nothing watching. These pin that it stays the live instance.
+  //
+  // Its LIVENESS is deliberately not asserted here: tests/unit/serialize.test.ts already proves
+  // MCP_PRETTY_JSON=true still changes serializeForDelivery's output, which is the property. A
+  // grep of serialize.ts for the string would be the weaker restatement — a commented-out read
+  // satisfies containment, so that assertion could not go red for the reason it exists.
+  //
+  // Not vacuous: `scrapers actually see the schemas` above refuses an empty scrape, so these
+  // cannot pass by both key sets rotting to [].
+  it('CONTRIBUTING.md still names MCP_PRETTY_JSON and its read site as the uncovered case', () => {
+    const contributing = read('../CONTRIBUTING.md');
+    expect(contributing).toContain('MCP_PRETTY_JSON');
+    expect(contributing).toContain('src/adapters/driving/tools/serialize.ts');
+  });
+
+  it('MCP_PRETTY_JSON is in NEITHER scraped source, so no CI gate covers it', () => {
+    expect(configSchemaKeys()).not.toContain('MCP_PRETTY_JSON');
+    expect(multiTenantEnvKeys()).not.toContain('MCP_PRETTY_JSON');
+  });
+
+  it('MCP_PRETTY_JSON is absent from .env.example, by the same predicate the sync tests use', () => {
+    expect(mentioned('MCP_PRETTY_JSON')).toBe(false);
+  });
+
   it('FIGMA_TIMEOUT_MS example matches the real default (90000, not the stale 30000)', () => {
     expect(example).toMatch(/^#?\s*FIGMA_TIMEOUT_MS=90000$/m);
   });
