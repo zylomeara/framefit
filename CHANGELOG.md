@@ -195,6 +195,23 @@ an emoji in instructions an agent acts on. Five field descriptions that quoted t
 of the default review-board and `find_threads` name patterns now describe the default instead - the
 patterns themselves are behaviour, are correct, and are unchanged.
 
+**13. The DOM snapshot schema is v6. Snapshots captured with an older extractor are refused.**
+
+Re-fetch the script (`get_layout_spec {include_extractor:true}`) and re-capture. A `schema: 5`
+snapshot now gets a `snapshot_schema` warn row and a `re_extract_dom` blocking item from
+`compare_node_to_dom`, and a hard error from `suggest_pairs`. Cached `snapshot_ref`s taken before
+the upgrade are equally stale.
+
+The version had to move because the change is not additive - it redefines an existing field.
+`styles.borderRadius` now means "all four CSS corners are this value"; a node whose corners differ
+omits it and sets `styles.borderRadiusAsymmetric: true` instead. Older extractors read the top-left
+corner alone and emitted `borderRadius: 8` for `border-radius: 8px 0 0 0` with no flag at all, so on
+the wire their output is indistinguishable from a genuinely uniform 8 and the server has no way to
+tell the two apart. Without the version bump the `corner-radius` row would have kept passing over an
+unmeasured difference on every stale capture - the same defect this release removes from the code,
+displaced onto the wire. Same reasoning as the v4 bump, where old extractors truncated text without
+flagging it.
+
 ### Added
 
 - **MCP tool annotations on all 26 registrations.** `readOnlyHint` on the 23 reads;
