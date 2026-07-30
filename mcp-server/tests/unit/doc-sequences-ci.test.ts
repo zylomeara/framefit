@@ -157,6 +157,26 @@ describe('the doc-sequences CI job is bound to the runner, not to a hand-copied 
       + 'publishes -- the gate must be able to fail the build').toEqual([]);
   });
 
+  // CONTRIBUTING.md tells a contributor what must be green before a PR merges, and it enumerated
+  // four jobs when the gate had five: `doc-sequences` -- the job this very file exists for -- was
+  // added and the page that lists the gate was not updated. A prose list of jobs is a second home
+  // for `needs:`, exactly the two-homes problem this file opens with, so it is read from `needs:`
+  // rather than restated here.
+  //
+  // Backticked, deliberately. Bare containment is nearly vacuous for a short id like `unit`, which
+  // occurs inside ordinary prose ("unit suite"); requiring the id as code refuses that. Ceiling: it
+  // does not check WHERE on the page the id appears, so a job named in some unrelated sentence
+  // would satisfy it. That trades an unlikely false green for no section parser, and the drift this
+  // catches -- a job added to the gate and never written down -- is caught either way.
+  it('CONTRIBUTING.md names every job in the publish gate', () => {
+    const gate = publishGateJobs();
+    expect(gate.length, 'publish-image has no needs: array to read').toBeGreaterThan(0);
+    const contributing = readFileSync(path.join(REPO_ROOT, 'CONTRIBUTING.md'), 'utf8');
+    const missing = gate.filter((job) => !contributing.includes(`\`${job}\``));
+    expect(missing, 'CONTRIBUTING.md does not name these jobs from publish-image\'s needs:, so it '
+      + 'understates what has to pass before a PR can merge').toEqual([]);
+  });
+
   it('refuses an if: on publish-image that can be true after a gate job failed', () => {
     // The second escape hatch for the same ruling, and the workflow's own comment forbids it while
     // nothing enforced it: an `if:` can make `needs:` advisory from the other side.
