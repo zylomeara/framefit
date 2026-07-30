@@ -176,9 +176,10 @@ The same applies to a reason naming both an account-type limit and a scope: plan
 so that is `forbidden` too.
 
 Nothing Figma really sends moved: measured over a 476-case matrix - 17 bodies x 7 statuses x 4 call
-shapes - the 16 cases that changed are all bodies Figma does not produce. But if you alert on `error_kind: "auth"`, or branch on the
-`[auth]` prefix, those cases now arrive as `forbidden`. The point of the change is that an
-intermediary can no longer choose the kind by writing one word into a body.
+shapes - the 16 cases that changed are all bodies Figma does not produce. But if you alert on
+`error_kind: "auth"`, or branch on the `[auth]` prefix, those cases now arrive as `forbidden`. The
+point of the change is that an intermediary can no longer choose the kind by writing one word into
+a body.
 
 **11. `framefit status` reports and checks the bind interface, and its skipped Figma check no
 longer reads as a pass.**
@@ -255,10 +256,10 @@ v4 bump, where old extractors truncated text without flagging it.
   positional join against your own team list was unreliable - and silently so, since with one slow
   team it was usually right. Each failure is now recorded at its own index and the array is
   compacted before it is returned, so it carries only the teams that failed, in the order the
-  teams were searched. That order is not necessarily your array: the searched list is your ids
-  deduplicated and capped at the first 5, and if you passed no `team_id` at all it is your
-  registered teams, which you never passed. So a positional join still does not work - the entry
-  at position `n` is the `n`th team that FAILED. Read `team_id` off each entry.
+  teams were searched. That list is not your array: `team_id` takes one team, and the multi-tenant
+  fallback that accepts none searches your registered teams, deduplicated and capped at the first
+  5. So a positional join still does not work - the entry at position `n` is the `n`th team that
+  FAILED. Read `team_id` off each entry.
 - **A repeated failure is no longer diagnosed differently from the first one.** The negative cache
   dropped the upstream reason on the way in and out, so a cached 400 lost the quote and fell back
   to generic advice.
