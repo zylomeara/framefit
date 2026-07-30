@@ -1253,9 +1253,9 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
 // An agent reads these pages and then STRING-MATCHES on what they quote. A quote off by a word does
 // not merely misinform, it sends the reader looking for text that is never printed. Three shipped:
 //
-//   report.ts:125  `outside profile scope: ${dims} - verify with the token-aware/strict profile`
+//   report.ts:125  `⏭ outside profile scope: ${dims} — verify with the token-aware/strict profile`
 //   page           "out of profile scope: <dims> - verify with token-aware/strict"
-//   diff.ts:1414   `the shadow list was not matched (single-shadow-first) - verify visually`
+//   diff.ts:1414   `the shadow list was not matched (single-shadow-first) — verify visually`
 //   page           "matching not attempted"          (and twice more on docs/coverage.md)
 //   diff.ts:1102   `TEXT descendants remained unpaired (content bijection and ordinal matching ...)`
 //   page           "left unpaired"
@@ -1291,12 +1291,17 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
 // normalises to holes alone (`"<screen name>"`) matches nothing rather than every interpolated
 // literal.
 //
-// THE RESIDUAL HOLE, NAMED: a prefix that drops a TRAILING qualifier still resolves -- quoting
-// `"the DOM radius is not one comparable px number"` off a note that goes on to qualify it is green.
-// Nothing here reads meaning, so that is not closed, only bounded: the inversion has to be reachable
-// by truncating the END of a note, never by cutting into its front. And a quote of a note's MIDDLE is
-// now red BY CONSTRUCTION. If one is ever genuinely needed, add a named exemption table for it here
-// rather than loosening the anchor -- the anchor is the entire predicate.
+// THE RESIDUAL HOLES, NAMED, each with the direction it fails in:
+//   - A prefix that drops a TRAILING qualifier still resolves -- quoting `"the DOM radius is not one
+//     comparable px number"` off a note that goes on to qualify it is green. FALSE GREEN. Nothing
+//     here reads meaning, so it is bounded rather than closed: an inversion has to be reachable by
+//     truncating the END of a note, never by cutting into its front.
+//   - PROSE INSIDE A PLACEHOLDER normalises away with it. `"<N, but only on a missing frame>` not
+//     verified (demoted)"` collapses to the same hole as `"<N>"` and resolves. FALSE GREEN, and the
+//     one hole where the page can state something actively untrue in the middle of a true quote.
+//   - A quote of a note's MIDDLE is red BY CONSTRUCTION, and so is a prefix that stops mid-token.
+//     FALSE RED if one is ever legitimate. If that happens, add a named exemption table here rather
+//     than loosening the anchor -- the anchor is the entire predicate.
 //
 // THE POPULATION SEARCHED IS THE MODULE, NOT TWO FILENAMES. The spec said report.ts +
 // verification.ts. Measured: the env-skip note quoted one line below the profile skip is authored in
@@ -1350,7 +1355,12 @@ const CANDIDATE_COUNT: Record<string, number> = {
  * nothing uses, so a speculative one fails rather than sitting here inviting misuse.
  */
 type ExemptionReason =
-  // The AGENT's own words: what it should or must not say. Never text the server prints.
+  // The page is quoting the AGENT's own words -- what it should or must not say. NOT "never printed":
+  // report.ts:298 prints `do NOT say "done" until this is closed` and verification.ts:447 prints
+  // `before "verified against the design" run token-aware or strict`, so two members of this reason
+  // do occur in notes. What makes them exempt is that the page's claim is about the agent's speech,
+  // not about text it will read back -- and a reason that overstated itself would be a false entry in
+  // the table this gate exists to keep true.
   | 'agent-speech'
   // Text the READER supplies or names in the request it builds: a field, a selector, a placeholder.
   | 'readers-input'
@@ -1398,6 +1408,9 @@ const NOT_SERVER_OUTPUT: Record<string, ExemptionReason> = {
   '<screen name>': 'readers-input',
   '<local path>.json': 'readers-input',
   '<string>': 'readers-input',
+  // `extractor_mode: "inline"` on :75 -- a value the CALLER passes. The module prints `inline-flex`
+  // and `inline-grid` and nothing else that starts with it, which is exactly how it used to resolve.
+  inline: 'readers-input',
   // The POST body the reader assembles, not something the endpoint prints back.
   snapshots: 'readers-input',
 
@@ -1493,7 +1506,13 @@ function emitterOf(
   // All holes and no text matches every literal that starts with an interpolation, which is not a
   // claim about anything.
   if (wanted.split(HOLE).join('').trim() === '') return null;
-  return literals.find((lit) => lit.text.startsWith(wanted)) ?? null;
+  // A prefix must end where a TOKEN ends. Otherwise the rule is sub-word promiscuous: `inline`
+  // prefixes `inline-flex` and `no` prefixes `node`, so a request-param value the module never prints
+  // was resolving off an unrelated CSS keyword. `-` counts as word-continuing, because the strings on
+  // both sides are full of CSS identifiers where it is.
+  const wordish = (c: string): boolean => /[A-Za-z0-9_-]/.test(c);
+  return literals.find((lit) => lit.text.startsWith(wanted)
+    && !(wordish(wanted.slice(-1)) && wordish(lit.text[wanted.length] ?? ''))) ?? null;
 }
 
 describe('Gate 5C: every quoted run on a doc page is emitted by the module, or excused by name', () => {
@@ -1614,6 +1633,11 @@ describe('Gate 5C: every quoted run on a doc page is emitted by the module, or e
     expect(emitterOf('<N> not verified (demoted)', literals)?.file).toBe('report.ts');
     // A quote that is all placeholder claims nothing and matches nothing.
     expect(emitterOf('<anything>', literals)).toBeNull();
+    // Sub-word: `inline` prefixes `inline-flex`, and the module prints nothing else beginning with
+    // it, so a start-only anchor blessed a request-param value as emitted output. The token boundary
+    // refuses the sub-word and keeps the whole token.
+    expect(emitterOf('inline', literals), 'a prefix must end where a token ends').toBeNull();
+    expect(emitterOf('inline-flex', literals)?.file).toBe('diff.ts');
     // And a quote of a literal's MIDDLE is red by construction, which is what the anchor buys.
     expect(emitterOf('verify with the token-aware/strict profile', literals)).toBeNull();
   });
