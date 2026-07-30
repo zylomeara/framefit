@@ -1481,6 +1481,26 @@ describe('the corner radius is one comparable px number, or it says so', () => {
       expect(snap.styles.borderRadiusUncomparable, `flag for ${computed}`).toBeUndefined();
     }
   });
+
+  // PX_ONLY's mantissa was `[0-9.]+` -- a run of digits AND dots, so '.px' and '..px' passed the test
+  // and then parseFloat to NaN, num() to undefined, and the pair emitted NO ROW from a truthy computed
+  // string: the same silent omission as the four false greens above, differing only in being
+  // unreachable from a browser (Chrome serializes '.5px' as '0.5px'). A number is now a number.
+  it('a dot-only mantissa is not a px length: .px and ..px are uncomparable, never silent', async () => {
+    const four = (v: string) => ({ borderTopLeftRadius: v, borderTopRightRadius: v,
+      borderBottomRightRadius: v, borderBottomLeftRadius: v });
+    for (const computed of ['.px', '..px', '.-5px']) {
+      const [snap]: any = await buildExtractor(four(computed))(['main']);
+      expect(snap.styles.borderRadius, `borderRadius for ${computed}`).toBeUndefined();
+      expect(snap.styles.borderRadiusUncomparable, `flag for ${computed}`).toBe(true);
+      expect(JSON.stringify(snap)).not.toContain('NaN');
+      expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+    }
+    // The control that keeps the fix from being an over-refusal: a leading-dot number is still a number.
+    const [ok]: any = await buildExtractor(four('.5px'))(['main']);
+    expect(ok.styles.borderRadius).toBe(0.5);
+    expect(ok.styles.borderRadiusUncomparable).toBeUndefined();
+  });
 });
 
 describe('v5: the style bundle on children', () => {

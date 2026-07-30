@@ -279,11 +279,17 @@ const BUILDERS: Record<string, () => Promise<Record<string, unknown>>> = {
   ),
 };
 
-// `extractor_js` is a single 50,285-character string on stdio. Stored verbatim it would be 50 KB of
-// literal source in a committed fixture; stored as {length, sha256} the live-equality assert below
-// stays exactly as strong (any byte of dom-extractor.ts changes the digest) and the fixture stays
-// readable. This is the ONLY path normalized on the way into a capture, and it is normalized on both
-// sides of the comparison, so it cannot hide drift.
+// `extractor_js` is the whole extractor as ONE string on stdio, tens of KB of it. Stored verbatim it
+// would be that much literal source in a committed fixture; stored as {length, sha256} the
+// live-equality assert below stays exactly as strong (any byte of dom-extractor.ts changes the
+// digest) and the fixture stays readable. This is the ONLY path normalized on the way into a
+// capture, and it is normalized on both sides of the comparison, so it cannot hide drift.
+//
+// The EXACT length is deliberately not written here. It lives in the capture, which is regenerated,
+// and in the elision on docs/tools/design-qa.md, which PLACEHOLDER_RE compares against the live
+// value. This comment said "50,285-character" through four lengths on this branch, checked by
+// nothing -- a number restated where it could have been read is the defect the gates around it
+// exist to catch.
 const NORMALIZED_PATH = 'extractor_js';
 function normalizeCapture(out: Record<string, unknown>): Record<string, unknown> {
   const v = out[NORMALIZED_PATH];

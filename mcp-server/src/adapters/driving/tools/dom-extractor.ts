@@ -41,7 +41,11 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   // computes to '1e+06px' (and large values saturate at '1.67772e+07px'). Those are ordinary
   // comparable radii -- parseFloat reads them correctly -- and rejecting them would flag a genuine px
   // radius with a note whose named shapes are all false about it.
-  const PX_ONLY = /^-?[0-9.]+(e[+-]?[0-9]+)?px$/;
+  // The mantissa is a NUMBER, not a run of digits-and-dots: [0-9.]+ also accepted '.px' and '..px',
+  // which pass the test and then parseFloat to NaN -> num() undefined -> no row at all from a truthy
+  // computed string. That is the silent omission this rule exists to reject, only reached from a
+  // hand-built string rather than from a browser.
+  const PX_ONLY = /^-?[0-9]*\\.?[0-9]+(e[+-]?[0-9]+)?px$/;
   const radiusOf = (cs) => {
     const c = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius];
     if (!c.every((v) => v === c[0])) return { uncomparable: true };
