@@ -16,6 +16,10 @@ The tool compares NUMBERS, not screenshots: inter-element distances are computed
 result is what gets caught. Your single responsibility is correct PAIRS of node_id ↔ CSS selector.
 Everything else is deterministic.
 
+Text this page shows as a VERBATIM quote of what the server prints is written as a double-quoted
+string inside a code span, with angle brackets marking an interpolated value — string-match on those.
+Every one of them is checked against the string the code emits (`docs-complete-lists.test.ts`).
+
 ## Workflow (one pass, ~4–5 calls)
 
 ### Step 0 — bring the UI into the design's state
@@ -182,7 +186,7 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
 - `verification.spacing_audit[]` — between-children gap measurement WITHOUT a container pair: works
   only when the adjacent pairs came through `dom_ref` of ONE batch (one extractor POST = one layout
   state). Inline `dom` or mixed refs → the gap is honestly `unchecked`. `gap.status:'fail'` =
-  a real gap divergence (verdict: "there are mismatches").
+  a real gap divergence (verdict: `"discrepancies found"`).
 - `scope:"pairs"` (no `frame_node_id`) — ONLY the submitted pairs were checked, NOT the whole screen:
   even `complete:true` here ≠ "screen verified". To gate whole-frame coverage, pass `frame_node_id`.
 
@@ -216,10 +220,11 @@ pass; the final "verified against the design" can only come from `token-aware` o
 `report_markdown` carries the profile in its header (`…, tolerance Npx, profile <name>` — in ALL
 modes including the default `token-aware`, not only when passed explicitly); `layout` additionally
 prints a warning right under the title that typography/colors/styles are OUT of scope. Profile
-skips (axes deliberately excluded by the profile) render as ONE summary `⏭` row ("out of profile
-scope: <dims> — verify with token-aware/strict") — distinguishable from a regular environmental
-`⏭` skip (which stays per-row with its own env reason, e.g. "scroll container: height
-uninformative", without the "out of profile scope" wording).
+skips (axes deliberately excluded by the profile) render as ONE summary `⏭` row
+(`"outside profile scope: <dims> — verify with the token-aware/strict profile"`) — distinguishable
+from a regular environmental `⏭` skip, which stays per-row with its own env reason (e.g.
+`"scroll container: content height <N>px — comparing the frame height is uninformative"`) and never
+carries the `"outside profile scope"` wording.
 
 ⚠️ **RECONNECT NOTE**: `match_profile` and the adjusted `tolerance_px` semantics (now `.optional()`
 without a zod default — the default is applied in code AFTER profile parsing) become visible in the

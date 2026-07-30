@@ -1246,3 +1246,145 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
     }
   });
 });
+
+// =================================================================================================
+// INSTANTIATION C (W8) -- every string the skill page quotes as VERBATIM tool output.
+//
+// An agent reads this page and then STRING-MATCHES on what it quotes. A quote that is off by a word
+// therefore does not merely misinform, it sends the reader looking for text that is never printed:
+// the profile-skip line was quoted as "out of profile scope: <dims> - verify with
+// token-aware/strict" against an emitted `outside profile scope: ${dims} - verify with the
+// token-aware/strict profile`, and the sentence around it told the reader to tell the two skip kinds
+// apart BY that wording.
+//
+// THE CONVENTION, declared on the page and read here: a code span whose whole content is one
+// double-quoted string (`"..."`) claims the server prints exactly that, with `<...>` marking an
+// interpolated value. Nothing else counts. Bare double quotes carry ordinary emphasis all over this
+// page ("done", "screen verified", "skeleton first"), so a convention built on them would be
+// comparing English against source.
+//
+// THE POPULATION IS THE MODULE, NOT TWO FILENAMES. The spec said report.ts + verification.ts.
+// Measured: the environmental-skip note the page quotes one line below the profile skip is authored
+// in diff.ts -- report.ts only renders the row it sits in -- so that boundary would have called a
+// byte-correct quote missing. It is therefore src/domain/layout-spec/**.ts: a rule about what
+// composes a compare_node_to_dom response, rather than a list someone extends whenever a red
+// appears. The row below pins that the widening is load-bearing and not decoration.
+//
+// EM DASH: quoted EXACTLY, never folded. report.ts:125 and diff.ts:491 both join with U+2014 and the
+// page carries the same character. A comparison that folded dashes would let the page print a hyphen
+// while an agent matching the page's bytes finds nothing -- the very failure this row exists for.
+//
+// INTERPOLATION: a whole-string `includes()` cannot work, and not because of any defect -- the source
+// reads `${dims}` where the page reads `<dims>`. Each page quote is split on its `<...>` spans and
+// every literal segment must occur, IN ORDER, inside ONE source literal. Whitespace is collapsed on
+// both sides: the page wraps at 100 columns mid-quote and the source does not.
+//
+// CEILING: "one source literal" comes from a regex over comment-stripped source, not from a tokenizer
+// that can tell a string from a regex literal. A mis-read literal costs a FALSE RED -- a real quote
+// reported missing -- never a false green, and the reader is checked below against both a string it
+// must find and one it must not.
+// =================================================================================================
+
+const SKILL_PAGE = 'docs/agents/design-qa-skill.md';
+const LAYOUT_SPEC_DIR = path.join(SRC_DIR, 'domain', 'layout-spec');
+
+/**
+ * EXACT, not a lower bound. A floor alone lets a red be cleared by deleting the quote marks off the
+ * offending line, which fixes the gate and not the page.
+ */
+const QUOTED_OUTPUT_COUNT = 5;
+/** The module holds thousands of literals; a reader returning near-nothing has broken, not shrunk. */
+const SOURCE_LITERAL_FLOOR = 200;
+
+const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
+
+/** Every `"..."` code span on the skill page: outer quotes dropped, wrapping folded. */
+function quotedOutputStrings(): string[] {
+  const text = readFileSync(path.join(REPO_ROOT, SKILL_PAGE), 'utf8');
+  return [...text.matchAll(/`"([^"`]*)"`/g)].map((m) => oneLine(m[1]));
+}
+
+/** Every string and template literal under the layout-spec module, with its file. */
+function emittedLiterals(): { file: string; text: string }[] {
+  const out: { file: string; text: string }[] = [];
+  for (const full of tsFilesUnder(LAYOUT_SPEC_DIR).sort()) {
+    const src = readFileSync(full, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      // Whole-line `//` only: a trailing one after code is left alone (harmless), while a `//` inside
+      // a string -- a URL -- must not be treated as the start of a comment.
+      .replace(/^[ \t]*\/\/.*$/gm, ' ');
+    for (const m of src.matchAll(/`(?:[^`\\]|\\.)*`|'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g)) {
+      out.push({ file: path.basename(full), text: oneLine(m[0].slice(1, -1)) });
+    }
+  }
+  return out;
+}
+
+/** The literal a page quote resolves to, or null when the module emits no such string. */
+function emitterOf(
+  quote: string,
+  literals: { file: string; text: string }[],
+): { file: string; text: string } | null {
+  const segments = oneLine(quote).split(/<[^<>]*>/).map(oneLine).filter((s) => s !== '');
+  for (const lit of literals) {
+    let at = 0;
+    const hit = segments.every((s) => {
+      const i = lit.text.indexOf(s, at);
+      at = i + s.length;
+      return i >= 0;
+    });
+    if (hit) return lit;
+  }
+  return null;
+}
+
+describe('Gate 5C: every string the skill quotes as tool output is one the module emits', () => {
+  const PROFILE_SKIP = 'outside profile scope: <dims> — verify with the token-aware/strict profile';
+  const ENV_SKIP = 'scroll container: content height <N>px — comparing the frame height is uninformative';
+
+  it('reads the page quotes, and cannot pass by reading none', () => {
+    expect(QUOTED_OUTPUT_COUNT, 'the expected quote count is zero, so this gate asserts nothing')
+      .toBeGreaterThan(0);
+    const quotes = quotedOutputStrings();
+    expect(
+      quotes.length,
+      `${SKILL_PAGE}: the \`"…"\` code-span reader found ${quotes.length} quotes, expected `
+      + `${QUOTED_OUTPUT_COUNT} -- a quote lost its marks, or a new one was added without measuring it`,
+    ).toBe(QUOTED_OUTPUT_COUNT);
+    // By name, with the em dash the page must carry: a hyphen here is a red, which is the policy.
+    expect(quotes, 'the profile-skip line is what W8 exists for').toContain(PROFILE_SKIP);
+  });
+
+  it('finds a source literal for every one of them', () => {
+    const literals = emittedLiterals();
+    expect(literals.length, 'the source-side reader returned almost nothing, so every quote would `find` a match against an empty haystack')
+      .toBeGreaterThan(SOURCE_LITERAL_FLOOR);
+    const missing = quotedOutputStrings().filter((q) => emitterOf(q, literals) === null);
+    expect(
+      missing,
+      `${SKILL_PAGE} presents these as verbatim tool output and nothing under `
+      + 'src/domain/layout-spec emits them, so an agent string-matching on the page finds nothing',
+    ).toEqual([]);
+  });
+
+  it('tells a quote the module emits from one it does not', () => {
+    const literals = emittedLiterals();
+    // The pre-fix text of the line this gate was written for. Three differences from report.ts:125 --
+    // `out of` for `outside`, and a tail missing both `the` and `profile`.
+    expect(
+      emitterOf('out of profile scope: <dims> — verify with token-aware/strict', literals),
+      'the pre-fix quote must be reported missing, or this gate could not have gone red',
+    ).toBeNull();
+    expect(emitterOf(PROFILE_SKIP, literals)?.text, 'resolved against the emitter, interpolation and all')
+      .toContain('${dims}');
+  });
+
+  it('needs the module-wide population, not the two files the spec named', () => {
+    // Load-bearing, so narrowing the boundary back is a red rather than a silent weakening.
+    expect(
+      emitterOf(ENV_SKIP, emittedLiterals())?.file,
+      'the env-skip note is authored outside report.ts/verification.ts, so the two-file boundary '
+      + 'would call this byte-correct quote missing',
+    ).toBe('diff.ts');
+  });
+});
