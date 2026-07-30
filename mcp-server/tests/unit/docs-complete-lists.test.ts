@@ -1345,7 +1345,7 @@ const MARKED_QUOTES: Record<string, number> = {
  * more; there is no reason for this one to be looser than the marked count beside it.
  */
 const CANDIDATE_COUNT: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 47,
+  'docs/agents/design-qa-skill.md': 48,
   'docs/coverage.md': 6,
 };
 
@@ -1408,6 +1408,7 @@ const NOT_SERVER_OUTPUT: Record<string, ExemptionReason> = {
   '<screen name>': 'readers-input',
   '<local path>.json': 'readers-input',
   '<string>': 'readers-input',
+  '<selector for pair 1>': 'readers-input',
   // `extractor_mode: "inline"` on :75 -- a value the CALLER passes. The module prints `inline-flex`
   // and `inline-grid` and nothing else that starts with it, which is exactly how it used to resolve.
   inline: 'readers-input',

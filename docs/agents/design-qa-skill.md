@@ -59,31 +59,44 @@ Call `get_layout_spec` with the node_ids under check + the frame id, `include_ex
 }
 ```
 
-### Step 3 — DOM side: one evaluate_script (the snapshot uploads itself)
-`extractor_js` from step 1 is a short LOADER (~8 lines): it fetches the canonical extractor from
-the server (script tag) and calls it. Paste it VERBATIM, with `upload_url` as the second
-argument; you get back a SHORT `{snapshot_ref, summaries}` — the full JSON never enters your
-context at all.
-**The loader is async — the thunk MUST be async/await (a sync paste is a silent failure):**
+### Step 3 — DOM side: one evaluate_script
+
+> **An HTTP deployment has two things stdio does not, and both come from the public base URL.**
+> First, `extractor_js` comes back as a short LOADER (~8 lines) that fetches the canonical script
+> from the server instead of inlining it. Second, `get_layout_spec` also returns an `upload_url`:
+> the extractor POSTs the snapshots there straight from the browser and hands you a SHORT
+> `{snapshot_ref, summaries}`, so the full JSON never enters your context. On the stdio server the
+> [quickstart](../README.md#quickstart) installs there is NEITHER — `extractor_js` is the whole
+> inline script and the response carries no `upload_url`, so the snapshot comes back to you and you
+> pass it inline as `pairs[].dom`. Step 1's response is what tells you which one you are on: an
+> `upload_url` key, or none.
+
+The thunk MUST be async/await either way (a sync paste is a silent failure). With an
+`upload_url`, pass it as the second argument; on stdio, leave it off:
 ```js
 async () => {
-  const extract = <extractor_js verbatim (the loader)>;
+  const extract = <extractor_js verbatim>;
   return await extract(["<selector for pair 1>", "<selector for pair 2>"], "<upload_url>");
+  // stdio: no second argument — `return await extract(["<selector for pair 1>", …]);`
 }
 ```
+On stdio the inline script is tens of kilobytes, which you do not want to repeat per capture:
+paste it ONCE as `window.__extract = <extractor_js verbatim>;`, then every later capture is the
+short `async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the
+handle; paste again.
 If the loader fails with 'extractor script blocked (CSP?)' — the page restricts script-src:
 re-request `get_layout_spec {include_extractor: true, extractor_mode: "inline"}` and work with
 the full inline extractor (everything below stays the same).
 Selectors go in the same order as the pairs' node_ids; each must match EXACTLY one element
 (`status:'multiple'` → scope it via `:has(...)`/data attributes).
-**Validate the pairs via summaries BEFORE compare:** each selector carries `rect {w,h}`,
-`tag.class0`, `childCount`. Is it the right element? (a product-card tile ≈ 360×280, expected
-5 tiles — childCount 5). Wrong one → fix the selector and re-run the extractor (the page is
-open — it's cheap).
-`upload_url` is multi-use (30-minute sliding TTL): a multi-screen flow = 1 get_layout_spec
-→ N evaluate_script → N snapshot_ref.
+**Validate the pairs BEFORE compare:** with an `upload_url` each selector comes back as a summary
+(`rect {w,h}`, `tag.class0`, `childCount`); on stdio you read the same fields off the snapshot
+itself. Is it the right element? (a product-card tile ≈ 360×280, expected 5 tiles — childCount 5).
+Wrong one → fix the selector and re-run the extractor (the page is open — it's cheap).
+`upload_url`, where there is one, is multi-use (30-minute sliding TTL): a multi-screen flow = 1
+get_layout_spec → N evaluate_script → N snapshot_ref.
 
-**Fallback when the result carries `upload_error`** (page CSP/network — the browser POST didn't
+**Fallback when the result carries `upload_error`** (an upload path exists, so this is HTTP-only) (page CSP/network — the browser POST didn't
 go through; the page is still open, NO re-navigation needed):
 1. Re-run evaluate_script with `filePath: "<local path>.json"` and WITHOUT uploadUrl — the full
    JSON goes to a file, bypassing your context (chrome-devtools only allows filePath into
@@ -103,7 +116,9 @@ go through; the page is still open, NO re-navigation needed):
    per POST, never one ref with global indices. A ref lives 30 minutes on a SLIDING TTL under a
    non-extendable 2-hour ceiling from creation: re-reading it keeps it alive, nothing keeps it past
    two hours.
-3. Only for a genuinely tiny snapshot — last resort: inline (`dom:` as before).
+3. Inline (`dom:` as before) — the last resort where there IS an upload path, and the ONLY path on
+   stdio, where `suggest_pairs` refuses outright and `compare_node_to_dom` puts a `snapshot_ref`
+   warn row plus a `re_extract_dom` blocker on the pair rather than measuring anything.
 
 ### Step 4 — one compare_node_to_dom
 ```
@@ -124,7 +139,9 @@ extractor (0-based; duplicates stay distinguishable). The `selector: "<string>"`
 works but must match BYTE-FOR-BYTE and cannot distinguish duplicate selectors.
 A ref lives 30 minutes from last access (every compare extends it) — "saw a ❌, re-read the spec,
 re-ran the pair" works without re-capturing. Expired → the report says honestly "re-run the
-extractor", not a cryptic error. Inline `dom:` also works (fallback/back-compat).
+extractor", not a cryptic error. `dom_ref` needs the snapshot store, which only the HTTP server
+paths construct: on stdio pass the snapshot object as `dom:` instead — not a fallback there, the
+only option.
 
 ### Step 5 — report
 Paste `report_markdown` from the response INTO YOUR ANSWER AS IS (do not rebuild the table by
