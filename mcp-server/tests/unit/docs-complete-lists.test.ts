@@ -83,7 +83,8 @@ const DOCS_TOOLS_DIR = path.join(REPO_ROOT, 'docs', 'tools');
 const TOOL_COUNT = 26;
 
 // =================================================================================================
-// THE MECHANISM -- exported, because Task 11 instantiates it over the blocking actions.
+// THE MECHANISM -- exported, because docs-response-examples.test.ts instantiates it over the
+// blocking actions.
 // =================================================================================================
 
 /**
@@ -1248,7 +1249,7 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
 });
 
 // =================================================================================================
-// INSTANTIATION C (W8) -- every string a page presents as VERBATIM server output.
+// INSTANTIATION C -- every string a page presents as VERBATIM server output.
 //
 // An agent reads these pages and then STRING-MATCHES on what they quote. A quote off by a word does
 // not merely misinform, it sends the reader looking for text that is never printed. Three shipped:
@@ -1262,8 +1263,8 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
 //
 // THE POPULATION IS SWEPT, NOT SELF-SELECTED -- this is the part round 1 got wrong. Round 1 checked
 // the strings an author chose to MARK, so it could not fail for a string nobody marked, and two of
-// the three defects above sat outside it while it was green. The shape borrowed here is Task 5's
-// command-fence gate: an OVER-INCLUSIVE detector plus a CLOSED set of named exemption reasons, so
+// the three defects above sat outside it while it was green. The shape borrowed here is
+// docs-command-fences.test.ts's: an OVER-INCLUSIVE detector plus a CLOSED set of named exemption reasons, so
 // every candidate is either checked against source or excused by name, and a new candidate is red
 // until someone does one or the other.
 //
@@ -1508,7 +1509,7 @@ function emittedLiterals(): { file: string; text: string }[] {
  * The literal a page quote is a PREFIX of, or null.
  *
  * Not containment. A quote that merely OCCURS somewhere in a literal can be the literal's opposite:
- * `verified (demoted)` occurs inside `not verified (demoted)`, and so did the reviewer's probe
+ * `verified (demoted)` occurs inside `not verified (demoted)`, and so did the probe that found it
  * `<N> verified (demoted)` once its placeholder was thrown away. Anchoring at the literal's start
  * makes a word dropped from the front fatal, which is the direction a negation is dropped from.
  */
@@ -1553,7 +1554,7 @@ describe('Gate 5C: every quoted run on a doc page is emitted by the module, or e
       ).toBe(CANDIDATE_COUNT[page]);
     }
     // By name, with the em dash the page must carry: a hyphen here is a red, which is the policy.
-    expect(markedQuotes(pageBody(QUOTED_PAGES[0])), 'the profile-skip line is what W8 exists for')
+    expect(markedQuotes(pageBody(QUOTED_PAGES[0])), 'the profile-skip line is the whole point of this gate')
       .toContain(PROFILE_SKIP);
   });
 
@@ -1633,7 +1634,7 @@ describe('Gate 5C: every quoted run on a doc page is emitted by the module, or e
 
   it('refuses a quote that INVERTS what the module prints', () => {
     // report.ts:195 emits `${total.demoted} not verified (demoted)`. Under containment, both of these
-    // resolved -- the first is the reviewer's probe, the second is what it degrades to once the
+    // resolved -- the first is the probe below, the second is what it degrades to once the
     // placeholder is dropped -- and the whole suite stayed green over a page telling an agent to
     // match on the opposite of the truth.
     const literals = emittedLiterals();
@@ -1659,7 +1660,7 @@ describe('Gate 5C: every quoted run on a doc page is emitted by the module, or e
     expect(emitterOf('verify with the token-aware/strict profile', literals)).toBeNull();
   });
 
-  it('needs the module-wide population, not the two files the spec named', () => {
+  it('needs the module-wide population, not report.ts plus verification.ts', () => {
     // Load-bearing, so narrowing the boundary back is a red rather than a silent weakening.
     expect(
       emitterOf(ENV_SKIP, emittedLiterals())?.file,

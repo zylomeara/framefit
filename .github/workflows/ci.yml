@@ -89,7 +89,7 @@ jobs:
       - run: node scripts/stdio-smoke.mjs
 
   doc-sequences:
-    name: documented command sequences (Gate 3, executing half)
+    name: documented command sequences
     if: github.event_name != 'schedule'   # weekly cron runs only the secrets scan
     runs-on: ubuntu-latest
     steps:

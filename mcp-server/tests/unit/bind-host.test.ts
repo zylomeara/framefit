@@ -167,7 +167,7 @@ describe('the container image re-opens the bind, and the healthcheck reads the S
     expect(dockerfile).toMatch(/^ENV BIND_HOST=0\.0\.0\.0$/m);
   });
 
-  // Gate 3b in the spec ("a container whose published port is dead fails its healthcheck") still has
+  // "A container whose published port is dead fails its healthcheck" still has
   // no runner that exercises THIS decision. The `doc-sequences` job does now start containers (it
   // runs docker/README.md's own bring-up fences), but it asserts the page's promise - /health
   // answering, the service settling in `running` - and never drives the healthcheck's fail-closed

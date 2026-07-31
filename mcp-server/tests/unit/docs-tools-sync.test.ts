@@ -165,7 +165,7 @@ describe('docs/tools mirrors the description a client is delivered', () => {
     // exact-set ratchet that stops it: 18 sections carry the whole delivered description today,
     // and moving in EITHER direction has to be a deliberate edit here.
     //
-    // THE RULE, as the spec settled it: no sentence the audit disproved may remain in any
+    // THE RULE: no sentence the audit disproved may remain in any
     // delivered description, and this 18-name set is a FLOOR - it may be grown by a deliberate
     // edit on this line and never shrunk.
     //

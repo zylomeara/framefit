@@ -301,7 +301,7 @@ function normalizeCapture(out: Record<string, unknown>): Record<string, unknown>
 
 // =================================================================================================
 // THE CORPUS. EIGHT: the five response fences of docs/tools/design-qa.md, plus the three of
-// docs/design-qa-tutorial.md, added here by Task 11 (W5) in the same commit that makes them true.
+// docs/design-qa-tutorial.md, added here in the same commit that makes them true.
 //
 // What those three carried at HEAD, every one of them a field a reader writes code against:
 // `source.root.file` and `fix_plan[].target.file` (SourceHint is {module?, local, raw} -- there is no
@@ -535,7 +535,7 @@ function documentedObject(e: CorpusEntry): unknown {
 
 describe('Gate 1: every documented response example is a real handler return', () => {
   it('the corpus is every response fence of the two design-QA pages', () => {
-    // 5 -> 8 in Task 11 (W5), the commit that corrects docs/design-qa-tutorial.md's three response
+    // 5 -> 8 in the commit that corrects docs/design-qa-tutorial.md's three response
     // fences. What this length actually catches: a fence DROPPED, or moved out from under the
     // heading its entry names, fails to resolve and is red. A fence ADDED under a NEW heading is
     // INVISIBLE until someone writes it into CORPUS by hand -- the corpus is a maintained list, not
