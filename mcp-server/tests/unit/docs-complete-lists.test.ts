@@ -1329,14 +1329,32 @@ describe('Gate 5A4: the fence-tag bullet declares every tag the pages actually u
 // =================================================================================================
 
 const QUOTED_PAGES = ['docs/agents/design-qa-skill.md', 'docs/coverage.md'];
-const LAYOUT_SPEC_DIR = path.join(SRC_DIR, 'domain', 'layout-spec');
+/**
+ * The source a page quote must be found in: what a TOOL CALL hands back. The layout-spec module
+ * composes the report and the receipt; the tool modules author the validation errors and refusals a
+ * caller reads in their place. The skill page quotes both, and quoting a `suggest_pairs` throw is not
+ * a lesser claim than quoting a diff note.
+ *
+ * Widened here from layout-spec alone, which called a byte-exact quote of
+ * `suggest-pairs-tool.ts:67` missing -- the second time this boundary has been too narrow for what
+ * the page actually says, and the same fix as the first (report.ts + verification.ts -> the module).
+ * Measured cost: three short quotes that were EXCUSED are now CHECKED, each against a real literal --
+ * `inline` against `z.enum(['loader', 'inline'])`, `not found` against `error: 'not found'`, and the
+ * truncation ellipsis against find-nodes-tool.ts's. Their exemptions are deleted rather than left to
+ * rot. Still outside, so `emitted-outside-the-module` stays true and in use: the upload response keys
+ * from src/infrastructure/dom-snapshot-routes.ts.
+ */
+const QUOTE_SOURCE_DIRS = [
+  path.join(SRC_DIR, 'domain', 'layout-spec'),
+  path.join(SRC_DIR, 'adapters', 'driving', 'tools'),
+];
 
 /**
  * Marked quotes per page: EXACT, not a floor. A floor lets a red be cleared by deleting the quote
  * marks off the offending line, which fixes the gate and not the page.
  */
 const MARKED_QUOTES: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 13,
+  'docs/agents/design-qa-skill.md': 14,
   'docs/coverage.md': 2,
 };
 /**
@@ -1409,9 +1427,6 @@ const NOT_SERVER_OUTPUT: Record<string, ExemptionReason> = {
   '<local path>.json': 'readers-input',
   '<string>': 'readers-input',
   '<selector for pair 1>': 'readers-input',
-  // `extractor_mode: "inline"` on :75 -- a value the CALLER passes. The module prints `inline-flex`
-  // and `inline-grid` and nothing else that starts with it, which is exactly how it used to resolve.
-  inline: 'readers-input',
   // The POST body the reader assembles, not something the endpoint prints back.
   snapshots: 'readers-input',
 
@@ -1430,14 +1445,12 @@ const NOT_SERVER_OUTPUT: Record<string, ExemptionReason> = {
 
   'Heading…': 'page-invented-example',
   '...': 'page-invented-example',
-  '…': 'page-invented-example',
 
   'skeleton first': 'english-emphasis',
   'padding-inner': 'english-emphasis',
   baked: 'english-emphasis',
   "doesn't exist": 'english-emphasis',
   "not found ≠ doesn't exist": 'english-emphasis',
-  'not found': 'english-emphasis',
   probably: 'english-emphasis',
   'Strictness profiles': 'english-emphasis',
   'split by size': 'english-emphasis',
@@ -1478,7 +1491,7 @@ const HOLE = '\u0000';
 /** Every string and template literal under the layout-spec module, with its file. */
 function emittedLiterals(): { file: string; text: string }[] {
   const out: { file: string; text: string }[] = [];
-  for (const full of tsFilesUnder(LAYOUT_SPEC_DIR).sort()) {
+  for (const full of QUOTE_SOURCE_DIRS.flatMap((d) => tsFilesUnder(d)).sort()) {
     const src = readFileSync(full, 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, ' ')
       // Whole-line `//` only: a trailing one after code is left alone (harmless), while a `//` inside
@@ -1634,11 +1647,14 @@ describe('Gate 5C: every quoted run on a doc page is emitted by the module, or e
     expect(emitterOf('<N> not verified (demoted)', literals)?.file).toBe('report.ts');
     // A quote that is all placeholder claims nothing and matches nothing.
     expect(emitterOf('<anything>', literals)).toBeNull();
-    // Sub-word: `inline` prefixes `inline-flex`, and the module prints nothing else beginning with
-    // it, so a start-only anchor blessed a request-param value as emitted output. The token boundary
-    // refuses the sub-word and keeps the whole token.
-    expect(emitterOf('inline', literals), 'a prefix must end where a token ends').toBeNull();
-    expect(emitterOf('inline-flex', literals)?.file).toBe('diff.ts');
+    // Sub-word: `inline` prefixes `inline-flex`, and a start-only anchor blessed a request-param
+    // value as emitted output because of it. Asserted against a SYNTHETIC literal rather than the
+    // repo's: the rule is what is under test, and pinning it to which real strings happen to exist
+    // made this row rot the moment the searched population widened -- `inline` is a declared
+    // `extractor_mode` value and now resolves honestly, which says nothing about the boundary rule.
+    const oneWord = [{ file: 'probe.ts', text: 'inline-flex' }];
+    expect(emitterOf('inline', oneWord), 'a prefix must end where a token ends').toBeNull();
+    expect(emitterOf('inline-flex', oneWord)?.file).toBe('probe.ts');
     // And a quote of a literal's MIDDLE is red by construction, which is what the anchor buys.
     expect(emitterOf('verify with the token-aware/strict profile', literals)).toBeNull();
   });

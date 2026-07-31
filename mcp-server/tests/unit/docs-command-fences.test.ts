@@ -72,10 +72,18 @@ const PAGES = Object.keys(FENCE_FLOOR);
 // `executable` is decided by MARKER ABSENCE alone (`declared.length === 0` below), not by whether a
 // command could really run, so promoting docs/snapshot-ingest.md into PAGES with its pre-fix curl and
 // no marker gives `docs/snapshot-ingest.md:142: terminates in \`curl\` without \`-f\``. The true claim
-// is narrower: those fences would enter PAGES carrying `# not-executed: substitution-required`, and a
+// is narrower: those fences would enter PAGES carrying `# not-executed: contains-placeholder`, and a
 // MARKED fence is excluded from the executable set the ban quantifies over. So the curl fix is a fix
 // to what the page TEACHES, and this table is about who sweeps the page -- but the ban was one
 // unwritten marker away from reaching it, not structurally out of range.
+//
+// TWO VOCABULARIES, AND THEY ARE NOT INTERCHANGEABLE. `EXCLUSION_REASONS` says why one FENCE on a
+// swept page does not run; `NOT_SWEPT_REASONS` below says why a whole PAGE is not swept. An earlier
+// version of the paragraph above prescribed a NotSweptReason as a fence marker, and the gate answers
+// that with `undeclared reason \`substitution-required\` (add it to EXCLUSION_REASONS deliberately)`
+// -- an invitation to paste the synonym into the other vocabulary and leave this file carrying two
+// words for one idea in two closed sets. Take the word from the set that governs the thing you are
+// excusing: a fence marker is always an EXCLUSION_REASONS word.
 type NotSweptReason =
   // Every fence needs a value substituted before it runs: `<keycloak-user-id>`, or a `$BASE`/`$TOKEN`
   // the reader exports first. Revoked the day the page grows a copy-paste recipe.

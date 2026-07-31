@@ -32,7 +32,7 @@ Pick the design frame for the current breakpoint (mobile frame for a mobile rend
 Call `get_layout_spec` with the node_ids under check + the frame id, `include_extractor: true`:
 - you get diff-ready specs (children structure — eyeball it: did you grab the right nodes?);
 - the frame width (`specs[].spec.rect.w` on the frame);
-- `extractor_js` — the canonical snapshot script.
+- `extractor_js` — the canonical DOM extractor, schema-versioned with the server.
 
 ### Step 2 — viewport and stabilization
 - `resize_page` to the frame width (otherwise geometry rows come back 👁 unchecked via the
@@ -96,8 +96,8 @@ Wrong one → fix the selector and re-run the extractor (the page is open — it
 `upload_url`, where there is one, is multi-use (30-minute sliding TTL): a multi-screen flow = 1
 get_layout_spec → N evaluate_script → N snapshot_ref.
 
-**Fallback when the result carries `upload_error`** (an upload path exists, so this is HTTP-only) (page CSP/network — the browser POST didn't
-go through; the page is still open, NO re-navigation needed):
+**Fallback when the result carries `upload_error`** (HTTP-only — it presupposes an upload path; the
+browser POST did not go through on CSP/network, and the page is still open, so NO re-navigation):
 1. Re-run evaluate_script with `filePath: "<local path>.json"` and WITHOUT uploadUrl — the full
    JSON goes to a file, bypassing your context (chrome-devtools only allows filePath into
    workspace roots — write to the repo root and delete afterwards);
@@ -118,7 +118,7 @@ go through; the page is still open, NO re-navigation needed):
    two hours.
 3. Inline (`dom:` as before) — the last resort where there IS an upload path, and the ONLY path on
    stdio. What is unavailable there is the REF path, not the tools: handed a `dom_ref`,
-   `suggest_pairs` throws `snapshot store unavailable on this server — pass dom_snapshot inline` and
+   `suggest_pairs` throws `"snapshot store unavailable on this server — pass dom_snapshot inline"` and
    `compare_node_to_dom` puts a `snapshot_ref` warn row plus a `re_extract_dom` blocker on that pair.
    Handed an inline snapshot, both run normally on stdio.
 
