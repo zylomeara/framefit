@@ -66,7 +66,7 @@ Call `get_layout_spec` with the node_ids under check + the frame id, `include_ex
 > from the server instead of inlining it. Second, `get_layout_spec` also returns an `upload_url`:
 > the extractor POSTs the snapshots there straight from the browser and hands you a SHORT
 > `{snapshot_ref, summaries}`, so the full JSON never enters your context. On the stdio server the
-> [quickstart](../README.md#quickstart) installs there is NEITHER — `extractor_js` is the whole
+> [quickstart](../../README.md#quickstart) installs there is NEITHER — `extractor_js` is the whole
 > inline script and the response carries no `upload_url`, so the snapshot comes back to you and you
 > pass it inline as `pairs[].dom`. Step 1's response is what tells you which one you are on: an
 > `upload_url` key, or none.
@@ -84,9 +84,9 @@ On stdio the inline script is tens of kilobytes, which you do not want to repeat
 paste it ONCE as `window.__extract = <extractor_js verbatim>;`, then every later capture is the
 short `async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the
 handle; paste again.
-If the loader fails with 'extractor script blocked (CSP?)' — the page restricts script-src:
-re-request `get_layout_spec {include_extractor: true, extractor_mode: "inline"}` and work with
-the full inline extractor (everything below stays the same).
+Only where there IS a loader: if it fails with 'extractor script blocked (CSP?)' the page restricts
+script-src — re-request `get_layout_spec {include_extractor: true, extractor_mode: "inline"}` and
+work with the full inline extractor (everything below stays the same). On stdio you already have it.
 Selectors go in the same order as the pairs' node_ids; each must match EXACTLY one element
 (`status:'multiple'` → scope it via `:has(...)`/data attributes).
 **Validate the pairs BEFORE compare:** with an `upload_url` each selector comes back as a summary
@@ -117,8 +117,10 @@ go through; the page is still open, NO re-navigation needed):
    non-extendable 2-hour ceiling from creation: re-reading it keeps it alive, nothing keeps it past
    two hours.
 3. Inline (`dom:` as before) — the last resort where there IS an upload path, and the ONLY path on
-   stdio, where `suggest_pairs` refuses outright and `compare_node_to_dom` puts a `snapshot_ref`
-   warn row plus a `re_extract_dom` blocker on the pair rather than measuring anything.
+   stdio. What is unavailable there is the REF path, not the tools: handed a `dom_ref`,
+   `suggest_pairs` throws `snapshot store unavailable on this server — pass dom_snapshot inline` and
+   `compare_node_to_dom` puts a `snapshot_ref` warn row plus a `re_extract_dom` blocker on that pair.
+   Handed an inline snapshot, both run normally on stdio.
 
 ### Step 4 — one compare_node_to_dom
 ```
@@ -203,7 +205,8 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
   is no longer needed (only for the depth of the pairs/text themselves).
 - `verification.spacing_audit[]` — between-children gap measurement WITHOUT a container pair: works
   only when the adjacent pairs came through `dom_ref` of ONE batch (one extractor POST = one layout
-  state). Inline `dom` or mixed refs → the gap is honestly `unchecked`. `gap.status:'fail'` =
+  state). Inline `dom` or mixed refs → the gap is honestly `unchecked`, so on stdio this channel
+  never verifies a gap at all — add a container pair there instead of waiting for it. `gap.status:'fail'` =
   a real gap divergence (verdict: `"discrepancies found"`).
 - `scope:"pairs"` (no `frame_node_id`) — ONLY the submitted pairs were checked, NOT the whole screen:
   even `complete:true` here ≠ "screen verified". To gate whole-frame coverage, pass `frame_node_id`.
