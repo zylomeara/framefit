@@ -67,20 +67,33 @@ const PAGES = Object.keys(FENCE_FLOOR);
 // and a closed table of named excuses. A page is swept or it is written here; there is no third state
 // and no way to be neither.
 //
-// The excuses are true of these two pages TODAY, and each says what would revoke it. Note what the
-// exclusion does NOT do: the `curl -f` ban applies to EXECUTABLE fences, and every fence on both
-// pages carries a placeholder or a caller-set variable, so it could never have been executable and
-// the ban would not have reached it even inside PAGES. The fix to that curl is therefore a fix to
-// what the page TEACHES, and this table is about who sweeps the page, not about whether it was right.
-const PAGES_NOT_SWEPT: Record<string, string> = {
-  // Operator runbook: every fence substitutes `<keycloak-user-id>` or a `$BASE`/`$TOKEN` the reader
-  // exports first, so none of them runs as written. Revoked the day it grows a copy-paste recipe.
-  'docs/snapshot-ingest.md':
-    'every fence needs a placeholder or an exported variable substituted first',
-  // An agent workflow, not a setup recipe: its one fence is the mid-workflow upload, whose URL comes
-  // from a previous tool call (`<upload_url>`). Revoked if it ever tells a HUMAN to run something.
-  'docs/agents/design-qa-skill.md':
-    'its one fence is a workflow step whose URL comes from a previous tool call',
+// WHAT THE EXCLUSION DOES NOT DO, stated correctly this time. An earlier version of this comment said
+// the `curl -f` ban "could never have reached" these fences. That is false and was measured false:
+// `executable` is decided by MARKER ABSENCE alone (`declared.length === 0` below), not by whether a
+// command could really run, so promoting docs/snapshot-ingest.md into PAGES with its pre-fix curl and
+// no marker gives `docs/snapshot-ingest.md:142: terminates in \`curl\` without \`-f\``. The true claim
+// is narrower: those fences would enter PAGES carrying `# not-executed: substitution-required`, and a
+// MARKED fence is excluded from the executable set the ban quantifies over. So the curl fix is a fix
+// to what the page TEACHES, and this table is about who sweeps the page -- but the ban was one
+// unwritten marker away from reaching it, not structurally out of range.
+type NotSweptReason =
+  // Every fence needs a value substituted before it runs: `<keycloak-user-id>`, or a `$BASE`/`$TOKEN`
+  // the reader exports first. Revoked the day the page grows a copy-paste recipe.
+  | 'substitution-required'
+  // Not addressed to a reader at all: an agent workflow whose fence is a step in a tool sequence, with
+  // its URL from a previous call. Revoked if the page ever tells a HUMAN to run something.
+  | 'not-a-reader-recipe';
+
+// Closed on BOTH axes, which is what this file already demands of its FENCES and did not demand of
+// itself: the union type makes free text a `pnpm typecheck` failure, and the rows below refuse a
+// reason outside the set and a declared reason nothing uses. An excuse table that accepted `''` while
+// the same gate rejects a `# not-executed:` marker with no reason was holding its own pages to a
+// lower standard than the pages it checks.
+const NOT_SWEPT_REASONS: NotSweptReason[] = ['substitution-required', 'not-a-reader-recipe'];
+
+const PAGES_NOT_SWEPT: Record<string, NotSweptReason> = {
+  'docs/snapshot-ingest.md': 'substitution-required',
+  'docs/agents/design-qa-skill.md': 'not-a-reader-recipe',
 };
 
 // The EXECUTABLE side needs its own floor, and this is what makes the partition mean anything.
@@ -353,12 +366,19 @@ describe('Gate 3 (static): every bash fence is classified, and every executable 
     // may use; this one decides which pages get swept at all, and the tag nobody thought of is
     // exactly the one that would escape -- which is how `docs/snapshot-ingest.md` escaped.
     const SHELLISH = /^(bash|sh|shell|zsh|console|shell-session|terminal|command)$/;
+    // CommonMark, not the three characters people usually type: up to three leading spaces, THREE OR
+    // MORE backticks (or tildes), and optional space before the info string. Measured escapes past the
+    // first version of this line: ```` ``` bash ```` and ```` ````bash ```` both gave exit 0 on an
+    // unlisted page. The swept-page collector is conservative here for a different reason -- an info
+    // string it cannot parse lands outside ALLOWED_LANGS and is red -- but THIS regex failing to match
+    // means a page is never looked at, so it errs wide on purpose.
+    const FENCE_OPEN = /^ {0,3}(?:`{3,}|~{3,})[ \t]*(\S*)/;
     const tracked = execFileSync('git', ['ls-files', '*.md'], { cwd: REPO_ROOT, encoding: 'utf8' })
       .split('\n').filter(Boolean);
     expect(tracked.length, 'git listed no markdown, so this row would sweep nothing')
       .toBeGreaterThan(10);
     const withShell = tracked.filter((page) => readFileSync(path.join(REPO_ROOT, page), 'utf8')
-      .split('\n').some((line) => SHELLISH.test((/^\s*```(\S*)/.exec(line)?.[1] ?? '').toLowerCase())));
+      .split('\n').some((line) => SHELLISH.test((FENCE_OPEN.exec(line)?.[1] ?? '').toLowerCase())));
     expect(withShell.length, 'no page carries a shell fence, so the accounting below is vacuous')
       .toBeGreaterThan(PAGES.length);
     expect(
@@ -374,6 +394,15 @@ describe('Gate 3 (static): every bash fence is classified, and every executable 
     ).toEqual([]);
     expect(Object.keys(PAGES_NOT_SWEPT).filter((page) => PAGES.includes(page)),
       'a page cannot be both swept and excused').toEqual([]);
+    // The excuse VOCABULARY, closed both ways, exactly as EXCLUSION_REASONS is for fence markers.
+    expect(
+      Object.entries(PAGES_NOT_SWEPT).filter(([, r]) => !NOT_SWEPT_REASONS.includes(r)).map(([p]) => p),
+      'an excuse carries a reason outside NOT_SWEPT_REASONS (an empty one included)',
+    ).toEqual([]);
+    expect(
+      NOT_SWEPT_REASONS.filter((r) => !Object.values(PAGES_NOT_SWEPT).includes(r)),
+      'a declared not-swept reason nothing uses -- dead vocabulary invites the next escapee into it',
+    ).toEqual([]);
   });
 
   it('keeps every page at or above its measured fence floor', () => {

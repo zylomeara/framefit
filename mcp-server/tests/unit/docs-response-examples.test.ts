@@ -539,7 +539,10 @@ describe('Gate 1: every documented response example is a real handler return', (
     // fences. What this length actually catches: a fence DROPPED, or moved out from under the
     // heading its entry names, fails to resolve and is red. A fence ADDED under a NEW heading is
     // INVISIBLE until someone writes it into CORPUS by hand -- the corpus is a maintained list, not
-    // a sweep, and saying otherwise was claiming a power this gate does not have.
+    // a sweep, and saying otherwise was claiming a power this gate does not have. The heading half is
+    // narrower still: `sectionLines` selects by `startsWith`, so RENAMING a heading's tail
+    // (`## Step 4 - compare` -> `## Step 4 - compare the pair`) keeps resolving and only a PREFIX
+    // change goes red.
     expect(CORPUS).toHaveLength(8);
     expect([...new Set(CORPUS.map((e) => e.page))].sort())
       .toEqual(['docs/design-qa-tutorial.md', 'docs/tools/design-qa.md']);
