@@ -395,8 +395,11 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
 
   if (reasons.length) {
     // (b) viewport ergonomics: for a viewport reason the row carries STRUCTURAL
-    // numbers (the header/verification do not parse the note's prose — a text drift does not
-    // break the numbers). Other geometry reasons carry no fields (nothing to carry).
+    // numbers, so nothing has to read the prose to get THEM. The note is not prose-free, though, and
+    // the blanket claim that used to sit here was wrong: verification.ts:248 tests
+    // `(r.note ?? '').includes('viewport')` to route this row to fix_viewport rather than
+    // resolve_skip, so that ONE word is load-bearing — drop it from the reason text and the blocking
+    // item silently changes kind. Other geometry reasons carry no fields (nothing to carry).
     rows.push({ prop: 'geometry', status: 'unchecked', note: reasons.join('; '),
       ...(viewportOff && opts.expectedOverlayWidth === undefined
         ? { figma: opts.frameWidth, dom: d.innerWidth } : {}) });
@@ -1244,6 +1247,13 @@ function transparentChild(node: AnchorNode, tol: number): DomChild | undefined {
   if (Math.abs(c.rect.w - node.rect.w) > tol || Math.abs(c.rect.h - node.rect.h) > tol) return undefined;
   const s = node.styles;
   if (s?.backgroundColor !== undefined || s?.gradient !== undefined || (s?.borderRadius ?? 0) > 0) return undefined;
+  // an uncomparable radius (v6 — corners that differ, a percentage, an ellipse) OMITS borderRadius, so the
+  // `> 0` test above stops seeing a visibly rounded wrapper: it would read as transparent, the descent would
+  // move every style axis to the child, sRadiusUncomparable (read THROUGH the anchor) would never fire, and
+  // the receipt would print a style_anchor row asserting "no styles" about a node with a visible rounded
+  // corner. Same disqualification as bgImage below, for the same reason — a real visible paint the
+  // transparency test cannot see as a number. `border-radius: 50%` is the commonest wrapper this catches.
+  if (s?.borderRadiusUncomparable === true) return undefined;
   // a raster url background (F2): invisible to the gradient detector, but it is a REAL visible background — the wrapper is opaque.
   if (s?.bgImage === true) return undefined;
   if ((s?.opacity ?? 1) < 1) return undefined; // a semi-transparent wrapper actually darkens the render — a carrier
@@ -1291,6 +1301,7 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   const sBgToken   = a ? a.styles?.backgroundColorToken       : d.styles?.backgroundColorToken;
   const sGradient  = a ? a.styles?.gradient                   : d.styles?.gradient;
   const sRadius    = a ? (a.styles?.borderRadius ?? 0)        : d.styles?.borderRadius;
+  const sRadiusUncomparable = a ? a.styles?.borderRadiusUncomparable    : d.styles?.borderRadiusUncomparable;
   const sOpacity   = a ? (a.styles?.opacity ?? 1)             : d.styles?.opacity;   // default 1, NOT 0
   const sShadow    = a ? a.shadow                             : d.shadow;
   const sBorders   = a ? (a.borders ?? { top: 0, right: 0, bottom: 0, left: 0 }) : d.borders;
@@ -1429,7 +1440,20 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     }
   }
 
-  if (spec.cornerRadius !== undefined && sRadius !== undefined) {
+  // The uncomparable branch comes FIRST and there is no fallthrough: with an active anchor sRadius
+  // defaults to 0, so an uncomparable carrier would otherwise emit a fail — an alarm about a difference
+  // nobody measured, since Figma carries ONE px number and there is nothing on its side to compare a
+  // per-corner, percentage or elliptical radius against. Nor is the row dropped: an omitted row makes the
+  // pair clean with no trace, and a reader cannot tell "measured and fine" from "not present". unchecked
+  // is the honest third answer, and verification.ts routes it to resolve_skip (a human must look).
+  // The note has to be true of EVERY input that reaches it. The set of such inputs has widened twice
+  // already (the ellipse and the percentage, then the browser-unresolved clamp()/min()/max()), so the
+  // note leads with the branch condition itself and offers the shapes as examples — a closed
+  // enumeration would go stale the next time a fourth thing turns out to reach this row.
+  if (spec.cornerRadius !== undefined && sRadiusUncomparable === true) {
+    rows.push({ prop: 'corner-radius', figma: spec.cornerRadius, dom: null, status: 'unchecked',
+      note: 'the DOM radius is not one comparable px number - e.g. the corners differ, or it is a percentage, an ellipse, or a value the browser left unresolved such as clamp()/min()/max(); Figma carries a single px cornerRadius, so there is no axis to judge it on - verify by eye' });
+  } else if (spec.cornerRadius !== undefined && sRadius !== undefined) {
     rows.push(numRow('corner-radius', spec.cornerRadius, sRadius, opts.tolerancePx, undefined, SRC_ANCHOR_PROP));
   }
   if (spec.opacity !== undefined && sOpacity !== undefined) {

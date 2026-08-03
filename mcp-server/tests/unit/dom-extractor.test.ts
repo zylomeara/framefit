@@ -27,7 +27,12 @@ function buildExtractor(styleOverrides: Record<string, string> = {}): (selectors
     borderTopColor: 'rgb(0, 0, 0)', borderRightColor: 'rgb(0, 0, 0)',
     borderBottomColor: 'rgb(0, 0, 0)', borderLeftColor: 'rgb(0, 0, 0)', boxShadow: 'none',
     paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-    borderTopLeftRadius: '0px', opacity: '1',
+    // All FOUR corners, here and in every other fake getComputedStyle below. The extractor compares
+    // the four computed STRINGS, and a fixture that defines only the top-left one leaves the other
+    // three undefined -- that is a DOM whose radius it cannot compare, so it would read as
+    // borderRadiusUncomparable and change what these cases assert.
+    borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     ...styleOverrides,
   });
   const fakeDoc = {
@@ -156,7 +161,8 @@ function buildExtractorCSS(opts: {
     borderTopColor: 'rgb(0, 0, 0)', borderRightColor: 'rgb(0, 0, 0)',
     borderBottomColor: 'rgb(0, 0, 0)', borderLeftColor: 'rgb(0, 0, 0)', boxShadow: opts.boxShadow ?? 'none',
     paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-    borderTopLeftRadius: '0px', opacity: '1',
+    borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     getPropertyValue: (name: string) => vars[name] ?? '',
   });
   const fakeDoc = {
@@ -253,7 +259,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     });
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -289,7 +296,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     });
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -336,7 +344,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     });
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -392,7 +401,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     });
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -430,7 +440,8 @@ describe('EXTRACTOR_JS', () => {
       color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)',
       borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
       paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-      borderTopLeftRadius: '0px', opacity: '1',
+      borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+      borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1',
     };
     // fakeCS must read style FROM THE NODE (n.__cs), not be arg-blind — otherwise
     // per-child display/position (case b's absolute descendant) can't be expressed at all.
@@ -1316,7 +1327,8 @@ function buildExtractorPerEl(childStyles: Record<string, string>,
     borderTopColor: 'rgb(0, 0, 0)', borderRightColor: 'rgb(0, 0, 0)',
     borderBottomColor: 'rgb(0, 0, 0)', borderLeftColor: 'rgb(0, 0, 0)', boxShadow: 'none',
     paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
-    borderTopLeftRadius: '0px', opacity: '1', justifyContent: 'normal',
+    borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1', justifyContent: 'normal',
   };
   let sheetsReads = 0;
   const fakeDoc = {
@@ -1332,9 +1344,171 @@ function buildExtractorPerEl(childStyles: Record<string, string>,
   return run;
 }
 
+// THE RULE: the DOM side either yields ONE comparable px number, or it says so. Figma carries a single
+// px cornerRadius, so that is the only shape there is anything to compare against. Three separate
+// inputs reached `pass` before these cases existed, each a false green, each locked below at BOTH
+// emitting sites (the child style bundle and the root styles) because each was reachable through
+// either one: a lone corner (`8px 0 0 0`), an h/v pair whose parseFloat collapses four different
+// corners onto one number, and a percentage compared as px.
+describe('the corner radius is one comparable px number, or it says so', () => {
+  const asym = { borderTopLeftRadius: '8px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px' };
+  const uniform = { borderTopLeftRadius: '8px', borderTopRightRadius: '8px',
+    borderBottomRightRadius: '8px', borderBottomLeftRadius: '8px' };
+
+  it('child: 8px 0 0 0 -> no borderRadius at all, and borderRadiusUncomparable true', async () => {
+    const [snap]: any = await buildExtractorPerEl(asym)(['main']);
+    const c = snap.children[0];
+    expect(c.styles.borderRadius).toBeUndefined(); // NOT 8 -- a lone corner is not the radius
+    expect(c.styles.borderRadiusUncomparable).toBe(true);
+    expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+  });
+  it('child: 8px 8px 8px 8px -> borderRadius 8 and no flag (the uniform case is untouched)', async () => {
+    const [snap]: any = await buildExtractorPerEl(uniform)(['main']);
+    const c = snap.children[0];
+    expect(c.styles.borderRadius).toBe(8);
+    expect(c.styles.borderRadiusUncomparable).toBeUndefined();
+  });
+  it('root: 8px 0 0 0 -> no borderRadius at all, and borderRadiusUncomparable true', async () => {
+    const [snap]: any = await buildExtractor(asym)(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBe(true);
+    expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+  });
+  it('root: 8px 8px 8px 8px -> borderRadius 8 and no flag (the uniform case is untouched)', async () => {
+    const [snap]: any = await buildExtractor(uniform)(['main']);
+    expect(snap.styles.borderRadius).toBe(8);
+    expect(snap.styles.borderRadiusUncomparable).toBeUndefined();
+  });
+
+  // The corners are compared as STRINGS, and this is the case that forces it. `border-radius:
+  // 8px / 4px 40px 4px 40px` computes to four "h v" PAIRS, and parseFloat reads every one of them as
+  // the same 8 -- four visibly different corners passing against a Figma 8. Measured before the fix:
+  // borderRadius: 8, no flag, row `pass`.
+  it('the h/v pair trap: 8px 4px | 8px 40px | ... -> uncomparable (parseFloat reads all four as 8)', async () => {
+    const paired = { borderTopLeftRadius: '8px 4px', borderTopRightRadius: '8px 40px',
+      borderBottomRightRadius: '8px 4px', borderBottomLeftRadius: '8px 40px' };
+    const [snap]: any = await buildExtractor(paired)(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBe(true);
+    const [child]: any = await buildExtractorPerEl(paired)(['main']);
+    expect(child.children[0].styles.borderRadius).toBeUndefined();
+    expect(child.children[0].styles.borderRadiusUncomparable).toBe(true);
+  });
+
+  // A UNIFORM ellipse is the same false green with nothing asymmetric about it: `border-radius:
+  // 8px / 4px` computes to four identical '8px 4px', and the number that survived parseFloat was 8 --
+  // an 8-by-4 ellipse passing a Figma cornerRadius of 8, which describes a circle. Equal strings are
+  // not enough; the value must be a bare px length.
+  it('the uniform ellipse: 8px / 4px on all four corners -> uncomparable, not a bare 8', async () => {
+    const ellipse = { borderTopLeftRadius: '8px 4px', borderTopRightRadius: '8px 4px',
+      borderBottomRightRadius: '8px 4px', borderBottomLeftRadius: '8px 4px' };
+    const [snap]: any = await buildExtractor(ellipse)(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBe(true);
+    expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+  });
+
+  // A percentage is not a comparable px number and Figma has no percentage radius, so there is nothing
+  // on the other side of that comparison. Measured before this case existed: `border-radius: 50%` on a
+  // 300x20 box -- real corners 150px and 10px -- emitted borderRadius: 50 and PASSED a Figma
+  // cornerRadius of 50. Same false green as the two above, reached without a single asymmetry.
+  it('a percentage is not px: 50% x4 -> uncomparable, never a bare 50', async () => {
+    const pct = { borderTopLeftRadius: '50%', borderTopRightRadius: '50%',
+      borderBottomRightRadius: '50%', borderBottomLeftRadius: '50%' };
+    const [snap]: any = await buildExtractor(pct)(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBe(true);
+    const [child]: any = await buildExtractorPerEl(pct)(['main']);
+    expect(child.children[0].styles.borderRadiusUncomparable).toBe(true);
+  });
+
+  // A value the browser LEFT UNRESOLVED is still a painted radius, and this case previously asserted
+  // the opposite: that those corners emit nothing. Measured in Chrome, `min()`, `max()` and `clamp()`
+  // carrying a percentage survive computation verbatim exactly as a percentage-bearing `calc()` does,
+  // and they PAINT -- hit-tested, the corner pixel of a `clamp(4px, 10%, 12px)` box is clipped just as
+  // it is for `8px`, while a no-radius control keeps it. Emitting nothing for them produced no row,
+  // empty blocking and `verification.complete: true` over a visibly rounded corner -- the same silent
+  // omission this describe block exists to refuse. They are uncomparable, not absent.
+  it('a radius the browser left unresolved is uncomparable, not absent (calc/min/max/clamp with a %)', async () => {
+    for (const v of ['calc(10% + 2px)', 'min(8px, 50%)', 'max(8px, 10%)', 'clamp(4px, 10%, 12px)']) {
+      const same = { borderTopLeftRadius: v, borderTopRightRadius: v,
+        borderBottomRightRadius: v, borderBottomLeftRadius: v };
+      const [snap]: any = await buildExtractor(same)(['main']);
+      expect(snap.styles.borderRadius, `borderRadius for ${v}`).toBeUndefined();
+      expect(snap.styles.borderRadiusUncomparable, `flag for ${v}`).toBe(true);
+      expect(JSON.stringify(snap)).not.toContain('NaN');
+      expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+    }
+  });
+
+  // The ONE silence left: nothing was computed at all, so there is no radius to report. Only an empty
+  // computed value reaches it -- a real getComputedStyle on a rendered element always returns a string.
+  it('an empty computed value is the only silence: no number, no flag, no NaN', async () => {
+    const [snap]: any = await buildExtractor({ borderTopLeftRadius: '', borderTopRightRadius: '',
+      borderBottomRightRadius: '', borderBottomLeftRadius: '' })(['main']);
+    expect(snap.styles.borderRadius).toBeUndefined();
+    expect(snap.styles.borderRadiusUncomparable).toBeUndefined();
+    expect(JSON.stringify(snap)).not.toContain('NaN');
+    expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+  });
+
+  // The control: what Chrome ACTUALLY computes for these authored values is a plain px length, so they
+  // are ordinary comparable radii and must not be caught by any of the cases above. Measured:
+  // `calc(1rem + 2px)` -> `18px`, an unset longhand -> `0px`, `min(8px, 12px)` -> `8px` (all-absolute
+  // arguments resolve; it is the percentage that survives), `1em` -> `16px`.
+  it('values that a browser resolves to px stay comparable: 18, 0, 8, 16', async () => {
+    const four = (v: string) => ({ borderTopLeftRadius: v, borderTopRightRadius: v,
+      borderBottomRightRadius: v, borderBottomLeftRadius: v });
+    for (const [computed, expected] of [['18px', 18], ['0px', 0], ['8px', 8], ['16px', 16]] as const) {
+      const [snap]: any = await buildExtractor(four(computed))(['main']);
+      expect(snap.styles.borderRadius, `borderRadius for ${computed}`).toBe(expected);
+      expect(snap.styles.borderRadiusUncomparable).toBeUndefined();
+    }
+  });
+
+  // Chrome switches to exponent notation for a large px length: measured, 999999px stays 999999px and
+  // 1000000px computes to '1e+06px', with large values saturating at '1.67772e+07px'. Those are
+  // genuinely comparable radii, and a px-only test that rejected them would be the one input for which
+  // BOTH the flag and every shape its note names are false.
+  it('the exponent form of a px length is still a px length (1e+06px, 1.67772e+07px)', async () => {
+    const four = (v: string) => ({ borderTopLeftRadius: v, borderTopRightRadius: v,
+      borderBottomRightRadius: v, borderBottomLeftRadius: v });
+    for (const [computed, expected] of [['999999px', 999999], ['1e+06px', 1000000],
+      ['1e+07px', 10000000], ['1.67772e+07px', 16777200]] as const) {
+      const [snap]: any = await buildExtractor(four(computed))(['main']);
+      expect(snap.styles.borderRadius, `borderRadius for ${computed}`).toBe(expected);
+      expect(snap.styles.borderRadiusUncomparable, `flag for ${computed}`).toBeUndefined();
+    }
+  });
+
+  // PX_ONLY's mantissa was `[0-9.]+` -- a run of digits AND dots, so '.px' and '..px' passed the test
+  // and then parseFloat to NaN, num() to undefined, and the pair emitted NO ROW from a truthy computed
+  // string: the same silent omission as the four false greens above, differing only in being
+  // unreachable from a browser (Chrome serializes '.5px' as '0.5px'). A number is now a number.
+  it('a dot-only mantissa is not a px length: .px and ..px are uncomparable, never silent', async () => {
+    const four = (v: string) => ({ borderTopLeftRadius: v, borderTopRightRadius: v,
+      borderBottomRightRadius: v, borderBottomLeftRadius: v });
+    for (const computed of ['.px', '..px', '.-5px']) {
+      const [snap]: any = await buildExtractor(four(computed))(['main']);
+      expect(snap.styles.borderRadius, `borderRadius for ${computed}`).toBeUndefined();
+      expect(snap.styles.borderRadiusUncomparable, `flag for ${computed}`).toBe(true);
+      expect(JSON.stringify(snap)).not.toContain('NaN');
+      expect(DomSnapshotSchema.safeParse(snap).success).toBe(true);
+    }
+    // The control that keeps the fix from being an over-refusal: a leading-dot number is still a number.
+    const [ok]: any = await buildExtractor(four('.5px'))(['main']);
+    expect(ok.styles.borderRadius).toBe(0.5);
+    expect(ok.styles.borderRadiusUncomparable).toBeUndefined();
+  });
+});
+
 describe('v5: the style bundle on children', () => {
   it("a child's significant styles are emitted: radius/gradient/bg/data", async () => {
-    const run = buildExtractorPerEl({ borderTopLeftRadius: '24px', backgroundColor: 'rgb(246, 246, 249)',
+    // All four corners at 24px: an override that set only the top-left one over the four-corner base
+    // would describe an ASYMMETRIC child, and the toBe(24) below would be asserting the wrong thing.
+    const run = buildExtractorPerEl({ borderTopLeftRadius: '24px', borderTopRightRadius: '24px',
+      borderBottomRightRadius: '24px', borderBottomLeftRadius: '24px', backgroundColor: 'rgb(246, 246, 249)',
       backgroundImage: 'conic-gradient(rgb(0,0,0), rgb(255,255,255))' });
     const [snap]: any = await run(['main']);
     const c = snap.children[0];
@@ -1363,16 +1537,17 @@ describe('v5: the style bundle on children', () => {
     const flat = buildExtractorPerEl({});
     await flat(['main']);
     const flatReads = (flat as any).__sheetsReads();
-    const styled = buildExtractorPerEl({ borderTopLeftRadius: '24px', backgroundColor: 'rgb(1, 2, 3)' });
+    const styled = buildExtractorPerEl({ borderTopLeftRadius: '24px', borderTopRightRadius: '24px',
+      borderBottomRightRadius: '24px', borderBottomLeftRadius: '24px', backgroundColor: 'rgb(1, 2, 3)' });
     await styled(['main']);
     const styledReads = (styled as any).__sheetsReads();
     expect(styledReads).toBeGreaterThan(flatReads); // classify was called ONLY for the styled child
   });
-  it('schema = 5', async () => {
+  it('schema = 6', async () => {
     const run = buildExtractorPerEl({});
     const [snap]: any = await run(['main']);
-    expect(snap.schema).toBe(5);
-    expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(5);
+    expect(snap.schema).toBe(6);
+    expect(DOM_SNAPSHOT_SCHEMA_VERSION).toBe(6);
   });
 
   // F2: a raster background-image: url(...) is invisible to the gradient detector

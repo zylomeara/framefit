@@ -151,7 +151,7 @@ export interface DomChild {
   path?: string;            // `:nth-child` chain from the captured root — the CSS selector for compare; for a text node = the parent element's path
   // v5: the child's styles are extended with a style bundle (compactly: a field is present ONLY when the
   // value is meaningful; absence at schema>=5 = there is no style — the capture guarantee for styleAnchor)
-  styles?: DomTypography & { borderRadius?: number; opacity?: number; gradient?: GradientModel; bgImage?: true }; // for kind:'text' — the parent's computed styles (typography is inherited); bgImage = a raster url background (invisible to the gradient detector)
+  styles?: DomTypography & { borderRadius?: number; borderRadiusUncomparable?: true; opacity?: number; gradient?: GradientModel; bgImage?: true }; // for kind:'text' — the parent's computed styles (typography is inherited); borderRadiusUncomparable = the DOM radius is not one comparable px number (corners differ, or a %/elliptical radius), so borderRadius is absent (v6); bgImage = a raster url background (invisible to the gradient detector)
   shadow?: DomShadow;          // v5
   borders?: Edges;             // v5 (non-zero only)
   borderColors?: { top?: string; right?: string; bottom?: string; left?: string };      // v5
@@ -187,7 +187,7 @@ export interface DomSnapshotOk {
   scroll: { top: number; left: number };
   transformed?: boolean;    // computed transform !== 'none'
   fontsLoaded?: boolean;    // document.fonts.status === 'loaded'
-  styles?: DomTypography & { display?: string; borderRadius?: number; opacity?: number; justifyContent?: string; gradient?: GradientModel };
+  styles?: DomTypography & { display?: string; borderRadius?: number; borderRadiusUncomparable?: true; opacity?: number; justifyContent?: string; gradient?: GradientModel };
   state?: Record<string, string | boolean>; // checked/disabled/…
   componentHints?: { tag: string; classList: string[]; data: Record<string, string> };
   children: DomChild[];     // visible in-flow (including bare text nodes), in DOM order
@@ -314,7 +314,13 @@ export interface BlockingItem {
   kind: string;        // structure_mismatch | children_truncated | snapshot | not_found | extractor_outdated | skip | truncated_text | uncovered_region | unchecked_spacing | viewport | frame_missing | unconfirmed_token | scope_incomplete
   node_id?: string;
   selector?: string;
-  action: string;      // machine token of the next step: add_pairs_on_children | raise_max_depth | re_extract_dom | fix_pair | update_extractor | resolve_skip | add_text_pair | add_pair | add_container_pair | fix_viewport | confirm_token | run_token_aware
+  // machine token of the next step. THIRTEEN values, spelled out for a reader and explicitly NOT a
+  // source of truth: this comment used to list 12 and omit fix_frame_id, and both documentation
+  // pages that restated it inherited that omission. docs-complete-lists.test.ts derives the set from
+  // the `action` property assignments in verification.ts instead (including the ternary at the
+  // truncated_text site, which is the only place add_text_pair is emitted) and forbids this line as
+  // a source.
+  action: string;      // add_pairs_on_children | raise_max_depth | re_extract_dom | fix_pair | update_extractor | resolve_skip | add_text_pair | add_pair | add_container_pair | fix_viewport | fix_frame_id | confirm_token | run_token_aware
   detail: string;      // human-readable (R3 hybrid)
   // aggregated confirm_token records: a list of places, truncated by the PLACES_CAP cap (the detailed ×N is in detail)
   places?: { node_id: string; prop: string }[];

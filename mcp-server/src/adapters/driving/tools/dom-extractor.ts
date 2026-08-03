@@ -7,12 +7,54 @@
 // doesn't get raw nodes any deeper — see projector.ts:12). Move all three in sync.
 // The build has no browser types — which is why this is a string, not a function.
 export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget = 90) => {
-  const SCHEMA = 5;
+  const SCHEMA = 6;
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : undefined; };
   const round1 = (n) => Math.round(n * 10) / 10;
   const rectOf = (r) => ({ x: round1(r.x), y: round1(r.y), w: round1(r.width), h: round1(r.height) });
   const padsOf = (cs) => ({ top: num(cs.paddingTop) || 0, right: num(cs.paddingRight) || 0,
     bottom: num(cs.paddingBottom) || 0, left: num(cs.paddingLeft) || 0 });
+  // THE RULE: the DOM side either yields ONE comparable px number, or it says so.
+  // Figma carries a single px cornerRadius, so that is the only shape there is anything to compare
+  // against. Everything else -- four differing corners, a percentage, an ellipse -- has no axis on
+  // the other side, and a number emitted for it is a verdict about something nobody measured.
+  // Three shapes reached PASS before this test existed, each a false green:
+  //   border-radius: 8px 0 0 0            -> reading the top-left corner alone gave a uniform 8
+  //   border-radius: 8px / 4px 40px ...   -> four "h v" PAIRS, and parseFloat('8px 4px') is 8, so
+  //                                          comparing parsed numbers made four different corners equal
+  //   border-radius: 50%                  -> 50 compared as px; on a 300x20 box the real corners are
+  //                                          150px and 10px, and it passed a Figma cornerRadius of 50
+  //   border-radius: 8px / 4px            -> one uniform ELLIPSE, 8 horizontal by 4 vertical, passing
+  //                                          a Figma 8 that describes a circle
+  //   border-radius: clamp(4px, 10%, 12px) -> left VERBATIM by the browser, so it parsed to nothing and
+  //                                          emitted nothing at all: no row, empty blocking,
+  //                                          verification.complete TRUE over a corner that is painted
+  // Hence: compare the four as STRINGS (that is what actually differs), and accept the value only
+  // when it is a bare px length. num() is never asked to interpret anything else.
+  // WHATEVER THE BROWSER COMPUTED IS A RADIUS, even when we cannot read it. min()/max()/clamp() and
+  // calc() carrying a percentage all survive computation verbatim (measured in Chrome), and they
+  // PAINT: hit-tested, the corner pixel of a clamp(4px, 10%, 12px) box is clipped exactly as for 8px,
+  // while a no-radius control keeps it. Emitting nothing for those is the silent-omission lie this
+  // change already rejected twice, so an unreadable computed value is uncomparable, not absent.
+  // The ONLY silence left is an empty computed value -- nothing was computed, so there is nothing to
+  // report; that is the pre-v6 behaviour and it keeps NaN off the wire.
+  // PX_ONLY accepts the exponent form: measured in Chrome, 999999px stays 999999px but 1000000px
+  // computes to '1e+06px' (and large values saturate at '1.67772e+07px'). The NEGATIVE exponent is
+  // just as real and just as reachable: measured, '0.0001px' stays verbatim and '0.00009px' computes
+  // to '9e-05px' -- it is six-significant-digit serialization, not a size threshold, so [+-] here is
+  // load-bearing and not defensive. Those are ordinary
+  // comparable radii -- parseFloat reads them correctly -- and rejecting them would flag a genuine px
+  // radius with a note whose named shapes are all false about it.
+  // The mantissa is a NUMBER, not a run of digits-and-dots: [0-9.]+ also accepted '.px' and '..px',
+  // which pass the test and then parseFloat to NaN -> num() undefined -> no row at all from a truthy
+  // computed string. That is the silent omission this rule exists to reject, only reached from a
+  // hand-built string rather than from a browser.
+  const PX_ONLY = /^-?[0-9]*\\.?[0-9]+(e[+-]?[0-9]+)?px$/;
+  const radiusOf = (cs) => {
+    const c = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius];
+    if (!c.every((v) => v === c[0])) return { uncomparable: true };
+    if (PX_ONLY.test(c[0])) return { value: num(c[0]) };
+    return c[0] ? { uncomparable: true } : {};
+  };
   const toHex = (c) => {
     const m = /^rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)$/.exec(c || '');
     if (!m) return undefined;
@@ -171,8 +213,9 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         child.styles.backgroundColor = cbg;
         child.styles.backgroundColorToken = classifyColor(n, 'background-color', cbg);
       }
-      const crad = num(cs.borderTopLeftRadius);
-      if (crad > 0) child.styles.borderRadius = crad;
+      const crad = radiusOf(cs);
+      if (crad.uncomparable) child.styles.borderRadiusUncomparable = true;
+      else if (crad.value > 0) child.styles.borderRadius = crad.value;
       const cop = num(cs.opacity);
       if (cop !== undefined && cop < 1) child.styles.opacity = cop;
       if (cs.backgroundImage && cs.backgroundImage !== 'none') {
@@ -644,6 +687,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     pruneToBudget(children, { n: 0 }, budget);
     const shadow = parseShadow(cs.boxShadow);
     if (shadow) shadow.colorToken = classifyColor(el, 'box-shadow', shadow.colorHex);
+    const rrad = radiusOf(cs);
     return {
       schema: SCHEMA, status: 'ok', selector,
       innerWidth: window.innerWidth,
@@ -664,11 +708,12 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       scroll: { top: el.scrollTop, left: el.scrollLeft },
       transformed: cs.transform !== 'none',
       fontsLoaded: document.fonts ? document.fonts.status === 'loaded' : undefined,
-      styles: Object.assign({ display: cs.display, backgroundColor: toHex(cs.backgroundColor),
-        borderRadius: num(cs.borderTopLeftRadius), opacity: num(cs.opacity), justifyContent: cs.justifyContent,
-        colorToken: classifyColor(el, 'color', toHex(cs.color)),
-        backgroundColorToken: classifyColor(el, 'background-color', toHex(cs.backgroundColor)),
-        gradient: classifyGradient(el, cs) }, typo(cs)),
+      styles: Object.assign({ display: cs.display, backgroundColor: toHex(cs.backgroundColor) },
+        rrad.uncomparable ? { borderRadiusUncomparable: true } : { borderRadius: rrad.value },
+        { opacity: num(cs.opacity), justifyContent: cs.justifyContent,
+          colorToken: classifyColor(el, 'color', toHex(cs.color)),
+          backgroundColorToken: classifyColor(el, 'background-color', toHex(cs.backgroundColor)),
+          gradient: classifyGradient(el, cs) }, typo(cs)),
       componentHints: { tag: el.tagName.toLowerCase(), classList: Array.from(el.classList).slice(0, 10),
         data: Object.fromEntries(Object.entries(el.dataset || {}).slice(0, 10)) },
       children,

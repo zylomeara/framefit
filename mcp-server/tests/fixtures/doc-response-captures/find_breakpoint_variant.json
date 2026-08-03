@@ -1,0 +1,44 @@
+{
+  "query": "product card",
+  "render_width": 320,
+  "tolerance": 24,
+  "variants": [
+    {
+      "node_id": "12:300",
+      "name": "Desktop",
+      "container": "Product card",
+      "frame_w": 1280,
+      "content": [
+        {
+          "node_id": "12:340",
+          "name": "Product card",
+          "w": 320,
+          "isBestMatch": true
+        },
+        {
+          "node_id": "12:350",
+          "name": "list",
+          "w": 288
+        }
+      ]
+    },
+    {
+      "node_id": "12:320",
+      "name": "Mobile",
+      "container": "Product card",
+      "frame_w": 375,
+      "content": [
+        {
+          "node_id": "12:400",
+          "name": "Product card",
+          "w": 343
+        }
+      ]
+    }
+  ],
+  "match": {
+    "node_id": "12:340",
+    "w": 320,
+    "variant_node_id": "12:300"
+  }
+}

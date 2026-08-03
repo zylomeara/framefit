@@ -10,7 +10,7 @@
       "name",
       "node_ids"
     ],
-    "digest": "f37ac8f9d8202766fe7924049c1de3211d66b771c9d4799b2f84cad3d3291f25",
+    "digest": "0f76db3b06f8903465c59a9713c0722a553cb921df1ff7410f4229e854ee0994",
     "annotations": {
       "readOnlyHint": true
     }
@@ -27,7 +27,7 @@
       "pairs",
       "tolerance_px"
     ],
-    "digest": "906514111a2c01d843de44a79f170a9f8518cb3f90a90e80472d9a15fc2aa114",
+    "digest": "b1559ace4cd9c6890359f459129a7876eef065e6ebc20a5623ceb01059de9b37",
     "annotations": {
       "readOnlyHint": true
     }
@@ -126,7 +126,7 @@
       "file",
       "node_ids"
     ],
-    "digest": "f8c2f1a56691e2806a30c4f0bc45689159c48392ac0afa42a98a52cc20c28857",
+    "digest": "44d561249973b655451bcb65a62688af07c765d228828698cd8b0e327cc2e270",
     "annotations": {
       "readOnlyHint": true
     }
@@ -190,7 +190,7 @@
     }
   },
   "get_layout_spec": {
-    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js - by default a short loader thunk that fetches the canonical script from the server rather than inlining it (extractor_mode:\"inline\" forces the full script, e.g. if a CSP blocks the loader's script tag); when the server is configured for it, also returns an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to compare_node_to_dom instead of pasting raw snapshot JSON.",
+    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script (extractor_mode:\"loader\", the default) is returned only when the server has a public base URL to point the browser at - otherwise, and whenever extractor_mode:\"inline\" is passed, the full script comes back inline, with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL, plus the snapshot store only the HTTP servers construct, is what also returns an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to compare_node_to_dom; the stdio server has neither, so pass the snapshot inline as compare_node_to_dom's dom.",
     "inputSchemaKeys": [
       "extractor_mode",
       "figma_token",
@@ -200,7 +200,7 @@
       "node_ids",
       "text_leaves"
     ],
-    "digest": "5008a0f11f7b577bd16dd801ea20e77d4e91983a3710f62a38ccf71b435463bc",
+    "digest": "8e1c13ea36d3885c6d2c011aa6a9ff8348bc821fca1a02231875f34eddc55620",
     "annotations": {
       "readOnlyHint": true
     }
@@ -373,7 +373,7 @@
     }
   },
   "search_design_system": {
-    "description": "Search published design-system libraries (components, component sets, styles) by name/description. team_id is OPTIONAL: without it, the tool searches your registered DS teams. Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key, kind, library file, node_id, page and source team_id - use node_id with get_design_context. Lexical name search; run short queries.",
+    "description": "Search published design-system libraries (components, component sets, styles) by name/description. team_id is required on the stdio and single-tenant servers; only the multi-tenant server can omit it, and there it falls back to the design-system teams you registered. Pass a `file` to narrow results to the libraries that file consumes. Returns matches with key, kind, library file, node_id, page and source team_id - use node_id with get_design_context. Lexical name search; run short queries.",
     "inputSchemaKeys": [
       "figma_token",
       "file",
@@ -381,7 +381,7 @@
       "query",
       "team_id"
     ],
-    "digest": "54cdef2e3ff0c55ba255aac8fa45bc8ad971d4fc5e42aad55d603b02ade62b5a",
+    "digest": "8e172f2b26b8acb451c3443586445123d450a2d18ec8019795ea4aec8cb211e6",
     "annotations": {
       "readOnlyHint": true
     }
@@ -396,7 +396,7 @@
       "frame_node_id",
       "max_depth"
     ],
-    "digest": "c0dcd09b8bce3f0bfb48180b174595ddf9f26f846422474c74881053ef57a2ba",
+    "digest": "3e2328f28e349480b971dfd30aaac06d9877e62929d918f1cc1da557cf60c352",
     "annotations": {
       "readOnlyHint": true
     }

@@ -7,7 +7,7 @@ so `docker compose up` with no `--profile` is a no-op. Pick one:
 | Profile | Command                                              | What you get                                                                 |
 |---------|------------------------------------------------------|------------------------------------------------------------------------------|
 | `local` | `docker compose --profile local up -d --build`       | Single-tenant server only. No DB, no auth, no secrets. Binds `127.0.0.1:3846`.|
-| `full`  | `COMPOSE_PROFILES=full docker compose up -d --build`  | The **production** service set: multi-tenant MCP + Postgres, authenticating against an **external** Keycloak (or any OIDC IdP). |
+| `full`  | `COMPOSE_PROFILES=full docker compose up -d --build` — **only after** § 2's one-time `mcp-server/.env` bootstrap; on a fresh checkout, without that file, compose refuses with `env file … not found` and exits `1` before building anything. | The **production** service set: multi-tenant MCP + Postgres, authenticating against an **external** Keycloak (or any OIDC IdP). |
 
 ---
 
@@ -17,20 +17,29 @@ Everything a contributor needs to see the server serve, with only Docker install
 
 ```bash
 cd docker
-docker compose --profile local up -d --build
-curl -s http://127.0.0.1:3846/health          # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
-# … MCP over HTTP at http://127.0.0.1:3846/mcp
-docker compose --profile local down
+# --wait is meaningful for this service: the compose file declares no healthcheck, but the image
+# does, so the container carries one and `up` returns only once /health answers.
+docker compose --profile local up -d --build --wait
+curl -fsS http://127.0.0.1:${MCP_PORT:-3846}/health   # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
+
+`-f` is not decoration: without it `curl` exits `0` on a `500`, so an unhealthy server reads as a
+green line. MCP over HTTP is then at `http://127.0.0.1:3846/mcp`; tear the stack down again with
+`docker compose --profile local down`, which is deliberately not part of the block above — the
+sequence ends on the health assertion, so nothing after it can mask a failed one.
 
 Or just run the smoke test, which does all of the above and tears down again:
 
 ```bash
+# not-executed: alternative-forms
 cd docker
-./smoke-local.sh          # build → health → MCP initialize → down
-KEEP_UP=1 ./smoke-local.sh   # …but leave it running
-MCP_PORT=4000 ./smoke-local.sh   # …on a different host port
+./smoke-local.sh          # build -> health -> MCP initialize -> down
+KEEP_UP=1 ./smoke-local.sh   # ...but leave it running
+MCP_PORT=4000 ./smoke-local.sh   # ...on a different host port
 ```
+
+Those three are alternatives, not a sequence: run one. Top to bottom they are three full image
+builds, and the middle one deliberately leaves the stack up.
 
 - **No token needed** for `/health` and MCP `initialize`. To make real Figma calls,
   supply a token: `FIGMA_TOKEN=figd_… docker compose --profile local up -d`, or put
@@ -44,23 +53,69 @@ MCP_PORT=4000 ./smoke-local.sh   # …on a different host port
 
 The production service set: the multi-tenant MCP server plus its Postgres, authenticating
 against an **external** Keycloak (or any OIDC identity provider). Production runs the exact
-same file; the only repo-side change vs. the historical deploy is that the compose literals
-are now `${VAR:-<localhost default>}`, so every prod-specific value comes from `docker/.env`
-(git-ignored) instead of being hard-coded. Set `COMPOSE_PROFILES=full` in `docker/.env` and
-the historical command is **byte-for-byte unchanged**:
+same file; the repo-side change vs. the historical deploy is that the prod-specific compose
+literals are now `${VAR:-<localhost default>}`, so the four IdP/host URLs and the Postgres
+password come from `docker/.env` (git-ignored) instead of being hard-coded. Not everything
+does, and the exceptions matter below: `ENCRYPTION_KEY` rides `mcp-server/.env` and must not go
+in `docker/.env` at all; `MULTI_TENANT` and `FIGMA_MAX_CONCURRENT_REQUESTS` are still literals
+in the compose file; and `DATABASE_URL` is assembled there, interpolating only
+`POSTGRES_PASSWORD`.
+
+### One-time, before the bring-up: `mcp-server/.env` and its encryption key
+
+The multi-tenant server encrypts stored Figma PATs (AES-256-GCM) with `ENCRYPTION_KEY`. It
+lives in `mcp-server/.env` (git-ignored) and compose delivers it via `env_file`. Do **not**
+put it in `docker/.env`: compose `environment` entries take precedence over `env_file`, so an
+env_file-supplied secret must never also be listed under `environment`.
+
+That `env_file` line is also why this step comes **first**. The `framefit` service declares
+`env_file: - ../mcp-server/.env`, and on a fresh checkout that file does not exist — so the
+bring-up below refuses before it builds anything:
+`env file …/mcp-server/.env not found: … no such file or directory`, exit `1`. Run this, and
+the same command exits `0`.
+
+```bash
+cd docker
+[ -f ../mcp-server/.env ] || cp ../mcp-server/.env.example ../mcp-server/.env
+grep -q '^ENCRYPTION_KEY=' ../mcp-server/.env || \
+  echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../mcp-server/.env
+# Both lines above are `||` chains, which exit 0 whether or not their right-hand side ran. Assert
+# the file compose will read actually carries the key:
+grep -q '^ENCRYPTION_KEY=' ../mcp-server/.env
+```
+
+### Then bring it up
+
+Set `COMPOSE_PROFILES=full` in `docker/.env` and the historical command is
+**byte-for-byte unchanged**:
 
 ```bash
 cd docker
 docker compose up -d --build framefit        # multi-tenant MCP + Postgres (its dependency)
+sleep 5
+[ "$(docker compose ps --format '{{.State}}' framefit)" = running ]
 ```
+
+Naming the service is enough to enable its profile, so this runs before you have set
+`COMPOSE_PROFILES=full` anywhere. The state test is the assertion: `up -d` exits `0` once it has
+*started* the container, and under `restart: unless-stopped` that includes a container already
+crash-looping — its exit status is not arrival.
+
+What this does **not** give you is a working deployment. The server comes up on localhost defaults
+for the four IdP/host values, so it authenticates nothing until you set them in `docker/.env` (below)
+and point `KEYCLOAK_JWKS_URL` at your **external** Keycloak.
 
 `COMPOSE_PROFILES=full` makes compose resolve the profile itself, so no `--profile` flag is
 needed:
 
 ```bash
+cd docker
 COMPOSE_PROFILES=full docker compose config --services
 # framefit
-# figma-postgres        ← the multi-tenant server and its database, nothing else
+# figma-postgres        <- the multi-tenant server and its database, nothing else
+# `config` exits 0 whatever it resolves - and, unlike `up`, succeeds even when the env_file above
+# is still missing - so assert the profile named the service rather than reading the exit status:
+COMPOSE_PROFILES=full docker compose config --services | grep -qx framefit
 ```
 
 > **The admin portal is not in this repository.** The multi-tenant server exposes an
@@ -83,6 +138,9 @@ Start with `status`: it needs no prerequisites — it just reports whatever is a
 for what each of the six checks means.
 
 ```bash
+# not-executed: requires-running-deployment,contains-placeholder
+cd docker
+
 # Diagnose this instance - which subsystem, if any, is broken:
 docker compose exec framefit framefit status
 
@@ -95,7 +153,7 @@ docker compose exec framefit framefit teams list --user <keycloak-user-id>
 
 # Build that user's cross-library variable graph from the registered teams:
 docker compose exec framefit framefit sync --user <keycloak-user-id>
-# → synced user <id>: N libraries, M variables, K skipped
+# -> synced user <id>: N libraries, M variables, K skipped
 
 # Mint an upload token for the variable-snapshot ingest (capture it, don't redirect it into the repo):
 TOKEN=$(docker compose exec -T framefit framefit bridge-token --user <keycloak-user-id>)
@@ -110,20 +168,6 @@ Bridge-tokens cannot be revoked, so keep the 30-minute default and mint on deman
 > **A running server keeps its graph in memory.** `sync` writes the fresh graph to Postgres, but a
 > live server holds the graph it built for the life of the process. Restart the `framefit` service
 > for a fresh sync to take effect.
-
-### One-time: the encryption key
-
-The multi-tenant server encrypts stored Figma PATs (AES-256-GCM) with `ENCRYPTION_KEY`. It
-lives in `mcp-server/.env` (git-ignored) and compose delivers it via `env_file`. Do **not**
-put it in `docker/.env`: compose `environment` entries take precedence over `env_file`, so an
-env_file-supplied secret must never also be listed under `environment`.
-
-```bash
-cd docker
-[ -f ../mcp-server/.env ] || cp ../mcp-server/.env.example ../mcp-server/.env
-grep -q '^ENCRYPTION_KEY=' ../mcp-server/.env || \
-  echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../mcp-server/.env
-```
 
 ### Required `docker/.env` on the production host
 
@@ -164,14 +208,15 @@ to its localhost defaults and auth breaks — treat the block as a required pre-
 ## 3. Deploying from a published image (instead of building on the host)
 
 CI (`.github/workflows/ci.yml`, job `publish-image`) builds `docker/Dockerfile` and pushes it
-to **`ghcr.io/zylomeara/framefit`** — only after `unit`, `integration`, `stdio-smoke` and
-`secrets-scan` are green. Tag scheme:
+to **`ghcr.io/zylomeara/framefit`** — only after `unit`, `integration`, `stdio-smoke`,
+`doc-sequences` and `secrets-scan` are green (`publish-image`'s `needs:` names all five). Tag
+scheme:
 
-| Tag                       | When                                | Use it for                                    |
-|---------------------------|-------------------------------------|-----------------------------------------------|
-| `sha-<short>`             | every push to `main`                | naming a commit's build — stable, but see below|
-| `main`                    | every push to `main`                | moving pointer — convenience, not a pin       |
-| `<x.y.z>`, `<x.y>`, `latest` | **only** on a `v*` git tag       | releases                                      |
+| Tag                          | When                                        | Use it for                                     |
+|------------------------------|---------------------------------------------|------------------------------------------------|
+| `sha-<short>`                | every push to `main` **and** every `v*` tag  | naming a commit's build — not a pin, see below |
+| `main`                       | every push to `main`                        | moving pointer — convenience, not a pin        |
+| `<x.y.z>`, `<x.y>`, `latest` | **only** on a `v*` git tag                  | releases — no `v`: `{{version}}` strips it     |
 
 The version numbers do **not** advance on every push — only a `v*` tag mints them. So a
 `main`/`sha-` image built after a release still reports the released version in its handshake;
@@ -180,18 +225,28 @@ the truth about what is deployed is the image **digest** plus the
 
 **Pin the digest, not the tag** — including `sha-<short>`, which looks immutable because it
 names a commit. It is not: each publish of that commit builds a fresh image and the builds are
-not bit-reproducible. On commit `28df820` the push-to-`main` run and the `v0.11.0` tag run each
-pushed `sha-28df820` with a different digest, so the tag names whichever finished last.
-Re-running a workflow, or tagging an already-published commit, moves it the same way.
+not bit-reproducible. Re-running a workflow, or tagging an already-published commit, publishes that
+same commit a second time — `type=sha` fires on `v*` tag runs too, not only on pushes to `main` —
+and `sha-<short>` then names whichever build finished last, not the one you saw.
+
+**Precondition: the image is private.** An anonymous GHCR token for `ghcr.io/zylomeara/framefit`
+carries no pull scope (measured: token length `0`, manifest `403`), so both commands below need
+`docker login ghcr.io` first, with a token carrying `read:packages` (see the first gotcha below for
+which kind). Building on the host — §§ 1 and 2 — stays the documented default; this section is the
+alternative for a box you would rather not compile on.
 
 The host then **pulls instead of building** — no compile on the box:
 
 ```bash
-# resolve the tag you want to its digest (downloads nothing), then pin that
-docker buildx imagetools inspect ghcr.io/zylomeara/framefit:v0.11.0 --format '{{.Manifest.Digest}}'
+# not-executed: requires-registry-auth,contains-placeholder
+cd docker
+
+# resolve the tag you want to its digest (downloads nothing), then pin that.
+# <x.y.z> is an image tag from the table above — the `v` belongs to the git tag, not the image.
+docker buildx imagetools inspect ghcr.io/zylomeara/framefit:<x.y.z> --format '{{.Manifest.Digest}}'
 docker pull ghcr.io/zylomeara/framefit@sha256:<digest>
 # then REPLACE the service's `build:` block with `image: ghcr.io/zylomeara/framefit@sha256:<digest>`
-# — never keep both: a service with `image:` AND `build:` silently builds when a pull fails,
+# - never keep both: a service with `image:` AND `build:` silently builds when a pull fails,
 # which defeats the whole point of pinning. In this repo's compose the `full` service is
 # build-only by design; the image-consuming production compose lives in the author's private
 # deploy repo.

@@ -60,8 +60,21 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
 ## Conventions
 
 - `file` accepts a full Figma URL (`https://www.figma.com/design/<key>/...`) or the raw file key.
-- Node ids use Figma's `12:345` form; nested instance ids use the compound `I12:345;67:890` form.
-- `figma_token` overrides the Figma personal access token per call; otherwise the server-configured
-  token is used.
+- Node ids use Figma's `12:345` form. Seven parameters also accept the compound nested-instance
+  form `I12:345;67:890`: `get_layout_spec.node_ids[]`, `get_view.node_id`,
+  `suggest_pairs.frame_node_id`, `compare_node_to_dom.pairs[].node_id`,
+  `compare_node_to_dom.frame_node_id`, `get_node_ancestry.node_id` and
+  `get_code_connect_map.node_ids[]`. Every other node-id parameter is pinned to `^\d+[:\-]\d+$`
+  and rejects the compound form with MCP error `-32602`.
+- One node-id parameter is exempt from both rules: `export_assets.node_ids[]` declares no pattern
+  at all, so it validates nothing. A malformed id is passed through to the Figma API instead of
+  being refused, and the error you get back is Figma's rather than the server's.
+- `figma_token` overrides the Figma personal access token for a single call; otherwise the
+  server-configured token is used. It is declared by 23 of the 26 tools -- every read tool -- and
+  by none of the three write tools (`post_comment`, `reply_to_comment`, `delete_comment`). All 26
+  declare `additionalProperties: false`, so passing it to a write tool is a schema error, not a
+  silent no-op.
+- Code fences: a request example is tagged `json` and a response example `jsonc`, which is what
+  lets a response body carry comments and elisions.
 - Sizes, depths and limits are capped server-side; responses that would exceed the transport budget
   degrade honestly (truncation flags, `omitted_*` counters) instead of silently dropping data.

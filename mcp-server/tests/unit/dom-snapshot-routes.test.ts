@@ -274,7 +274,7 @@ describe('GET /extractor.js', () => {
 
     const body = await res.text();
     expect(body).toContain('window.__figmaDomDiff = ');
-    expect(body).toContain('schema v5');
+    expect(body).toContain('schema v6');
     // parse-only (not run): a syntax error here would silently produce a
     // broken script-tag injection in the browser with no useful error.
     expect(() => new Function(body)).not.toThrow();

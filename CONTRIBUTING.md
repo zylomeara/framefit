@@ -9,17 +9,23 @@ repo's testing norms, and how a PR gets merged.
 Node 20+ and [pnpm](https://pnpm.io/installation). Everything below runs from `mcp-server/`:
 
 ```bash
+# not-executed: long-running-process
 cd mcp-server
 pnpm install
 pnpm build       # tsc -> dist/
-pnpm dev         # http server on 127.0.0.1:3846, watches src/
-pnpm test        # unit suite (excludes tests/e2e)
+pnpm dev         # http server on 127.0.0.1:3846, watches src/ - runs until you stop it
+pnpm test        # unit suite (excludes tests/e2e) - in a second shell
 pnpm typecheck   # tsc --noEmit over src/ + tests/
 ```
 
 `cp .env.example .env` and fill `FIGMA_TOKEN` to exercise the server against real Figma files
-locally. `.env.example` documents the full config surface and is machine-checked against the
-config schema, so an undocumented env var fails CI.
+locally. `tests/unit/publication-metadata.test.ts` checks `.env.example` against two sources —
+every `config.ts` schema variable and every `multi-tenant/env.ts` variable — so a variable in
+either source that is missing from `.env.example` fails CI. It scrapes those two files and
+nothing else, so a variable read in any other file is invisible to it: `MCP_PRETTY_JSON`, read
+from `process.env` in `src/adapters/driving/tools/serialize.ts`, is live and in no schema. Add
+one of those and you must document it by hand — `.env.example` is not a complete list of what
+the server reads.
 
 ## Repo layout
 
@@ -50,10 +56,11 @@ This repo does TDD, and treats a passing test as evidence only if it can also fa
 ### Test tiers
 
 - **Unit** (`tests/unit/`) — no external dependencies, part of `pnpm test`.
-- **Integration** (`tests/integration/`) — Postgres-gated: every file wraps its `describe` block in
-  `describe.skipIf(!process.env.TEST_DATABASE_URL)`, so `pnpm test` skips them cleanly without a
-  DB, and CI's `integration` job (which starts a `postgres:16` service) runs them for real. If
-  you're changing `src/multi-tenant/`, set `TEST_DATABASE_URL` locally to exercise these.
+- **Integration** (`tests/integration/`) — Postgres-gated: every file declares
+  `const url = process.env.TEST_DATABASE_URL;` and wraps each top-level `describe` in
+  `describe.skipIf(!url)`, so `pnpm test` skips them cleanly without a DB, and CI's `integration`
+  job (which starts a `postgres:16` service) runs them for real. If you're changing
+  `src/multi-tenant/`, set `TEST_DATABASE_URL` locally to exercise these.
 - **E2E** (`tests/e2e/`) — hit the real Figma REST API. Excluded from `pnpm test`; run via
   `pnpm test:e2e` with `FIGMA_TOKEN_E2E` and `E2E_FILE_URL` set (see `.env.example`). Not part of
   CI — use them as your own sanity check against a live file.
@@ -78,8 +85,10 @@ things the code genuinely could not check are flagged, never silently passed.
 
 - Keep it small and focused; include tests for the behavior you're adding or fixing.
 - Describe what changed and *why* — intent stated up front makes review faster.
-- CI must be green: unit + typecheck, Postgres-gated integration, the `stdio-smoke` matrix
-  (3 OSes × Node 20/22), and the gitleaks secrets scan. See `.github/workflows/ci.yml`.
+- CI must be green: `unit` (typecheck + unit suite), `integration` (Postgres-gated),
+  `stdio-smoke` (3 OSes × Node 20/22), `doc-sequences` (drives the command sequences the docs
+  document), and `secrets-scan` (gitleaks). `publish-image` needs every one of them, so a red
+  gate blocks the image push. See `.github/workflows/ci.yml`.
 
 ## Licensing
 

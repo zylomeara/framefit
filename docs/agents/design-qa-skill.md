@@ -16,6 +16,10 @@ The tool compares NUMBERS, not screenshots: inter-element distances are computed
 result is what gets caught. Your single responsibility is correct PAIRS of node_id ↔ CSS selector.
 Everything else is deterministic.
 
+Text this page shows as a VERBATIM quote of what the server prints is written as a double-quoted
+string inside a code span, with angle brackets marking an interpolated value — string-match on those.
+Every one of them is checked against the string the code emits (`docs-complete-lists.test.ts`).
+
 ## Workflow (one pass, ~4–5 calls)
 
 ### Step 0 — bring the UI into the design's state
@@ -28,7 +32,7 @@ Pick the design frame for the current breakpoint (mobile frame for a mobile rend
 Call `get_layout_spec` with the node_ids under check + the frame id, `include_extractor: true`:
 - you get diff-ready specs (children structure — eyeball it: did you grab the right nodes?);
 - the frame width (`specs[].spec.rect.w` on the frame);
-- `extractor_js` — the canonical snapshot script.
+- `extractor_js` — the canonical DOM extractor, schema-versioned with the server.
 
 ### Step 2 — viewport and stabilization
 - `resize_page` to the frame width (otherwise geometry rows come back 👁 unchecked via the
@@ -36,8 +40,8 @@ Call `get_layout_spec` with the node_ids under check + the frame id, `include_ex
   `emulate` (CDP).
 - **Fixed-width overlays (drawers/modals)**: pass `expected_overlay_width:
   <content-frame width>` to compare — size.w stops false-failing (becomes info), the
-  `overlay_width` row reads like "app 390 / overlay 400 (Δ10, within tolerance)" as a positive
-  signal, and you can KEEP `frame_node_id` (the viewport guard is decoupled; preflight checks the
+  `overlay_width` row carries both widths and their Δ (app 390 vs overlay 400, Δ10 within
+  tolerance) as a positive signal, and you can KEEP `frame_node_id` (the viewport guard is decoupled; preflight checks the
   frame against the overlay). The old workaround "omit frame_node_id" is no longer needed.
 - **Not sure which variant frame matches your render** (dozens of same-named breakpoint
   variants)? One call `find_breakpoint_variant {file, query: "<screen name>", render_width:
@@ -55,32 +59,45 @@ Call `get_layout_spec` with the node_ids under check + the frame id, `include_ex
 }
 ```
 
-### Step 3 — DOM side: one evaluate_script (the snapshot uploads itself)
-`extractor_js` from step 1 is a short LOADER (~8 lines): it fetches the canonical extractor from
-the server (script tag) and calls it. Paste it VERBATIM, with `upload_url` as the second
-argument; you get back a SHORT `{snapshot_ref, summaries}` — the full JSON never enters your
-context at all.
-**The loader is async — the thunk MUST be async/await (a sync paste is a silent failure):**
+### Step 3 — DOM side: one evaluate_script
+
+> **An HTTP deployment has two things stdio does not, and both come from the public base URL.**
+> First, `extractor_js` comes back as a short LOADER (~8 lines) that fetches the canonical script
+> from the server instead of inlining it. Second, `get_layout_spec` also returns an `upload_url`:
+> the extractor POSTs the snapshots there straight from the browser and hands you a SHORT
+> `{snapshot_ref, summaries}`, so the full JSON never enters your context. On the stdio server the
+> [quickstart](../../README.md#quickstart) installs there is NEITHER — `extractor_js` is the whole
+> inline script and the response carries no `upload_url`, so the snapshot comes back to you and you
+> pass it inline as `pairs[].dom`. Step 1's response is what tells you which one you are on: an
+> `upload_url` key, or none.
+
+The thunk MUST be async/await either way (a sync paste is a silent failure). With an
+`upload_url`, pass it as the second argument; on stdio, leave it off:
 ```js
 async () => {
-  const extract = <extractor_js verbatim (the loader)>;
+  const extract = <extractor_js verbatim>;
   return await extract(["<selector for pair 1>", "<selector for pair 2>"], "<upload_url>");
+  // stdio: no second argument — `return await extract(["<selector for pair 1>", …]);`
 }
 ```
-If the loader fails with 'extractor script blocked (CSP?)' — the page restricts script-src:
-re-request `get_layout_spec {include_extractor: true, extractor_mode: "inline"}` and work with
-the full inline extractor (everything below stays the same).
+On stdio the inline script is tens of kilobytes, which you do not want to repeat per capture:
+paste it ONCE as `window.__extract = <extractor_js verbatim>;`, then every later capture is the
+short `async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the
+handle; paste again.
+Only where there IS a loader: if it fails with 'extractor script blocked (CSP?)' the page restricts
+script-src — re-request `get_layout_spec {include_extractor: true, extractor_mode: "inline"}` and
+work with the full inline extractor (everything below stays the same). On stdio you already have it.
 Selectors go in the same order as the pairs' node_ids; each must match EXACTLY one element
 (`status:'multiple'` → scope it via `:has(...)`/data attributes).
-**Validate the pairs via summaries BEFORE compare:** each selector carries `rect {w,h}`,
-`tag.class0`, `childCount`. Is it the right element? (a product-card tile ≈ 360×280, expected
-5 tiles — childCount 5). Wrong one → fix the selector and re-run the extractor (the page is
-open — it's cheap).
-`upload_url` is multi-use (30-minute sliding TTL): a multi-screen flow = 1 get_layout_spec
-→ N evaluate_script → N snapshot_ref.
+**Validate the pairs BEFORE compare:** with an `upload_url` each selector comes back as a summary
+(`rect {w,h}`, `tag.class0`, `childCount`); on stdio you read the same fields off the snapshot
+itself. Is it the right element? (a product-card tile ≈ 360×280, expected 5 tiles — childCount 5).
+Wrong one → fix the selector and re-run the extractor (the page is open — it's cheap).
+`upload_url`, where there is one, is multi-use (30-minute sliding TTL): a multi-screen flow = 1
+get_layout_spec → N evaluate_script → N snapshot_ref.
 
-**Fallback when the result carries `upload_error`** (page CSP/network — the browser POST didn't
-go through; the page is still open, NO re-navigation needed):
+**Fallback when the result carries `upload_error`** (HTTP-only — it presupposes an upload path; the
+browser POST did not go through on CSP/network, and the page is still open, so NO re-navigation):
 1. Re-run evaluate_script with `filePath: "<local path>.json"` and WITHOUT uploadUrl — the full
    JSON goes to a file, bypassing your context (chrome-devtools only allows filePath into
    workspace roots — write to the repo root and delete afterwards);
@@ -92,11 +109,18 @@ go through; the page is still open, NO re-navigation needed):
      -H 'Content-Type: application/json' --data-binary @body.json
    ```
    The response `{"snapshot_ref": "...", "selectors": [...], "expires_at": "..."}` — carry
-   `snapshot_ref` into compare. Any Content-Type is accepted; a batch over 2 MB → split into
-   several POSTs to the same upload_url (the limit is per POST, not per session). Each POST mints
-   its own `snapshot_ref`, and `dom_ref.index` restarts from 0 within that ref — track (ref, index)
-   pairs per POST, never one ref with global indices.
-3. Only for a genuinely tiny snapshot — last resort: inline (`dom:` as before).
+   `snapshot_ref` into compare. Any Content-Type is accepted; a batch over 2 MB **or over 20
+   snapshots** is answered 413, so split into several POSTs to the same upload_url — both limits are
+   per POST, not per session, and size alone is not the whole rule. Each POST mints its own
+   `snapshot_ref`, and `dom_ref.index` restarts from 0 within that ref — track (ref, index) pairs
+   per POST, never one ref with global indices. A ref lives 30 minutes on a SLIDING TTL under a
+   non-extendable 2-hour ceiling from creation: re-reading it keeps it alive, nothing keeps it past
+   two hours.
+3. Inline (`dom:` as before) — the last resort where there IS an upload path, and the ONLY path on
+   stdio. What is unavailable there is the REF path, not the tools: handed a `dom_ref`,
+   `suggest_pairs` throws `"snapshot store unavailable on this server — pass dom_snapshot inline"` and
+   `compare_node_to_dom` puts a `snapshot_ref` warn row plus a `re_extract_dom` blocker on that pair.
+   Handed an inline snapshot, both run normally on stdio.
 
 ### Step 4 — one compare_node_to_dom
 ```
@@ -117,7 +141,9 @@ extractor (0-based; duplicates stay distinguishable). The `selector: "<string>"`
 works but must match BYTE-FOR-BYTE and cannot distinguish duplicate selectors.
 A ref lives 30 minutes from last access (every compare extends it) — "saw a ❌, re-read the spec,
 re-ran the pair" works without re-capturing. Expired → the report says honestly "re-run the
-extractor", not a cryptic error. Inline `dom:` also works (fallback/back-compat).
+extractor", not a cryptic error. `dom_ref` needs the snapshot store, which only the HTTP server
+paths construct: on stdio pass the snapshot object as `dom:` instead — not a fallback there, the
+only option.
 
 ### Step 5 — report
 Paste `report_markdown` from the response INTO YOUR ANSWER AS IS (do not rebuild the table by
@@ -128,7 +154,14 @@ The response carries a machine `verification { complete, scope, pairs, frame_cov
 It is a GATE, not a footnote — do not report "verified against the design / matches the design" until:
 - `complete: true` — the check is complete WITHIN scope. Only then say "verified".
 - `complete: false` — do NOT say "done". Work through `blocking` (exactly what remains; each item
-  is `{ action, node_id|selector, detail }` — perform the `action`, re-run the affected steps):
+  is `{ action, node_id|selector, detail }` — perform the `action`, re-run the affected steps).
+  These THIRTEEN are every `action` the server can emit, so there is no default branch to write.
+  `mcp-server/tests/unit/docs-complete-lists.test.ts` compares the TOKENS that open these bullets
+  against the set read out of the server's own source, failing in either direction, and checks every
+  `kind` a bullet names against the kinds the code pairs with that bullet's action. It does NOT check
+  the prose after the token — that is a claim about meaning, and no cheap check reads meaning, so
+  treat a description that contradicts your run as the thing that is wrong:
+  <!-- blocking-actions:begin -->
   - `add_pair` / `add_container_pair` — a frame region/container WITHOUT a pair. `add_container_pair`
     arrives under TWO different `kind`s: `unchecked_spacing` (between-children spacing NOT verified —
     the older meaning) and `spacing_mismatch` (the gap WAS measured by the spacing audit and
@@ -147,18 +180,34 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
     carries `places[]` (ALL nodes with this token/reason; `node_id` is just the first place,
     `places_capped` — how many were cut) — confirm EVERY place in `places`; the reasons in `detail`
     differ (e.g. `not-captured` = the DOM token was not read there).
+  - `fix_viewport` — `kind: 'viewport'`: the window width you captured at and the `frame_node_id`
+    frame's width disagree, so geometry was demoted to `unchecked` rather than reported as red.
+    Resize to the frame's width (or pass `expected_overlay_width` for a fixed overlay) and re-capture
+    — do NOT read the demoted rows as passes.
+  - `fix_frame_id` — `kind: 'frame_missing'`: `frame_node_id` was given, but no such node exists in
+    this file. `scope` still reads `"frame"` and there is NO `frame_coverage` key at all, while
+    `complete` is forced `false` — the tool refuses to downgrade a missing frame into a green
+    pairs-scope run. A coverage gate that did not run is worse than a red one: re-run step 1 and pass
+    the id it returns.
+  - `run_token_aware` — `kind: 'scope_incomplete'`: the run used `match_profile: 'layout'`, whose
+    scope excludes typography/colors/styles/component. It is inserted as the FIRST blocking item and
+    keeps `complete` at `false` by construction — finish with `token-aware` or `strict`. See
+    "Strictness profiles" below.
+  <!-- blocking-actions:end -->
 - `blocking: []` with `complete:false` — only INHERENT items remain: hug/fill demotes, out-of-coverage,
   OR a clean spacing audit (`spacing_audit[].fully_clean` — between-children gaps verified and equal,
   only the container INSETS unverified): there is no automated action — verify those axes BY EYE
   (or add a container pair for a full green) — then you may proceed.
 - `frame_coverage` carries enumeration provenance: `enumeration_source`/`enumeration_depth`
-  (in the report: "enumeration: deep@8"). `deep` = coverage was enumerated from depth 8 regardless
+  (in the report: `"· enumeration: <source>@<depth>"`, e.g. `· enumeration: deep@8`). `deep` = coverage
+  was enumerated from depth 8 regardless
   of your `max_depth` (a free re-slice from the frame cache) — raising `max_depth` for COVERAGE
   is no longer needed (only for the depth of the pairs/text themselves).
 - `verification.spacing_audit[]` — between-children gap measurement WITHOUT a container pair: works
   only when the adjacent pairs came through `dom_ref` of ONE batch (one extractor POST = one layout
-  state). Inline `dom` or mixed refs → the gap is honestly `unchecked`. `gap.status:'fail'` =
-  a real gap divergence (verdict: "there are mismatches").
+  state). Inline `dom` or mixed refs → the gap is honestly `unchecked`, so on stdio this channel
+  never verifies a gap at all — add a container pair there instead of waiting for it. `gap.status:'fail'` =
+  a real gap divergence (verdict: `"discrepancies found"`).
 - `scope:"pairs"` (no `frame_node_id`) — ONLY the submitted pairs were checked, NOT the whole screen:
   even `complete:true` here ≠ "screen verified". To gate whole-frame coverage, pass `frame_node_id`.
 
@@ -192,10 +241,11 @@ pass; the final "verified against the design" can only come from `token-aware` o
 `report_markdown` carries the profile in its header (`…, tolerance Npx, profile <name>` — in ALL
 modes including the default `token-aware`, not only when passed explicitly); `layout` additionally
 prints a warning right under the title that typography/colors/styles are OUT of scope. Profile
-skips (axes deliberately excluded by the profile) render as ONE summary `⏭` row ("out of profile
-scope: <dims> — verify with token-aware/strict") — distinguishable from a regular environmental
-`⏭` skip (which stays per-row with its own env reason, e.g. "scroll container: height
-uninformative", without the "out of profile scope" wording).
+skips (axes deliberately excluded by the profile) render as ONE summary `⏭` row
+(`"⏭ outside profile scope: <dims> — verify with the token-aware/strict profile"`) — distinguishable
+from a regular environmental `⏭` skip, which stays per-row with its own env reason (e.g.
+`"scroll container: content height <N>px — comparing the frame height is uninformative"`) and never
+carries the `"⏭ outside profile scope"` wording.
 
 ⚠️ **RECONNECT NOTE**: `match_profile` and the adjusted `tolerance_px` semantics (now `.optional()`
 without a zod default — the default is applied in code AFTER profile parsing) become visible in the
@@ -277,10 +327,11 @@ read ❌ as defects:
    (false padding-end / offset-cross); an inset "baked" into a child's padding that the gap sees
    as 0 (border-box) — the diff SKIPS such deltas.
 3. Typography: direct TEXT children are checked as usual, and containers with several texts get
-   AUTO-DESCENT — rows like `font-size[chip→"Heading…"]` with a note "auto-descent: by content /
-   by order" (content binding is the more reliable). A separate TEXT pair is needed ONLY when the
-   descent honestly gave up: warn `typography_descent[...]` ("left unpaired" — content bijection
-   and order both failed) OR 👁 unchecked `typography[...]` / `typography_descent[...]` (out of
+   AUTO-DESCENT — rows like `font-size[chip→"Heading…"]` with a note `"auto-descent: by content"`
+   or `"auto-descent: by order"` (content binding is the more reliable). A separate TEXT pair is
+   needed ONLY when the descent honestly gave up: warn `typography_descent[...]`
+   (`"TEXT descendants remained unpaired (content bijection and ordinal matching did not work)"`)
+   OR 👁 unchecked `typography[...]` / `typography_descent[...]` (out of
    reach: text below the capture cut — raise `max_depth` to 8 OR aim a pair lower, e.g. at the
    chip instead of the card).
 
@@ -292,8 +343,8 @@ read ❌ as defects:
   **A color with a "do not port the hex" note** — the design color is bound to a token
   (library default mode): a hex mismatch ≠ defect; verify the SEMANTIC token in the app (which
   CSS var/token is applied), not the value.
-- ℹ️ info — a reference/diagnostic row, not a defect (`overlay_width` on a fixed overlay:
-  "app 390 / overlay 400 (Δ10, within tolerance)" — a positive signal).
+- ℹ️ info — a reference/diagnostic row, not a defect (`overlay_width` on a fixed overlay carries
+  both widths and their Δ — a positive signal).
 - 🟰 demoted — would be ❌ but is structurally EXPLAINED (the number is visible, not hidden): a
   `justify-content` spacer distributes free space (the padding edge is informative, not a defect);
   hug-width text (`size.w`/`padding-end` = the text's natural width); fixed-overlay `size.w`.
@@ -302,14 +353,15 @@ read ❌ as defects:
 - 👁 unchecked — there IS something to check but it was NOT REACHED: typography below the capture
   cut (raise `max_depth` to 8 OR add a pair on the nested TEXT) or the environment is not ready
   (viewport≠frame / transform≠none / rotated → fix the window / wait out the animation). NOT
-  "all good" — verify by eye. In the summary verdict this counts as "not verified (out of reach)".
+  "all good" — verify by eye. In the summary verdict this counts as `"<N> not verified (out of reach)"`.
 - ⏭ skip — there is physically NOTHING to compare (inapplicable): a scroll container (frame
   height uninformative) / a node without auto-layout (no inter-element metrics). Not a defect and
   not "unverified" — reads clean.
 
 **"Is the pair fully verified?"** = `fail===0 && demoted===0 && unchecked===0`. `skip>0` (only
-inapplicable axes) does NOT block it. The summary is honest: `🟰N`/`👁N` in the header + "N not
-verified (demoted)/(out of reach) — verify by eye" ⇒ green ≠ everything-visible-verified.
+inapplicable axes) does NOT block it. The summary is honest: `🟰N`/`👁N` in the header, and the
+verdict line carries `"<N> not verified (demoted)"` / `"<N> not verified (out of reach)"`
+⇒ green ≠ everything-visible-verified.
 **The machine readiness gate is `verification.complete` (Step 6):** it aggregates this across ALL
 pairs AND frame coverage (uncovered regions / unverified between-children spacing / truncation).
 Do not report "verified" until `complete !== true` is resolved; on `false` work the `blocking`
@@ -330,7 +382,7 @@ terminal `no discrepancies above tolerance` is the green.
   drawn is not; verify by eye / get_screenshot focus crop), radial/conic gradient GEOMETRY
   (center/radius/shape — flagged 👁 unchecked), second-and-further background layers (only the
   first layer is compared; a `gradient-layers` info row flags the rest), and multi-shadow stacks
-  (>1 shadow → `⚠️ box-shadow` "matching not attempted").
+  (>1 shadow → `⚠️ box-shadow` `"the shadow list was not matched (single-shadow-first) — verify visually"`).
 - offset-cross is measured on the child's BOX edges: internal cross-axis alignment of CONTENT
   inside the child (e.g. text pushed down by the child's own padding) is invisible to the pair's
   diff — check it with a separate pair on that child.

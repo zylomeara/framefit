@@ -7,27 +7,66 @@ strangely, including a box whose server refuses to boot: a crash-looping contain
 `/health`, and it is not running either, so `docker compose run` - not `exec` - is what still gets a
 verdict out of the same image and the same service environment.
 
-Three invocation forms:
+Three invocation forms, one fence each: they run from different directories and have three different
+preconditions, so there is no single working directory the three of them share.
+
+**A source checkout.** This form runs **from `mcp-server/`**, after `pnpm install && pnpm build`
+there. `dist/` is git-ignored, so it does not exist until you build, and it is never created at the
+repo root: `node dist/index.js status` one level up fails with `MODULE_NOT_FOUND` rather than
+reporting anything about the instance. There is no `framefit` on PATH either - the bin symlink exists
+only in the image (see `docker/Dockerfile`, `ln -s /app/dist/index.js /usr/local/bin/framefit`) - so
+call the built entrypoint directly.
 
 ```bash
-# A source checkout. There is no `framefit` on PATH - the bin symlink exists only in the image
-# (docker/Dockerfile:21) - so call the built entrypoint directly.
-node dist/index.js status
+cd mcp-server
+# precondition: built-checkout
+set -o pipefail
+report=$(mktemp)
+node dist/index.js status | tee "$report"
+grep -qE '^[0-9]+ ok, [0-9]+ skipped, [0-9]+ failed' "$report"
+```
 
-# A deployed box whose container is RUNNING (compose service `framefit`, or `framefit-local` under
-# the local profile).
+`tee`, not a plain redirect: the six check lines are the answer you came here for, so they stay on
+your terminal and the copy exists only for the `grep`. `mktemp`, not a fixed path: a named file in
+`/tmp` survives the run, so a later invocation that produced no report at all would still find the
+previous one and `grep` it green. That `grep` is the point of the last line - `status` exits 0
+whenever no check FAILED, including a run in which almost everything was SKIPPED, so the exit status
+alone does not prove a report was produced. `set -o pipefail` keeps a real failure real: without it
+the pipeline reports `tee`'s status, and a `status` that exited 1 would read as success. The checks
+and the verdict line are on stdout; only the advisory `note:` goes to stderr.
+
+**A deployed box whose container is RUNNING** - compose service `framefit`, or `framefit-local` under
+the local profile:
+
+```bash
+# not-executed: requires-running-deployment
+cd docker
 docker compose exec framefit framefit status
+```
 
-# A deployed box whose container is NOT running - the crash-loop case this command exists for.
-# Every compose service declares `restart: unless-stopped`, so a container that dies during boot
-# sits in `Restarting`, and `exec` refuses outright:
-#     Error response from daemon: Container <id> is restarting, wait until the container is running
-# `run` starts a THROWAWAY container from the same image, carrying the same service environment
-# (compose enables the service's own profile for `run`, so no --profile flag is needed). The image
-# is CMD-only, so `framefit status` replaces the server command cleanly; `--rm` leaves nothing
-# behind, and `run` publishes no host port, so it cannot collide with the looping container.
+**A deployed box whose container is NOT running** - the crash-loop case this command exists for.
+Every compose service declares `restart: unless-stopped`, so a container that dies during boot sits
+in `Restarting`, and `exec` refuses outright with
+`Error response from daemon: Container <id> is restarting, wait until the container is running`.
+`run` starts a THROWAWAY container from the same image, carrying the same service environment
+(compose enables the service's own profile for `run`, so no `--profile` flag is needed). The image
+declares no `ENTRYPOINT` of its own and inherits `docker-entrypoint.sh` from its base image
+(see `docker/Dockerfile`, `FROM node:20-alpine AS runtime`); that script execs the arguments it is
+handed, so `framefit status` still replaces the server command cleanly. `--rm` leaves nothing behind,
+and `run` publishes no host port, so it cannot collide with the looping container.
+
+```bash
+# not-executed: requires-env-file
+cd docker
 docker compose run --rm framefit framefit status
 ```
+
+`run` does not need the container to be up - that is the whole point of it - so what stops this one
+unattended is not the deployment but a file. The `full`-profile `framefit` service declares
+`env_file: ../mcp-server/.env`, and compose refuses before starting anything when that git-ignored
+file is absent: `env file .../mcp-server/.env not found`, exit 1. Create it first - see
+[`docker/README.md`](../docker/README.md) section 2. Under the `local` profile the service is
+`framefit-local`, which declares no `env_file` and needs no such setup.
 
 Flags:
 
@@ -77,14 +116,16 @@ server survives, and for those this check is the only place they ever surface.
 - **ok**: `loadConfig` (the real zod schema) accepts the environment, and in multi-tenant
   `loadMultiTenantEnv` accepts it too. `detail` names the effective mode and which loaders ran.
 - **fail, and boot aborts**: `DS_TEAM_IDS` and `MULTI_TENANT` set together (a hard boot guard, so the
-  container restart-loops); `loadConfig` rejects a value (`LOG_LEVEL=verbose`, a broken limits
-  relationship); in multi-tenant, a required variable missing or `ENCRYPTION_KEY` not 64 hex
-  characters.
+  container restart-loops); an unparseable team id in `DS_TEAM_IDS` - `parseTeamIds` throws inside
+  `createEnvGraphFromConfig` (see `mcp-server/src/infrastructure/env-graph.ts`, `throws on a garbage id`),
+  the process prints `fatal:` and exits 1, so under `restart: unless-stopped` this is a crash loop too
+  (the message names the offending id - team ids are public identifiers and are deliberately not
+  redacted); `loadConfig` rejects a value (`LOG_LEVEL=verbose`, a broken limits relationship); in
+  multi-tenant, a required variable missing or `ENCRYPTION_KEY` not 64 hex characters.
 - **fail, and the server still boots**: `MULTI_TENANT` set while `MCP_TRANSPORT` is not `http` - it
   boots, but single-tenant with no auth layer, which is not the mode the environment claims;
   `DS_TEAM_IDS` set without `FIGMA_TOKEN` - it boots healthy and only logs
-  `env_graph.disabled_no_token`, leaving cross-library aliases silently unresolved; an unparseable
-  team id (the message names it - team ids are public identifiers and are deliberately not redacted).
+  `env_graph.disabled_no_token`, leaving cross-library aliases silently unresolved.
 - **skipped**: never. It needs nothing but the environment.
 
 The `config` check answers questions about the environment's SHAPE. It cannot tell you that a
@@ -213,9 +254,11 @@ Exactly one JSON document on stdout. Fields:
 - `checks[]` - one object per check, in registry order: `{ id, state }` plus `reason` and/or
   `detail`, by state: an `ok` row always carries `detail` and never `reason`; a `skipped` row always
   carries `reason` and never `detail`; a `fail` row always carries `reason` and MAY carry `detail`
-  too. Read both on a failure - a `figma` failure carries `detail.accepted` ("k of n" probes
-  accepted) and a `tokens` failure over a bad default carries `detail.invalid_non_default`, so a
-  consumer that reads only `reason` on failures drops the numbers behind them.
+  too. Read both on a failure - a MULTI-TENANT `figma` failure carries `detail.accepted` ("k of n"
+  probes accepted), though the single-tenant one does not: that branch probes a single token and
+  returns `reason` alone, with no "k of n" to report. A `tokens` failure over a bad default carries
+  `detail.invalid_non_default`. So a consumer that reads only `reason` on failures drops the numbers
+  behind them - and one that assumes `detail` is always there on a failure breaks on single-tenant.
 - `summary` - `{ total, ok, skipped, failed, complete, ok_overall }`.
   - `total`, `ok`, `skipped`, `failed` - counts over the checks that COMPLETED, which on the deadline
     path is fewer than the whole registry.
@@ -229,12 +272,14 @@ Exactly one JSON document on stdout. Fields:
 ## Scope: what status can and cannot see
 
 `status` reads the **process environment only**. It never loads a `.env` file - unlike `pnpm start`,
-which passes `--env-file-if-exists=.env` (`mcp-server/package.json:23`). Under `docker compose exec` it
-therefore sees exactly the service's environment, which is the environment the server itself booted
-with. Under `docker compose run` it sees that environment as compose renders it NOW - from the compose
-file, `env_file` and your shell - which is the right question to ask of a container that will not boot,
-but it is not proof of what the looping container started with if the config changed since. In a shell
-where you have only sourced a `.env` by hand, it sees whatever that shell exported and nothing more.
+which passes `--env-file-if-exists=.env`
+(see `mcp-server/package.json`, `"start": "node --env-file-if-exists=.env dist/index.js"`). Under
+`docker compose exec` it therefore sees exactly the service's environment, which is the environment
+the server itself booted with. Under `docker compose run` it sees that environment as compose renders
+it NOW - from the compose file, `env_file` and your shell - which is the right question to ask of a
+container that will not boot, but it is not proof of what the looping container started with if the
+config changed since. In a shell where you have only sourced a `.env` by hand, it sees whatever that
+shell exported and nothing more.
 
 It also cannot see a **running server's memory**. The single-tenant variable graph is built in the
 server process and held there for the life of that process, so a fresh `sync` is invisible to a running

@@ -100,17 +100,25 @@ It deliberately says nothing about what deleting a thread root does to its repli
 reference documents the author-only rule and no cascade, and the only experiment that would settle
 it destroys real comments.
 
-**6. The structured log surface changed: one field renamed, one field added, three new events.**
+**6. The structured log surface changed: one field's value changed, one field added, five new
+events.**
 
 `use_case.start` and `tool.error` lines now carry `tool: "delete_comment"`. A log query, alert or
 dashboard pinned to `resolve_comment` matches nothing.
 
 Two more things an operator parsing these lines will see. `server.listening` gained `bind_host`,
-carrying the address the socket actually bound (see item 1). And three `info` events are new, one
-per tool that now degrades instead of failing when a render is unavailable:
+carrying the address the socket actually bound (see item 1). And five events are new. Three of them
+are `info`, one per tool that now degrades instead of failing when a render is unavailable:
 `review_board.screenshots_unavailable`, `get_screenshot.tiles_unavailable` and
 `get_pin_detail.full_res_unavailable`. They fire on calls that used to either fail outright or succeed
 silently.
+
+The other two are refusals, one for each refusal this release adds. `mcp.origin_rejected` (`warn`,
+item 4) is one line per request turned away for its `Origin`, carrying that origin truncated to 64
+characters plus `origin_truncated`. `dom_snapshot.upload_rejected` (`info`, item 8) is one line per
+404 on an unknown or expired capability token, carrying `capTokenPrefix` and the client's declared
+`content-length` - which is a claim rather than a measurement, since that path deliberately never
+reads the body. Both fire on paths that logged nothing at all before.
 
 **7. `FRAMEFIT_READ_ONLY` now actually refuses writes on the single-tenant and stdio paths.**
 
@@ -167,10 +175,11 @@ field next to a reason that names something else - produced kind `auth`. It now 
 The same applies to a reason naming both an account-type limit and a scope: plan outranks scope,
 so that is `forbidden` too.
 
-Nothing Figma really sends moved: measured over a 476-case matrix, the 16 cases that changed are
-all bodies Figma does not produce. But if you alert on `error_kind: "auth"`, or branch on the
-`[auth]` prefix, those cases now arrive as `forbidden`. The point of the change is that an
-intermediary can no longer choose the kind by writing one word into a body.
+Nothing Figma really sends moved: measured over a 476-case matrix - 17 bodies x 7 statuses x 4 call
+shapes - the 16 cases that changed are all bodies Figma does not produce. But if you alert on
+`error_kind: "auth"`, or branch on the `[auth]` prefix, those cases now arrive as `forbidden`. The
+point of the change is that an intermediary can no longer choose the kind by writing one word into
+a body.
 
 **11. `framefit status` reports and checks the bind interface, and its skipped Figma check no
 longer reads as a pass.**
@@ -194,6 +203,27 @@ teach the same thing: `find_nodes` and `get_review_board`. `compare_node_to_dom`
 an emoji in instructions an agent acts on. Five field descriptions that quoted the Cyrillic halves
 of the default review-board and `find_threads` name patterns now describe the default instead - the
 patterns themselves are behaviour, are correct, and are unchanged.
+
+**13. The DOM snapshot schema is v6. Snapshots captured with an older extractor are refused.**
+
+Re-fetch the script (`get_layout_spec {include_extractor:true}`) and re-capture. A `schema: 5`
+snapshot now gets a `snapshot_schema` warn row and a `re_extract_dom` blocking item from
+`compare_node_to_dom`, and a hard error from `suggest_pairs`. Cached `snapshot_ref`s taken before
+the upgrade are equally stale.
+
+The version had to move because the change is not additive - it redefines an existing field.
+`styles.borderRadius` now means "all four CSS corners are this ONE px number", which is the only
+shape Figma's single px `cornerRadius` can be compared against. Any other radius omits the field and
+sets `styles.borderRadiusUncomparable: true` instead: corners that differ, a percentage, or an
+elliptical `8px / 4px`.
+
+Older extractors emitted a plain number for all of them - `borderRadius: 8` for
+`border-radius: 8px 0 0 0`, `50` for `border-radius: 50%` - with no flag at all, so on the wire their
+output is indistinguishable from a genuinely uniform 8px or 50px and the server has no way to tell
+the two apart. Each of those passed a matching Figma `cornerRadius`. Without the version bump the
+`corner-radius` row would have kept passing over an unmeasured difference on every stale capture -
+the same defect this release removes from the code, displaced onto the wire. Same reasoning as the
+v4 bump, where old extractors truncated text without flagging it.
 
 ### Added
 
@@ -224,8 +254,12 @@ patterns themselves are behaviour, are correct, and are unchanged.
 - **`search_design_system`'s `skipped_teams` is ordered by input, not by completion.** The team
   requests run concurrently and the array used to be appended in whatever order they settled, so a
   positional join against your own team list was unreliable - and silently so, since with one slow
-  team it was usually right. It is built by index now: entry `n` is the `n`th team you asked
-  about.
+  team it was usually right. Each failure is now recorded at its own index and the array is
+  compacted before it is returned, so it carries only the teams that failed, in the order the
+  teams were searched. That list is not your array: `team_id` takes one team, and the multi-tenant
+  fallback that accepts none searches your registered teams, deduplicated and capped at the first
+  5. So a positional join still does not work - the entry at position `n` is the `n`th team that
+  FAILED. Read `team_id` off each entry.
 - **A repeated failure is no longer diagnosed differently from the first one.** The negative cache
   dropped the upstream reason on the way in and out, so a cached 400 lost the quote and fell back
   to generic advice.
@@ -237,5 +271,10 @@ patterns themselves are behaviour, are correct, and are unchanged.
 - **Both documented `npx -y framefit` one-liners now set `MCP_TRANSPORT=stdio`.** The server
   defaults to the HTTP transport, so the documented line used to boot an HTTP server the MCP host
   never spoke to.
-- **`framefit status` names a command you can actually run** for the deployment you are in: a
-  source checkout, an installed bin, or a container.
+- **`get_variables` and `search_design_system` now end a refusal at a command you can actually
+  run.** Every branch of their 403 diagnosis used to end in Figma's web UI and at nothing runnable
+  against this instance. Both now append a `framefit status` line derived from how this process was
+  started - a source checkout, an installed bin, or a container - together with the caveat that
+  makes it answerable in the mode you are in: which credential that run would probe, and whether it
+  would probe one at all. This is a change to those two tool errors only; what `status` itself
+  prints changed for its own reasons, in item 11 above.

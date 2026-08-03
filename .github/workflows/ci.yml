@@ -88,6 +88,38 @@ jobs:
       - run: pnpm build
       - run: node scripts/stdio-smoke.mjs
 
+  doc-sequences:
+    name: documented command sequences
+    if: github.event_name != 'schedule'   # weekly cron runs only the secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: mcp-server/pnpm-lock.yaml
+      # No `pnpm install` step: the runner materialises the tree under review into a temp copy and
+      # installs THERE, and only for a page that declares `# precondition: built-checkout`. pnpm is
+      # on PATH above for that copy's sake. Installing here would put node_modules in the checkout,
+      # which the copy deliberately does not inherit.
+      #
+      # Both pages run the commands they document, so this job needs docker — present on
+      # ubuntu-latest. `docker/README.md` builds the image twice (local profile, then full); the two
+      # bring-ups publish the same host port, so the runner tears each stack down before the next
+      # fence. Measured warm on darwin: 25.7s for the whole page, of which 22s is the two bring-ups.
+      # A cold runner pays a full image build on the first one.
+      #
+      # NO PAGE ARGUMENTS, deliberately. With no argument the runner drives every page in its own
+      # DRIVEN table, so the list of pages CI covers has exactly one home. Naming them here instead
+      # meant that deleting one `- run:` line silently dropped four of the five executed fences while
+      # the job stayed green — this gate's own failure mode, inside the job that runs it.
+      # tests/unit/doc-sequences-ci.test.ts asserts this step exists and still passes no page.
+      - run: node scripts/run-doc-sequences.mjs
+
   secrets-scan:
     runs-on: ubuntu-latest
     permissions:
@@ -107,11 +139,12 @@ jobs:
 
   publish-image:
     name: publish image to GHCR
-    # Gate: only a green test run publishes. `needs` on the four jobs above means a
-    # red test — or a red gitleaks scan — blocks the push. On `schedule` the three
-    # test jobs skip, the skip propagates here, and no cron publication happens.
+    # Gate: only a green test run publishes. `needs` on the five jobs above means a
+    # red test — or a red gitleaks scan, or documentation whose own commands no longer
+    # run — blocks the push. On `schedule` the four test jobs skip, the skip propagates
+    # here, and no cron publication happens.
     # NEVER add always()/!cancelled() to this if: — that would defeat the gate.
-    needs: [unit, integration, stdio-smoke, secrets-scan]
+    needs: [unit, integration, stdio-smoke, secrets-scan, doc-sequences]
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&

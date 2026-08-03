@@ -52,6 +52,7 @@ No server to host, no database, no auth. Claude Code spawns and tears down the p
 Prerequisites: Node 20+ and [pnpm](https://pnpm.io/installation).
 
 ```bash
+# not-executed: requires-public-repo
 git clone https://github.com/zylomeara/framefit.git && cd framefit/mcp-server
 pnpm install
 pnpm build
@@ -65,6 +66,7 @@ Register it with Claude Code — replace the path with your absolute checkout pa
 [Figma token](#figma-token):
 
 ```bash
+# not-executed: requires-mcp-host,contains-placeholder
 claude mcp add framefit \
   --env MCP_TRANSPORT=stdio \
   --env FIGMA_TOKEN=figd_your_token_here \
@@ -78,10 +80,22 @@ For cross-library design tokens, add `--env DS_TEAM_IDS=<team-id>,…` (comma-se
 `figma.com/team/<id>` URLs): the named teams' published libraries sync into an in-memory graph so
 `get_variables` resolves those aliases headless (`resolved_via:"graph"`) — see
 [`docs/tools/design-system.md`](docs/tools/design-system.md#get_variables). Unset, aliases stay
-honestly unresolved. The first graph-needing call (`get_variables`, `get_design_context`, or
-`compare_node_to_dom`) after startup blocks while those libraries sync — several minutes on a large
-design system (measured ~11 libraries / 7000+ variables), one-time per process; later calls are
-fast and the call is not hung.
+honestly unresolved.
+
+The first graph-needing call (`get_variables`, `get_design_context`, or `compare_node_to_dom`)
+after startup blocks while those libraries sync — several minutes on a large design system (the
+~11 libraries / 7000+ variables figure is inherited from earlier notes and was not re-measured
+here). Calls that arrive during that sync do not skip it: they join the same in-flight build and
+block with it, so for those minutes every graph-needing call waits. None is hung — they all
+unblock together when the build finishes, and from then on the sync adds nothing to a call
+until the graph goes stale.
+
+The sync is not a one-off either: the graph rebuilds whenever the last confirmed build is older
+than `DS_LIBRARY_TTL_SEC` (default `86400` seconds — 24 hours), so on a long-lived server the
+first graph-needing call after the TTL lapses pays the same several minutes, roughly once a day.
+A build that throws, or that comes back with zero libraries, is not confirmed and does not start
+that clock: it is retried by the next graph-needing call past a fixed 60-second interval, so
+until one confirmed build lands the cadence is a minute, not a day.
 
 > An npm package is on the way - it will replace the clone-and-build step with a one-line
 > `claude mcp add framefit --env MCP_TRANSPORT=stdio -- npx -y framefit`. The transport flag is
@@ -95,8 +109,8 @@ external Keycloak):
 
 ```bash
 cd docker
-docker compose --profile local up -d --build   # single-tenant HTTP on 127.0.0.1:3846
-curl -s http://127.0.0.1:3846/health            # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
+docker compose --profile local up -d --build --wait   # single-tenant HTTP on 127.0.0.1:3846
+curl -fsS http://127.0.0.1:${MCP_PORT:-3846}/health    # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
 ```
 
 The compose file is profile-driven (`local` / `full`); prerequisites and production notes are in
@@ -129,12 +143,44 @@ cycle automatically.
 ## Figma token
 
 The server authenticates to Figma with a personal access token (`FIGMA_TOKEN`). Generate one in
-Figma: **Settings → Security → Personal access tokens**, with scopes:
+Figma: **Settings → Security → Personal access tokens**, with the scopes for the tools you use:
 
-- `file_comments:read`
-- `file_content:read`
-- `file_variables:read` — Enterprise only; enables `get_variables` and token-name resolution in
-  design context. Everything else works without it.
+- `file_content:read` — every file-reading tool: the design-QA loop, navigation, screenshots,
+  asset export, and the review-board pair (`get_review_board`, `get_pin_detail`, which read pin
+  text from nodes and never call the comments endpoint).
+- `file_comments:read` — `get_comments`, `summarize_comments`, `find_threads`.
+- `file_comments:write` — `post_comment`, `reply_to_comment`, `delete_comment`.
+  `file_comments:read` is read-only and does not cover these; the server's own 403 names this
+  scope. Those three tools are the only ones that take no per-call `figma_token`, so they always
+  run on the server's token.
+- `file_variables:read` — Enterprise only. `get_variables` fails outright without it;
+  `get_design_context` reports the skipped stage in `degraded_stages`; `compare_node_to_dom`
+  **degrades quietly**, and its token rows read `unknown`.
+- `team_library_content:read` — `search_design_system`, which reads the published components,
+  component sets and styles of a team. A 403 is diagnosed per team and re-thrown carrying Figma's
+  own stated reason.
+- `library_content:read` — `get_libraries` fails outright without it. Component identity in
+  `get_layout_spec` / `suggest_pairs` / `compare_node_to_dom` / `get_view` **degrades quietly**
+  instead, to a `setUnresolved` info row.
+- `library_assets:read` — resolving a component key to the library file it came from. No caller
+  raises: `get_code_connect_map` returns empty with `reason:"components_unresolved"`;
+  `get_libraries` marks the result `degraded:true`; and `search_design_system`'s optional `file:`
+  narrowing **degrades quietly** — with no library keys to narrow by it stops filtering
+  altogether, still reporting `file` while returning the team's entire asset list.
+- `projects:read` — the `DS_TEAM_IDS` variable-graph sync recommended above, where it **degrades
+  quietly**: the sync logs and skips the team, so the advertised `resolved_via:"graph"` silently
+  never happens. On the multi-tenant `/accounts` team-discovery path it raises instead.
+- `current_user:read` — `framefit status`'s `figma` probe, which calls `GET /v1/me`.
+
+The design-QA loop (`get_layout_spec` → `suggest_pairs` → `compare_node_to_dom`) needs
+`file_content:read` and nothing else; each remaining scope unlocks the tools named beside it. Read
+each entry for its failure mode: the ones marked **degrades quietly** return an incomplete answer
+rather than an error, so a missing scope there looks like a result and not like a problem.
+
+Per-scope necessity is unverified. The mapping above is derived from the endpoints this server
+calls and from Figma's published scope table, not from minting one token per scope and observing
+403 against 200. The failure modes were read from the code path that emits them, per scope; they
+are not a closed list of everything a missing scope can affect.
 
 Keep the token in the client's env block (Tier 1) or `mcp-server/.env` — never in a committed
 config file. Note: Figma PATs now expire after at most 90 days.
@@ -174,12 +220,18 @@ Both build on the multi-tenant store; deployment shapes are in
 ## Development
 
 ```bash
+# not-executed: long-running-process
 cd mcp-server
 pnpm install
 cp .env.example .env      # fill FIGMA_TOKEN
-pnpm dev                  # http://127.0.0.1:3846
-pnpm test                 # unit tests   (pnpm typecheck for types)
+pnpm dev                  # http://127.0.0.1:3846 - runs until you stop it
+pnpm test                 # unit tests   (pnpm typecheck for types) - in a second shell
 ```
+
+`pnpm dev` and `pnpm start` pass `--env-file-if-exists`, which needs Node **20.19** (or 22.9 on the
+22.x line) — above the `"node": ">=20"` that `mcp-server/package.json` declares, and above the 20.6
+that plain `--env-file` needs. Tier 1 above passes neither flag, so its Node 20+ prerequisite
+stands; the [config examples](examples/mcp-config/) cover both and say which is which.
 
 The server is hexagonal (domain / ports / application / adapters); `MCP_TRANSPORT` selects `http`
 (Express + Streamable HTTP, for the docker/VPS deploy) or `stdio` (host-spawned, for local Claude
