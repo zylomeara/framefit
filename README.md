@@ -231,7 +231,7 @@ pnpm test                 # unit tests   (pnpm typecheck for types) - in a secon
 `pnpm dev` and `pnpm start` pass `--env-file-if-exists`, which needs Node **20.19** (or 22.9 on the
 22.x line) — above the `"node": ">=20"` that `mcp-server/package.json` declares, and above the 20.6
 that plain `--env-file` needs. Tier 1 above passes neither flag, so its Node 20+ prerequisite
-stands; the [config examples](examples/mcp-config/) use both and say which is which.
+stands; the [config examples](examples/mcp-config/) cover both and say which is which.
 
 The server is hexagonal (domain / ports / application / adapters); `MCP_TRANSPORT` selects `http`
 (Express + Streamable HTTP, for the docker/VPS deploy) or `stdio` (host-spawned, for local Claude

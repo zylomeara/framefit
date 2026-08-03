@@ -59,10 +59,10 @@ Rather than inlining `FIGMA_TOKEN`, put it in `mcp-server/.env` and load it via 
 }
 ```
 
-`--env-file` needs Node 20.6; `--env-file-if-exists`, used below and by this repo's own `pnpm dev` /
-`pnpm start`, needs Node 20.19 (or 22.9 on the 22.x line). Both are above the `"node": ">=20"` in
-`mcp-server/package.json`, and neither is needed on the README's Tier-1 path, which passes no
-env-file flag at all.
+`--env-file` needs Node 20.6; `--env-file-if-exists`, used by this repo's own `pnpm dev` /
+`pnpm start` and offered as an opt-in below, needs Node 20.19 (or 22.9 on the 22.x line). Both are
+above the `"node": ">=20"` in `mcp-server/package.json`, and neither is needed on the README's
+Tier-1 path, which passes no env-file flag at all.
 
 ### Live iteration on the source
 
@@ -76,7 +76,6 @@ last element, which would drop the entry point:
       "type": "stdio",
       "command": "node",
       "args": [
-        "--env-file-if-exists=/absolute/path/to/framefit/mcp-server/.env",
         "--import",
         "/absolute/path/to/framefit/mcp-server/node_modules/tsx/dist/loader.mjs",
         "--watch",
@@ -97,27 +96,41 @@ project, not this checkout. Measured on node v24.12.0 from a directory outside t
 fails with `Cannot find package 'tsx' imported from <your project>/` and then prints on stdout
 `Failed running '...'. Waiting for file changes before restarting...`.
 
-What happens after that line depends on **whether anything is left in the watch set**, and both
-outcomes are ones an MCP client cannot report. The loader failed before the entry point was ever
-resolved, so no source file was registered: the only path in the set is the one the env-file element
-put there, and Node watches that path whether or not the file exists. With it, the process **stays
-alive**, waiting for a change that will never come, and the client sees no error and no answer.
-Without it the same argv has nothing to watch, so it prints that same line and **exits 0** —
-measured five times at 116-153 ms. A success code, from a server that answered nothing.
+What happens after that line depends on **whether anything is left in the watch set**, and every
+outcome is one an MCP client cannot report. The loader failed before the entry point was ever
+resolved, so no source file was registered, and the array above puts nothing else in the set: with
+an empty set the process prints that same line and **exits 0** — measured five times at 116-153 ms.
+A success code, from a server that answered nothing. Give it anything watchable instead — an
+env-file element, or `--watch-path` — and on node v24.12.0 the same argv **stays alive** rather than
+exiting, waiting for a change that will never come. The client sees no error and no answer either
+way.
 
-`--env-file` fails a third way: with no `.env` yet on disk it exits **9** before the handshake even
-starts, which is why the array above uses `--env-file-if-exists`.
+**The array carries no env-file flag, because a fresh clone has no `mcp-server/.env`** — and every
+way of naming an absent env file costs you something. Measured against an absent file on v20.20.2,
+v22.23.2 and v24.12.0:
 
-Five elements, three of them absolute paths. Two must already exist — `tsx/dist/loader.mjs`, which
-`pnpm install` puts under `node_modules/`, and `src/index.ts` — while `.env` need not, which is the
-whole of what `--env-file-if-exists` buys you.
+- `--env-file=<path>` exits **9** before the handshake on all three, printing
+  `node: <path>/.env: not found`;
+- `--env-file-if-exists=<path>` prints `<path>/.env not found. Continuing without it.` and runs, on
+  all three;
+- `--env-file-if-exists=<path>` **together with `--watch`** — which is exactly the shape this
+  section documents — runs on v20.20.2 and v24.12.0, but on **v22.23.2** it dies before the
+  handshake with `Error: ENOENT: no such file or directory, watch '<path>/.env'`.
+
+Node 22 is in this repo's CI matrix, so the array above names no env file at all and works from a
+fresh clone on every runtime measured. **Once `mcp-server/.env` exists**, add
+`--env-file-if-exists=/absolute/path/to/framefit/mcp-server/.env` as the array's first element: with
+the file present, that combination stays up on all three.
+
+Four elements, two of them absolute paths, and both must already exist — `tsx/dist/loader.mjs`,
+which `pnpm install` puts under `node_modules/`, and `src/index.ts`.
 
 On **Windows** the loader takes a `file://` URL instead:
 `file:///C:/path/to/framefit/mcp-server/node_modules/tsx/dist/loader.mjs`. Only that one element
-changes; `--env-file-if-exists` and the entry point take a plain drive-letter path. `--import` is
-resolved as an ESM specifier, so a drive-letter path parses as a URL whose scheme is the drive
-letter — measured with `D:\...`: `ERR_UNSUPPORTED_ESM_URL_SCHEME ... Received protocol 'd:'`, the
-same with forward slashes.
+changes; the entry point takes a plain drive-letter path, and so does `--env-file-if-exists` if you
+add it. `--import` is resolved as an ESM specifier, so a drive-letter path parses as a URL whose
+scheme is the drive letter — measured with `D:\...`:
+`ERR_UNSUPPORTED_ESM_URL_SCHEME ... Received protocol 'd:'`, the same with forward slashes.
 
 ## 4. Future — npx one-liner
 

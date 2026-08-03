@@ -33,11 +33,13 @@
 //     that answered nothing, which is what a naive harness reads as a pass;
 //   - STAYS ALIVE, with the bare `tsx` and something in the WATCH SET. This is the same argv as
 //     above plus an env-file element, and that element is the whole difference: the loader failed
-//     before the entry point was resolved, so no source file was ever registered, and node watches
-//     the env-file path whether or not the file exists. Measured alive at 10s under three stdin
-//     dispositions (pipe, pipe-then-end, ignore) and at 5s from a plain shell; `--watch-path` in
-//     place of the env-file element does the same. The documented argv HAS an env-file element, so
-//     this is the shape the real page produces.
+//     before the entry point was resolved, so no source file was ever registered, and node v24.12.0
+//     watches the env-file path whether or not the file exists. Measured alive at 10s under three
+//     stdin dispositions (pipe, pipe-then-end, ignore) and at 5s from a plain shell; `--watch-path`
+//     in place of the env-file element does the same. The documented argv no longer CARRIES an
+//     env-file element -- see resolveDocArgv's note below for the node 22 measurement that took it
+//     out -- so this shape now arrives via `--watch-path`, or via the element the page tells a
+//     reader to add back once `mcp-server/.env` exists.
 //
 // The watch set is the mechanism, not "`--watch` is a supervisor" -- the same supervisor exits in
 // 130ms when the set is empty. Three shapes on ONE Node version, and `engines` is `>=20`, which
@@ -119,7 +121,14 @@ childEnv.MCP_TRANSPORT = 'stdio';
 function readLiveIterationArgs() {
   const pagePath = path.join(REPO_ROOT, CONFIG_PAGE);
   if (!existsSync(pagePath)) throw new Error(`${NO_SOURCE}: the page does not exist at ${pagePath}`);
-  const lines = readFileSync(pagePath, 'utf8').split('\n');
+  // `/\r?\n/`, not `'\n'`: a Windows checkout is CRLF, and on `'\n'` every line keeps a trailing
+  // `\r` that the fence scan below cannot see past -- `\r` IS a line terminator in JavaScript, so
+  // `.` never matches it and `$` without the `m` flag sits only at the end of the whole input.
+  // Measured against a CRLF copy of this very page: the heading test survived on its `.trim()`
+  // (headingIdx=66, same as LF) and the fence scan returned open=-1, failing the run with `the
+  // section holds no fence` -- a documentation-shaped error message for a line-ending defect, on
+  // both Windows legs of the matrix and neither POSIX one.
+  const lines = readFileSync(pagePath, 'utf8').split(/\r?\n/);
 
   const headingIdx = lines.findIndex((l) => l.trim() === LIVE_HEADING);
   if (headingIdx === -1) throw new Error(`${NO_SOURCE}: no line reads exactly \`${LIVE_HEADING}\``);
@@ -204,13 +213,21 @@ function readLiveIterationArgs() {
  * (EITHER spelling) is allowed to be absent, so only its directory is checked. Everything else that
  * resolves under the checkout must be an existing file.
  *
- * Why BOTH spellings and not just `--env-file-if-exists`, when only that one tolerates an absent
- * file: because the difference between them is a RUNTIME behaviour, and it is one of the two
- * failures this whole run exists to catch. `mcp-server/.env` is git-ignored and absent in CI, so a
- * page that regressed to `--env-file=` makes the child exit 9 with `node: <path>/.env: not found`
- * BEFORE the handshake -- which is precisely what the premature-exit guard names. Asserting it here
- * instead would report the same defect one step earlier and leave that guard undemonstrated, and a
- * guard nothing has ever fired is a guard nobody has checked.
+ * Why BOTH spellings, rather than asserting that the page uses the tolerant one: because the
+ * difference between them is a RUNTIME behaviour, and it is one of the failures this whole run
+ * exists to catch. `mcp-server/.env` is git-ignored and absent in CI, so a page that regressed to
+ * `--env-file=` makes the child exit 9 with `node: <path>/.env: not found` BEFORE the handshake --
+ * which is precisely what the premature-exit guard names. Asserting it here instead would report
+ * the same defect one step earlier and leave that guard undemonstrated, and a guard nothing has
+ * ever fired is a guard nobody has checked.
+ *
+ * AND `--env-file-if-exists` IS NOT THE SAFE SPELLING EITHER, which is why this relaxation licenses
+ * nothing beyond the directory check. It tolerates an absent file ALONE; combined with `--watch` --
+ * the live-iteration shape -- node v22.23.2 dies on `ENOENT: no such file or directory, watch
+ * '<path>/.env'` before the handshake, while v20.20.2 and v24.12.0 print the notice and run. The CI
+ * matrix includes node 22, so the documented argv now names no env file at all and the page tells a
+ * reader to add one once the file exists; if it comes back, the handshake stays the thing that
+ * decides.
  *
  * It does NOT check: flags that carry no path; a path outside the checkout (nothing rewrote it, so
  * nothing here knows what it should be); and above all it cannot tell that `--import` names a module
@@ -377,6 +394,9 @@ function withSession({ argv, cwd, label, timeoutMs, strictStdout }, drive) {
     // be the informative one, which is why the full stderr is dumped by the caller regardless.
     const lastWords = () => {
       const parts = [];
+      // Plain `'\n'` here, deliberately: the `.trim()` on the next step takes a CRLF child's
+      // trailing `\r` with it, and only the trimmed strings are read below. The doc reader in
+      // readLiveIterationArgs has no such trim, which is why it splits on `/\r?\n/` instead.
       const errLines = stderrBuf.split('\n').map((l) => l.trim()).filter((l) => l !== '');
       const firstError = errLines.find((l) => /\bError\b/.test(l));
       if (firstError !== undefined) parts.push(`stderr: ${firstError.slice(0, 200)}`);
