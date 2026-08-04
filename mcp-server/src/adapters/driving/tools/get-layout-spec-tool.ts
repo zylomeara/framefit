@@ -18,8 +18,13 @@ const InputSchema = {
   include_extractor: z.boolean().default(false)
     .describe('Include the canonical DOM extractor script (paste it VERBATIM into chrome-devtools evaluate_script).'),
   extractor_mode: z.enum(['loader', 'inline']).default('loader')
-    .describe('loader (default): an 8-line thunk that fetches the versioned extractor from the server ' +
-      '(GET /api/dom-snapshots/extractor.js) instead of inlining the whole script (738 lines, 54121 chars) ' +
+    // No size digits here on purpose: a tools/list description is cached by the client, cannot be
+    // corrected in the field, and nothing the caller DOES depends on the exact count - "the whole
+    // script" already carries the only decision it informs (loader small, inline large). A digit
+    // here would have to be gated forever; see extractor-size-lock.test.ts for where the real
+    // numbers are stated and checked.
+    .describe('loader (default): a short thunk that fetches the versioned extractor from the server ' +
+      '(GET /api/dom-snapshots/extractor.js) instead of inlining the whole script ' +
       'every call - falls back to inline automatically if the server has no public base URL configured, ' +
       'which is every stdio deployment. inline: always return the full extractor script (e.g. if the ' +
       'loader\'s script-tag injection is CSP-blocked).'),
@@ -137,14 +142,28 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
             result_truncated_note: 'result exceeded the budget — re-request the omitted node_ids in a separate get_layout_spec call (fewer node_ids at a time) or lower max_depth' } : {}),
           ...(hydration.length ? { hydration: hydration.filter((h) => kept.some((k: { node_id: string }) => k.node_id === h.node_id)) } : {}),
           ...extractorFields,
-          // The call form for the branch with NO upload_url — every stdio server, and any server
-          // without the snapshot store. The guidance below used to live only in upload_hint, i.e. in
-          // the one branch stdio never reaches, so a stdio caller got the full inline extractor and
-          // no instructions at all; the usual guess is then to re-paste it per capture and re-request
-          // it per call, which costs a cycle roughly 3x what it needs to.
+          // The call form for the branch with NO upload_url — this fires on `!uploadUrl`, which is
+          // every stdio server (no snapshot store, no public base URL) and equally any server that
+          // has a public base URL but no snapshot store: uploadUrl needs BOTH, the loader needs only
+          // the base URL, so that server would hand back a loader thunk AND this hint. No shipped
+          // wiring builds one — but the guard is `!uploadUrl`, and the hint is true of any branch it
+          // fires on: without an upload_url the snapshots come back to the caller either way.
+          // The guidance used to live only in upload_hint, i.e. in the one branch stdio never
+          // reaches, so a stdio caller got the full inline extractor and no instructions at all; the
+          // usual guess is then to re-paste it per capture and re-request it per call, which costs a
+          // cycle roughly 3x what it needs to.
+          //
+          // THE PASTE-ONCE FORM IS A THUNK, NOT AN ASSIGNMENT. chrome-devtools evaluate_script
+          // evaluates `(<what you sent>)` and then CALLS it with no arguments, so a bare
+          // `window.__extract = <script>;` does not even parse (the trailing `;` closes nothing) and
+          // the same text without the `;` parses as a function expression that is then invoked with
+          // no selectors — a TypeError inside the extractor. Wrapping the assignment in a thunk that
+          // returns is the only shape that survives both steps.
           ...(args.include_extractor && !uploadUrl ? { extractor_hint:
             'no upload_url on this server: the extractor hands the snapshots back to you. Paste ' +
-            'extractor_js ONCE as `window.__extract = <extractor_js VERBATIM>;`, then every capture is ' +
+            'extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; ' +
+            "return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare " +
+            'assignment throws) — then every capture is ' +
             `\`async () => await window.__extract(["<sel>", …]${stdioDepthArgs})\` (a reload drops the ` +
             'handle — paste again). Pass include_extractor:false on every later get_layout_spec call. ' +
             'Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom.' } : {}),

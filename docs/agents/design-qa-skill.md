@@ -81,8 +81,14 @@ async () => {
 }
 ```
 On stdio the inline script is tens of kilobytes, which you do not want to repeat per capture:
-paste it ONCE as `window.__extract = <extractor_js verbatim>;`, then every later capture is the
-short `async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the
+paste it ONCE — inside a thunk, for the same reason the capture is one. `evaluate_script` CALLS what
+you send with no arguments, so a bare `window.__extract = <extractor_js verbatim>;` is a SyntaxError
+and the same text without the `;` is invoked with no selectors and throws:
+```js
+() => { window.__extract = <extractor_js verbatim>; return 'ok'; }
+```
+Then every later capture is the short
+`async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the
 handle; paste again. Every LATER `get_layout_spec` call in the session then takes
 `include_extractor: false` — the script is already on the page, and re-requesting it is the largest
 avoidable cost on this transport. The server says both of these back to you in `extractor_hint`,

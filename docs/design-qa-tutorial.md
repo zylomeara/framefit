@@ -87,8 +87,17 @@ On the stdio server the [quickstart](../README.md#quickstart) installs, this cal
 
   `extractor_js` goes into that one slot verbatim, and on stdio that is the whole inline script —
   tens of kilobytes of it, which is more than you want to repeat per capture. **Paste it once and
-  keep the handle**: send one `evaluate_script` whose whole body is
-  `window.__extract = <extractor_js VERBATIM>;`, and every capture after that is the short
+  keep the handle** — and note that the same rule applies to the paste itself: `evaluate_script`
+  calls what you send, so a bare `window.__extract = <extractor_js VERBATIM>;` is a `SyntaxError`
+  (the trailing `;` closes nothing inside `(…)`), and the same text without the `;` parses as a
+  function expression that is then invoked with no selectors — the `TypeError` again. The paste is a
+  thunk too:
+
+  ```js
+  () => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }
+  ```
+
+  Every capture after that is the short
   `async () => await window.__extract([".card", ".card__title", ".card__price"])`. The handle lives
   on the page, so a reload or a navigation drops it and you paste again. Do not write your own
   `getComputedStyle` walker instead: the extractor and the server agree on a snapshot schema, and the
@@ -97,10 +106,13 @@ On the stdio server the [quickstart](../README.md#quickstart) installs, this cal
   `extractor_mode` asks for by default, and it degrades to the inline script whenever the server has
   no public base URL to point a browser at
   (see `mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts`, `useLoader = extractorMode === 'loader' && !!deps.publicBaseUrl`);
-- `extractor_hint` — everything in the two bullets above, said back to you by the server in one
-  string: the call form, paste-once-and-keep-the-handle, `include_extractor: false` on every later
-  call, and hand each snapshot to the matching `pairs[i].dom`. It is returned wherever there is no
-  `upload_url`, which is what an HTTP deployment gets `upload_hint` for instead.
+- `extractor_hint` — the server saying the same thing back to you in one string: the paste-once thunk
+  and the short call form from the bullet above, plus two things the bullets do not cover — hand each
+  snapshot to the matching `pairs[i].dom` (step 4), and **pass `include_extractor: false` on every
+  later `get_layout_spec` call in the session**. That last one is the largest avoidable cost on this
+  transport: the script is already on the page, so re-requesting it re-sends the whole inline
+  extractor — tens of kilobytes through your context — for nothing. It is returned wherever there is
+  no `upload_url`, which is what an HTTP deployment gets `upload_hint` for instead.
 
 That key list is this call's, not the tool's: `extractor_mode: "inline"` returns no `extractor_note`
 (nothing degraded — you asked for inline), and `text_leaves: true`, or a `node_ids` entry the file

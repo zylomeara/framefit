@@ -55,9 +55,12 @@ One prerequisite is not a package: the design-QA cycle measures a *rendered* pag
 real browser through a browser-automation MCP running alongside framefit (the
 [agent skill](docs/agents/design-qa-skill.md) is written against chrome-devtools tool names). On
 stdio there is no server for that browser to fetch the DOM extractor from, so `get_layout_spec`
-hands it back inline — 54121 characters, once per session if you park it on `window.__extract`. One
-component capture then runs roughly 30,000 characters and crosses the agent's context twice: out of
-the browser, and back in as `compare_node_to_dom`'s `pairs[].dom`.
+hands it back inline — 54121 characters, once per session if you park it on `window.__extract`
+(`() => { window.__extract = <extractor_js verbatim>; return 'ok'; }` — `evaluate_script` calls what
+you send, so the paste has to be a thunk). Each snapshot it returns then runs roughly 30,000
+characters, and one capture carries one snapshot per pair — three for the tutorial's card — each
+crossing the agent's context twice: out of the browser, and back in as `compare_node_to_dom`'s
+`pairs[].dom`.
 
 ```bash
 # not-executed: requires-public-repo

@@ -196,10 +196,35 @@ describe('get_layout_spec tool', () => {
     it('names the 1-arg call form, the reusable handle, include_extractor:false and pairs[i].dom', async () => {
       const run = harness({ getNodesRaw }); // no publicBaseUrl, no snapshotStore
       const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
-      expect(out.extractor_hint).toContain('window.__extract = <extractor_js VERBATIM>;');
+      expect(out.extractor_hint).toContain("() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }");
       expect(out.extractor_hint).toContain('await window.__extract(["<sel>", …])');
       expect(out.extractor_hint).toContain('include_extractor:false');
       expect(out.extractor_hint).toContain('pairs[i].dom');
+    });
+
+    // The previous version of the row above asserted `window.__extract = <extractor_js VERBATIM>;`,
+    // which is what the hint said and what does not run: chrome-devtools evaluate_script evaluates
+    // `(<what you sent>)` and CALLS the result with no arguments (chrome-devtools-mcp
+    // build/src/tools/script.js, `evaluateHandle(\`(${fnString})\`)` then `fn(...args)` with an empty
+    // args array -- byte-identical across installed versions 1.0.1 through 1.6.0). So the shipped
+    // text was a SyntaxError with the trailing `;` and a TypeError inside the extractor without it,
+    // and a toContain() gate went green on both. This row therefore does not read the hint, it RUNS
+    // it, through the wrapper's own two steps.
+    it('EXECUTES: the paste form the hint delivers really parks the extractor on window.__extract', async () => {
+      const run = harness({ getNodesRaw });
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+
+      // Lift the paste form out of the delivered string -- no second copy of it in this file, so a
+      // hint that stops carrying one fails here rather than testing a literal nobody ships.
+      const pasteForm = /`(\(\) => \{ window\.__extract = <extractor_js VERBATIM>;[^`]*)`/.exec(out.extractor_hint)?.[1];
+      expect(pasteForm, 'the hint carries no `() => { window.__extract = ... }` paste form').toBeDefined();
+
+      const fnString = pasteForm!.replace('<extractor_js VERBATIM>', out.extractor_js);
+      const fakeWindow: { __extract?: unknown } = {};
+      // The wrapper's two steps, in order: evaluate `(fnString)`, then call it with zero arguments.
+      const fn = new Function('window', `return (${fnString})`)(fakeWindow) as () => unknown;
+      expect(() => fn(), 'the delivered paste form throws when evaluate_script calls it').not.toThrow();
+      expect(typeof fakeWindow.__extract, 'window.__extract is not a function after the paste').toBe('function');
     });
 
     it('carries depth/budget in the uploadUrl-less positional form when max_depth is given', async () => {
