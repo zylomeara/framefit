@@ -96,6 +96,13 @@ export const OkSchema = z.object({
   status: z.literal('ok').optional(),
   selector: z.string().optional(),
   innerWidth: z.number().positive(),
+  // NOT a schema bump, deliberately: this repo bumps for a change in MEANING (see v4 and v6 above --
+  // both made a stale capture indistinguishable on the wire from a fresh one), and this field is
+  // additive and optional. A pre-this-release extractor omits it, the page-gutter demote in diff.ts
+  // never fires, and such a capture behaves exactly as it does today: the gutter shortfall stays a
+  // FAIL. The DIRECTION is what settles it -- an old snapshot loses an explanation, it never gains a
+  // green over a difference nobody measured, so nothing has to be rejected to stay honest.
+  layoutViewportWidth: z.number().positive().optional(),
   rect: Rect,
   borders: EdgesSchema,
   borderColors: StringEdges.optional(),

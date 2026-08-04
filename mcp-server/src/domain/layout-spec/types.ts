@@ -175,6 +175,7 @@ export interface DomSnapshotOk {
   status?: 'ok';
   selector?: string;
   innerWidth: number;
+  layoutViewportWidth?: number; // documentElement.clientWidth — the width CSS laid the page out in; innerWidth minus it = the page scrollbar gutter
   rect: SpecRect;           // getBoundingClientRect (border-box)
   borders: Edges;           // computed border widths — diff subtracts them when computing paddings
   borderColors?: { top?: string; right?: string; bottom?: string; left?: string };
