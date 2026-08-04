@@ -83,7 +83,10 @@ async () => {
 On stdio the inline script is tens of kilobytes, which you do not want to repeat per capture:
 paste it ONCE as `window.__extract = <extractor_js verbatim>;`, then every later capture is the
 short `async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the
-handle; paste again.
+handle; paste again. Every LATER `get_layout_spec` call in the session then takes
+`include_extractor: false` — the script is already on the page, and re-requesting it is the largest
+avoidable cost on this transport. The server says both of these back to you in `extractor_hint`,
+returned beside `extractor_js` wherever there is no `upload_url`.
 Only where there IS a loader: if it fails with 'extractor script blocked (CSP?)' the page restricts
 script-src — re-request `get_layout_spec {include_extractor: true, extractor_mode: "inline"}` and
 work with the full inline extractor (everything below stays the same). On stdio you already have it.
@@ -129,21 +132,24 @@ compare_node_to_dom({
   frame_node_id: "<frame from step 1>",   // enables the viewport guard
   expected_overlay_width: 400,            // fixed overlay (drawer/modal): see step 2
   pairs: [
-    { node_id: "12:340", dom_ref: { ref: "<snapshot_ref>", index: 0 }, label: "panel-body" },
-    { node_id: "12:341", dom_ref: { ref: "<snapshot_ref>", index: 1 }, label: "row-item",
+    { node_id: "12:340", dom: <snapshot for selector 1>, label: "panel-body" },
+    { node_id: "12:341", dom: <snapshot for selector 2>, label: "row-item",
       expected_component: "ds-list-item" },  // optional
   ],
   tolerance_px: 1,
 })
 ```
-**`dom_ref.index` is the recommended key**: the selector's position in the array you handed the
-extractor (0-based; duplicates stay distinguishable). The `selector: "<string>"` alternative
-works but must match BYTE-FOR-BYTE and cannot distinguish duplicate selectors.
-A ref lives 30 minutes from last access (every compare extends it) — "saw a ❌, re-read the spec,
-re-ran the pair" works without re-capturing. Expired → the report says honestly "re-run the
-extractor", not a cryptic error. `dom_ref` needs the snapshot store, which only the HTTP server
-paths construct: on stdio pass the snapshot object as `dom:` instead — not a fallback there, the
-only option.
+`dom` is the snapshot OBJECT the extractor returned for that selector, in the order you handed the
+selectors in. On stdio this is not a fallback, it is the only option — `dom_ref` needs the snapshot
+store, which only the HTTP server paths construct.
+
+**Where there IS an `upload_url`**, pass `dom_ref: { ref: <snapshot_ref>, index: 0 }` instead and
+keep the whole snapshot out of your context. **`dom_ref.index` is the recommended key** there: the
+selector's position in the array you handed the extractor (0-based; duplicates stay
+distinguishable). The `selector: "<string>"` alternative works but must match BYTE-FOR-BYTE and
+cannot distinguish duplicate selectors. A ref lives 30 minutes from last access (every compare
+extends it) — "saw a ❌, re-read the spec, re-ran the pair" works without re-capturing. Expired →
+the report says honestly "re-run the extractor", not a cryptic error.
 
 ### Step 5 — report
 Paste `report_markdown` from the response INTO YOUR ANSWER AS IS (do not rebuild the table by

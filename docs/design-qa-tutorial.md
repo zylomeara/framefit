@@ -66,7 +66,8 @@ One call projects the Figma side and hands you the DOM extractor:
 ```
 
 On the stdio server the [quickstart](../README.md#quickstart) installs, this call comes back with
-`file`, `snapshot_schema`, `specs`, `hydration`, `extractor_js` and `extractor_note`:
+`file`, `snapshot_schema`, `specs`, `hydration`, `extractor_js`, `extractor_note` and
+`extractor_hint`:
 
 - `specs[]` — the diff-ready Figma projection (rects, auto-layout axis/gap/padding, children
   geometry, typography, fills);
@@ -95,7 +96,11 @@ On the stdio server the [quickstart](../README.md#quickstart) installs, this cal
 - `extractor_note` — `loader unavailable without public base URL — inline returned`. A loader is what
   `extractor_mode` asks for by default, and it degrades to the inline script whenever the server has
   no public base URL to point a browser at
-  (see `mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts`, `useLoader = extractorMode === 'loader' && !!deps.publicBaseUrl`).
+  (see `mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts`, `useLoader = extractorMode === 'loader' && !!deps.publicBaseUrl`);
+- `extractor_hint` — everything in the two bullets above, said back to you by the server in one
+  string: the call form, paste-once-and-keep-the-handle, `include_extractor: false` on every later
+  call, and hand each snapshot to the matching `pairs[i].dom`. It is returned wherever there is no
+  `upload_url`, which is what an HTTP deployment gets `upload_hint` for instead.
 
 That key list is this call's, not the tool's: `extractor_mode: "inline"` returns no `extractor_note`
 (nothing degraded — you asked for inline), and `text_leaves: true`, or a `node_ids` entry the file

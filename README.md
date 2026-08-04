@@ -51,6 +51,14 @@ planning batch usage.
 No server to host, no database, no auth. Claude Code spawns and tears down the process itself.
 Prerequisites: Node 20+ and [pnpm](https://pnpm.io/installation).
 
+One prerequisite is not a package: the design-QA cycle measures a *rendered* page, so it drives a
+real browser through a browser-automation MCP running alongside framefit (the
+[agent skill](docs/agents/design-qa-skill.md) is written against chrome-devtools tool names). On
+stdio there is no server for that browser to fetch the DOM extractor from, so `get_layout_spec`
+hands it back inline — 54121 characters, once per session if you park it on `window.__extract`. One
+component capture then runs roughly 30,000 characters and crosses the agent's context twice: out of
+the browser, and back in as `compare_node_to_dom`'s `pairs[].dom`.
+
 ```bash
 # not-executed: requires-public-repo
 git clone https://github.com/zylomeara/framefit.git && cd framefit/mcp-server

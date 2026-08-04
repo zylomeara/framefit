@@ -188,6 +188,39 @@ describe('get_layout_spec tool', () => {
     });
   });
 
+  // The call-form guidance used to exist ONLY inside upload_hint, i.e. only on the branch a stdio
+  // server never reaches: a stdio caller got the whole inline extractor and no instructions at all.
+  describe('extractor_hint (the branch with no upload_url)', () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+
+    it('names the 1-arg call form, the reusable handle, include_extractor:false and pairs[i].dom', async () => {
+      const run = harness({ getNodesRaw }); // no publicBaseUrl, no snapshotStore
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+      expect(out.extractor_hint).toContain('window.__extract = <extractor_js VERBATIM>;');
+      expect(out.extractor_hint).toContain('await window.__extract(["<sel>", …])');
+      expect(out.extractor_hint).toContain('include_extractor:false');
+      expect(out.extractor_hint).toContain('pairs[i].dom');
+    });
+
+    it('carries depth/budget in the uploadUrl-less positional form when max_depth is given', async () => {
+      const run = harness({ getNodesRaw });
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true, max_depth: 6 })).content[0].text);
+      expect(out.extractor_hint).toContain('await window.__extract(["<sel>", …], undefined, 5, 180)');
+    });
+
+    it('is absent where there IS an upload_url, and absent when no extractor was asked for', async () => {
+      const snapshotStore = { mint: vi.fn(() => 'cap-token') } as unknown as ToolDeps['snapshotStore'];
+      const withUpload = harness({ getNodesRaw }, { snapshotStore, publicBaseUrl: 'https://figma.test' });
+      const uploaded = JSON.parse((await withUpload({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+      expect(uploaded.upload_hint).toBeDefined();
+      expect(uploaded.extractor_hint).toBeUndefined();
+
+      const run = harness({ getNodesRaw });
+      const noExtractor = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+      expect(noExtractor.extractor_hint).toBeUndefined();
+    });
+  });
+
   describe('max_depth (drill-down)', () => {
     it('default (no max_depth) still fetches FETCH_DEPTH (5) — backward-compat', async () => {
       const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));

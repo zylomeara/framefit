@@ -18,10 +18,11 @@ const InputSchema = {
   include_extractor: z.boolean().default(false)
     .describe('Include the canonical DOM extractor script (paste it VERBATIM into chrome-devtools evaluate_script).'),
   extractor_mode: z.enum(['loader', 'inline']).default('loader')
-    .describe('loader (default): a <=7-line thunk that fetches the versioned extractor from the server ' +
-      '(GET /api/dom-snapshots/extractor.js) instead of inlining ~90 lines of JS every call - falls back to ' +
-      'inline automatically if the server has no public base URL configured. inline: always return the full ' +
-      'extractor script (e.g. if the loader\'s script-tag injection is CSP-blocked).'),
+    .describe('loader (default): an 8-line thunk that fetches the versioned extractor from the server ' +
+      '(GET /api/dom-snapshots/extractor.js) instead of inlining the whole script (738 lines, 54121 chars) ' +
+      'every call - falls back to inline automatically if the server has no public base URL configured, ' +
+      'which is every stdio deployment. inline: always return the full extractor script (e.g. if the ' +
+      'loader\'s script-tag injection is CSP-blocked).'),
   max_depth: z.number().int().min(1).max(8).optional()
     .describe('Capture depth for BOTH sides (Figma projection + emitted extractor); default 4. Drill into a ' +
       'childrenTruncated branch by re-fetching it deeper (e.g. max_depth:6) - pass the SAME max_depth to ' +
@@ -125,6 +126,9 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         // though get_layout_spec's OWN projection just went deeper. Absent max_depth, the hint stays
         // the prior 2-arg call, byte-for-byte (backward-compat).
         const depthArgsSuffix = maxDepth !== undefined ? `, ${effDepth - 1}, ${budgetFor(effDepth)}` : '';
+        // Same depth/budget arguments for the no-upload_url call form, which has no uploadUrl to pass:
+        // depthLeft/budget are positional args 3 and 4, so slot 2 needs an explicit `undefined`.
+        const stdioDepthArgs = depthArgsSuffix && `, undefined${depthArgsSuffix}`;
         return jsonResult({
           file: parsed.value,
           snapshot_schema: DOM_SNAPSHOT_SCHEMA_VERSION,
@@ -133,6 +137,17 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
             result_truncated_note: 'result exceeded the budget — re-request the omitted node_ids in a separate get_layout_spec call (fewer node_ids at a time) or lower max_depth' } : {}),
           ...(hydration.length ? { hydration: hydration.filter((h) => kept.some((k: { node_id: string }) => k.node_id === h.node_id)) } : {}),
           ...extractorFields,
+          // The call form for the branch with NO upload_url — every stdio server, and any server
+          // without the snapshot store. The guidance below used to live only in upload_hint, i.e. in
+          // the one branch stdio never reaches, so a stdio caller got the full inline extractor and
+          // no instructions at all; the usual guess is then to re-paste it per capture and re-request
+          // it per call, which costs a cycle roughly 3x what it needs to.
+          ...(args.include_extractor && !uploadUrl ? { extractor_hint:
+            'no upload_url on this server: the extractor hands the snapshots back to you. Paste ' +
+            'extractor_js ONCE as `window.__extract = <extractor_js VERBATIM>;`, then every capture is ' +
+            `\`async () => await window.__extract(["<sel>", …]${stdioDepthArgs})\` (a reload drops the ` +
+            'handle — paste again). Pass include_extractor:false on every later get_layout_spec call. ' +
+            'Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom.' } : {}),
           ...(uploadUrl ? { upload_url: uploadUrl, upload_hint:
             `call the extractor as: async () => { const extract = <extractor_js VERBATIM>; return await extract(["<sel>", …], "<upload_url>"${depthArgsSuffix}); } ` +
             '— extractor_js decides for itself whether to load the canonical script from the server (loader) or is already the full script (inline); ' +
