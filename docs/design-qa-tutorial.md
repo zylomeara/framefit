@@ -181,7 +181,11 @@ Hand the frame root and the DOM snapshot to the pair proposer:
 ```
 
 That object is `snapshots[0]`, the frame-root snapshot the extractor printed, **trimmed to fit this
-page** — paste yours whole. `paddings` is not decoration: a snapshot missing it makes the diff report
+page — and therefore not a size reference**: a real capture runs to tens of thousands of characters,
+scaling with the nodes captured up to the budget — which is the magnitude the
+[README](../README.md) quotes for the transport cost, and nowhere near what you see here. Paste
+yours whole.
+`paddings` is not decoration: a snapshot missing it makes the diff report
 `extractor_outdated` and raise an `update_extractor` blocking item, so a hand-shortened snapshot has
 the tool telling you to repair an extractor that is fine.
 

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetLayoutSpecTool } from '../../src/adapters/driving/tools/get-layout-spec-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
@@ -10,6 +13,28 @@ import { withFrameRaw } from './helpers/frame-raw.js';
 import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
+// Repo layout: <root>/mcp-server/tests/unit/<this file>.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/**
+ * Run a paste form the way chrome-devtools evaluate_script does: substitute the extractor into the
+ * `<extractor_js VERBATIM>` slot, evaluate `(<what you sent>)`, then CALL the result with no
+ * arguments and await it (the wrapper does `await fn(...args)`; a sync `expect(() => fn())` cannot
+ * see a rejected promise, so this awaits and a future async form stays covered).
+ *
+ * The substitution takes a REPLACER FUNCTION, not a replacement string: EXTRACTOR_JS contains `$&`
+ * and `$'`, which String.replace expands in a replacement string -- measured, that made the script
+ * it evaluated 54213 chars against the extractor's 54164, diverging from char 27592, so the proof
+ * proved a string nobody ships. The containment assert below is what keeps that honest.
+ */
+async function runsPasteForm(pasteForm: string, extractorJs: string, where: string): Promise<void> {
+  const fnString = pasteForm.replace('<extractor_js VERBATIM>', () => extractorJs);
+  expect(fnString.includes(extractorJs), `${where}: the substituted script is not the extractor byte for byte`).toBe(true);
+  const fakeWindow: { __extract?: unknown } = {};
+  const fn = new Function('window', `return (${fnString})`)(fakeWindow) as () => unknown;
+  await expect((async () => fn())(), `${where}: the paste form throws when evaluate_script calls it`).resolves.toBeDefined();
+  expect(typeof fakeWindow.__extract, `${where}: window.__extract is not a function after the paste`).toBe('function');
+}
 function harness(api: Partial<FigmaApi>, depsOverrides: Partial<ToolDeps> = {}) {
   const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000, ...depsOverrides };
@@ -219,12 +244,26 @@ describe('get_layout_spec tool', () => {
       const pasteForm = /`(\(\) => \{ window\.__extract = <extractor_js VERBATIM>;[^`]*)`/.exec(out.extractor_hint)?.[1];
       expect(pasteForm, 'the hint carries no `() => { window.__extract = ... }` paste form').toBeDefined();
 
-      const fnString = pasteForm!.replace('<extractor_js VERBATIM>', out.extractor_js);
-      const fakeWindow: { __extract?: unknown } = {};
-      // The wrapper's two steps, in order: evaluate `(fnString)`, then call it with zero arguments.
-      const fn = new Function('window', `return (${fnString})`)(fakeWindow) as () => unknown;
-      expect(() => fn(), 'the delivered paste form throws when evaluate_script calls it').not.toThrow();
-      expect(typeof fakeWindow.__extract, 'window.__extract is not a function after the paste').toBe('function');
+      await runsPasteForm(pasteForm!, out.extractor_js, 'the delivered extractor_hint');
+    });
+
+    // The hint is not the only place this form ships: three pages print it for a reader to paste, and
+    // only the delivered string was executed here. Measured: putting the old non-executing
+    // `window.__extract = <extractor_js VERBATIM>;` back on all three left the whole suite green. So
+    // each page's copy is lifted and RUN, exactly as the delivered one is.
+    it.each([
+      ['README.md', "Tier 1's paste-once parenthetical"],
+      ['docs/agents/design-qa-skill.md', 'the agent skill the workflow is written against'],
+      ['docs/design-qa-tutorial.md', "the tutorial's step-2 paste block"],
+    ])('EXECUTES: the paste form printed on %s runs too', async (page, what) => {
+      const run = harness({ getNodesRaw });
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+
+      const text = readFileSync(path.join(REPO_ROOT, page), 'utf8');
+      const pasteForm = /\(\) => \{ window\.__extract = <extractor_js VERBATIM>;[^`\n]*?\}/.exec(text)?.[0];
+      expect(pasteForm, `${page} (${what}) prints no executable \`() => { window.__extract = ... }\` paste form`).toBeDefined();
+
+      await runsPasteForm(pasteForm!, out.extractor_js, `${page} (${what})`);
     });
 
     it('carries depth/budget in the uploadUrl-less positional form when max_depth is given', async () => {

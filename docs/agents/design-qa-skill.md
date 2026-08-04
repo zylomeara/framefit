@@ -75,17 +75,17 @@ The thunk MUST be async/await either way (a sync paste is a silent failure). Wit
 `upload_url`, pass it as the second argument; on stdio, leave it off:
 ```js
 async () => {
-  const extract = <extractor_js verbatim>;
+  const extract = <extractor_js VERBATIM>;
   return await extract(["<selector for pair 1>", "<selector for pair 2>"], "<upload_url>");
   // stdio: no second argument — `return await extract(["<selector for pair 1>", …]);`
 }
 ```
 On stdio the inline script is tens of kilobytes, which you do not want to repeat per capture:
 paste it ONCE — inside a thunk, for the same reason the capture is one. `evaluate_script` CALLS what
-you send with no arguments, so a bare `window.__extract = <extractor_js verbatim>;` is a SyntaxError
+you send with no arguments, so a bare `window.__extract = <extractor_js VERBATIM>;` is a SyntaxError
 and the same text without the `;` is invoked with no selectors and throws:
 ```js
-() => { window.__extract = <extractor_js verbatim>; return 'ok'; }
+() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }
 ```
 Then every later capture is the short
 `async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the

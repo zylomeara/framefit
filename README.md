@@ -56,11 +56,13 @@ real browser through a browser-automation MCP running alongside framefit (the
 [agent skill](docs/agents/design-qa-skill.md) is written against chrome-devtools tool names). On
 stdio there is no server for that browser to fetch the DOM extractor from, so `get_layout_spec`
 hands it back inline — 54121 characters, once per session if you park it on `window.__extract`
-(`() => { window.__extract = <extractor_js verbatim>; return 'ok'; }` — `evaluate_script` calls what
-you send, so the paste has to be a thunk). Each snapshot it returns then runs roughly 30,000
-characters, and one capture carries one snapshot per pair — three for the tutorial's card — each
-crossing the agent's context twice: out of the browser, and back in as `compare_node_to_dom`'s
-`pairs[].dom`.
+(`() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` — `evaluate_script` calls what
+you send, so the paste has to be a thunk). Each snapshot it returns then runs to tens of thousands
+of characters — it scales with the nodes captured, up to the default 90-node budget, so there is no
+one figure for it — and one capture carries one snapshot per pair — three for the tutorial's card —
+each crossing the agent's context twice: out of the browser, and back in as `compare_node_to_dom`'s
+`pairs[].dom`. (The [tutorial](docs/design-qa-tutorial.md)'s printed snapshot is trimmed to fit the
+page and is not a size reference.)
 
 ```bash
 # not-executed: requires-public-repo

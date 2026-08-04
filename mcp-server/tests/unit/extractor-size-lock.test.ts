@@ -21,23 +21,33 @@
 //   DOES depends on the exact count: "the whole script" carries the only decision it informs (loader
 //   small, inline large). That delivered string, and its verbatim twin in the tool page's parameter
 //   table, therefore state no size at all -- which is why they cannot rot, and why the check on them
-//   is an ABSENCE rather than a value.
+//   is an ABSENCE rather than a value. The arm reads a size CLAIM (a number beside a size unit) at
+//   ANY length, because the first version of it matched `\d{3,7}` and was therefore blind to the two
+//   claims named above: "~90 lines" is two digits and "<=7-line thunk" is one. Measured at that
+//   version: `(the script is ~90 lines)` in the delivered description and its doc twin left this
+//   whole file green. The historical claims are run through the arm below, so it cannot go blind to
+//   them again.
 //
 // AND A REGISTRY SWEEP, because a hand-kept list of sites is exactly the structure that failed here:
-// three of the four sites were simply not on anyone's list. `every occurrence of the live count is
-// in a named file` makes MUST_STATE provably complete for today's value -- a fifth site that copies
-// the number is reported by path and line the moment it lands.
+// three of the four sites were simply not on anyone's list. The sweep population is therefore
+// DERIVED -- `git ls-files`, every tracked file -- and never typed out: a hand-kept CORPUS is that
+// same self-selected population one layer up, and measured, it was one -- `54121` on
+// `docs/snapshot-ingest.md`, a tracked page the list did not reach, left the whole suite green.
+// Anything held out of the derived population must be named in EXCLUDED with a reason from a closed
+// set. `every occurrence of the live count is in a named file` then makes MUST_STATE provably
+// complete for today's value -- a fifth site that copies the number is reported by path and line the
+// moment it lands.
 //
-// WHAT THIS DELIBERATELY DOES NOT DO: hunt for size-shaped numbers generally. Both `docs/tools/
-// design-qa.md` and `docs/design-qa-tutorial.md` legitimately carry `N chars` elisions for
-// `report_markdown`, and README states the per-SNAPSHOT cost in characters. A "any 4-6 digit number
-// near a chars unit" sweep would need an allowlist for each, and an allowlist that grows with
-// unrelated work is a hole, not a gate. Those elisions have their own live check
-// (docs-response-examples.test.ts compares each against its capture); the residual left open here is
-// a NEW site inventing a size the extractor never had, which no check on this axis reaches without
-// that allowlist.
+// WHAT THIS DELIBERATELY DOES NOT DO: hunt for size-shaped numbers generally, outside the anchor
+// windows. Both `docs/tools/design-qa.md` and `docs/design-qa-tutorial.md` legitimately carry
+// `N chars` elisions for `report_markdown`. A "any 4-6 digit number near a chars unit" sweep would
+// need an allowlist for each, and an allowlist that grows with unrelated work is a hole, not a gate.
+// Those elisions have their own live check (docs-response-examples.test.ts compares each against its
+// capture); the residual left open here is a NEW site inventing a size the extractor never had,
+// which no check on this axis reaches without that allowlist.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXTRACTOR_JS } from '../../src/adapters/driving/tools/dom-extractor.js';
@@ -86,20 +96,43 @@ const NO_SIZE_DIGIT: { file: string; what: string; anchor: string }[] = [
   },
 ];
 
-/** Files searched for stray copies of the live count. */
-const CORPUS = [
-  'README.md',
-  'docs/coverage.md',
-  'docs/design-qa-tutorial.md',
-  'docs/agents/design-qa-skill.md',
-  'docs/tools/design-qa.md',
-  'docs/tools/README.md',
-  'docs/status.md',
-  'docs/deployment.md',
-  'mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts',
-  'mcp-server/src/adapters/driving/tools/dom-extractor.ts',
-  'mcp-server/src/infrastructure/dom-snapshot-routes.ts',
-];
+/**
+ * A size CLAIM: a number beside a size unit, at any length ("~90 lines", "<=7-line thunk",
+ * "54121 chars"), plus a bare 3+ digit run, which inside an anchor window is a size and nothing else.
+ * Fresh regex per call -- a shared /g literal carries lastIndex between callers.
+ */
+function sizeClaims(text: string): string[] {
+  const re = /\b\d[\d,.]*\s*-?\s*(?:lines?|chars?|characters?|bytes?|[kKmM]B)\b|\b\d{3,}\b/g;
+  return [...text.matchAll(re)].map((m) => m[0]);
+}
+
+/**
+ * Why a tracked file may sit OUTSIDE the sweep. A closed set: an exclusion must be one of these, so
+ * "it was inconvenient" cannot become a reason and the population cannot be quietly narrowed again.
+ */
+const REASONS = {
+  recorded_capture:
+    'a recorded tool response, not a claim -- the number is there because the server printed it, and it is '
+    + 're-recorded with the extractor (docs-response-examples.test.ts compares it against the live capture)',
+  gate_header:
+    "this gate's own header, which QUOTES the historical claim it exists to prevent; the quote is history and "
+    + 'must not track the live value',
+} as const;
+
+const EXCLUDED: Record<string, keyof typeof REASONS> = {
+  'mcp-server/tests/fixtures/doc-response-captures/get_layout_spec.json': 'recorded_capture',
+  'mcp-server/tests/unit/extractor-size-lock.test.ts': 'gate_header',
+};
+
+/** Every tracked file. DERIVED, never typed out -- a hand-kept list is the failure this gate is about. */
+function trackedFiles(): string[] {
+  return execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' })
+    .split('\0')
+    .filter((f) => f !== '');
+}
+
+/** Files searched for stray copies of the live count: everything tracked, minus the named exclusions. */
+const CORPUS = trackedFiles().filter((f) => !(f in EXCLUDED));
 
 /** The anchor line plus the two either side of it -- where a reintroduced digit would land. */
 function anchorWindow(text: string, anchor: string): string | undefined {
@@ -124,7 +157,7 @@ describe('the extractor size is stated in exactly the places this gate names, an
         regressed.push(`${s.file}: ${s.what} -- the anchor "${s.anchor}" is gone, so this row checks nothing`);
         continue;
       }
-      const found = [...window_.matchAll(/\b\d{3,7}\b/g)].map((m) => m[0]);
+      const found = sizeClaims(window_);
       if (found.length) {
         regressed.push(
           `${s.file}: ${s.what} -- states a size again (${found.join(', ')}). A client caches this string; a digit in it cannot be corrected in the field, and gating it is the price of writing it`,
@@ -148,10 +181,36 @@ describe('the extractor size is stated in exactly the places this gate names, an
     expect(unregistered, 'a size claim exists that this gate does not name').toEqual([]);
   });
 
+  // The arm above is what the two stale claims in this file's header actually looked like. Its first
+  // version matched `\d{3,7}`, so it saw NEITHER of them -- the gate could not catch the defect it
+  // names. This row is those exact texts, put through the arm.
+  it('the size-digit arm sees the historical claims: one digit, two digits, and the live count', () => {
+    const blind = ['the script is ~90 lines', 'a <=7-line thunk', `${CHARS} chars`, 'roughly 30 kB']
+      .filter((claim) => sizeClaims(claim).length === 0);
+    expect(blind, 'the arm is blind to a size claim of this shape, which is how "~90 lines" survived').toEqual([]);
+    // ...and does not fire on the prose that legitimately surrounds the anchors.
+    expect(sizeClaims('GET /api/dom-snapshots/extractor.js, tens of kilobytes'), 'false positive on anchor prose').toEqual([]);
+  });
+
   it('is not vacuous: the live count is a real measurement and every named file really carries it', () => {
     expect(CHARS, 'EXTRACTOR_JS collapsed, so every fragment above would be trivially satisfiable').toBeGreaterThan(10_000);
     const carrying = CORPUS.filter((f) => new RegExp(`\\b${CHARS}\\b`).test(read(f)));
     expect(new Set(carrying), 'the set of files carrying the live count is not the set this gate names')
       .toEqual(new Set(MUST_STATE.map((s) => s.file)));
+  });
+
+  it('sweeps a DERIVED population, and every hold-out is tracked and named with a closed-set reason', () => {
+    const tracked = new Set(trackedFiles());
+    expect(tracked.size, 'git ls-files returned nothing, so the sweep would pass over an empty corpus').toBeGreaterThan(100);
+    expect(CORPUS.length, 'the sweep corpus is not the tracked tree minus the exclusions')
+      .toBe(tracked.size - Object.keys(EXCLUDED).length);
+    const stale = Object.entries(EXCLUDED)
+      .filter(([f, reason]) => !tracked.has(f) || !(reason in REASONS))
+      .map(([f, reason]) => (tracked.has(f)
+        ? `${f}: reason "${reason}" is not in the closed set`
+        : `${f}: is not tracked, so the exclusion is stale`));
+    expect(stale, 'an exclusion that no longer describes a tracked file, or a reason outside the closed set').toEqual([]);
+    // Every MUST_STATE site must be IN the swept population -- an excluded site is an unswept claim.
+    expect(MUST_STATE.map((s) => s.file).filter((f) => !CORPUS.includes(f)), 'a named site sits outside the sweep').toEqual([]);
   });
 });
