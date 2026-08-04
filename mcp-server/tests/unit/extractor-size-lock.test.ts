@@ -26,7 +26,7 @@
 //   claims named above: "~90 lines" is two digits and "<=7-line thunk" is one. Measured at that
 //   version: `(the script is ~90 lines)` in the delivered description and its doc twin left this
 //   whole file green. The historical claims are run through the arm below, so it cannot go blind to
-//   them again.
+//   them again. And it is applied to an EXACT REGION, never to a window: see NO_SIZE_SITES.
 //
 // AND A REGISTRY SWEEP, because a hand-kept list of sites is exactly the structure that failed here:
 // three of the four sites were simply not on anyone's list. The sweep population is therefore
@@ -38,8 +38,8 @@
 // complete for today's value -- a fifth site that copies the number is reported by path and line the
 // moment it lands.
 //
-// WHAT THIS DELIBERATELY DOES NOT DO: hunt for size-shaped numbers generally, outside the anchor
-// windows. Both `docs/tools/design-qa.md` and `docs/design-qa-tutorial.md` legitimately carry
+// WHAT THIS DELIBERATELY DOES NOT DO: hunt for size-shaped numbers generally, outside the regions
+// named below. Both `docs/tools/design-qa.md` and `docs/design-qa-tutorial.md` legitimately carry
 // `N chars` elisions for `report_markdown`. A "any 4-6 digit number near a chars unit" sweep would
 // need an allowlist for each, and an allowlist that grows with unrelated work is a hole, not a gate.
 // Those elisions have their own live check (docs-response-examples.test.ts compares each against its
@@ -51,6 +51,10 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXTRACTOR_JS } from '../../src/adapters/driving/tools/dom-extractor.js';
+import { registerGetLayoutSpecTool } from '../../src/adapters/driving/tools/get-layout-spec-tool.js';
+import { createLogger } from '../../src/infrastructure/logger.js';
+import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Repo layout: <root>/mcp-server/tests/unit/<this file>.
@@ -74,32 +78,83 @@ const MUST_STATE: { file: string; what: string; fragment: string }[] = [
   },
 ];
 
-/** Every site that deliberately states NO size, and must not grow one back. */
-const NO_SIZE_DIGIT: { file: string; what: string; anchor: string }[] = [
+/**
+ * The extractor_mode field description AS DELIVERED: registered through the real registerTool call
+ * and read off the registered input schema, not off the source lines that produce it.
+ *
+ * THE DEFECT THIS SHAPE EXISTS FOR. The previous version of the arm below read the anchor line plus
+ * the two either side -- a +/-2-line window. Measured: the anchor sits on line 27 of
+ * get-layout-spec-tool.ts while the same `.describe()` call runs to line 30, so a size claim on
+ * line 30 passed the gate, and with the tool-surface digest re-recorded (which any deliberate
+ * wording edit does) the FULL suite went green while the claim shipped to MCP clients. That is this
+ * file's own header's defect at this file's own header's site. A line window is a heuristic and a
+ * heuristic has an edge; the delivered STRING has a boundary instead, so there is nothing left to
+ * be off by.
+ */
+function deliveredExtractorModeDescription(): string {
+  const { server, get } = makeFakeMcpServer();
+  registerGetLayoutSpecTool(server, {
+    buildApi: () => ({}), defaultToken: 'figd_x', logger: createLogger({ level: 'silent' }), maxResultChars: 40_000,
+  } as unknown as ToolDeps);
+  const shape = get('get_layout_spec')?.inputSchema as Record<string, { description?: string }> | undefined;
+  const described = shape?.extractor_mode?.description;
+  if (typeof described !== 'string' || described === '') {
+    throw new Error('get_layout_spec registers no extractor_mode description, so the absence arm would check nothing');
+  }
+  return described;
+}
+
+/** The single markdown table row whose first cell is `cell` -- a row is one line, so this is exact. */
+const tableRow = (text: string, cell: string): string | undefined =>
+  text.split('\n').find((l) => l.startsWith(`| \`${cell}\` |`));
+
+/** The whole JSDoc block containing `anchor` -- delimited by its own comment markers, so exact. */
+const jsdocContaining = (text: string, anchor: string): string | undefined =>
+  text.match(/\/\*\*[\s\S]*?\*\//g)?.find((b) => b.includes(anchor));
+
+/**
+ * Every site that deliberately states NO size, and must not grow one back. Each names the EXACT
+ * text it checks -- the delivered string, one table row, one comment block -- and never a window
+ * around an anchor.
+ */
+const NO_SIZE_SITES: { where: string; what: string; text: () => string | undefined; holds: string }[] = [
   {
-    file: 'mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts',
-    what: 'the DELIVERED extractor_mode field description an MCP client reads',
-    // Just the phrase, and not the string-concat quote that follows it in the source: an anchor that
-    // includes the punctuation a digit would be inserted BEFORE is broken by the very edit it exists
-    // to catch, and the row then reports a missing anchor instead of the digit.
-    anchor: 'instead of inlining the whole script',
+    where: 'get_layout_spec tools/list (delivered)',
+    what: 'the DELIVERED extractor_mode field description an MCP client reads and caches',
+    text: deliveredExtractorModeDescription,
+    holds: 'instead of inlining the whole script',
   },
   {
-    file: 'docs/tools/design-qa.md',
+    where: 'docs/tools/design-qa.md',
     what: "the extractor_mode row of the tool page's parameter table, a verbatim twin of the delivered string",
-    anchor: 'instead of inlining the whole script every call',
+    text: () => tableRow(read('docs/tools/design-qa.md'), 'extractor_mode'),
+    holds: 'instead of inlining the whole script every call',
   },
   {
-    file: 'mcp-server/src/infrastructure/dom-snapshot-routes.ts',
+    where: 'mcp-server/src/infrastructure/dom-snapshot-routes.ts',
     what: "GET /extractor.js's JSDoc, which carried the last surviving \"~90-line\" copy of the number this line set out to kill",
-    anchor: 'instead of the caller re-pasting the whole',
+    text: () => jsdocContaining(read('mcp-server/src/infrastructure/dom-snapshot-routes.ts'),
+      'instead of the caller re-pasting the whole'),
+    holds: 'instead of the caller re-pasting the whole',
   },
 ];
 
 /**
  * A size CLAIM: a number beside a size unit, at any length ("~90 lines", "<=7-line thunk",
- * "54121 chars"), plus a bare 3+ digit run, which inside an anchor window is a size and nothing else.
- * Fresh regex per call -- a shared /g literal carries lastIndex between callers.
+ * "54121 chars"), plus a bare 3+ digit run, which inside one of the regions above is a size and
+ * nothing else. Fresh regex per call -- a shared /g literal carries lastIndex between callers.
+ *
+ * WHAT THIS ENUMERATION CANNOT DO, AND WHICH WAY IT FAILS. It lists the LIKELY spellings; it cannot
+ * prove the ABSENCE of a size claim in free prose. "kilobytes" spelled out, a magnitude suffix
+ * ("54k"), a number in words ("fifty-four thousand characters") -- each passes, and adding the next
+ * two spellings only moves the edge, because an enumeration over natural language never closes. It
+ * FAILS OPEN: a claim it does not spell ships silently, exactly the way "~90 lines" did.
+ *
+ * So this arm is not the defence. The defence is that the strings above state no size BY DESIGN --
+ * nothing a caller does depends on the count, so there is no reason to write one, and the reviewer
+ * of any edit to those strings is looking at three short texts, not at a corpus. This arm is a
+ * TRIPWIRE for the regression, cheap and worth having; treating it as a proof of absence is the
+ * error, and this comment is here so nobody has to re-derive that by adding a seventh spelling.
  */
 function sizeClaims(text: string): string[] {
   const re = /\b\d[\d,.]*\s*-?\s*(?:lines?|chars?|characters?|bytes?|[kKmM]B)\b|\b\d{3,}\b/g;
@@ -124,53 +179,76 @@ const EXCLUDED: Record<string, keyof typeof REASONS> = {
   'mcp-server/tests/unit/extractor-size-lock.test.ts': 'gate_header',
 };
 
-/** Every tracked file. DERIVED, never typed out -- a hand-kept list is the failure this gate is about. */
-function trackedFiles(): string[] {
-  return execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' })
-    .split('\0')
-    .filter((f) => f !== '');
+/**
+ * Every tracked file, or undefined outside a git checkout. DERIVED, never typed out -- a hand-kept
+ * list is the failure this gate is about.
+ *
+ * LAZY AND MEMOISED ON PURPOSE. The population used to be built at MODULE scope, so in a
+ * `git archive` copy (a release tarball, a vendored subtree) `git ls-files` threw during COLLECTION
+ * and the whole file failed to load -- taking down the rows that only read files by path and need
+ * no git at all. Now the git rows skip BY NAME and everything else still runs.
+ *
+ * RESIDUAL, WITH ITS FAILURE DIRECTION: the sweep sees TRACKED files only. A brand-new page that
+ * copies the live count is invisible to it until `git add` -- i.e. it FAILS OPEN on exactly the run
+ * a contributor makes just after writing the page. It closes itself the moment the file is staged,
+ * and never reaches a commit unnamed; the gap is the working copy, not the history.
+ */
+let trackedCache: string[] | undefined;
+let trackedAsked = false;
+function trackedFiles(): string[] | undefined {
+  if (!trackedAsked) {
+    trackedAsked = true;
+    try {
+      trackedCache = execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+        .split('\0')
+        .filter((f) => f !== '');
+    } catch {
+      trackedCache = undefined;
+    }
+  }
+  return trackedCache;
 }
 
 /** Files searched for stray copies of the live count: everything tracked, minus the named exclusions. */
-const CORPUS = trackedFiles().filter((f) => !(f in EXCLUDED));
+const corpus = (): string[] => (trackedFiles() ?? []).filter((f) => !(f in EXCLUDED));
 
-/** The anchor line plus the two either side of it -- where a reintroduced digit would land. */
-function anchorWindow(text: string, anchor: string): string | undefined {
-  const lines = text.split('\n');
-  const i = lines.findIndex((l) => l.includes(anchor));
-  return i === -1 ? undefined : lines.slice(Math.max(0, i - 2), i + 3).join('\n');
-}
+/** True in a copy with no git history, where the DERIVED population cannot be built at all. */
+const OUTSIDE_GIT = trackedFiles() === undefined;
 
 describe('the extractor size is stated in exactly the places this gate names, and it is the live one', () => {
   it('states the LIVE character count wherever it states one at all', () => {
+    expect(CHARS, 'EXTRACTOR_JS collapsed, so every fragment below would be trivially satisfiable').toBeGreaterThan(10_000);
     const stale = MUST_STATE.filter((s) => !read(s.file).includes(s.fragment)).map(
       (s) => `${s.file}: ${s.what} -- does not say "${s.fragment}"; EXTRACTOR_JS is now ${CHARS} chars`,
     );
     expect(stale, `EXTRACTOR_JS is ${CHARS} chars and these sites do not say so`).toEqual([]);
   });
 
-  it('keeps the delivered description and its doc twin free of a size digit', () => {
+  it('keeps the WHOLE delivered description, and its doc twin, free of a size digit', () => {
     const regressed: string[] = [];
-    for (const s of NO_SIZE_DIGIT) {
-      const window_ = anchorWindow(read(s.file), s.anchor);
-      if (window_ === undefined) {
-        regressed.push(`${s.file}: ${s.what} -- the anchor "${s.anchor}" is gone, so this row checks nothing`);
+    for (const s of NO_SIZE_SITES) {
+      const text = s.text();
+      if (text === undefined) {
+        regressed.push(`${s.where}: ${s.what} -- the region is gone, so this row checks nothing`);
         continue;
       }
-      const found = sizeClaims(window_);
+      const found = sizeClaims(text);
       if (found.length) {
         regressed.push(
-          `${s.file}: ${s.what} -- states a size again (${found.join(', ')}). A client caches this string; a digit in it cannot be corrected in the field, and gating it is the price of writing it`,
+          `${s.where}: ${s.what} -- states a size again (${found.join(', ')}). A client caches this string; a digit in it cannot be corrected in the field, and gating it is the price of writing it`,
         );
       }
     }
     expect(regressed, 'a size digit came back into a string that deliberately states none').toEqual([]);
+    // Not vacuous: each region must really be the text it claims to be, not an empty match.
+    const wrong = NO_SIZE_SITES.filter((s) => !(s.text() ?? '').includes(s.holds));
+    expect(wrong.map((s) => s.where), 'a region no longer holds the prose it is supposed to guard').toEqual([]);
   });
 
-  it('names every file in the corpus that carries the live count', () => {
+  it.skipIf(OUTSIDE_GIT)('names every file in the corpus that carries the live count', () => {
     const named = new Set(MUST_STATE.map((s) => s.file));
     const unregistered: string[] = [];
-    for (const file of CORPUS) {
+    for (const file of corpus()) {
       const text = read(file);
       for (const m of text.matchAll(new RegExp(`\\b${CHARS}\\b`, 'g'))) {
         if (named.has(file)) continue;
@@ -192,17 +270,16 @@ describe('the extractor size is stated in exactly the places this gate names, an
     expect(sizeClaims('GET /api/dom-snapshots/extractor.js, tens of kilobytes'), 'false positive on anchor prose').toEqual([]);
   });
 
-  it('is not vacuous: the live count is a real measurement and every named file really carries it', () => {
-    expect(CHARS, 'EXTRACTOR_JS collapsed, so every fragment above would be trivially satisfiable').toBeGreaterThan(10_000);
-    const carrying = CORPUS.filter((f) => new RegExp(`\\b${CHARS}\\b`).test(read(f)));
+  it.skipIf(OUTSIDE_GIT)('is not vacuous: every named file really carries the live count', () => {
+    const carrying = corpus().filter((f) => new RegExp(`\\b${CHARS}\\b`).test(read(f)));
     expect(new Set(carrying), 'the set of files carrying the live count is not the set this gate names')
       .toEqual(new Set(MUST_STATE.map((s) => s.file)));
   });
 
-  it('sweeps a DERIVED population, and every hold-out is tracked and named with a closed-set reason', () => {
+  it.skipIf(OUTSIDE_GIT)('sweeps a DERIVED population, and every hold-out is tracked and named with a closed-set reason', () => {
     const tracked = new Set(trackedFiles());
     expect(tracked.size, 'git ls-files returned nothing, so the sweep would pass over an empty corpus').toBeGreaterThan(100);
-    expect(CORPUS.length, 'the sweep corpus is not the tracked tree minus the exclusions')
+    expect(corpus().length, 'the sweep corpus is not the tracked tree minus the exclusions')
       .toBe(tracked.size - Object.keys(EXCLUDED).length);
     const stale = Object.entries(EXCLUDED)
       .filter(([f, reason]) => !tracked.has(f) || !(reason in REASONS))
@@ -211,6 +288,6 @@ describe('the extractor size is stated in exactly the places this gate names, an
         : `${f}: is not tracked, so the exclusion is stale`));
     expect(stale, 'an exclusion that no longer describes a tracked file, or a reason outside the closed set').toEqual([]);
     // Every MUST_STATE site must be IN the swept population -- an excluded site is an unswept claim.
-    expect(MUST_STATE.map((s) => s.file).filter((f) => !CORPUS.includes(f)), 'a named site sits outside the sweep').toEqual([]);
+    expect(MUST_STATE.map((s) => s.file).filter((f) => !corpus().includes(f)), 'a named site sits outside the sweep').toEqual([]);
   });
 });
