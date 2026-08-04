@@ -705,10 +705,40 @@ export const figmaCheck: Check = {
       // FIGMA_TOKEN=...) and never in the shell, so the reader whose token is dead is EXACTLY the
       // reader who gets this line. The per-call-token fact it drops is not lost: configCheck's own
       // detail still carries it, on a line printed by the same run.
+      // NAMING THE FLAG RATHER THAN READING THE FILE. The obvious other fix is for this command to
+      // load `mcp-server/.env` itself, and it is the wrong one: this report's own scope says
+      // `env_source: "process"`, and every other check answers "what would a server started from
+      // THIS environment do". A token loaded here on the reader's behalf is not the token their MCP
+      // host passes - it would turn the one check they came for into a probe of a different
+      // credential, and report ok for a host that is failing. So the environment stays the subject,
+      // and the reader gets the exact two ways to put a token into it.
+      // THE PATH IS RELATIVE TO THE READER'S CWD, AND A MISS IS ONE LINE, NOT A FAILURE.
+      // This sentence used to say `--env-file-if-exists=mcp-server/.env`, and the only fence on this
+      // page that produces a runnable `node dist/index.js status` opens with `cd mcp-server` - where
+      // that value resolves to `mcp-server/mcp-server/.env`, so the reader gets the identical SKIP
+      // they came here to fix. Measured from `mcp-server/` on node v24.12.0: with `.env` the check
+      // runs (`[OK] figma handle=...`); with `mcp-server/.env` STDOUT is byte-identical to the bare
+      // run, exit 0 either way, and the whole difference is one line on STDERR --
+      // `mcp-server/.env not found. Continuing without it.`
+      // THE PREVIOUS VERSION OF THIS COMMENT, AND OF THE DELIVERED SENTENCE, SAID THE FLAG REPORTS
+      // NOTHING WHEN IT MISSES. That was measured on stdout alone and it is false: node names the
+      // path it tried. What survives the correction is the reason the value had to change -- the
+      // miss does not stop the run and does not change the verdict, so a reader who is reading the
+      // report rather than the stream sees the same skip with exit 0. The value is therefore the one
+      // true from the directory `dist/index.js` is run from, and the sentence says which directory
+      // that is rather than leaving it to be inferred.
+      // Gated by running it: `status-command-hint.test.ts` pulls this flag out of the DELIVERED
+      // string and spawns node with it against a planted `.env`, so a path that does not load is red.
       if (!token) return { state: 'skipped', reason:
         'no FIGMA_TOKEN in this process environment, so the token was not probed - this is NOT a verdict '
-        + 'that the token is fine. On stdio the token lives in your MCP host\'s env block, not your shell; '
-        + 're-run this command with FIGMA_TOKEN set to probe it.' };
+        + 'that the token is fine. On stdio the token lives in your MCP host\'s env block, not your shell. '
+        + 'Re-run this command with the token in ITS environment: prefix it with `FIGMA_TOKEN=figd_...`, or '
+        + '(from a checkout, node 20.19+, run from `mcp-server/`) insert `--env-file-if-exists=.env` right '
+        + 'after `node`. That path is relative to your shell\'s directory; when it misses, node prints '
+        + '`<path> not found. Continuing without it.` on stderr and runs anyway, so a wrong one still '
+        + 'leaves you this same skip and exit 0 - the tell is that one line, not a failure. '
+        + 'This command does not read that file by itself: it reports the environment a server would be '
+        + 'handed, and a token it loaded for you would not be the one your host passes.' };
       // Single probe, so it gets the WHOLE per-check budget - there is no second user to share it with.
       const result = await ctx.validatePat(token, PER_CHECK_TIMEOUT_MS);
       if (!result.ok) {

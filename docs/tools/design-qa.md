@@ -4,11 +4,33 @@ Deterministic Figma ↔ DOM verification: project a Figma frame into a diff-read
 rendered DOM with the canonical extractor, pair the two sides, and get a machine-readable metric
 diff with an honest verification receipt.
 
-Typical order: [`find_breakpoint_variant`](#find_breakpoint_variant) →
-[`get_layout_spec`](#get_layout_spec) → [`suggest_pairs`](#suggest_pairs) →
-[`compare_node_to_dom`](#compare_node_to_dom), with [`get_view`](#get_view) for orientation inside
-a large frame. The full cycle is walked through in the
-[Design QA tutorial](../design-qa-tutorial.md).
+## The cycle
+
+Stated once, here. The server's own MCP `instructions`, the
+[agent skill](../agents/design-qa-skill.md) and the [tutorial](../design-qa-tutorial.md) point at
+this list and add detail to it; none of them redefines it.
+
+1. [`find_breakpoint_variant`](#find_breakpoint_variant) — pick the frame whose **content** width
+   matches your render width. Skip it when you already know the frame id.
+2. [`get_layout_spec`](#get_layout_spec) with `include_extractor: true` — the Figma side of the
+   comparison, plus the canonical DOM extractor.
+3. **In the browser, not in a framefit tool** — run that extractor over your CSS selectors and keep
+   the snapshot it returns for each one. No tool on this page can do this step: it needs a rendered
+   page, and the server never sees one. This is where an agent uses its browser automation.
+4. [`suggest_pairs`](#suggest_pairs) — propose `node_id` ↔ selector pairs out of the frame-root
+   snapshot, with honest `unmatched_figma` / `unmatched_dom` lists. Skip it when you already know
+   which node each selector renders: it is the answer to "I do not know the node ids", not a toll
+   gate on the compare.
+5. [`compare_node_to_dom`](#compare_node_to_dom) — the measurement, and the verdict.
+
+Then read `verification.complete` — the done-gate. Never claim the UI matches the design while it is
+`false` or `blocking[]` is non-empty: each blocking item names the action that closes it. Work those
+actions, re-capture the pairs they name (step 3), and run step 5 again.
+
+[`get_view`](#get_view) is not a step in that sequence — it is orientation inside a large frame, at
+any point. [`examples/first-verdict.mjs`](../../examples/first-verdict.mjs) is the same five steps
+as a runnable stdio client, and the [tutorial](../design-qa-tutorial.md) walks them end to end with
+a worked example.
 
 To understand *how a node is built* (auto-layout, fills, tokens, component structure) rather than
 to verify it against a rendered page, use
@@ -22,6 +44,17 @@ On stdio `suggest_pairs` throws `snapshot store unavailable on this server — p
 inline`, and `compare_node_to_dom` notes `snapshot store unavailable on this server — pass dom
 inline` on the pair. So the examples here pass the snapshot inline; switch to `dom_ref` once you run
 the server over HTTP.
+
+**What the two big payloads cost, and who can avoid paying it.** Step 2's `extractor_js` is the whole
+script inline on stdio, and step 3's snapshot is tens of thousands of characters per pair. Both cross
+an agent's context by default, and neither has to:
+[`examples/first-verdict.mjs`](../../examples/first-verdict.mjs) `serve-extractor` holds the script on
+a loopback socket so the page fetches it, and its `verdict` reads the capture from a file the browser
+tool wrote (chrome-devtools' `evaluate_script` takes a `filePath`). **That is the client avoiding the
+crossing, not the tool contract changing.** `suggest_pairs` still takes `dom_snapshot` inline and
+`compare_node_to_dom` still takes `pairs[].dom` inline — an agent calling these tools directly, with
+no client in between, pays both costs in full, and so does any other client that does not do the same
+two things.
 
 **Where the response examples come from.** Each one below is a real return of that tool's handler,
 captured from the request shown above it against a stub of one small Figma file (a `Product card`
@@ -57,7 +90,7 @@ the extractor can POST snapshots to directly from the browser, yielding a `dom_r
 | `file` | string, **required** | Figma file URL or raw key |
 | `node_ids` | string[], **required** | Node ids to project into diff-ready layout specs, up to 20 per call (batched in one REST call). |
 | `include_extractor` | boolean (default `false`) | Include the canonical DOM extractor script (paste it VERBATIM into chrome-devtools `evaluate_script`). |
-| `extractor_mode` | `"loader"` \| `"inline"` (default `"loader"`) | `loader`: a <=7-line thunk that fetches the versioned extractor from the server (`GET /api/dom-snapshots/extractor.js`) instead of inlining ~90 lines of JS every call - falls back to inline automatically if the server has no public base URL configured. `inline`: always return the full extractor script (e.g. if the loader's script-tag injection is CSP-blocked). |
+| `extractor_mode` | `"loader"` \| `"inline"` (default `"loader"`) | `loader`: a short thunk that fetches the versioned extractor from the server (`GET /api/dom-snapshots/extractor.js`) instead of inlining the whole script every call - falls back to inline automatically if the server has no public base URL configured, which is every stdio deployment. `inline`: always return the full extractor script (e.g. if the loader's script-tag injection is CSP-blocked). |
 | `max_depth` | integer 1–8 (default 4) | Capture depth for BOTH sides (Figma projection + emitted extractor). Drill into a `childrenTruncated` branch by re-fetching it deeper (e.g. `max_depth:6`) - pass the SAME `max_depth` to `compare_node_to_dom` for that pair, or the Figma/DOM sides desync. |
 | `text_leaves` | boolean (default `false`) | Instead of the full spec tree, return a flat list of leaf TEXT nodes (id/name/path/text_snippet/typography) under each node_id - one call to enumerate typography for pair-building/inspection, no manual frame->children->text drill. Respects `max_depth`; `text_leaves_truncated` flags leaves beyond the depth cut (raise `max_depth` to reach them). |
 | `figma_token` | string | Override Figma PAT |
@@ -102,10 +135,12 @@ Response (abridged), from the stdio server:
       "cause_breakdown": { "depth": 0, "breadth": 0, "budget": 0 } }
   ],
   "extractor_js": "<full inline extractor script, 54121 chars - elided>",
-  "extractor_note": "loader unavailable without public base URL — inline returned"
+  "extractor_note": "loader unavailable without public base URL — inline returned",
+  "extractor_hint": "no upload_url on this server: the extractor hands the snapshots back to you. Paste extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare assignment throws) — then every capture is `async () => await window.__extract([\"<sel>\", …], undefined, 3, 90)` (a reload drops the handle — paste again). Pass include_extractor:false on every later get_layout_spec call. Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom."
   /* On an HTTP server with a public base URL, extractor_js is the versioned loader thunk instead,
-     there is no extractor_note, and an "upload_url": "https://<server>/api/dom-snapshots/<capToken>"
-     is returned alongside it. */
+     there is no extractor_note and no extractor_hint, and an
+     "upload_url": "https://<server>/api/dom-snapshots/<capToken>" is returned alongside it, carrying
+     its own "upload_hint" with the browser-POST call form. */
 }
 ```
 
@@ -206,6 +241,13 @@ The response also carries a `verification` receipt - a machine gate with `comple
 and an actionable `blocking` list - plus per-pair `source` hints (CSS-module file candidates) and
 a `fix_plan` (grouped edits derived from fail rows). See the
 [Design QA tutorial](../design-qa-tutorial.md) for how to read them.
+
+Colors are enriched from the file's variables, and that fetch is the slowest thing this tool does on
+a large file. When it fails or times out, the run degrades honestly - token rows read as unresolved
+and a `confirm_token` blocker appears - and says so in two places a caller sees: a
+`degraded_stages: [{ stage, reason, ms, detail }]` key, and one `ℹ️` line in `report_markdown`. `ms`
+is the point. Measured on this transport, that one endpoint took 90 seconds of a 93-second call, and
+without it the caller has a two-minute silence and no way to tell a slow call from a hung one.
 
 The example below submits one pair out of the frame's three children, so its receipt reports
 `complete: false` and names what is still unchecked. That is the gate doing its job, not the tool

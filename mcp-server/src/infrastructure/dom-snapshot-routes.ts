@@ -183,7 +183,7 @@ export interface ExtractorScriptResponse {
 /**
  * Pure core of GET /extractor.js: the canonical, schema-versioned DOM extractor, served so
  * get_layout_spec's default 'loader' extractor_mode can point the browser at a script tag
- * (see buildExtractorLoader in dom-extractor.ts) instead of the caller re-pasting the ~90-line
+ * (see buildExtractorLoader in dom-extractor.ts) instead of the caller re-pasting the whole
  * EXTRACTOR_JS verbatim into every tool call. No Express types in the signature — unit-testable
  * directly, same rationale as handleUpload above.
  */

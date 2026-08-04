@@ -22,6 +22,15 @@ Every one of them is checked against the string the code emits (`docs-complete-l
 
 ## Workflow (one pass, ~4–5 calls)
 
+The cycle is stated once, in [`docs/tools/design-qa.md`](../tools/design-qa.md#the-cycle), and the
+steps below are that cycle plus the branch cases you need while running it — that page is the
+definition, this one is the operating detail. The mapping is exact: its step 1
+(`find_breakpoint_variant`) is folded into Step 2 here, its step 2 (`get_layout_spec`) is Step 1
+here, its step 3 (run the extractor in the browser) is Step 3, its step 4 (`suggest_pairs`) is the
+first entry under [Finding pairs](#finding-pairs--when-you-dont-know-node_id) below — that is where
+the code puts it, as the answer to an unknown node_id and never as a gate on the compare — and its
+step 5 (`compare_node_to_dom`) is Step 4.
+
 ### Step 0 — bring the UI into the design's state
 - Open the target screen/drawer/overlay (elements must be in the DOM and visible).
 - Set component states to match the frame: checked/hover/disabled.
@@ -75,15 +84,24 @@ The thunk MUST be async/await either way (a sync paste is a silent failure). Wit
 `upload_url`, pass it as the second argument; on stdio, leave it off:
 ```js
 async () => {
-  const extract = <extractor_js verbatim>;
+  const extract = <extractor_js VERBATIM>;
   return await extract(["<selector for pair 1>", "<selector for pair 2>"], "<upload_url>");
   // stdio: no second argument — `return await extract(["<selector for pair 1>", …]);`
 }
 ```
 On stdio the inline script is tens of kilobytes, which you do not want to repeat per capture:
-paste it ONCE as `window.__extract = <extractor_js verbatim>;`, then every later capture is the
-short `async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the
-handle; paste again.
+paste it ONCE — inside a thunk, for the same reason the capture is one. `evaluate_script` CALLS what
+you send with no arguments, so a bare `window.__extract = <extractor_js VERBATIM>;` is a SyntaxError
+and the same text without the `;` is invoked with no selectors and throws:
+```js
+() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }
+```
+Then every later capture is the short
+`async () => await window.__extract(["<selector for pair 1>", …])`. A reload drops the
+handle; paste again. Every LATER `get_layout_spec` call in the session then takes
+`include_extractor: false` — the script is already on the page, and re-requesting it is the largest
+avoidable cost on this transport. The server says both of these back to you in `extractor_hint`,
+returned beside `extractor_js` wherever there is no `upload_url`.
 Only where there IS a loader: if it fails with 'extractor script blocked (CSP?)' the page restricts
 script-src — re-request `get_layout_spec {include_extractor: true, extractor_mode: "inline"}` and
 work with the full inline extractor (everything below stays the same). On stdio you already have it.
@@ -129,21 +147,24 @@ compare_node_to_dom({
   frame_node_id: "<frame from step 1>",   // enables the viewport guard
   expected_overlay_width: 400,            // fixed overlay (drawer/modal): see step 2
   pairs: [
-    { node_id: "12:340", dom_ref: { ref: "<snapshot_ref>", index: 0 }, label: "panel-body" },
-    { node_id: "12:341", dom_ref: { ref: "<snapshot_ref>", index: 1 }, label: "row-item",
+    { node_id: "12:340", dom: <snapshot for selector 1>, label: "panel-body" },
+    { node_id: "12:341", dom: <snapshot for selector 2>, label: "row-item",
       expected_component: "ds-list-item" },  // optional
   ],
   tolerance_px: 1,
 })
 ```
-**`dom_ref.index` is the recommended key**: the selector's position in the array you handed the
-extractor (0-based; duplicates stay distinguishable). The `selector: "<string>"` alternative
-works but must match BYTE-FOR-BYTE and cannot distinguish duplicate selectors.
-A ref lives 30 minutes from last access (every compare extends it) — "saw a ❌, re-read the spec,
-re-ran the pair" works without re-capturing. Expired → the report says honestly "re-run the
-extractor", not a cryptic error. `dom_ref` needs the snapshot store, which only the HTTP server
-paths construct: on stdio pass the snapshot object as `dom:` instead — not a fallback there, the
-only option.
+`dom` is the snapshot OBJECT the extractor returned for that selector, in the order you handed the
+selectors in. On stdio this is not a fallback, it is the only option — `dom_ref` needs the snapshot
+store, which only the HTTP server paths construct.
+
+**Where there IS an `upload_url`**, pass `dom_ref: { ref: <snapshot_ref>, index: 0 }` instead and
+keep the whole snapshot out of your context. **`dom_ref.index` is the recommended key** there: the
+selector's position in the array you handed the extractor (0-based; duplicates stay
+distinguishable). The `selector: "<string>"` alternative works but must match BYTE-FOR-BYTE and
+cannot distinguish duplicate selectors. A ref lives 30 minutes from last access (every compare
+extends it) — "saw a ❌, re-read the spec, re-ran the pair" works without re-capturing. Expired →
+the report says honestly "re-run the extractor", not a cryptic error.
 
 ### Step 5 — report
 Paste `report_markdown` from the response INTO YOUR ANSWER AS IS (do not rebuild the table by
@@ -295,6 +316,14 @@ do NOT hardcode a px literal; `kind:'property'` (color/font/border/…) — set 
 
 ## Finding pairs — when you don't know node_id
 
+0. **The whole frame at once** → `suggest_pairs {file, frame_node_id, dom_snapshot: <the frame-root
+   snapshot from step 3>}` — it proposes `node_id` ↔ `dom_path` pairs with a confidence and an
+   `ambiguous` flag, and lists `unmatched_figma` / `unmatched_dom` honestly. Confirm the confident
+   ones, resolve the ambiguous ones by hand, and go to step 4 with the result. On stdio pass the
+   snapshot INLINE — handed a `dom_ref` there it throws the snapshot-store refusal quoted in step 3.
+   Skip this call entirely when you already know the node ids: it proposes pairs, it does not
+   license the compare. The unmatched lists are the same regions the Step 6 receipt will hold you
+   to, so reading them early is cheaper than meeting them as `add_pair` blockers.
 1. **A node outside the known frame** (typical: a section header, a neighboring block) →
    FIRST `get_node_ancestry {file, node_id: <nearest KNOWN node>}` — returns breadcrumbs up to the
    page and the DIRECT children of every ancestor: the target is usually visible among the

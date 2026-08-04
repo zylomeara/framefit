@@ -34,6 +34,15 @@ const DESCENT_MAX_CANDIDATES = 64;
 // false-cut there would lose ALL token rows with nothing to recover them.
 const VARIABLES_FETCH_CAP_MS = 20_000;
 
+/**
+ * An enrichment stage that did not arrive, and what it cost. `stage`/`reason` keep
+ * get_design_context's vocabulary (domain/design-context/types.ts) so one reader can branch on both
+ * tools the same way; `ms` and `detail` are what this tool adds, because the missing fact here is
+ * not THAT the stage degraded - the rows already say that - but that the caller spent most of the
+ * call waiting for it.
+ */
+interface DegradedStage { stage: 'variables'; reason: 'error'; ms: number; detail: string }
+
 // match-profiles: the type lives in domain (types.ts) — it has domain consumers (DiffOptions.profile
 // in diff.ts + buildVerification.opts.matchProfile); the re-export preserves existing test imports.
 export type { MatchProfile };
@@ -283,6 +292,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // do NOT write here — the audit itself rejects a missing entry.
         const captures = new Map<string, CaptureInfo>();
 
+        // Enrichment that did not arrive, and how long it cost before it did not arrive. Emitted as
+        // `degraded_stages` only when non-empty (see the variables fetch below).
+        const degradedStages: DegradedStage[] = [];
+
         // whether a graph/snapshot fallback is even reachable this call — computed ONCE
         // (not per-pair) so gate `needsModes` below stays a pure read. Multi-tenant only (`deps.
         // variableGraph`/`deps.variableSnapshot`); single-tenant/stdio has neither → always false.
@@ -300,11 +313,21 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // The capped timeout is cached with capMs=20000 → warm calls skip it.
         const variablesApi = graphOrSnapshotAvailable ? deps.buildApi(token, VARIABLES_FETCH_CAP_MS) : api;
         let variableIndex: VariableIndex | undefined;
+        // The degradation was honest and INVISIBLE: the token rows read `unknown` and a confirm_token
+        // blocker appears, but nothing in the response said where the wait went. Measured on stdio:
+        // 90 of a 124-second call spent in this one endpoint, with the reason on stderr only, which
+        // an MCP caller does not read - so the caller cannot tell waiting from hanging. Same shape as
+        // get_design_context's degraded_stages, plus the ms, because the ms IS the missing fact.
+        const variablesStartedAt = Date.now();
         try {
           variableIndex = buildVariableIndex(await variablesApi.getVariablesLocal(parsed.value));
         } catch (err) {
           if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
           deps.logger.info({ err: (err as Error).message }, 'compare.variables_unavailable');
+          degradedStages.push({
+            stage: 'variables', reason: 'error', ms: Date.now() - variablesStartedAt,
+            detail: (err as Error).message,
+          });
         }
 
         // Build the single-tenant env library graph before ANY variableGraph read below — the
@@ -728,7 +751,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // fix-plan: fixPlanStripped is read by the serialize CLOSURE (declared BEFORE it)
         // — the clamp measurement in the strip tier accounts for both the removed fix_plan and the added response flag.
         let fixPlanStripped = false;
-        const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(parsed.value, tolerancePx, kept, frame, results.length - kept.length, effPreflight, depthLevels, verification, hydration, fixPlanStripped));
+        const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(parsed.value, tolerancePx, kept, frame, results.length - kept.length, effPreflight, depthLevels, verification, hydration, degradedStages, fixPlanStripped));
         // Budget cascade: full → bulk-pass compression → [fix-plan strip tier] → omitted_pairs
         // (the last resort). fix_plan is pure duplication of rows: if it doesn't fit after condense, we FIRST
         // strip fix_plan/fix_plan_capped from ALL pairs (+fix_plan_stripped:true, an honest flag), and only
@@ -751,7 +774,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // Latency: one log line for the whole call — to measure wall-clock
         // without reconstructing it from fetch logs. Only on the successful main return.
         deps.logger.info({ total_ms: Date.now() - t0, pairs: args.pairs.length }, 'compare.done');
-        return jsonResult(buildOutput(parsed.value, tolerancePx, kept, frame, results.length - kept.length, effPreflight, depthLevels, verification, hydration, fixPlanStripped));
+        return jsonResult(buildOutput(parsed.value, tolerancePx, kept, frame, results.length - kept.length, effPreflight, depthLevels, verification, hydration, degradedStages, fixPlanStripped));
       }, deps.noTokenHint),
   );
 }
@@ -759,7 +782,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
 function buildOutput(file: string, tolerancePx: number, pairs: PairResult[],
   frame: { node_id: string; width?: number } | undefined, omitted: number, preflight: string | undefined,
   depthLevels: number, verification: VerificationReceipt, hydration: HydrationReceipt[],
-  fixPlanStripped = false): Record<string, unknown> {
+  degradedStages: DegradedStage[] = [], fixPlanStripped = false): Record<string, unknown> {
   const summary: PairSummary = { pass: 0, fail: 0, warn: 0, skip: 0, info: 0, demoted: 0, unchecked: 0, review: 0 };
   for (const p of pairs) (Object.keys(summary) as (keyof PairSummary)[]).forEach((k) => { summary[k] += p.summary[k]; });
   const keptHydration = hydration.filter((h) => pairs.some((p) => p.node_id === h.node_id));
@@ -768,9 +791,11 @@ function buildOutput(file: string, tolerancePx: number, pairs: PairResult[],
     verification,
     ...(keptHydration.length ? { hydration: keptHydration } : {}),
     not_covered_by_tool: NOT_COVERED_BY_TOOL,
+    ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
     report_markdown: renderReport({
       file, tolerancePx, pairs, ...(frame ? { frame } : {}),
       ...(omitted ? { omittedPairs: omitted } : {}), ...(preflight ? { preflight } : {}), depthLevels, verification,
+      ...(degradedStages.length ? { degradedStages } : {}),
     }),
     ...(omitted ? { omitted_pairs: omitted } : {}),
     // fix-plan: an honest flag — fix_plan was stripped from ALL pairs by the budget tier (BEFORE dropping

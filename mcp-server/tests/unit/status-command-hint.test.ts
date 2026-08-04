@@ -7,7 +7,10 @@
 // The composite rows at the bottom run through the REAL tool handler over the REAL adapters, for
 // the reason spelled out at the top of tool-diagnosis-e2e.test.ts: this hint is appended by a
 // SECOND layer to a sentence the adapter wrote, and only the delivered text shows both halves.
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { statusCommandHint, tokenStatusHint } from '../../src/infrastructure/status-hint.js';
 import { validatePat } from '../../src/multi-tenant/validate-pat.js';
@@ -279,6 +282,70 @@ describe('figmaCheck prints the reason and never presents a SKIP as a verdict ab
     expect(r.state).toBe('skipped');
     expect((r as { reason: string }).reason).toMatch(/not a verdict|does not mean the token/i);
     expect((r as { reason: string }).reason).toMatch(/env block|host/i);
+  });
+
+  // THE INSTRUCTION IS RUN, NOT READ. This skip is the one place the server tells a reader how to
+  // get their token into the process, and the flag value it prints is relative to a directory -- so
+  // it is right or wrong per directory, and asserting the TEXT would have said nothing about which.
+  // Measured against the commit before this row: reverting the delivered value to
+  // `--env-file-if-exists=mcp-server/.env` (a path that resolves to `mcp-server/mcp-server/.env`
+  // from the directory the page's own fence puts you in) left the full suite green, exit 0, 2936
+  // passed. So the flag is pulled OUT of the delivered string and handed to a real node, from a
+  // directory holding a real `.env`: the instruction loads the file or this is red.
+  //
+  // WHAT THE TEMP DIRECTORY STANDS IN FOR, and the gap it leaves. The hint names `mcp-server/`, and
+  // `mcp-server/.env` is git-ignored -- a fresh clone has none, so running there would be red on
+  // every clean checkout. The property under test is not "that file exists" but "this value names
+  // the `.env` of the directory you are told to run from", and a directory with a planted `.env` is
+  // exactly that property with the checkout's own secret left out of it. Failure direction: a value
+  // that is wrong ONLY relative to `mcp-server/` specifically (`../.env`, say) is not caught here.
+  // The `pnpm start` cross-check below closes that one -- that script runs from `mcp-server/`, and
+  // the two spellings must agree.
+  it('the `--env-file-if-exists` it prints really loads the .env of the directory it names', async () => {
+    const r = await figmaCheck.run(baseCtx({ probe: true, multiTenant: false, env: {},
+      validatePat: async () => { throw new Error('unused'); } }));
+    const printed = /--env-file-if-exists=([^`\s]+)/.exec((r as { reason: string }).reason);
+    expect(printed, 'the skip no longer prints an --env-file-if-exists flag, so this row runs nothing')
+      .not.toBeNull();
+
+    const dir = mkdtempSync(path.join(tmpdir(), 'framefit-envfile-'));
+    writeFileSync(path.join(dir, '.env'), 'FRAMEFIT_ENV_FILE_PROBE=loaded\n');
+    const loaded = spawnSync(
+      process.execPath,
+      [`--env-file-if-exists=${printed![1]}`, '-p', 'process.env.FRAMEFIT_ENV_FILE_PROBE ?? "<unset>"'],
+      { cwd: dir, encoding: 'utf8' },
+    );
+    expect(loaded.status, `node exited ${loaded.status}: ${loaded.stderr}`).toBe(0);
+    expect(loaded.stdout.trim(), `the delivered flag \`--env-file-if-exists=${printed![1]}\` did not load `
+      + 'the `.env` sitting in the directory it was run from -- the reader following this skip gets the '
+      + 'same skip back').toBe('loaded');
+
+    // The same value this package's own `start` script uses, which is a script that runs from
+    // `mcp-server/`. No third copy: both sides are read live.
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as
+      { scripts: Record<string, string> };
+    const started = /--env-file-if-exists=\S+/.exec(pkg.scripts.start ?? '');
+    expect(started, 'package.json `start` no longer carries the flag this compares against').not.toBeNull();
+    expect(`--env-file-if-exists=${printed![1]}`,
+      'the skip tells the reader to run from `mcp-server/` with a value `pnpm start` does not use from '
+      + 'that same directory').toBe(started![0]);
+  });
+
+  it('a MISS is one stderr line and exit 0, which is what the skip now says it is', () => {
+    // The claim this replaces said `-if-exists` "reports nothing when it misses, so a wrong one gives
+    // you this same skip in silence". Measured on node v24.12.0 and false: node names the path on
+    // stderr. It was true of STDOUT only, and the shipped sentence generalised it. The half that
+    // survives -- exit 0, run continues, same verdict -- is asserted here beside the line, so if node
+    // ever does go silent (or starts failing) this reds and the sentence is re-read rather than
+    // quietly becoming true again by accident.
+    const miss = spawnSync(
+      process.execPath,
+      ['--env-file-if-exists=no-such-directory/.env', '-p', '1'],
+      { cwd: tmpdir(), encoding: 'utf8' },
+    );
+    expect(miss.status, 'a missing --env-file-if-exists path stopped the run').toBe(0);
+    expect(miss.stderr, 'node no longer names the path it could not find, so the skip overstates the warning')
+      .toContain('no-such-directory/.env not found. Continuing without it.');
   });
 });
 

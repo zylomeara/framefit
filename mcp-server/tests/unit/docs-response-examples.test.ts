@@ -152,6 +152,12 @@ function stubApi(): Partial<FigmaApi> {
     getDocumentRaw: (async () => ({
       name: 'Product Page', lastModified: '2026-01-01T00:00:00Z', version: '1', document: documentRoot,
     })) as FigmaApi['getDocumentRaw'],
+    // A file with no variables is a different fact from an api that cannot be asked, and
+    // compare_node_to_dom now REPORTS a failed ask as a `degraded_stages` entry instead of only
+    // logging it. Without this method that entry appears in a DOCUMENTED response, carrying a stub
+    // artifact as its detail (`variablesApi.getVariablesLocal is not a function`). The stubbed file
+    // simply has no tokens; nothing degrades.
+    getVariablesLocal: (async () => ({ meta: { variables: {}, variableCollections: {} } })) as FigmaApi['getVariablesLocal'],
   };
 }
 

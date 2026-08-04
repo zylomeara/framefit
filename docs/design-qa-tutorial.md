@@ -1,5 +1,11 @@
 # Design QA tutorial: verifying a rendered page against Figma
 
+The cycle is stated once, in [the tool reference](tools/design-qa.md#the-cycle). This page is that
+same cycle walked end to end with a worked example — the sections below are its steps, not a second
+definition of them, and where they disagree that page is right. Two of its five steps are optional
+and this walkthrough takes both: step 1 (`find_breakpoint_variant`) because you usually do not know
+the frame, and step 4 (`suggest_pairs`) because you usually do not know the node ids.
+
 This walkthrough shows the full design-QA cycle with the five tools from
 [docs/tools/design-qa.md](tools/design-qa.md):
 
@@ -66,7 +72,8 @@ One call projects the Figma side and hands you the DOM extractor:
 ```
 
 On the stdio server the [quickstart](../README.md#quickstart) installs, this call comes back with
-`file`, `snapshot_schema`, `specs`, `hydration`, `extractor_js` and `extractor_note`:
+`file`, `snapshot_schema`, `specs`, `hydration`, `extractor_js`, `extractor_note` and
+`extractor_hint`:
 
 - `specs[]` — the diff-ready Figma projection (rects, auto-layout axis/gap/padding, children
   geometry, typography, fills);
@@ -86,8 +93,17 @@ On the stdio server the [quickstart](../README.md#quickstart) installs, this cal
 
   `extractor_js` goes into that one slot verbatim, and on stdio that is the whole inline script —
   tens of kilobytes of it, which is more than you want to repeat per capture. **Paste it once and
-  keep the handle**: send one `evaluate_script` whose whole body is
-  `window.__extract = <extractor_js VERBATIM>;`, and every capture after that is the short
+  keep the handle** — and note that the same rule applies to the paste itself: `evaluate_script`
+  calls what you send, so a bare `window.__extract = <extractor_js VERBATIM>;` is a `SyntaxError`
+  (the trailing `;` closes nothing inside `(…)`), and the same text without the `;` parses as a
+  function expression that is then invoked with no selectors — the `TypeError` again. The paste is a
+  thunk too:
+
+  ```js
+  () => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }
+  ```
+
+  Every capture after that is the short
   `async () => await window.__extract([".card", ".card__title", ".card__price"])`. The handle lives
   on the page, so a reload or a navigation drops it and you paste again. Do not write your own
   `getComputedStyle` walker instead: the extractor and the server agree on a snapshot schema, and the
@@ -95,7 +111,14 @@ On the stdio server the [quickstart](../README.md#quickstart) installs, this cal
 - `extractor_note` — `loader unavailable without public base URL — inline returned`. A loader is what
   `extractor_mode` asks for by default, and it degrades to the inline script whenever the server has
   no public base URL to point a browser at
-  (see `mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts`, `useLoader = extractorMode === 'loader' && !!deps.publicBaseUrl`).
+  (see `mcp-server/src/adapters/driving/tools/get-layout-spec-tool.ts`, `useLoader = extractorMode === 'loader' && !!deps.publicBaseUrl`);
+- `extractor_hint` — the server saying the same thing back to you in one string: the paste-once thunk
+  and the short call form from the bullet above, plus two things the bullets do not cover — hand each
+  snapshot to the matching `pairs[i].dom` (step 4), and **pass `include_extractor: false` on every
+  later `get_layout_spec` call in the session**. That last one is the largest avoidable cost on this
+  transport: the script is already on the page, so re-requesting it re-sends the whole inline
+  extractor — tens of kilobytes through your context — for nothing. It is returned wherever there is
+  no `upload_url`, which is what an HTTP deployment gets `upload_hint` for instead.
 
 That key list is this call's, not the tool's: `extractor_mode: "inline"` returns no `extractor_note`
 (nothing degraded — you asked for inline), and `text_leaves: true`, or a `node_ids` entry the file
@@ -164,7 +187,11 @@ Hand the frame root and the DOM snapshot to the pair proposer:
 ```
 
 That object is `snapshots[0]`, the frame-root snapshot the extractor printed, **trimmed to fit this
-page** — paste yours whole. `paddings` is not decoration: a snapshot missing it makes the diff report
+page — and therefore not a size reference**: a real capture runs to tens of thousands of characters,
+scaling with the nodes captured up to the budget — which is the magnitude the
+[README](../README.md) quotes for the transport cost, and nowhere near what you see here. Paste
+yours whole.
+`paddings` is not decoration: a snapshot missing it makes the diff report
 `extractor_outdated` and raise an `update_extractor` blocking item, so a hand-shortened snapshot has
 the tool telling you to repair an extractor that is fine.
 

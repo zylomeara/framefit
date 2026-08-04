@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetLayoutSpecTool } from '../../src/adapters/driving/tools/get-layout-spec-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
@@ -10,6 +13,79 @@ import { withFrameRaw } from './helpers/frame-raw.js';
 import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
+// Repo layout: <root>/mcp-server/tests/unit/<this file>.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/**
+ * Run a paste form the way chrome-devtools evaluate_script does: substitute the extractor into the
+ * `<extractor_js VERBATIM>` slot, evaluate `(<what you sent>)`, then CALL the result with no
+ * arguments and await it (the wrapper does `await fn(...args)`; a sync `expect(() => fn())` cannot
+ * see a rejected promise, so this awaits and a future async form stays covered).
+ *
+ * The substitution takes a REPLACER FUNCTION, not a replacement string: EXTRACTOR_JS contains `$&`
+ * and `$'`, which String.replace expands in a replacement string -- measured, that made the script
+ * it evaluated 54213 chars against the extractor's 54164, diverging from char 27592, so the proof
+ * proved a string nobody ships. The containment assert below is what keeps that honest.
+ */
+async function runsPasteForm(pasteForm: string, extractorJs: string, where: string): Promise<void> {
+  const fnString = pasteForm.replace('<extractor_js VERBATIM>', () => extractorJs);
+  expect(fnString.includes(extractorJs), `${where}: the substituted script is not the extractor byte for byte`).toBe(true);
+  const fakeWindow: { __extract?: unknown } = {};
+  const fn = new Function('window', `return (${fnString})`)(fakeWindow) as () => unknown;
+  await expect((async () => fn())(), `${where}: the paste form throws when evaluate_script calls it`).resolves.toBeDefined();
+  expect(typeof fakeWindow.__extract, `${where}: window.__extract is not a function after the paste`).toBe('function');
+}
+
+/**
+ * The PER-CAPTURE form -- `async () => { const extract = <extractor_js VERBATIM>; return await
+ * extract([…]); }` -- lifted out of whatever text carries it. One regex for all three sites: the
+ * delivered `upload_hint` prints it on one line, the two doc pages print it as a fenced block.
+ * Non-greedy to the first `}`, which is the thunk's own closer everywhere it ships.
+ */
+const CAPTURE_FORM_RE = /async \(\) => \{[\s\S]*?const extract = <extractor_js VERBATIM>;[\s\S]*?\}/;
+
+/**
+ * Run the per-capture form the way `runsPasteForm` runs the paste-once one. It is the form used on
+ * EVERY capture and it was executed by NOTHING: measured, regressing it to the same non-executing
+ * shape the paste-once form was just repaired for left the suite bit-identical to baseline. Precise
+ * about "bit-identical": that holds for the two doc pages under every regression, and for the
+ * delivered upload_hint under the narrow one (dropping the opening `async () => {`). A wider
+ * regression that also drops the trailing `; }` already reddened a pre-existing row further down,
+ * which pins the closing brace -- so the delivered carrier was never quite blind, only nearly.
+ *
+ * Two steps, because one of the form's reader placeholders IS the extractor:
+ *
+ *  1. With the real EXTRACTOR_JS in the `<extractor_js VERBATIM>` slot, byte for byte: evaluate
+ *     `(<what you sent>)` the way chrome-devtools evaluate_script does, and require a callable back.
+ *     This is the step a non-executing shape fails -- `const extract = <script>;` outside a thunk
+ *     does not parse inside `(…)` at all.
+ *  2. With a PROBE in that slot: CALL the result with no arguments and await it, and watch the call
+ *     ARRIVE at `extract` with a selectors array. Running the real extractor here is neither the
+ *     point nor possible -- it needs a live DOM and would POST to the literal "<upload_url>"
+ *     placeholder; what this row is about is the CALL FORM around it.
+ *
+ * The only text touched is what a reader replaces: `<extractor_js VERBATIM>`, and the `…` that
+ * stands for "more selectors here" and is not JS. Everything else runs exactly as it ships.
+ */
+async function runsCaptureForm(captureForm: string, extractorJs: string, where: string): Promise<void> {
+  const fill = (slot: string): string =>
+    captureForm.replace(/,\s*…/gu, '').replace('<extractor_js VERBATIM>', () => slot);
+
+  const real = fill(extractorJs);
+  expect(real.includes(extractorJs), `${where}: the substituted script is not the extractor byte for byte`).toBe(true);
+  expect(typeof new Function(`return (${real})`)(), `${where}: the capture form does not evaluate to a callable`).toBe('function');
+
+  const calls: unknown[][] = [];
+  const probe = 'async (...a) => { __calls.push(a); return { snapshot_ref: "r", summaries: [] }; }';
+  const fn = new Function('__calls', `return (${fill(probe)})`)(calls) as () => unknown;
+  // Two failures reach this row, so the label names both: the form THROWING when evaluate_script
+  // calls it, and the form resolving to NOTHING because it never returned the extractor's result
+  // (measured: a thunk that assigns `extract` and returns nothing lands here, and it did not throw).
+  await expect((async () => fn())(), `${where}: the capture form throws, or resolves to nothing, when evaluate_script calls it`).resolves.toBeDefined();
+  expect(calls.length, `${where}: the capture form never calls the extractor`).toBe(1);
+  expect(Array.isArray(calls[0][0]), `${where}: the extractor is not called with a selectors array`).toBe(true);
+}
+
 function harness(api: Partial<FigmaApi>, depsOverrides: Partial<ToolDeps> = {}) {
   const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000, ...depsOverrides };
@@ -185,6 +261,103 @@ describe('get_layout_spec tool', () => {
       const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
       expect(out.extractor_js).toContain('pruneToBudget');
       expect(out.extractor_note).toBe('loader unavailable without public base URL — inline returned');
+    });
+  });
+
+  // The call-form guidance used to exist ONLY inside upload_hint, i.e. only on the branch a stdio
+  // server never reaches: a stdio caller got the whole inline extractor and no instructions at all.
+  describe('extractor_hint (the branch with no upload_url)', () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+
+    it('names the 1-arg call form, the reusable handle, include_extractor:false and pairs[i].dom', async () => {
+      const run = harness({ getNodesRaw }); // no publicBaseUrl, no snapshotStore
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+      expect(out.extractor_hint).toContain("() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }");
+      expect(out.extractor_hint).toContain('await window.__extract(["<sel>", …])');
+      expect(out.extractor_hint).toContain('include_extractor:false');
+      expect(out.extractor_hint).toContain('pairs[i].dom');
+    });
+
+    // The previous version of the row above asserted `window.__extract = <extractor_js VERBATIM>;`,
+    // which is what the hint said and what does not run: chrome-devtools evaluate_script evaluates
+    // `(<what you sent>)` and CALLS the result with no arguments (chrome-devtools-mcp
+    // build/src/tools/script.js, `evaluateHandle(\`(${fnString})\`)` then `fn(...args)` with an empty
+    // args array -- byte-identical across installed versions 1.0.1 through 1.6.0). So the shipped
+    // text was a SyntaxError with the trailing `;` and a TypeError inside the extractor without it,
+    // and a toContain() gate went green on both. This row therefore does not read the hint, it RUNS
+    // it, through the wrapper's own two steps.
+    it('EXECUTES: the paste form the hint delivers really parks the extractor on window.__extract', async () => {
+      const run = harness({ getNodesRaw });
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+
+      // Lift the paste form out of the delivered string -- no second copy of it in this file, so a
+      // hint that stops carrying one fails here rather than testing a literal nobody ships.
+      const pasteForm = /`(\(\) => \{ window\.__extract = <extractor_js VERBATIM>;[^`]*)`/.exec(out.extractor_hint)?.[1];
+      expect(pasteForm, 'the hint carries no `() => { window.__extract = ... }` paste form').toBeDefined();
+
+      await runsPasteForm(pasteForm!, out.extractor_js, 'the delivered extractor_hint');
+    });
+
+    // The hint is not the only place this form ships: three pages print it for a reader to paste, and
+    // only the delivered string was executed here. Measured: putting the old non-executing
+    // `window.__extract = <extractor_js VERBATIM>;` back on all three left the whole suite green. So
+    // each page's copy is lifted and RUN, exactly as the delivered one is.
+    it.each([
+      ['README.md', "Tier 1's paste-once parenthetical"],
+      ['docs/agents/design-qa-skill.md', 'the agent skill the workflow is written against'],
+      ['docs/design-qa-tutorial.md', "the tutorial's step-2 paste block"],
+    ])('EXECUTES: the paste form printed on %s runs too', async (page, what) => {
+      const run = harness({ getNodesRaw });
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+
+      const text = readFileSync(path.join(REPO_ROOT, page), 'utf8');
+      const pasteForm = /\(\) => \{ window\.__extract = <extractor_js VERBATIM>;[^`\n]*?\}/.exec(text)?.[0];
+      expect(pasteForm, `${page} (${what}) prints no executable \`() => { window.__extract = ... }\` paste form`).toBeDefined();
+
+      await runsPasteForm(pasteForm!, out.extractor_js, `${page} (${what})`);
+    });
+
+    it('EXECUTES: the per-capture form in the delivered upload_hint really calls the extractor', async () => {
+      const snapshotStore = { mint: vi.fn(() => 'cap-token') } as unknown as ToolDeps['snapshotStore'];
+      const run = harness({ getNodesRaw }, { snapshotStore, publicBaseUrl: 'https://figma.test' });
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true, extractor_mode: 'inline' })).content[0].text);
+
+      const form = CAPTURE_FORM_RE.exec(out.upload_hint)?.[0];
+      expect(form, 'upload_hint carries no `async () => { const extract = … }` capture form').toBeDefined();
+      await runsCaptureForm(form!, out.extractor_js, 'the delivered upload_hint');
+    });
+
+    // The per-capture form is not only delivered, it is PRINTED for a reader to paste. Only the
+    // paste-once form was executed from these pages; measured, regressing the capture form here to a
+    // non-executing shape left the suite bit-identical to baseline. So each page's copy is run too.
+    it.each([
+      ['docs/agents/design-qa-skill.md', 'the agent skill the workflow is written against'],
+      ['docs/design-qa-tutorial.md', "the tutorial's extractor_js bullet"],
+    ])('EXECUTES: the per-capture form printed on %s runs too', async (page, what) => {
+      const run = harness({ getNodesRaw });
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+
+      const form = CAPTURE_FORM_RE.exec(readFileSync(path.join(REPO_ROOT, page), 'utf8'))?.[0];
+      expect(form, `${page} (${what}) prints no executable \`async () => { const extract = … }\` capture form`).toBeDefined();
+      await runsCaptureForm(form!, out.extractor_js, `${page} (${what})`);
+    });
+
+    it('carries depth/budget in the uploadUrl-less positional form when max_depth is given', async () => {
+      const run = harness({ getNodesRaw });
+      const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true, max_depth: 6 })).content[0].text);
+      expect(out.extractor_hint).toContain('await window.__extract(["<sel>", …], undefined, 5, 180)');
+    });
+
+    it('is absent where there IS an upload_url, and absent when no extractor was asked for', async () => {
+      const snapshotStore = { mint: vi.fn(() => 'cap-token') } as unknown as ToolDeps['snapshotStore'];
+      const withUpload = harness({ getNodesRaw }, { snapshotStore, publicBaseUrl: 'https://figma.test' });
+      const uploaded = JSON.parse((await withUpload({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
+      expect(uploaded.upload_hint).toBeDefined();
+      expect(uploaded.extractor_hint).toBeUndefined();
+
+      const run = harness({ getNodesRaw });
+      const noExtractor = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+      expect(noExtractor.extractor_hint).toBeUndefined();
     });
   });
 
