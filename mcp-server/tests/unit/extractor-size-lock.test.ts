@@ -76,6 +76,11 @@ const MUST_STATE: { file: string; what: string; fragment: string }[] = [
     what: "the get_layout_spec response fence's extractor_js elision (its VALUE is also compared with the capture by docs-response-examples.test.ts; this row is what names the site)",
     fragment: `${CHARS} chars - elided`,
   },
+  {
+    file: 'examples/first-verdict.mjs',
+    what: "the client header's statement of what the inline paste costs -- the number `serve-extractor` exists to remove, and the one a reader weighs the loopback handoff against. The client's own OUTPUT states this live (it prints the fingerprint's length half), so only the header can rot",
+    fragment: `${CHARS} characters`,
+  },
 ];
 
 /**

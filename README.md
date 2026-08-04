@@ -55,14 +55,22 @@ One prerequisite is not a package: the design-QA cycle measures a *rendered* pag
 real browser through a browser-automation MCP running alongside framefit (the
 [agent skill](docs/agents/design-qa-skill.md) is written against chrome-devtools tool names). On
 stdio there is no server for that browser to fetch the DOM extractor from, so `get_layout_spec`
-hands it back inline — 54121 characters, once per session if you park it on `window.__extract`
-(`() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` — `evaluate_script` calls what
-you send, so the paste has to be a thunk). Each snapshot it returns then runs to tens of thousands
-of characters — it scales with the nodes captured, up to the default 90-node budget, so there is no
-one figure for it — and one capture carries one snapshot per pair — three for the tutorial's card —
-each crossing the agent's context twice: out of the browser, and back in as `compare_node_to_dom`'s
-`pairs[].dom`. (The [tutorial](docs/design-qa-tutorial.md)'s printed snapshot is trimmed to fit the
-page and is not a size reference.)
+hands it back inline — 54121 characters, once per session if you park it on a global
+(`() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` — `evaluate_script` calls
+what you send, so the paste has to be a thunk). Each snapshot it returns then runs to tens of
+thousands of characters — it scales with the nodes captured, up to the default 90-node budget, so
+there is no one figure for it — and one capture carries one snapshot per pair — three for the
+tutorial's card — each crossing the agent's context twice: out of the browser, and back in as
+`compare_node_to_dom`'s `pairs[].dom`. (The [tutorial](docs/design-qa-tutorial.md)'s printed snapshot
+is trimmed to fit the page and is not a size reference.)
+
+**Neither crossing is necessary, and [the recipe below](#your-first-verdict) does not make them.**
+The extractor can reach the page over a loopback socket, and the snapshot can go to a file the
+browser tool writes and this repository's client reads. Both cost tens of characters instead of tens
+of thousands. What that does NOT change is the tool contract: `compare_node_to_dom` still takes
+`pairs[].dom` inline and `suggest_pairs` still takes `dom_snapshot` inline, so the saving belongs to
+the client standing between you and the tools. An agent driving the tools directly, or a different
+client, still pays both costs in full.
 
 ```bash
 # not-executed: requires-public-repo
@@ -93,33 +101,53 @@ Run `/mcp` inside Claude Code to confirm the 26 tools are live. Ready-to-copy co
 
 [`examples/first-verdict.mjs`](examples/first-verdict.mjs) walks the
 [design-QA cycle](docs/tools/design-qa.md#the-cycle) over stdio and needs nothing installed. It is
-honest about the one step it cannot do: node has no browser, so it prepares two files for you to
+honest about the one step it cannot do: node has no browser, so it hands you two short thunks to
 paste into whatever browser automation you have, and does everything on either side of that.
 
 A Figma URL ends `?node-id=12-340`. The tools take `12:340`, with a **colon** — both spellings parse,
 and this client rewrites the dash, so paste the id straight out of the address bar.
 
+The clone fence above leaves you in `framefit/mcp-server`; this one runs from the repository root, so
+it opens by going up one. (It used to open `cd framefit`, which exits 1 from both of the directories
+this page actually produces — it worked only from the checkout's parent, where nothing puts you.)
+
 ```bash
 # not-executed: contains-placeholder
-cd framefit
-FIGMA_TOKEN=figd_your_token_here node examples/first-verdict.mjs prepare \
+cd ..
+FIGMA_TOKEN=figd_your_token_here node examples/first-verdict.mjs serve-extractor \
   --file https://www.figma.com/design/AbCdEf012345/Product-Page --frame 12-340 \
   --pair '.card=12:340' --pair '.card__title=12:341' --pair '.card__price=12:344'
 ```
 
-That prints the frame width and writes `1-paste-extractor.js` and `2-capture.js`. In the browser:
-size the viewport to that width, paste the first file into `evaluate_script` — it must return the
-`<length>:<hash>` line the command printed, and anything else means the 54 KB paste arrived mangled
-and would measure the wrong script — then paste the second and save the array it returns as
-`snapshots.json`. Feed that file back:
+That prints the frame width, then holds the extractor on `127.0.0.1` at an ephemeral port and prints
+the ~350-character thunk that fetches it. In the browser: size the viewport to that width, paste the
+thunk into `evaluate_script` — it must return the `<length>:<hash>` line the command printed, and
+anything else means what landed in the page is not the script this client was handed, so do not
+measure it. Paste the second thunk to capture, and give your browser tool a **file** to write the
+result to rather than returning it: chrome-devtools' `evaluate_script` takes a `filePath`. It
+resolves a relative path against **its own workspace root** and refuses to write outside it — so do
+not aim it at this checkout; give it a bare name and use the absolute path it echoes back. The
+loopback server stops itself once the page has taken the extractor (it is needed exactly once), or
+after `--timeout` seconds with nobody asking.
+
+Feed that file back:
 
 ```bash
 # not-executed: contains-placeholder
 FIGMA_TOKEN=figd_your_token_here node examples/first-verdict.mjs verdict \
   --file https://www.figma.com/design/AbCdEf012345/Product-Page --frame 12-340 \
   --pair '.card=12:340' --pair '.card__title=12:341' --pair '.card__price=12:344' \
-  --snapshots snapshots.json
+  --snapshots /the/absolute/path/evaluate_script/echoed/back.json
 ```
+
+Measured end to end against a live Figma frame and a live page, one pair: **8655 characters** for the
+whole cycle — the extractor crossing the agent zero times, the snapshot zero times. That is what the
+loopback socket and the file are worth; the same run with both of them pasted through is about ten
+times as much, and the snapshot half of it grows with every pair.
+
+`prepare` is the same recipe with the extractor written to a file for you to paste **verbatim** —
+54121 characters through your context. Keep it for a page whose CSP forbids the `eval` the fetch
+thunk needs; there is no reason to reach for it otherwise.
 
 Swap `AbCdEf012345`, the node ids and the selectors for your own; if your token already sits in
 `mcp-server/.env`, run `node --env-file=mcp-server/.env examples/first-verdict.mjs …` instead of

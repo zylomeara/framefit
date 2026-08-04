@@ -712,11 +712,22 @@ export const figmaCheck: Check = {
       // host passes - it would turn the one check they came for into a probe of a different
       // credential, and report ok for a host that is failing. So the environment stays the subject,
       // and the reader gets the exact two ways to put a token into it.
+      // THE PATH IS RELATIVE TO THE READER'S CWD, AND THE FLAG IS SILENT ABOUT GETTING IT WRONG.
+      // This sentence used to say `--env-file-if-exists=mcp-server/.env`, and the only fence on this
+      // page that produces a runnable `node dist/index.js status` opens with `cd mcp-server` - where
+      // that value resolves to `mcp-server/mcp-server/.env`. `-if-exists` is precisely the flag that
+      // turns a wrong path into a no-op: no error, no warning, and the identical SKIP the reader came
+      // here to fix. Measured from `mcp-server/`: with `.env` the check runs (`[OK] figma
+      // handle=...`); with `mcp-server/.env` the output is byte-identical to the bare run. So the
+      // value is the one true from the directory `dist/index.js` is being run from, and the sentence
+      // says which directory that is rather than leaving it to be inferred.
       if (!token) return { state: 'skipped', reason:
         'no FIGMA_TOKEN in this process environment, so the token was not probed - this is NOT a verdict '
         + 'that the token is fine. On stdio the token lives in your MCP host\'s env block, not your shell. '
         + 'Re-run this command with the token in ITS environment: prefix it with `FIGMA_TOKEN=figd_...`, or '
-        + '(from a checkout, node 20.19+) insert `--env-file-if-exists=mcp-server/.env` right after `node`. '
+        + '(from a checkout, node 20.19+, run from `mcp-server/`) insert `--env-file-if-exists=.env` right '
+        + 'after `node`. That path is relative to your shell\'s directory and `-if-exists` reports nothing '
+        + 'when it misses, so a wrong one gives you this same skip in silence. '
         + 'This command does not read that file by itself: it reports the environment a server would be '
         + 'handed, and a token it loaded for you would not be the one your host passes.' };
       // Single probe, so it gets the WHOLE per-check budget - there is no second user to share it with.

@@ -45,6 +45,17 @@ inline`, and `compare_node_to_dom` notes `snapshot store unavailable on this ser
 inline` on the pair. So the examples here pass the snapshot inline; switch to `dom_ref` once you run
 the server over HTTP.
 
+**What the two big payloads cost, and who can avoid paying it.** Step 2's `extractor_js` is the whole
+script inline on stdio, and step 3's snapshot is tens of thousands of characters per pair. Both cross
+an agent's context by default, and neither has to:
+[`examples/first-verdict.mjs`](../../examples/first-verdict.mjs) `serve-extractor` holds the script on
+a loopback socket so the page fetches it, and its `verdict` reads the capture from a file the browser
+tool wrote (chrome-devtools' `evaluate_script` takes a `filePath`). **That is the client avoiding the
+crossing, not the tool contract changing.** `suggest_pairs` still takes `dom_snapshot` inline and
+`compare_node_to_dom` still takes `pairs[].dom` inline — an agent calling these tools directly, with
+no client in between, pays both costs in full, and so does any other client that does not do the same
+two things.
+
 **Where the response examples come from.** Each one below is a real return of that tool's handler,
 captured from the request shown above it against a stub of one small Figma file (a `Product card`
 section holding a `Desktop` and a `Mobile` frame, the Desktop one holding the 320x420 card the other

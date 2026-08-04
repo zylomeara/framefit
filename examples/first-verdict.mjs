@@ -1,20 +1,53 @@
 #!/usr/bin/env node
 // Your first verdict: a runnable stdio client that walks the design-QA cycle to a receipt.
 //
-//   node examples/first-verdict.mjs prepare --file <url|key> --frame <node-id> --pair '<css>=<node-id>' ...
+//   node examples/first-verdict.mjs serve-extractor --file <url|key> --frame <node-id> --pair '<css>=<node-id>' ...
 //   node examples/first-verdict.mjs verdict --file <url|key> --frame <node-id> --pair '<css>=<node-id>' ... --snapshots <file.json>
 //
 // The seam is deliberate and it is where a browser lives. Node cannot drive your page, so this
 // client does the two halves it CAN do -- everything on the Figma side, and everything after the
-// capture -- and hands you two files to paste into whatever browser automation you already have
+// capture -- and hands you a short thunk to paste into whatever browser automation you already have
 // (chrome-devtools MCP, Playwright, the devtools console). It never pretends to drive Chrome.
 //
-//   prepare  -> get_layout_spec           -> writes 1-paste-extractor.js and 2-capture.js
-//   [you]    -> paste both into the page  -> save what the second one returns as snapshots.json
-//   verdict  -> suggest_pairs + compare_node_to_dom -> report, verification receipt, exit code
+//   serve-extractor -> get_layout_spec -> holds the extractor on 127.0.0.1, prints two short thunks
+//   [you]           -> paste thunk 1 (the page FETCHES the extractor), then thunk 2 to capture,
+//                      and have your browser tool write what it returns to a FILE
+//   verdict         -> suggest_pairs + compare_node_to_dom -> report, verification receipt, exit code
+//
+// WHY THE SEAM MOVED, AND WHAT IT IS WORTH. A developer who had never seen this project reached a
+// real verdict over stdio by REFUSING the path this file used to document. Following it literally
+// costs ~387,000 characters of agent context; theirs cost 87,000. Both crossings are avoidable and
+// neither of them is a framefit tool call:
+//
+//   1. THE EXTRACTOR. `get_layout_spec {include_extractor:true}` returns the whole script inline on
+//      stdio, because a stdio server has no public base URL for the browser to fetch it from. Pasted
+//      through the agent, that is 54121 characters. `serve-extractor` puts those characters on a
+//      loopback socket instead: they cross THIS process, which is not the agent's context, and what
+//      the agent handles is a ~350-character thunk that fetches them.
+//   2. THE SNAPSHOT. `verdict` reads the capture from a FILE. chrome-devtools' `evaluate_script`
+//      takes a `filePath` and writes its result there, so the snapshot never has to come back as a
+//      tool result and go out again as a tool argument.
+//
+// WHAT THIS DOES NOT CHANGE, said plainly because it is the honest limit: the MCP tool contract.
+// `compare_node_to_dom` still takes `pairs[].dom` inline and `suggest_pairs` still takes
+// `dom_snapshot` inline -- the snapshot crosses THIS client's memory on its way from the file to the
+// tool call. A different client, or an agent driving the tools directly with no client in between,
+// pays both costs in full. What is bought here is bought by the client standing in the middle, not
+// by the server asking for less.
+//
+//   prepare -> the fallback: writes the extractor to a file for you to paste VERBATIM. Keep it for a
+//   page whose CSP forbids `eval`, where thunk 1 cannot run at all.
 //
 // The cycle itself is stated once, in docs/tools/design-qa.md#the-cycle; this file is that cycle
 // with the arguments filled in. Dependency-free on purpose: node 20+, nothing installed.
+//
+// WHAT IS GATED HERE, AND WHAT IS NOT. `mcp-server/tests/unit/first-verdict-client.test.ts` parses
+// every argument object below with the tool's LIVE registered input schema, so a renamed or dropped
+// argument is red before it ships; `design-qa-cycle-once.test.ts` holds the narrative above to the
+// one place the cycle is defined. Neither of them runs this client: the end-to-end path needs a
+// Figma token and a browser, so it is proven by hand and NOT by CI. The residual is therefore
+// everything between two well-typed calls -- a thunk this file prints that the page will not run, a
+// loopback port nothing can reach -- and it FAILS OPEN, silently, until somebody runs the recipe.
 //
 // NOT stdio-smoke.mjs's job and not its shape. mcp-server/scripts/stdio-smoke.mjs is a CI gate --
 // two handshakes, a foreign cwd, exit-code forensics on a documented argv. The one thing both files
@@ -22,9 +55,10 @@
 // `rpc()` below; everything that made that file 39 KB is CI concern and stays there.
 
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Repo layout: <root>/examples/<this file> and <root>/mcp-server/dist/index.js.
@@ -32,25 +66,30 @@ const SERVER_ENTRY = path.resolve(__dirname, '..', 'mcp-server', 'dist', 'index.
 
 const USAGE = `first-verdict -- from a Figma frame to a machine-checkable verdict, over stdio.
 
-  node examples/first-verdict.mjs prepare --file <url|key> --frame <node-id> --pair '<css>=<node-id>' [...]
+  node examples/first-verdict.mjs serve-extractor --file <url|key> --frame <node-id> --pair '<css>=<node-id>' [...]
   node examples/first-verdict.mjs verdict --file <url|key> --frame <node-id> --pair '<css>=<node-id>' [...] --snapshots <file>
+  node examples/first-verdict.mjs prepare --file <url|key> --frame <node-id> --pair '<css>=<node-id>' [...]
 
   --file        Figma file URL or bare key.
   --frame       The frame under check. A Figma URL says node-id=33153-93531; the tools take
                 33153:93531 and this client accepts either -- it rewrites the dash for you.
   --pair        Repeatable, 'cssSelector=nodeId'. The FIRST one must be the frame itself: its
                 snapshot is what suggest_pairs reads and what carries the subtree.
-  --snapshots   (verdict) The JSON array 2-capture.js returned, one snapshot per --pair, in order.
+  --snapshots   (verdict) The file your browser tool wrote the capture to. chrome-devtools resolves
+                a RELATIVE filePath against its own workspace root and refuses to write outside it,
+                so this is normally the absolute path it echoed back, not a path in this checkout.
   --out         (prepare) Directory for the two paste files. Default: the current directory.
-  --max-depth   Both sides, 4..8. Default 4. Raising it changes the capture call -- prepare writes
-                the matching arguments into 2-capture.js, so re-run prepare if you change it.
+  --max-depth   Both sides, 4..8. Default 4. Raising it changes the capture call -- both
+                serve-extractor and prepare emit the matching arguments, so re-run whichever you use.
   --profile     compare_node_to_dom match_profile: token-aware (default) | strict | layout.
+  --timeout     (serve-extractor) Seconds the loopback server waits with nothing asking for the
+                extractor before it stops itself. Default 180.
 
 The Figma token is read from FIGMA_TOKEN in this process's environment and passed to the server
 this client spawns. Either export it, or point node at a file that holds it:
 
-  FIGMA_TOKEN=figd_... node examples/first-verdict.mjs prepare ...
-  node --env-file=mcp-server/.env examples/first-verdict.mjs prepare ...
+  FIGMA_TOKEN=figd_... node examples/first-verdict.mjs serve-extractor ...
+  node --env-file=mcp-server/.env examples/first-verdict.mjs serve-extractor ...
 
 Exit codes: 0 verification.complete is true, 2 a verdict that is not green (the gate working,
 not a crash), 1 this client or the server could not produce a verdict at all.`;
@@ -58,7 +97,7 @@ not a crash), 1 this client or the server could not produce a verdict at all.`;
 // --- argv ----------------------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const out = { pairs: [], maxDepth: 4, out: process.cwd(), profile: undefined };
+  const out = { pairs: [], maxDepth: 4, out: process.cwd(), profile: undefined, timeout: 180 };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     const value = () => {
@@ -78,6 +117,7 @@ function parseArgs(argv) {
     else if (a === '--out') out.out = value();
     else if (a === '--max-depth') out.maxDepth = Number(value());
     else if (a === '--profile') out.profile = value();
+    else if (a === '--timeout') out.timeout = Number(value());
     else if (a === '-h' || a === '--help') { console.log(USAGE); process.exit(0); }
     else die(`unknown argument '${a}'`);
   }
@@ -85,13 +125,14 @@ function parseArgs(argv) {
   if (!out.frame) die('--frame is required');
   if (out.pairs.length === 0) die('at least one --pair is required (the first one is the frame)');
   if (!(out.maxDepth >= 4 && out.maxDepth <= 8)) die('--max-depth must be 4..8');
+  if (!(out.timeout > 0)) die('--timeout must be a positive number of seconds');
   return out;
 }
 
 // A Figma URL writes the node id with a dash (`node-id=33153-93531`); every tool takes a colon
 // (`33153:93531`). The schemas accept both spellings, so this rewrite is a convenience and not a
 // correction -- it exists so one value can be pasted straight out of the address bar.
-const nodeId = (v) => v.replace(/^(\d+)-(\d+)$/, '$1:$2');
+export const nodeId = (v) => v.replace(/^(\d+)-(\d+)$/, '$1:$2');
 
 function die(message) {
   console.error(`first-verdict: ${message}\n\n${USAGE}`);
@@ -175,6 +216,43 @@ async function withServer(fn) {
   }
 }
 
+// --- the arguments of every tool call this client makes ------------------------------------------
+
+/**
+ * The three tool-call argument objects, as functions of the parsed argv (and, for the two that need
+ * it, the captured snapshots). Exported and pure so they can be checked against the LIVE registered
+ * input schemas rather than against a copy of them.
+ *
+ * WHY THEY ARE NOT WRITTEN INLINE AT THE CALL SITES. Nothing here was gated. Measured against the
+ * previous commit: renaming an argument in the `compare_node_to_dom` call left the whole suite green
+ * -- this file is a `.mjs` under `examples/`, so no typecheck reaches it, and no test knew what it
+ * sends. A client whose arguments have drifted off the schema fails at the reader's first run, which
+ * is the one run this file exists to make succeed. Pulled out here they are values a test can build
+ * and hand to `z.object(<registered shape>).strict().parse(...)`, so a renamed or dropped argument is
+ * red before it ships (mcp-server/tests/unit/first-verdict-client.test.ts).
+ */
+export const TOOL_ARGS = {
+  get_layout_spec: (args) => ({
+    file: args.file,
+    node_ids: [...new Set([args.frame, ...args.pairs.map((p) => p.nodeId)])],
+    include_extractor: true,
+    max_depth: args.maxDepth,
+  }),
+  suggest_pairs: (args, snapshots) => ({
+    file: args.file,
+    frame_node_id: args.frame,
+    dom_snapshot: snapshots[0],
+    max_depth: args.maxDepth,
+  }),
+  compare_node_to_dom: (args, snapshots) => ({
+    file: args.file,
+    frame_node_id: args.frame,
+    pairs: args.pairs.map((p, i) => ({ node_id: p.nodeId, dom: snapshots[i], label: p.selector })),
+    max_depth: args.maxDepth,
+    ...(args.profile ? { match_profile: args.profile } : {}),
+  }),
+};
+
 // --- the paste guard -----------------------------------------------------------------------------
 
 /**
@@ -190,69 +268,190 @@ function fingerprint(source) {
   return `${source.length}:${h.toString(16)}`;
 }
 
-// --- prepare -------------------------------------------------------------------------------------
+// --- the Figma side, shared by both browser-facing commands ---------------------------------------
 
-async function prepare(args) {
-  const spec = await withServer((call) => call('get_layout_spec', {
-    file: args.file,
-    node_ids: [...new Set([args.frame, ...args.pairs.map((p) => p.nodeId)])],
-    include_extractor: true,
-    max_depth: args.maxDepth,
-  }));
-
+/** One get_layout_spec call: the extractor, the frame width, and the fingerprint of the extractor. */
+async function figmaSide(args) {
+  const spec = await withServer((call) => call('get_layout_spec', TOOL_ARGS.get_layout_spec(args)));
   if (typeof spec.extractor_js !== 'string') {
     die('get_layout_spec returned no extractor_js - this client asked for one, so something is wrong');
   }
-  const frameSpec = spec.specs?.find((s) => s.node_id === args.frame);
-  const frameWidth = frameSpec?.spec?.rect?.w;
+  return {
+    extractor: spec.extractor_js,
+    expected: fingerprint(spec.extractor_js),
+    specCount: spec.specs?.length ?? 0,
+    frameWidth: spec.specs?.find((s) => s.node_id === args.frame)?.spec?.rect?.w,
+  };
+}
+
+/**
+ * The extractor's own arguments, and the server's mapping of max_depth onto them:
+ * 4 -> (3, 90), 6 -> (5, 180), 8 -> (7, 180). Written out rather than defaulted, so raising
+ * --max-depth cannot leave the DOM side three levels shallower than the Figma side.
+ */
+const captureCall = (args, global) =>
+  `async () => await window.${global}([${args.pairs.map((p) => JSON.stringify(p.selector)).join(', ')}], `
+  + `undefined, ${args.maxDepth - 1}, ${args.maxDepth > 4 ? 180 : 90})`;
+
+// The Figma URL is single-quoted because a dev-mode one ends `?node-id=33153-93531&m=dev`, and an
+// unquoted `&` backgrounds the command at that character - the reader's paste would run
+// `node ... --file https://...?node-id=33153-93531` in the background and then `m=dev`.
+/** The `verdict` line that closes both recipes, with this run's own arguments already in it. */
+const verdictLine = (args, snapshotsPath) =>
+  `node examples/first-verdict.mjs verdict --file '${args.file}' --frame ${args.frame} `
+  + args.pairs.map((p) => `--pair '${p.selector}=${p.nodeId}'`).join(' ')
+  + ` --snapshots ${snapshotsPath}`;
+
+function frameWidthNote(args, side) {
+  console.log(`\nFigma side: ${side.specCount} spec(s), frame ${args.frame}`
+    + (side.frameWidth ? ` is ${side.frameWidth}px wide` : ' has no rect (is that id really the frame?)'));
+  if (side.frameWidth) {
+    console.log(`  Size the browser viewport to ${side.frameWidth}px wide FIRST. A window that disagrees`);
+    console.log('  with the frame does not produce red rows - it demotes every geometry row to unchecked.');
+  }
+}
+
+// --- serve-extractor: the extractor reaches the page without crossing the agent -------------------
+
+const EXTRACTOR_PATH = '/extractor.js';
+
+/**
+ * Hold the extractor on loopback and hand back the URL.
+ *
+ * The whole surface, deliberately: it binds 127.0.0.1 (never 0.0.0.0 - this is an eval-able script,
+ * and a LAN-reachable one is a LAN-reachable code injection), takes an ephemeral port so two runs
+ * cannot collide, answers ONE exact path with ONE string held in memory, and touches the filesystem
+ * nowhere. There is no directory to serve and no path to traverse: anything that is not
+ * `GET /extractor.js` is a 404, and `..` in a URL cannot name a file this process never opens.
+ *
+ * `Access-Control-Allow-Origin: *` is what makes the page's `fetch` legal - the page is on its own
+ * origin (localhost:3000, :3673, whatever you render on) and this is not it. It is scoped by what is
+ * served rather than by who may read it: the response body is a script this same reader is about to
+ * paste into their own page by hand.
+ *
+ * STOPPING ITSELF, and what it can actually observe. The extractor is needed exactly ONCE per page:
+ * after `window.__extract` is parked, the capture thunk re-runs from the page with no server
+ * involved. So the server cannot see "the capture finished" and does not pretend to - it stops a
+ * short grace period after it has SERVED the script (long enough to re-paste a thunk that raced the
+ * page's own navigation), and otherwise after `--timeout` seconds of nobody asking at all.
+ */
+function serveExtractorScript(source, { idleMs, graceMs }) {
+  const body = `window.__extract = ${source};`;
+  const bytes = Buffer.byteLength(body);
+  let timer;
+  let stopped;
+  const arm = (ms) => {
+    clearTimeout(timer);
+    // NOT unref()'d, and that is the whole lifetime of this command: the process must stay up while
+    // the reader pastes, and the listening socket alone would keep it up forever. The timer is what
+    // ends the run, so it has to hold the loop open until it fires.
+    timer = setTimeout(() => server.close(), ms);
+  };
+  const server = createServer((req, res) => {
+    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    if (req.method !== 'GET' || pathname !== EXTRACTOR_PATH) {
+      res.writeHead(404, { 'content-type': 'text/plain' }).end('not found\n');
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'text/javascript; charset=utf-8',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': '*',
+      'content-length': bytes,
+    }).end(body);
+    console.error(`[first-verdict] extractor served (${bytes} bytes); `
+      + `stopping in ${Math.round(graceMs / 1000)}s unless asked again`);
+    arm(graceMs);
+  });
+  const done = new Promise((resolve) => { stopped = resolve; });
+  server.on('close', () => { clearTimeout(timer); stopped(); });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      arm(idleMs);
+      resolve({ base: `http://127.0.0.1:${server.address().port}`, done });
+    });
+  });
+}
+
+async function serveExtractor(args) {
+  const side = await figmaSide(args);
+  const idleMs = args.timeout * 1000;
+  const graceMs = Math.min(idleMs, 30_000);
+  const { base, done } = await serveExtractorScript(side.extractor, { idleMs, graceMs });
+
+  frameWidthNote(args, side);
+  console.log('\n  1. Paste this into evaluate_script. It fetches the extractor over loopback, so the'
+    + `\n     ${side.expected.split(':')[0]} characters of it never cross your context. It must return exactly ${side.expected} -`
+    + '\n     that is the same length:hash of the same script, computed on both sides; anything else'
+    + '\n     means what landed in the page is not what this client was handed, so do not measure it.\n');
+  console.log(`async () => { const s = await (await fetch('${base}${EXTRACTOR_PATH}')).text(); (0,eval)(s);`
+    + ' const t = String(window.__extract); let h = 0;'
+    + " for (let i = 0; i < t.length; i += 1) h = (Math.imul(h, 31) + t.charCodeAt(i)) >>> 0; return t.length + ':' + h.toString(16); }");
+  console.log('\n  2. Then paste this one, and have your browser tool write the result to a FILE rather'
+    + '\n     than return it: chrome-devtools evaluate_script takes a `filePath`. It resolves a relative'
+    + '\n     path against ITS OWN workspace root and refuses to write outside it, so do not try to aim'
+    + '\n     it at this checkout - give it a bare name and use the absolute path it echoes back.\n');
+  console.log(captureCall(args, '__extract'));
+  console.log('\n  3. Then, with the path it printed:\n');
+  console.log(verdictLine(args, '<the absolute path evaluate_script echoed back>'));
+  console.error(`\n[first-verdict] serving until asked, or ${args.timeout}s from now. Ctrl-C to stop early.`);
+  await done;
+  console.error('[first-verdict] extractor server stopped. Re-run serve-extractor if you need it again.');
+}
+
+// --- prepare: the fallback, for a page whose CSP will not eval --------------------------------
+
+async function prepare(args) {
+  const side = await figmaSide(args);
 
   mkdirSync(args.out, { recursive: true });
   const pasteFile = path.join(args.out, '1-paste-extractor.js');
   const captureFile = path.join(args.out, '2-capture.js');
-  const expected = fingerprint(spec.extractor_js);
 
   // evaluate_script CALLS what you send, so both files are thunks. The first parks the extractor on
   // the page and returns the fingerprint of what landed; the second is short enough to re-run freely.
   writeFileSync(pasteFile,
     '// Paste the WHOLE of this file into your browser tool\'s evaluate_script (chrome-devtools MCP:\n'
     + '// evaluate_script { function: <this file> }). It must return exactly:\n'
-    + `//   ${expected}\n`
+    + `//   ${side.expected}\n`
     + '// Any other value means the paste did not arrive intact - re-paste, do not measure.\n'
     + '() => {\n'
-    + `  window.__extract = ${spec.extractor_js};\n`
+    + `  window.__extract = ${side.extractor};\n`
     + '  const s = String(window.__extract);\n'
     + '  let h = 0;\n'
     + '  for (let i = 0; i < s.length; i += 1) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;\n'
     + '  return s.length + \':\' + h.toString(16);\n'
     + '}\n');
 
-  // depthLeft/budget are the extractor's own arguments and the server's mapping of max_depth onto
-  // them: 4 -> (3, 90), 6 -> (5, 180), 8 -> (7, 180). Written out rather than defaulted, so raising
-  // --max-depth cannot leave the DOM side three levels shallower than the Figma side.
-  const depthLeft = args.maxDepth - 1;
-  const budget = args.maxDepth > 4 ? 180 : 90;
-  const selectors = args.pairs.map((p) => JSON.stringify(p.selector)).join(', ');
   writeFileSync(captureFile,
-    '// Run this in the SAME page, after 1-paste-extractor.js. Save what it returns as snapshots.json\n'
+    '// Run this in the SAME page, after 1-paste-extractor.js. Save what it returns to a file\n'
     + '// (a JSON array, one snapshot per selector, in this order) and pass it to `verdict --snapshots`.\n'
-    + `async () => await window.__extract([${selectors}], undefined, ${depthLeft}, ${budget})\n`);
+    + `${captureCall(args, '__extract')}\n`);
 
-  console.log(`\nFigma side: ${spec.specs?.length ?? 0} spec(s), frame ${args.frame}`
-    + (frameWidth ? ` is ${frameWidth}px wide` : ' has no rect (is that id really the frame?)'));
-  if (frameWidth) {
-    console.log(`  1. Size the browser viewport to ${frameWidth}px wide. A window that disagrees with the`);
-    console.log('     frame does not produce red rows - it demotes every geometry row to unchecked.');
-  }
-  console.log(`  2. Paste ${pasteFile} into the page. It must return ${expected}`);
-  console.log(`  3. Paste ${captureFile}; save the array it returns as snapshots.json`);
-  console.log(`  4. node examples/first-verdict.mjs verdict --file ... --frame ${args.frame} `
-    + args.pairs.map((p) => `--pair '${p.selector}=${p.nodeId}'`).join(' ') + ' --snapshots snapshots.json');
+  frameWidthNote(args, side);
+  console.log(`\n  1. Paste ${pasteFile} into the page. It must return ${side.expected}`);
+  console.log(`     This is the FALLBACK path: that paste is ${side.expected.split(':')[0]} characters through your`);
+  console.log('     context. `serve-extractor` sends a ~350-character thunk instead; use this one only');
+  console.log('     when the page\'s CSP forbids the `eval` that thunk needs.');
+  console.log(`  2. Paste ${captureFile}; write the array it returns to a file`);
+  console.log(`  3. ${verdictLine(args, '<that file>')}`);
 }
 
 // --- verdict -------------------------------------------------------------------------------------
 
 function readSnapshots(file, pairs) {
   if (!file) die('--snapshots is required for the verdict step');
+  // Measured, and it is the snag the file handoff actually has: chrome-devtools resolves a relative
+  // `filePath` against ITS OWN workspace root - not this checkout, not your shell's cwd - and refuses
+  // outright to write anywhere outside its configured roots ("Access denied: ... is not within any of
+  // the configured workspace roots"). So a reader who aims it at `framefit/snapshots.json` gets no
+  // file, and a reader who passes the bare name they gave it gets ENOENT here. Neither needs guessing:
+  // the tool echoes the absolute path it wrote, and that is the value this flag wants.
+  if (!existsSync(file)) {
+    die(`${file} does not exist. If your browser tool wrote it, use the ABSOLUTE path it echoed back - `
+      + 'chrome-devtools resolves a relative filePath against its own workspace root, which is not this '
+      + 'checkout, and refuses to write outside it.');
+  }
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(file, 'utf8'));
@@ -291,23 +490,12 @@ async function verdict(args) {
     // have not paired yet, and its unmatched lists are the same regions the receipt will hold you to.
     let proposals;
     try {
-      proposals = await call('suggest_pairs', {
-        file: args.file,
-        frame_node_id: args.frame,
-        dom_snapshot: snapshots[0],
-        max_depth: args.maxDepth,
-      });
+      proposals = await call('suggest_pairs', TOOL_ARGS.suggest_pairs(args, snapshots));
     } catch (err) {
       console.error(`[first-verdict] suggest_pairs did not run: ${err.message}`);
     }
 
-    const compare = await call('compare_node_to_dom', {
-      file: args.file,
-      frame_node_id: args.frame,
-      pairs: args.pairs.map((p, i) => ({ node_id: p.nodeId, dom: snapshots[i], label: p.selector })),
-      max_depth: args.maxDepth,
-      ...(args.profile ? { match_profile: args.profile } : {}),
-    });
+    const compare = await call('compare_node_to_dom', TOOL_ARGS.compare_node_to_dom(args, snapshots));
     return { proposals, compare };
   });
 
@@ -351,17 +539,35 @@ async function verdict(args) {
 
 // --- main ----------------------------------------------------------------------------------------
 
-const [command, ...rest] = process.argv.slice(2);
-if (command === undefined || command === '-h' || command === '--help') {
-  console.log(USAGE);
-  process.exit(0);
-}
-if (command !== 'prepare' && command !== 'verdict') die(`unknown command '${command}'`);
+/**
+ * The commands, and the ONE place their names are written. A test that quantifies over the client's
+ * tool calls needs to be able to import this file; a module that runs `main()` on import cannot be
+ * imported by anything. Hence the direct-invocation guard below - `import` gets the exports and no
+ * side effects, `node examples/first-verdict.mjs ...` gets the CLI, and neither knows about the other.
+ *
+ * `serve-extractor` resolves only when its loopback server stops (served + grace, or idle timeout),
+ * so its `await` is the visible wait while you paste; the other two are ordinary.
+ */
+const COMMANDS = { 'serve-extractor': serveExtractor, prepare, verdict };
 
-const args = parseArgs(rest);
-try {
-  process.exit(command === 'prepare' ? ((await prepare(args)) ?? 0) : await verdict(args));
-} catch (err) {
-  console.error(`\nfirst-verdict: ${err.message}`);
-  process.exit(1);
+export async function main(argv) {
+  const [command, ...rest] = argv;
+  if (command === undefined || command === '-h' || command === '--help') {
+    console.log(USAGE);
+    return 0;
+  }
+  const run = COMMANDS[command];
+  if (!run) die(`unknown command '${command}' (expected: ${Object.keys(COMMANDS).join(', ')})`);
+  return (await run(parseArgs(rest))) ?? 0;
+}
+
+// process.argv[1] is the resolved script path; comparing its file:// URL to this module's own is
+// what tells "run as a program" from "imported by a test", on every platform, without string paths.
+if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  try {
+    process.exit(await main(process.argv.slice(2)));
+  } catch (err) {
+    console.error(`\nfirst-verdict: ${err.message}`);
+    process.exit(1);
+  }
 }
