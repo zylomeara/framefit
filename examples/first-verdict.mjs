@@ -71,8 +71,8 @@ const USAGE = `first-verdict -- from a Figma frame to a machine-checkable verdic
   node examples/first-verdict.mjs prepare --file <url|key> --frame <node-id> --pair '<css>=<node-id>' [...]
 
   --file        Figma file URL or bare key.
-  --frame       The frame under check. A Figma URL says node-id=33153-93531; the tools take
-                33153:93531 and this client accepts either -- it rewrites the dash for you.
+  --frame       The frame under check. A Figma URL says node-id=12-340; the tools take
+                12:340 and this client accepts either -- it rewrites the dash for you.
   --pair        Repeatable, 'cssSelector=nodeId'. The FIRST one must be the frame itself: its
                 snapshot is what suggest_pairs reads and what carries the subtree.
   --snapshots   (verdict) The file your browser tool wrote the capture to. chrome-devtools resolves
@@ -129,8 +129,8 @@ function parseArgs(argv) {
   return out;
 }
 
-// A Figma URL writes the node id with a dash (`node-id=33153-93531`); every tool takes a colon
-// (`33153:93531`). The schemas accept both spellings, so this rewrite is a convenience and not a
+// A Figma URL writes the node id with a dash (`node-id=12-340`); every tool takes a colon
+// (`12:340`). The schemas accept both spellings, so this rewrite is a convenience and not a
 // correction -- it exists so one value can be pasted straight out of the address bar.
 export const nodeId = (v) => v.replace(/^(\d+)-(\d+)$/, '$1:$2');
 
@@ -293,9 +293,9 @@ const captureCall = (args, global) =>
   `async () => await window.${global}([${args.pairs.map((p) => JSON.stringify(p.selector)).join(', ')}], `
   + `undefined, ${args.maxDepth - 1}, ${args.maxDepth > 4 ? 180 : 90})`;
 
-// The Figma URL is single-quoted because a dev-mode one ends `?node-id=33153-93531&m=dev`, and an
+// The Figma URL is single-quoted because a dev-mode one ends `?node-id=12-340&m=dev`, and an
 // unquoted `&` backgrounds the command at that character - the reader's paste would run
-// `node ... --file https://...?node-id=33153-93531` in the background and then `m=dev`.
+// `node ... --file https://...?node-id=12-340` in the background and then `m=dev`.
 /** The `verdict` line that closes both recipes, with this run's own arguments already in it. */
 const verdictLine = (args, snapshotsPath) =>
   `node examples/first-verdict.mjs verdict --file '${args.file}' --frame ${args.frame} `
