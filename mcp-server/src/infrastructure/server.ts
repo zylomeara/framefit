@@ -174,13 +174,25 @@ export interface MultiTenantContext {
 // agents on hosts WITHOUT a skills mechanism, so it carries the minimal design-QA contract:
 // the tool cycle and the done-gate. The full branching workflow lives in
 // docs/agents/design-qa-skill.md (progressively loaded by hosts that support skills).
+//
+// THE CYCLE IS DEFINED IN docs/tools/design-qa.md ("The cycle"), and this string is a compression of
+// that list, not a fourth opinion about it. The three-tool version it used to carry
+// (get_layout_spec -> suggest_pairs -> compare_node_to_dom) disagreed with both documentation pages
+// in two ways that cost a first-time reader real time: it omitted the browser capture, which is the
+// step no tool here can perform and the one that dominates the wall clock, and it made suggest_pairs
+// look mandatory when the code treats it as the answer to "I do not know the node ids".
 export const SERVER_INSTRUCTIONS = [
   'Framefit is a verification-first Figma server: it measures a rendered UI against its Figma',
-  'frame and reports a machine-checkable verdict. For design QA follow the cycle:',
-  'get_layout_spec -> suggest_pairs -> compare_node_to_dom. Treat the returned',
-  '`verification.complete` as the done-gate: never claim the UI matches the design while it is',
-  'false or `blocking[]` is non-empty — each blocking item names the action that fixes coverage.',
-  'Full agent workflow: docs/agents/design-qa-skill.md in the repository.',
+  'frame and reports a machine-checkable verdict. The design-QA cycle, five steps:',
+  '(1) find_breakpoint_variant picks the frame matching your render width - skip it when you already',
+  'know the frame id; (2) get_layout_spec {include_extractor: true} returns the Figma side and the',
+  'DOM extractor; (3) YOU run that extractor in the browser over your CSS selectors - no tool here',
+  'can, it needs a rendered page; (4) suggest_pairs proposes node_id/selector pairs from the',
+  'frame-root snapshot - skip it when you already know the node ids; (5) compare_node_to_dom',
+  'measures and returns the verdict. Treat the returned `verification.complete` as the done-gate:',
+  'never claim the UI matches the design while it is false or `blocking[]` is non-empty — each',
+  'blocking item names the action that fixes coverage. The cycle is stated once in',
+  'docs/tools/design-qa.md; the full agent workflow is docs/agents/design-qa-skill.md.',
 ].join('\n');
 
 export function makeReadCaches(config: AppConfig, logger?: Logger, budget?: CacheBudget,

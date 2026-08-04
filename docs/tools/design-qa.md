@@ -4,11 +4,33 @@ Deterministic Figma ↔ DOM verification: project a Figma frame into a diff-read
 rendered DOM with the canonical extractor, pair the two sides, and get a machine-readable metric
 diff with an honest verification receipt.
 
-Typical order: [`find_breakpoint_variant`](#find_breakpoint_variant) →
-[`get_layout_spec`](#get_layout_spec) → [`suggest_pairs`](#suggest_pairs) →
-[`compare_node_to_dom`](#compare_node_to_dom), with [`get_view`](#get_view) for orientation inside
-a large frame. The full cycle is walked through in the
-[Design QA tutorial](../design-qa-tutorial.md).
+## The cycle
+
+Stated once, here. The server's own MCP `instructions`, the
+[agent skill](../agents/design-qa-skill.md) and the [tutorial](../design-qa-tutorial.md) point at
+this list and add detail to it; none of them redefines it.
+
+1. [`find_breakpoint_variant`](#find_breakpoint_variant) — pick the frame whose **content** width
+   matches your render width. Skip it when you already know the frame id.
+2. [`get_layout_spec`](#get_layout_spec) with `include_extractor: true` — the Figma side of the
+   comparison, plus the canonical DOM extractor.
+3. **In the browser, not in a framefit tool** — run that extractor over your CSS selectors and keep
+   the snapshot it returns for each one. No tool on this page can do this step: it needs a rendered
+   page, and the server never sees one. This is where an agent uses its browser automation.
+4. [`suggest_pairs`](#suggest_pairs) — propose `node_id` ↔ selector pairs out of the frame-root
+   snapshot, with honest `unmatched_figma` / `unmatched_dom` lists. Skip it when you already know
+   which node each selector renders: it is the answer to "I do not know the node ids", not a toll
+   gate on the compare.
+5. [`compare_node_to_dom`](#compare_node_to_dom) — the measurement, and the verdict.
+
+Then read `verification.complete` — the done-gate. Never claim the UI matches the design while it is
+`false` or `blocking[]` is non-empty: each blocking item names the action that closes it. Work those
+actions, re-capture the pairs they name (step 3), and run step 5 again.
+
+[`get_view`](#get_view) is not a step in that sequence — it is orientation inside a large frame, at
+any point. [`examples/first-verdict.mjs`](../../examples/first-verdict.mjs) is the same five steps
+as a runnable stdio client, and the [tutorial](../design-qa-tutorial.md) walks them end to end with
+a worked example.
 
 To understand *how a node is built* (auto-layout, fills, tokens, component structure) rather than
 to verify it against a rendered page, use
@@ -208,6 +230,13 @@ The response also carries a `verification` receipt - a machine gate with `comple
 and an actionable `blocking` list - plus per-pair `source` hints (CSS-module file candidates) and
 a `fix_plan` (grouped edits derived from fail rows). See the
 [Design QA tutorial](../design-qa-tutorial.md) for how to read them.
+
+Colors are enriched from the file's variables, and that fetch is the slowest thing this tool does on
+a large file. When it fails or times out, the run degrades honestly - token rows read as unresolved
+and a `confirm_token` blocker appears - and says so in two places a caller sees: a
+`degraded_stages: [{ stage, reason, ms, detail }]` key, and one `ℹ️` line in `report_markdown`. `ms`
+is the point. Measured on this transport, that one endpoint took 90 seconds of a 93-second call, and
+without it the caller has a two-minute silence and no way to tell a slow call from a hung one.
 
 The example below submits one pair out of the frame's three children, so its receipt reports
 `complete: false` and names what is still unchecked. That is the gate doing its job, not the tool

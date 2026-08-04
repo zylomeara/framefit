@@ -1,5 +1,11 @@
 # Design QA tutorial: verifying a rendered page against Figma
 
+The cycle is stated once, in [the tool reference](tools/design-qa.md#the-cycle). This page is that
+same cycle walked end to end with a worked example — the sections below are its steps, not a second
+definition of them, and where they disagree that page is right. Two of its five steps are optional
+and this walkthrough takes both: step 1 (`find_breakpoint_variant`) because you usually do not know
+the frame, and step 4 (`suggest_pairs`) because you usually do not know the node ids.
+
 This walkthrough shows the full design-QA cycle with the five tools from
 [docs/tools/design-qa.md](tools/design-qa.md):
 

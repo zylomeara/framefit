@@ -138,6 +138,10 @@ export function renderReport(input: {
   // A1: machine-gated receipt. The verdict accounts for frame coverage (else "no discrepancies" with
   // uncovered regions = a frame-level false green), and the "Check" block + blocking are rendered.
   verification?: VerificationReceipt;
+  // Enrichment that did not arrive, and the seconds it took not to arrive. Rendered next to the
+  // rows it degraded, because a caller who reads only this markdown is otherwise told that colors
+  // are `unknown` without being told why the call took two minutes to say so.
+  degradedStages?: { stage: string; reason: string; ms: number; detail: string }[];
 }): string {
   const lines: string[] = [];
   const frameNote = input.frame ? `, frame ${input.frame.node_id}${input.frame.width ? ` (${input.frame.width}px)` : ''}` : '';
@@ -238,6 +242,9 @@ export function renderReport(input: {
   lines.push(`Total: ✅${total.pass} ❌${total.fail}${demTotal}${unchTotal}${revTotal} ⚠️${total.warn} ⏭${total.skip} ℹ️${total.info} — ${verdict}`);
   const vBlock = renderVerification(input.verification);
   if (vBlock.length) lines.push('', ...vBlock);
+  for (const d of input.degradedStages ?? []) {
+    lines.push('', `ℹ️ ${d.stage}: not resolved after ${Math.round(d.ms / 1000)}s (${d.reason}: ${d.detail}) — that wait is inside this call's duration, and the rows it feeds read as unresolved rather than verified`);
+  }
   lines.push('', `⚠️ NOT covered by this tool (verify visually): ${NOT_COVERED_BY_TOOL.join(', ')}`);
   lines.push('ℹ️ icons: size/position are measured geometrically, the diff does not check glyph/shape — verify visually or get_screenshot focus-crop');
   lines.push(`ℹ️ typography checked to ${input.depthLevels ?? 4} nesting levels — TEXT deeper: raise max_depth (up to 8) and rerun, or add a separate pair on the TEXT node`);

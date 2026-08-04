@@ -22,6 +22,15 @@ Every one of them is checked against the string the code emits (`docs-complete-l
 
 ## Workflow (one pass, ~4–5 calls)
 
+The cycle is stated once, in [`docs/tools/design-qa.md`](../tools/design-qa.md#the-cycle), and the
+steps below are that cycle plus the branch cases you need while running it — that page is the
+definition, this one is the operating detail. The mapping is exact: its step 1
+(`find_breakpoint_variant`) is folded into Step 2 here, its step 2 (`get_layout_spec`) is Step 1
+here, its step 3 (run the extractor in the browser) is Step 3, its step 4 (`suggest_pairs`) is the
+first entry under [Finding pairs](#finding-pairs--when-you-dont-know-node_id) below — that is where
+the code puts it, as the answer to an unknown node_id and never as a gate on the compare — and its
+step 5 (`compare_node_to_dom`) is Step 4.
+
 ### Step 0 — bring the UI into the design's state
 - Open the target screen/drawer/overlay (elements must be in the DOM and visible).
 - Set component states to match the frame: checked/hover/disabled.
@@ -307,6 +316,14 @@ do NOT hardcode a px literal; `kind:'property'` (color/font/border/…) — set 
 
 ## Finding pairs — when you don't know node_id
 
+0. **The whole frame at once** → `suggest_pairs {file, frame_node_id, dom_snapshot: <the frame-root
+   snapshot from step 3>}` — it proposes `node_id` ↔ `dom_path` pairs with a confidence and an
+   `ambiguous` flag, and lists `unmatched_figma` / `unmatched_dom` honestly. Confirm the confident
+   ones, resolve the ambiguous ones by hand, and go to step 4 with the result. On stdio pass the
+   snapshot INLINE — handed a `dom_ref` there it throws the snapshot-store refusal quoted in step 3.
+   Skip this call entirely when you already know the node ids: it proposes pairs, it does not
+   license the compare. The unmatched lists are the same regions the Step 6 receipt will hold you
+   to, so reading them early is cheaper than meeting them as `add_pair` blockers.
 1. **A node outside the known frame** (typical: a section header, a neighboring block) →
    FIRST `get_node_ancestry {file, node_id: <nearest KNOWN node>}` — returns breadcrumbs up to the
    page and the DIRECT children of every ancestor: the target is usually visible among the

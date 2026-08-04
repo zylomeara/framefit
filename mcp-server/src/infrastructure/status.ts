@@ -705,10 +705,20 @@ export const figmaCheck: Check = {
       // FIGMA_TOKEN=...) and never in the shell, so the reader whose token is dead is EXACTLY the
       // reader who gets this line. The per-call-token fact it drops is not lost: configCheck's own
       // detail still carries it, on a line printed by the same run.
+      // NAMING THE FLAG RATHER THAN READING THE FILE. The obvious other fix is for this command to
+      // load `mcp-server/.env` itself, and it is the wrong one: this report's own scope says
+      // `env_source: "process"`, and every other check answers "what would a server started from
+      // THIS environment do". A token loaded here on the reader's behalf is not the token their MCP
+      // host passes - it would turn the one check they came for into a probe of a different
+      // credential, and report ok for a host that is failing. So the environment stays the subject,
+      // and the reader gets the exact two ways to put a token into it.
       if (!token) return { state: 'skipped', reason:
         'no FIGMA_TOKEN in this process environment, so the token was not probed - this is NOT a verdict '
-        + 'that the token is fine. On stdio the token lives in your MCP host\'s env block, not your shell; '
-        + 're-run this command with FIGMA_TOKEN set to probe it.' };
+        + 'that the token is fine. On stdio the token lives in your MCP host\'s env block, not your shell. '
+        + 'Re-run this command with the token in ITS environment: prefix it with `FIGMA_TOKEN=figd_...`, or '
+        + '(from a checkout, node 20.19+) insert `--env-file-if-exists=mcp-server/.env` right after `node`. '
+        + 'This command does not read that file by itself: it reports the environment a server would be '
+        + 'handed, and a token it loaded for you would not be the one your host passes.' };
       // Single probe, so it gets the WHOLE per-check budget - there is no second user to share it with.
       const result = await ctx.validatePat(token, PER_CHECK_TIMEOUT_MS);
       if (!result.ok) {

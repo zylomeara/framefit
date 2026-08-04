@@ -89,6 +89,46 @@ claude mcp add framefit \
 Run `/mcp` inside Claude Code to confirm the 26 tools are live. Ready-to-copy config variants
 (project-scoped `.mcp.json`, global) are in [`examples/mcp-config/`](examples/mcp-config/).
 
+### Your first verdict
+
+[`examples/first-verdict.mjs`](examples/first-verdict.mjs) walks the
+[design-QA cycle](docs/tools/design-qa.md#the-cycle) over stdio and needs nothing installed. It is
+honest about the one step it cannot do: node has no browser, so it prepares two files for you to
+paste into whatever browser automation you have, and does everything on either side of that.
+
+A Figma URL ends `?node-id=12-340`. The tools take `12:340`, with a **colon** — both spellings parse,
+and this client rewrites the dash, so paste the id straight out of the address bar.
+
+```bash
+# not-executed: contains-placeholder
+cd framefit
+FIGMA_TOKEN=figd_your_token_here node examples/first-verdict.mjs prepare \
+  --file https://www.figma.com/design/AbCdEf012345/Product-Page --frame 12-340 \
+  --pair '.card=12:340' --pair '.card__title=12:341' --pair '.card__price=12:344'
+```
+
+That prints the frame width and writes `1-paste-extractor.js` and `2-capture.js`. In the browser:
+size the viewport to that width, paste the first file into `evaluate_script` — it must return the
+`<length>:<hash>` line the command printed, and anything else means the 54 KB paste arrived mangled
+and would measure the wrong script — then paste the second and save the array it returns as
+`snapshots.json`. Feed that file back:
+
+```bash
+# not-executed: contains-placeholder
+FIGMA_TOKEN=figd_your_token_here node examples/first-verdict.mjs verdict \
+  --file https://www.figma.com/design/AbCdEf012345/Product-Page --frame 12-340 \
+  --pair '.card=12:340' --pair '.card__title=12:341' --pair '.card__price=12:344' \
+  --snapshots snapshots.json
+```
+
+Swap `AbCdEf012345`, the node ids and the selectors for your own; if your token already sits in
+`mcp-server/.env`, run `node --env-file=mcp-server/.env examples/first-verdict.mjs …` instead of
+setting it inline. You get a report, then `complete=false` and a `blocking` list. **That is the
+usual first answer and it is the gate working**, not a failure: framefit will not call a page
+verified while a region of the frame went unmeasured. Each blocking item names the action that
+closes it (commonly `add_pair` for a region you did not pair) — do those, re-capture, run `verdict`
+again. The exit code says the same: `0` green, `2` a verdict that is not green, `1` no verdict at all.
+
 For cross-library design tokens, add `--env DS_TEAM_IDS=<team-id>,…` (comma-separated team ids or
 `figma.com/team/<id>` URLs): the named teams' published libraries sync into an in-memory graph so
 `get_variables` resolves those aliases headless (`resolved_via:"graph"`) — see
@@ -149,6 +189,8 @@ The design-QA loop is packaged as a reusable agent skill:
 `.claude/skills/figma-design-qa/SKILL.md` in your project and the agent runs the verify-before-done
 cycle automatically.
 
+- [The cycle](docs/tools/design-qa.md#the-cycle) — the five steps, stated once. The server's MCP
+  `instructions`, the skill and the tutorial all point at that list rather than paraphrasing it.
 - [Design QA tutorial](docs/design-qa-tutorial.md) — the full cycle end to end (pairs → compare →
   verification receipt → fix plan → strictness profiles).
 - [What the diff covers — honestly](docs/coverage.md) — the deterministic-vs-verify-by-eye table.

@@ -219,8 +219,12 @@ Whether Figma itself accepts the credentials this instance holds. The only check
 - **skipped**: the probe is off (the default in multi-tenant; `--no-probe` in single-tenant); no
   `FIGMA_TOKEN` in single-tenant - which is **not a verdict that the token is fine**, because on
   stdio the token lives in your MCP host's env block (`claude mcp add --env FIGMA_TOKEN=...`) and
-  never in your shell, so a bare run of this command skips the one check you came for; re-run it
-  with `FIGMA_TOKEN` set to the value your host passes. Or, in multi-tenant, no `DATABASE_URL`, no handle, no
+  never in your shell, so a bare run of this command skips the one check you came for. The skip names
+  the two ways to put a token into this process: prefix the command with `FIGMA_TOKEN=figd_...`, or
+  insert `--env-file-if-exists=mcp-server/.env` right after `node` (a source checkout, node 20.19+).
+  It deliberately does not read that file on its own - `scope.env_source` is `"process"` and every
+  check here answers "what would a server started from THIS environment do", so a token loaded on
+  your behalf would probe a credential your MCP host never passes. Or, in multi-tenant, no `DATABASE_URL`, no handle, no
   `ENCRYPTION_KEY`, no registered users, or no user with a default PAT to probe. That last case is a
   skip and not a green "0 of 0": nothing was called, so nothing was proven. The `tokens` check is where
   "nobody has a default" becomes a hard failure.

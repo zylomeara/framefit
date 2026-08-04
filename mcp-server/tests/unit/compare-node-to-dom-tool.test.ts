@@ -296,6 +296,33 @@ describe('compare_node_to_dom tool', () => {
     expect(JSON.parse(res.content[0].text).pairs[0].summary).toBeDefined();
   });
 
+  it('a variables fetch that fails is REPORTED to the caller, not only logged: degraded_stages + a report line', async () => {
+    // The defect: on a giant file this endpoint can burn ~90s of a ~124s call and then degrade
+    // honestly into review rows and a confirm_token blocker — with the reason on STDERR, which no
+    // MCP caller reads. The tool told the truth about the measurement and nothing about the wait,
+    // so the caller could not tell waiting from hanging. Both channels a caller actually sees are
+    // asserted here: the structured key and the markdown a reader pastes.
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
+    const getVariablesLocal = vi.fn(async () => { throw new Error('Figma API timeout after 90000ms'); });
+    const run = harness({ getNodesRaw, getVariablesLocal });
+    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
+    expect(res.isError).toBeFalsy();                      // still a verdict, never a failure
+    const out = JSON.parse(res.content[0].text);
+    expect(out.degraded_stages).toEqual([
+      { stage: 'variables', reason: 'error', ms: expect.any(Number), detail: 'Figma API timeout after 90000ms' },
+    ]);
+    expect(out.report_markdown).toContain('Figma API timeout after 90000ms');
+  });
+
+  it('a variables fetch that SUCCEEDS carries no degraded_stages key at all', async () => {
+    // The other direction, because a key that is always present says nothing: an honest flag has to
+    // be absent on the healthy path, or every reader learns to ignore it.
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
+    const run = harness({ getNodesRaw, getVariablesLocal: boundVars });
+    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
+    expect(JSON.parse(res.content[0].text).degraded_stages).toBeUndefined();
+  });
+
   // needsModes second disjunct — the graph/snapshot fallback also needs discovery,
   // but ONLY when (1) variableIndex is unavailable, (2) at least one of the graph/snapshot deps is wired,
   // (3) the subtree has an EXTERNAL bound color (graph/snapshot can only resolve published-key
