@@ -47,7 +47,11 @@ const CAPTURE_FORM_RE = /async \(\) => \{[\s\S]*?const extract = <extractor_js V
 /**
  * Run the per-capture form the way `runsPasteForm` runs the paste-once one. It is the form used on
  * EVERY capture and it was executed by NOTHING: measured, regressing it to the same non-executing
- * shape the paste-once form was just repaired for left the suite bit-identical to baseline.
+ * shape the paste-once form was just repaired for left the suite bit-identical to baseline. Precise
+ * about "bit-identical": that holds for the two doc pages under every regression, and for the
+ * delivered upload_hint under the narrow one (dropping the opening `async () => {`). A wider
+ * regression that also drops the trailing `; }` already reddened a pre-existing row further down,
+ * which pins the closing brace -- so the delivered carrier was never quite blind, only nearly.
  *
  * Two steps, because one of the form's reader placeholders IS the extractor:
  *
@@ -74,7 +78,10 @@ async function runsCaptureForm(captureForm: string, extractorJs: string, where: 
   const calls: unknown[][] = [];
   const probe = 'async (...a) => { __calls.push(a); return { snapshot_ref: "r", summaries: [] }; }';
   const fn = new Function('__calls', `return (${fill(probe)})`)(calls) as () => unknown;
-  await expect((async () => fn())(), `${where}: the capture form throws when evaluate_script calls it`).resolves.toBeDefined();
+  // Two failures reach this row, so the label names both: the form THROWING when evaluate_script
+  // calls it, and the form resolving to NOTHING because it never returned the extractor's result
+  // (measured: a thunk that assigns `extract` and returns nothing lands here, and it did not throw).
+  await expect((async () => fn())(), `${where}: the capture form throws, or resolves to nothing, when evaluate_script calls it`).resolves.toBeDefined();
   expect(calls.length, `${where}: the capture form never calls the extractor`).toBe(1);
   expect(Array.isArray(calls[0][0]), `${where}: the extractor is not called with a selectors array`).toBe(true);
 }

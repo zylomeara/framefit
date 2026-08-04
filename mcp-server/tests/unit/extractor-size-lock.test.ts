@@ -46,7 +46,7 @@
 // capture); the residual left open here is a NEW site inventing a size the extractor never had,
 // which no check on this axis reaches without that allowlist.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -198,12 +198,19 @@ let trackedAsked = false;
 function trackedFiles(): string[] | undefined {
   if (!trackedAsked) {
     trackedAsked = true;
-    try {
-      trackedCache = execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    // The ONE condition that legitimately means "this population cannot be built": no history here.
+    // Everything else -- dubious ownership on a bind-mounted checkout, a broken PATH, a git that
+    // exits non-zero for any reason at all -- is a FAILURE TO MEASURE inside a real repository, and
+    // it must fail LOUD. A bare `catch` here swallowed all of them alike and turned the sweep into a
+    // silent skip: measured with a `git` shim exiting 128 in a real checkout, a planted fifth copy
+    // of the live count shipped GREEN. The whole point of deriving the population was that a
+    // hand-kept list fails open; catching every error put the failure back one level up.
+    if (!existsSync(path.join(REPO_ROOT, '.git'))) {
+      trackedCache = undefined;
+    } else {
+      trackedCache = execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
         .split('\0')
         .filter((f) => f !== '');
-    } catch {
-      trackedCache = undefined;
     }
   }
   return trackedCache;
