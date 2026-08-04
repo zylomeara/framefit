@@ -23,7 +23,7 @@
 //      stdio, because a stdio server has no public base URL for the browser to fetch it from. Pasted
 //      through the agent, that is 54121 characters. `serve-extractor` puts those characters on a
 //      loopback socket instead: they cross THIS process, which is not the agent's context, and what
-//      the agent handles is a ~350-character thunk that fetches them.
+//      the agent handles is a ~278-character thunk that fetches them.
 //   2. THE SNAPSHOT. `verdict` reads the capture from a FILE. chrome-devtools' `evaluate_script`
 //      takes a `filePath` and writes its result there, so the snapshot never has to come back as a
 //      tool result and go out again as a tool argument.
@@ -316,6 +316,23 @@ function frameWidthNote(args, side) {
 const EXTRACTOR_PATH = '/extractor.js';
 
 /**
+ * Thunk 1, as printed: fetch the extractor over loopback, park it, and hand back the same
+ * `<length>:<hash>` fingerprint this client computed on its own copy.
+ *
+ * A FUNCTION, AND EXPORTED, SO ITS LENGTH CAN BE MEASURED. The "~N-character thunk" this file's
+ * header and the README both quote is what a reader weighs the loopback handoff against, and it was
+ * a hand-written number: it said ~350 while the string was 278, and mutating it to ~9999 left the
+ * whole suite green. `extractor-size-lock.test.ts` calls this and checks both sites against what it
+ * returns. Only the port varies - 277 characters at a 4-digit port, 278 at a 5-digit one, which is
+ * every ephemeral port `listen(0)` hands out on Linux and macOS alike.
+ */
+export function fetchThunk(base) {
+  return `async () => { const s = await (await fetch('${base}${EXTRACTOR_PATH}')).text(); (0,eval)(s);`
+    + ' const t = String(window.__extract); let h = 0;'
+    + " for (let i = 0; i < t.length; i += 1) h = (Math.imul(h, 31) + t.charCodeAt(i)) >>> 0; return t.length + ':' + h.toString(16); }";
+}
+
+/**
  * Hold the extractor on loopback and hand back the URL.
  *
  * The whole surface, deliberately: it binds 127.0.0.1 (never 0.0.0.0 - this is an eval-able script,
@@ -384,9 +401,7 @@ async function serveExtractor(args) {
     + `\n     ${side.expected.split(':')[0]} characters of it never cross your context. It must return exactly ${side.expected} -`
     + '\n     that is the same length:hash of the same script, computed on both sides; anything else'
     + '\n     means what landed in the page is not what this client was handed, so do not measure it.\n');
-  console.log(`async () => { const s = await (await fetch('${base}${EXTRACTOR_PATH}')).text(); (0,eval)(s);`
-    + ' const t = String(window.__extract); let h = 0;'
-    + " for (let i = 0; i < t.length; i += 1) h = (Math.imul(h, 31) + t.charCodeAt(i)) >>> 0; return t.length + ':' + h.toString(16); }");
+  console.log(fetchThunk(base));
   console.log('\n  2. Then paste this one, and have your browser tool write the result to a FILE rather'
     + '\n     than return it: chrome-devtools evaluate_script takes a `filePath`. It resolves a relative'
     + '\n     path against ITS OWN workspace root and refuses to write outside it, so do not try to aim'
@@ -431,7 +446,7 @@ async function prepare(args) {
   frameWidthNote(args, side);
   console.log(`\n  1. Paste ${pasteFile} into the page. It must return ${side.expected}`);
   console.log(`     This is the FALLBACK path: that paste is ${side.expected.split(':')[0]} characters through your`);
-  console.log('     context. `serve-extractor` sends a ~350-character thunk instead; use this one only');
+  console.log('     context. `serve-extractor` sends a ~278-character thunk instead; use this one only');
   console.log('     when the page\'s CSP forbids the `eval` that thunk needs.');
   console.log(`  2. Paste ${captureFile}; write the array it returns to a file`);
   console.log(`  3. ${verdictLine(args, '<that file>')}`);

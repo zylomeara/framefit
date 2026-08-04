@@ -49,7 +49,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { EXTRACTOR_JS } from '../../src/adapters/driving/tools/dom-extractor.js';
 import { registerGetLayoutSpecTool } from '../../src/adapters/driving/tools/get-layout-spec-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
@@ -81,6 +81,34 @@ const MUST_STATE: { file: string; what: string; fragment: string }[] = [
     what: "the client header's statement of what the inline paste costs -- the number `serve-extractor` exists to remove, and the one a reader weighs the loopback handoff against. The client's own OUTPUT states this live (it prints the fingerprint's length half), so only the header can rot",
     fragment: `${CHARS} characters`,
   },
+];
+
+/**
+ * THE OTHER SIZE ON THIS AXIS, and it rotted the same way. `serve-extractor` exists to keep the
+ * count above out of the agent's context, and what it sends instead is quoted as a "~N-character
+ * thunk" -- the magnitude the whole handoff is sold on. It said ~350 in three shipped places while
+ * the string was 278, the commit message said ~280, and mutating the pages to `~9999-character` left
+ * the suite green: it was a hand-counted number with nothing reading it.
+ *
+ * MEASURED OFF THE FUNCTION THAT PRINTS IT, so there is no second copy to keep. Only the port varies
+ * -- 277 characters at a 4-digit port, 278 at a 5-digit one -- and `listen(0)` hands out a 5-digit
+ * ephemeral port on Linux and macOS alike, which is the number the pages state.
+ */
+async function liveThunkChars(): Promise<number> {
+  const { fetchThunk } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'examples', 'first-verdict.mjs')).href
+  ) as { fetchThunk: (base: string) => string };
+  return fetchThunk('http://127.0.0.1:65535').length;
+}
+
+/** Every `~N-character thunk` claim on a page, with its N. */
+const thunkClaims = (text: string): number[] =>
+  [...text.matchAll(/~\s*(\d+)\s*-character thunk/g)].map((m) => Number(m[1]));
+
+/** The files that quote the thunk size and must keep quoting the live one. */
+const THUNK_SITES = [
+  'README.md',
+  'examples/first-verdict.mjs',
 ];
 
 /**
@@ -234,6 +262,32 @@ describe('the extractor size is stated in exactly the places this gate names, an
       (s) => `${s.file}: ${s.what} -- does not say "${s.fragment}"; EXTRACTOR_JS is now ${CHARS} chars`,
     );
     expect(stale, `EXTRACTOR_JS is ${CHARS} chars and these sites do not say so`).toEqual([]);
+  });
+
+  it('states the LIVE loader-thunk size in every place that quotes one', async () => {
+    const live = await liveThunkChars();
+    expect(live, 'the thunk collapsed, so every claim below would be trivially satisfiable')
+      .toBeGreaterThan(100);
+    // Named sites first: each must still carry a claim at all. A site that quietly drops its number
+    // is a registry row checking nothing, which is how the last three went stale.
+    const silent = THUNK_SITES.filter((f) => thunkClaims(read(f)).length === 0);
+    expect(silent, 'a named site no longer quotes the thunk size, so this row would pass over it').toEqual([]);
+    // Then every claim anywhere in the tracked tree -- outside git, the named sites alone. The
+    // spelling is specific enough to sweep wide: `~<digits>-character thunk` is this number and
+    // nothing else. Residual, with its direction: a claim written some OTHER way ("about 280 chars
+    // of thunk") is invisible here and FAILS OPEN, the same residual the size-claim arm above
+    // declares for prose it cannot enumerate.
+    const files = OUTSIDE_GIT ? THUNK_SITES : corpus();
+    const wrong: string[] = [];
+    for (const file of files) {
+      const text = read(file);
+      for (const m of text.matchAll(/~\s*(\d+)\s*-character thunk/g)) {
+        if (Number(m[1]) === live) continue;
+        wrong.push(`${file}:${text.slice(0, m.index).split('\n').length}: says "${m[0]}", `
+          + `and the thunk this client prints is ${live} characters`);
+      }
+    }
+    expect(wrong, `the loader thunk is ${live} characters and these claims say otherwise`).toEqual([]);
   });
 
   it('keeps the WHOLE delivered description, and its doc twin, free of a size digit', () => {

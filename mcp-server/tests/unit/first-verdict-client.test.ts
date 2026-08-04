@@ -28,7 +28,8 @@
 // names and types, which is the half a schema can actually answer. The other half is the end-to-end
 // run, which needs a Figma token and a browser and is therefore not in this suite.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
@@ -184,6 +185,52 @@ describe("the client's tool calls are parsed by the schemas the server registers
     for (const spelling of [urlForm, toolForm]) {
       expect(COMPOUND_NODE_ID_RE.test(spelling), `\`${spelling}\` is rejected by the live node-id regex`).toBe(true);
     }
+  });
+
+  it("the README's own `cd` lands where the command it introduces actually runs", () => {
+    // A DIRECTORY INSTRUCTION IS RUN, NOT READ. That fence used to open `cd framefit`, which exits 1
+    // from both directories this page produces -- and measured against the commit before this row,
+    // putting `cd framefit` back left the full suite green, exit 0, 2936 passed. The fence carries
+    // placeholders (a token, a file URL, node ids) so it cannot be executed whole; what CAN be
+    // executed is the part that was wrong -- the walk from where the reader stands to a directory
+    // where the entry point the fence names resolves.
+    //
+    // Every input is taken off the page: the clone fence says where the reader is standing, the
+    // recipe fence says where to go and what to run. Nothing here is a second copy of any of them.
+    const lines = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8').split('\n');
+
+    // Where the reader stands: the clone fence ends `cd framefit/<subdir>`, and `framefit/` is this
+    // checkout however it happens to be named on disk.
+    const clone = lines.map((l) => /&&\s*cd\s+framefit\/(\S+)\s*$/.exec(l)).find((m) => m !== null);
+    expect(clone, 'README no longer ends its clone fence in `cd framefit/<subdir>`').toBeDefined();
+    const standing = path.join(REPO_ROOT, clone![1]);
+    expect(existsSync(standing), `the clone fence leaves the reader in ${clone![1]}, which is not in this repo`)
+      .toBe(true);
+
+    // Where the recipe sends them, and what it runs there: the nearest `cd` above the first
+    // `node <script>` line that invokes this client.
+    const invocation = lines.findIndex((l) => /\bnode\s+\S*first-verdict\.mjs\s+serve-extractor\b/.test(l));
+    expect(invocation, 'README no longer shows a `serve-extractor` invocation').toBeGreaterThan(-1);
+    const script = /\bnode\s+(\S*first-verdict\.mjs)\b/.exec(lines[invocation])![1];
+    let target: string | undefined;
+    for (let i = invocation - 1; i >= 0 && target === undefined; i -= 1) {
+      const m = /^cd\s+(\S+)\s*$/.exec(lines[i]);
+      if (m !== null) target = m[1];
+    }
+    expect(target, 'the `serve-extractor` fence has no `cd` above it, so the reader is told nothing')
+      .not.toBeUndefined();
+
+    const cwd = path.resolve(standing, target!);
+    expect(existsSync(cwd), `\`cd ${target}\` from ${clone![1]} names ${cwd}, which does not exist`).toBe(true);
+    // `--help` rather than the recipe itself: the full run needs a Figma token and a browser and is
+    // proven by hand (see this client's header). What this proves is the half that was broken --
+    // from that directory, `node <script>` resolves and runs. A path that does not resolve is
+    // MODULE_NOT_FOUND, exit 1, and this row says so with the directory it tried.
+    const run = spawnSync(process.execPath, [script, '--help'], { cwd, encoding: 'utf8' });
+    const why = (run.stderr ?? String(run.error ?? '')).trim().split('\n')[0] ?? '';
+    expect(run.status, `\`node ${script} --help\` from \`${cwd}\` exited ${run.status}: ${why}`).toBe(0);
+    expect(run.stdout ?? '', 'that command ran, but printed something other than this client\'s usage')
+      .toContain('first-verdict --');
   });
 
   it('sends the snapshot inline, which is the cost this client does NOT remove', async () => {

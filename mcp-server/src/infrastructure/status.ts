@@ -712,22 +712,31 @@ export const figmaCheck: Check = {
       // host passes - it would turn the one check they came for into a probe of a different
       // credential, and report ok for a host that is failing. So the environment stays the subject,
       // and the reader gets the exact two ways to put a token into it.
-      // THE PATH IS RELATIVE TO THE READER'S CWD, AND THE FLAG IS SILENT ABOUT GETTING IT WRONG.
+      // THE PATH IS RELATIVE TO THE READER'S CWD, AND A MISS IS ONE LINE, NOT A FAILURE.
       // This sentence used to say `--env-file-if-exists=mcp-server/.env`, and the only fence on this
       // page that produces a runnable `node dist/index.js status` opens with `cd mcp-server` - where
-      // that value resolves to `mcp-server/mcp-server/.env`. `-if-exists` is precisely the flag that
-      // turns a wrong path into a no-op: no error, no warning, and the identical SKIP the reader came
-      // here to fix. Measured from `mcp-server/`: with `.env` the check runs (`[OK] figma
-      // handle=...`); with `mcp-server/.env` the output is byte-identical to the bare run. So the
-      // value is the one true from the directory `dist/index.js` is being run from, and the sentence
-      // says which directory that is rather than leaving it to be inferred.
+      // that value resolves to `mcp-server/mcp-server/.env`, so the reader gets the identical SKIP
+      // they came here to fix. Measured from `mcp-server/` on node v24.12.0: with `.env` the check
+      // runs (`[OK] figma handle=...`); with `mcp-server/.env` STDOUT is byte-identical to the bare
+      // run, exit 0 either way, and the whole difference is one line on STDERR --
+      // `mcp-server/.env not found. Continuing without it.`
+      // THE PREVIOUS VERSION OF THIS COMMENT, AND OF THE DELIVERED SENTENCE, SAID THE FLAG REPORTS
+      // NOTHING WHEN IT MISSES. That was measured on stdout alone and it is false: node names the
+      // path it tried. What survives the correction is the reason the value had to change -- the
+      // miss does not stop the run and does not change the verdict, so a reader who is reading the
+      // report rather than the stream sees the same skip with exit 0. The value is therefore the one
+      // true from the directory `dist/index.js` is run from, and the sentence says which directory
+      // that is rather than leaving it to be inferred.
+      // Gated by running it: `status-command-hint.test.ts` pulls this flag out of the DELIVERED
+      // string and spawns node with it against a planted `.env`, so a path that does not load is red.
       if (!token) return { state: 'skipped', reason:
         'no FIGMA_TOKEN in this process environment, so the token was not probed - this is NOT a verdict '
         + 'that the token is fine. On stdio the token lives in your MCP host\'s env block, not your shell. '
         + 'Re-run this command with the token in ITS environment: prefix it with `FIGMA_TOKEN=figd_...`, or '
         + '(from a checkout, node 20.19+, run from `mcp-server/`) insert `--env-file-if-exists=.env` right '
-        + 'after `node`. That path is relative to your shell\'s directory and `-if-exists` reports nothing '
-        + 'when it misses, so a wrong one gives you this same skip in silence. '
+        + 'after `node`. That path is relative to your shell\'s directory; when it misses, node prints '
+        + '`<path> not found. Continuing without it.` on stderr and runs anyway, so a wrong one still '
+        + 'leaves you this same skip and exit 0 - the tell is that one line, not a failure. '
         + 'This command does not read that file by itself: it reports the environment a server would be '
         + 'handed, and a token it loaded for you would not be the one your host passes.' };
       // Single probe, so it gets the WHOLE per-check budget - there is no second user to share it with.

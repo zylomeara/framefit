@@ -223,10 +223,12 @@ Whether Figma itself accepts the credentials this instance holds. The only check
   the two ways to put a token into this process: prefix the command with `FIGMA_TOKEN=figd_...`, or
   insert `--env-file-if-exists=.env` right after `node` (a source checkout, node 20.19+, run from
   `mcp-server/` - the directory this page's first fence puts you in, and the one `.env` is relative
-  to). The path is resolved against your shell's directory and `-if-exists` says nothing when it
-  misses, so a value that is right for a different cwd gives you this same skip with no error at all:
-  measured from `mcp-server/`, `--env-file-if-exists=mcp-server/.env` is byte-identical to the bare
-  run. It deliberately does not read that file on its own - `scope.env_source` is `"process"` and every
+  to). The path is resolved against your shell's directory, and a miss is one line rather than a
+  failure: node prints `<path> not found. Continuing without it.` on **stderr** and carries on, so a
+  value that is right for a different cwd gives you this same skip and exit 0. Measured from
+  `mcp-server/`, `--env-file-if-exists=mcp-server/.env` leaves stdout byte-identical to the bare run
+  and adds exactly that one stderr line - which is the whole warning you get, above a report that
+  still says `[SKIP] figma`. It deliberately does not read that file on its own - `scope.env_source` is `"process"` and every
   check here answers "what would a server started from THIS environment do", so a token loaded on
   your behalf would probe a credential your MCP host never passes. Or, in multi-tenant, no `DATABASE_URL`, no handle, no
   `ENCRYPTION_KEY`, no registered users, or no user with a default PAT to probe. That last case is a

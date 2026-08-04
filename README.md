@@ -120,7 +120,7 @@ FIGMA_TOKEN=figd_your_token_here node examples/first-verdict.mjs serve-extractor
 ```
 
 That prints the frame width, then holds the extractor on `127.0.0.1` at an ephemeral port and prints
-the ~350-character thunk that fetches it. In the browser: size the viewport to that width, paste the
+the ~278-character thunk that fetches it. In the browser: size the viewport to that width, paste the
 thunk into `evaluate_script` — it must return the `<length>:<hash>` line the command printed, and
 anything else means what landed in the page is not the script this client was handed, so do not
 measure it. Paste the second thunk to capture, and give your browser tool a **file** to write the
