@@ -404,3 +404,51 @@ describe('suggest_pairs tool', () => {
     });
   });
 });
+
+// dom_selector: the address a reader can paste, assembled — not invented. Uniqueness is a property of
+// the document, and the server only sees the captured subtree, so the ONLY thing here that can be wrong
+// is the join: a capture root that is a selector LIST ('.a, .b') read as '.a' OR '.b > path'.
+describe('dom_selector (capture root + nth-child path, :is()-scoped)', () => {
+  const withSelector = (selector: string) => ({ ...okDomSnapshot, selector });
+
+  it('emits root + path on pairs, candidates and unmatched_dom; a comma-carrying root stays one scope', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+    const run = harness({ getNodesRaw });
+    // A third dom element the same size as the button, one index further out: the Button instance now has
+    // a runner-up 3.75 behind (45 vs 41.25) — inside AMBIGUOUS_MARGIN — so the row carries candidates[].
+    // Without it this fixture has no ambiguity at all and the candidates arm below would quantify over an
+    // empty array, i.e. pass whether or not the tool ever addresses a candidate.
+    const twoWay = { ...withSelector('.a, .b'), children: [...okDomSnapshot.children,
+      { kind: 'element' as const, tag: 'div', path: '> :nth-child(3)', rect: { x: 0, y: 32, w: 300, h: 40 } }] };
+    const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: twoWay });
+    const out = JSON.parse(res.content[0].text);
+    const titlePair = out.pairs.find((p: any) => p.node_id === '1:2');
+    // NOT '.a, .b > :nth-child(1)', which parses as '.a' OR '.b > :nth-child(1)' and silently resolves
+    // to the capture root itself.
+    expect(titlePair.dom_selector).toBe(':is(.a, .b) > :nth-child(1)');
+    const btn = out.pairs.find((p: any) => p.node_id === COMPOUND_ID);
+    expect(btn.ambiguous).toBe(true);
+    expect(btn.candidates.map((c: any) => c.dom_path)).toEqual(['> :nth-child(2)', '> :nth-child(3)']); // PRESENCE
+    expect(btn.candidates.map((c: any) => c.dom_selector))
+      .toEqual([':is(.a, .b) > :nth-child(2)', ':is(.a, .b) > :nth-child(3)']);
+  });
+
+  it('no root selector in the snapshot -> NO dom_selector field (an address is never synthesized)', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot }); // no .selector
+    const out = JSON.parse(res.content[0].text);
+    expect(out.pairs.every((p: any) => !('dom_selector' in p))).toBe(true);
+    expect(out.pairs.every((p: any) => typeof p.dom_path === 'string')).toBe(true); // dom_path still there
+  });
+
+  it('unmatched_dom rows are pasteable too — that is the list a mis-pair is retargeted from', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '2:1': { document: nestedDoc } } }));
+    const run = harness({ getNodesRaw });
+    const snap = { ...nestedDomSnapshot, selector: 'main.app',
+      children: [...nestedDomSnapshot.children, { kind: 'element' as const, tag: 'footer', path: '> :nth-child(2)', rect: { x: 0, y: 900, w: 100, h: 20 } }] };
+    const res = await run({ file: 'abc', frame_node_id: '2-1', dom_snapshot: snap });
+    const out = JSON.parse(res.content[0].text);
+    expect(out.unmatched_dom).toContainEqual({ dom_path: '> :nth-child(2)', tag: 'footer', rect: { w: 100, h: 20 }, dom_selector: ':is(main.app) > :nth-child(2)' });
+  });
+});

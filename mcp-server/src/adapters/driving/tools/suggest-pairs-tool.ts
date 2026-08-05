@@ -19,6 +19,17 @@ import type { DomChild } from '../../../domain/layout-spec/types.js';
 const anyTruncated = (kids: DomChild[] | undefined): boolean =>
   (kids ?? []).some((k) => k.childrenTruncated === true || anyTruncated(k.children));
 
+// dom_path ('> :nth-child(3) > :nth-child(1)') is NOT a selector — document.querySelector throws on it.
+// We do not GENERATE one either: uniqueness is a property of the document, and the server only ever sees
+// the captured subtree (a class that is unique inside a component-rooted capture is typically not unique
+// in the page). We concatenate the address we already hold: the capture root selector — which the
+// extractor already PROVED unique (>1 match → status 'multiple', it refuses) — plus the nth-child chain,
+// which is unique under a unique root by construction. :is() rather than a bare join because the root may
+// be a selector LIST ('.a, .b'): '.a, .b > :nth-child(3)' parses as '.a' OR '.b > …' and would silently
+// resolve to the wrong element. No root selector in the snapshot → NO field: never synthesize an address.
+export const domSelector = (root: string | undefined, path: string): string | undefined =>
+  root === undefined || root === '' || path === '' ? undefined : `:is(${root}) ${path}`;
+
 export const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
   frame_node_id: z.string().regex(COMPOUND_NODE_ID_RE).describe('Frame/root node to align against the DOM subtree'),
@@ -49,8 +60,16 @@ export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): voi
       description: 'Propose Figma-node <-> DOM-element pairs (by text/size/order/role) with confidence + ambiguous flags + honest ' +
       'unmatched, so you review proposed pairs instead of hand-building them (compound I...;... ids come dug out of the ' +
       'frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to ' +
-      'compare_node_to_dom. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
-      'inspected - the top is reported honestly in unmatched_figma/unmatched_dom instead, and you drill in by hand.',
+      'compare_node_to_dom. Every proposal ships its receipt - score, margin over the runner-up, both rects, the DOM tag, ' +
+      'and dom_selector (the capture-root selector + the nth-child path, pasteable as-is; absent if the snapshot carries no ' +
+      'root selector, then use dom_path relative to your own root) - so you confirm or reject by eye instead of re-measuring ' +
+      'in the browser. Read the receipt, not the word: an exact text match is worth +100 of a ~145 scale, so on a ' +
+      'container-only frame every proposal reads low - that says "no text on either side here", not "bad geometry", and such ' +
+      'pairs are yours to confirm by hand. children_skipped means the margin over the runner-up was inside the ambiguity ' +
+      'band: the identity is unresolved, so its children were NOT guessed - confirm/retarget the pair, then re-run rooted on ' +
+      'the confirmed element. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
+      'inspected - the top is reported honestly in unmatched_figma/unmatched_dom (with rect + tag, so a mis-pair is ' +
+      'retargeted straight from that list) instead, and you drill in by hand.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -99,8 +118,13 @@ export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): voi
       if (args.max_depth !== undefined) matchOpts.maxDepth = args.max_depth;
       if (spec.rect) matchOpts.rootFig = { w: spec.rect.w, h: spec.rect.h };
       const r = matchPairs(spec.children, dom.children, matchOpts);
-      return jsonResult({ file: parsed.value, frame: spec.node, pairs: r.pairs,
-        unmatched_figma: r.unmatched_figma, unmatched_dom: r.unmatched_dom,
+      const withSel = <T extends { dom_path: string }>(o: T): T & { dom_selector?: string } => {
+        const s = domSelector(dom.selector, o.dom_path);
+        return s === undefined ? o : { ...o, dom_selector: s };
+      };
+      return jsonResult({ file: parsed.value, frame: spec.node,
+        pairs: r.pairs.map((p) => withSel(p.candidates ? { ...p, candidates: p.candidates.map(withSel) } : p)),
+        unmatched_figma: r.unmatched_figma, unmatched_dom: r.unmatched_dom.map(withSel),
         summary: { paired: r.pairs.length, ambiguous: r.pairs.filter((p) => (p as { ambiguous?: boolean }).ambiguous).length,
           unmatched_figma: r.unmatched_figma.length, unmatched_dom: r.unmatched_dom.length, depth_truncated: r.depth_truncated,
           // I1: includes the ROOT dom.childrenTruncated too (not only nested) — additive, the field

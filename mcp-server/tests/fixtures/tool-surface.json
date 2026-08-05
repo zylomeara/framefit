@@ -387,7 +387,7 @@
     }
   },
   "suggest_pairs": {
-    "description": "Propose Figma-node <-> DOM-element pairs (by text/size/order/role) with confidence + ambiguous flags + honest unmatched, so you review proposed pairs instead of hand-building them (compound I...;... ids come dug out of the frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to compare_node_to_dom. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not inspected - the top is reported honestly in unmatched_figma/unmatched_dom instead, and you drill in by hand.",
+    "description": "Propose Figma-node <-> DOM-element pairs (by text/size/order/role) with confidence + ambiguous flags + honest unmatched, so you review proposed pairs instead of hand-building them (compound I...;... ids come dug out of the frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to compare_node_to_dom. Every proposal ships its receipt - score, margin over the runner-up, both rects, the DOM tag, and dom_selector (the capture-root selector + the nth-child path, pasteable as-is; absent if the snapshot carries no root selector, then use dom_path relative to your own root) - so you confirm or reject by eye instead of re-measuring in the browser. Read the receipt, not the word: an exact text match is worth +100 of a ~145 scale, so on a container-only frame every proposal reads low - that says \"no text on either side here\", not \"bad geometry\", and such pairs are yours to confirm by hand. children_skipped means the margin over the runner-up was inside the ambiguity band: the identity is unresolved, so its children were NOT guessed - confirm/retarget the pair, then re-run rooted on the confirmed element. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not inspected - the top is reported honestly in unmatched_figma/unmatched_dom (with rect + tag, so a mis-pair is retargeted straight from that list) instead, and you drill in by hand.",
     "inputSchemaKeys": [
       "dom_ref",
       "dom_snapshot",
@@ -396,7 +396,7 @@
       "frame_node_id",
       "max_depth"
     ],
-    "digest": "4fda55c7782ff4ab67e95c04ebc592cd58224a1d0dc54cc439ead9e871489ad1",
+    "digest": "9a2574d058f89211694e3e008ca683b5298bcf7dce8318ea94795f17d91a7d57",
     "annotations": {
       "readOnlyHint": true
     }

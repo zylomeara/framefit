@@ -157,6 +157,26 @@ Under an unpaired parent (or once one side of a pair is a leaf), its descendants
 inspected - the top is reported honestly in `unmatched_figma` / `unmatched_dom` instead, and you
 drill in by hand.
 
+Every proposal carries the receipt the ranking ran on: `score`, `margin` over the runner-up, both
+rects, the DOM `dom_tag`, and `dom_selector` - the capture-root selector (which the extractor
+already refused to accept unless it matched exactly one element) `:is()`-scoped over the
+`dom_path`, pasteable into `compare_node_to_dom` as it stands. No root selector in the snapshot
+means no `dom_selector` field: an address is never synthesized. Read the receipt, not the word - an
+exact text match is worth +100 of a ~145 scale, so on a frame of containers every proposal reads
+`low`, which says *no text on either side here*, not *bad geometry*. Those are yours to confirm,
+and the two rects are usually enough to do it by eye. `children_skipped: true` means the lead over
+the runner-up was inside the ambiguity band and no text below could settle it, so the subtree was
+**not** matched underneath a parent that may be wrong - confirm or retarget the pair, then re-run
+rooted on the confirmed element.
+
+An address is only as fresh as the capture it came from. An `nth-child` chain always resolves to
+*something*: after a navigation or a re-render the same chain can land on a different element, the
+extractor answers `ok`, and `compare_node_to_dom` then reports the difference between two unrelated
+elements as a design defect. Measured on an in-app route change, a pair scored against a 1280x348
+grid re-resolved to a 44x44 button - silently, with `status: "ok"`. That is what `dom_rect` is for:
+if the element you are about to compare no longer matches the rect on the row, re-capture instead
+of trusting the verdict.
+
 **Parameters**
 
 | Parameter | Type | Description |
@@ -187,7 +207,7 @@ drill in by hand.
         "kind": "element",
         "tag": "h3",
         "classList": ["card__title"],
-        "path": "1",
+        "path": "> :nth-child(1)",
         "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
         "text": "Product card"
       }
@@ -206,12 +226,17 @@ Response (abridged):
   "file": "AbCdEf012345",
   "frame": { "id": "12:340", "name": "Product card", "type": "FRAME" },
   "pairs": [
-    { "node_id": "12:341", "name": "title", "type": "TEXT", "dom_path": "1",
+    { "node_id": "12:341", "name": "title", "type": "TEXT", "dom_path": "> :nth-child(1)",
+      "dom_selector": ":is(.card) > :nth-child(1)",
       "confidence": "high", "signals": ["text-exact", "size", "order"],
-      "figma_text": "Product card", "dom_text": "Product card" }
+      "score": 100, "figma_rect": { "w": 288, "h": 24 }, "dom_rect": { "w": 288, "h": 24 },
+      "dom_tag": "h3", "figma_text": "Product card", "dom_text": "Product card" }
+    /* score 100 = the unique-text bijection, which is not ranked against a runner-up, hence no
+       margin. A container proposal instead reads confidence low, score ~30, margin ~3 and
+       children_skipped: geometry only, unresolved, yours to confirm */
   ],
   "unmatched_figma": [
-    { "node_id": "12:344", "name": "price", "reason": "no DOM candidate" }
+    { "node_id": "12:344", "name": "price", "reason": "no DOM candidate", "rect": { "w": 288, "h": 20 } }
     /* ... then the "list" frame (12:350), same shape */
   ],
   "unmatched_dom": [],

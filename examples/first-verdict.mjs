@@ -518,12 +518,17 @@ async function verdict(args) {
   if (proposals) {
     const paired = new Set(args.pairs.map((p) => p.nodeId));
     const unpaired = (proposals.pairs ?? []).filter((p) => !paired.has(p.node_id));
+    const box = (r) => (r ? `${Math.round(r.w)}x${Math.round(r.h)}` : '?');
     console.log(`\n--- suggest_pairs: ${(proposals.pairs ?? []).length} proposal(s), `
-      + `${unpaired.length} of them not in your --pair list. dom_path is relative to the frame-root`
-      + '\n    snapshot, so turn it into a selector of your own before passing it as --pair:');
+      + `${unpaired.length} of them not in your --pair list. dom_selector is pasteable as --pair as it`
+      + '\n    stands; the two rects on the line are how you reject a wrong one without opening a browser.'
+      + '\n    A score below ~46 means no text matched on either side - confirm those by hand:');
     for (const p of unpaired.slice(0, 10)) {
-      console.log(`  ${p.node_id}  <-  ${p.dom_path ?? '<no dom_path>'}`
-        + `   confidence ${p.confidence ?? '?'}${p.ambiguous ? ' (ambiguous - check it)' : ''}`);
+      console.log(`  ${p.node_id} ${box(p.figma_rect)}  <-  ${p.dom_selector ?? p.dom_path ?? '<no dom_path>'}`
+        + ` <${p.dom_tag ?? '?'}> ${box(p.dom_rect)}`
+        + `   ${p.confidence ?? '?'} score ${p.score ?? '?'} margin ${p.margin ?? '-'}`
+        + `${p.ambiguous ? ' (ambiguous - check it)' : ''}`
+        + `${p.children_skipped ? ' (children not inspected - confirm this pair first)' : ''}`);
     }
     for (const key of ['unmatched_figma', 'unmatched_dom']) {
       const n = (proposals[key] ?? []).length;
