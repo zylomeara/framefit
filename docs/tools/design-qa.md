@@ -160,14 +160,19 @@ drill in by hand.
 Every proposal carries the receipt the ranking ran on: `score`, `margin` over the runner-up, both
 rects, the DOM `dom_tag`, and `dom_selector` - the capture-root selector (which the extractor
 already refused to accept unless it matched exactly one element) `:is()`-scoped over the
-`dom_path`, pasteable into `compare_node_to_dom` as it stands. No root selector in the snapshot
-means no `dom_selector` field: an address is never synthesized. Read the receipt, not the word - an
+`dom_path`. It is pasteable as the *extractor's* root selector to re-capture that element -
+`compare_node_to_dom` itself takes a snapshot or a `dom_ref`, never a selector, and a `dom_ref`
+selector has to match the string the extractor was given byte-for-byte. No root selector in the
+snapshot means no `dom_selector` field: an address is never synthesized. Read the receipt, not the word - an
 exact text match is worth +100 of a ~145 scale, so on a frame of containers every proposal reads
 `low`, which says *no text on either side here*, not *bad geometry*. Those are yours to confirm,
 and the two rects are usually enough to do it by eye. `children_skipped: true` means the lead over
 the runner-up was inside the ambiguity band and no text below could settle it, so the subtree was
 **not** matched underneath a parent that may be wrong - confirm or retarget the pair, then re-run
-rooted on the confirmed element.
+rooted on the confirmed element. A withheld subtree appears in *neither* unmatched list, on
+purpose: an unmatched row asserts "no counterpart here", and we did not look. `summary.
+children_skipped` counts those pairs, so an all-zero unmatched summary is not read as full
+coverage over a frame where some nodes were never judged.
 
 An address is only as fresh as the capture it came from. An `nth-child` chain always resolves to
 *something*: after a navigation or a re-render the same chain can land on a different element, the

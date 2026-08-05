@@ -61,13 +61,19 @@ export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): voi
       'unmatched, so you review proposed pairs instead of hand-building them (compound I...;... ids come dug out of the ' +
       'frame). Two-step: capture the frame-root DOM subtree with the extractor, pass it here, feed confirmed pairs to ' +
       'compare_node_to_dom. Every proposal ships its receipt - score, margin over the runner-up, both rects, the DOM tag, ' +
-      'and dom_selector (the capture-root selector + the nth-child path, pasteable as-is; absent if the snapshot carries no ' +
-      'root selector, then use dom_path relative to your own root) - so you confirm or reject by eye instead of re-measuring ' +
-      'in the browser. Read the receipt, not the word: an exact text match is worth +100 of a ~145 scale, so on a ' +
-      'container-only frame every proposal reads low - that says "no text on either side here", not "bad geometry", and such ' +
-      'pairs are yours to confirm by hand. children_skipped means the margin over the runner-up was inside the ambiguity ' +
-      'band: the identity is unresolved, so its children were NOT guessed - confirm/retarget the pair, then re-run rooted on ' +
-      'the confirmed element. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
+      'and dom_selector (the capture-root selector + the nth-child path; absent if the snapshot carries no root selector, ' +
+      'then use dom_path relative to your own root) - so you confirm or reject by eye instead of re-measuring in the ' +
+      'browser. dom_selector is pasteable as the EXTRACTOR root selector to re-capture that element - compare_node_to_dom ' +
+      'itself takes a snapshot or a ref, not a selector - and only against the page the snapshot came from: an nth-child ' +
+      'chain always resolves to something, so after a navigation it lands on a different element and the compare reports ' +
+      'two unrelated elements as a design defect. dom_rect is how you catch that. Read the receipt, not the word: an exact ' +
+      'text match is worth +100 of a ~145 scale, so on a container-only frame every proposal reads low - that says "no text ' +
+      'on either side here", not "bad geometry", and such pairs are yours to confirm by hand. children_skipped means the ' +
+      'margin over the runner-up was inside the ambiguity band AND no text on either side below could have settled it, so ' +
+      'the identity is unresolved and its children were NOT guessed - confirm/retarget the pair, then re-run rooted on the ' +
+      'confirmed element. Those withheld subtrees are in NEITHER unmatched list (an unmatched row would claim "no ' +
+      'counterpart", a thing we did not check) - summary.children_skipped counts them so the coverage is not read as ' +
+      'complete. Under an unpaired parent (or once one side of a pair is a leaf), its descendants are not ' +
       'inspected - the top is reported honestly in unmatched_figma/unmatched_dom (with rect + tag, so a mis-pair is ' +
       'retargeted straight from that list) instead, and you drill in by hand.',
       inputSchema: InputSchema,
@@ -127,6 +133,13 @@ export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): voi
         unmatched_figma: r.unmatched_figma, unmatched_dom: r.unmatched_dom.map(withSel),
         summary: { paired: r.pairs.length, ambiguous: r.pairs.filter((p) => (p as { ambiguous?: boolean }).ambiguous).length,
           unmatched_figma: r.unmatched_figma.length, unmatched_dom: r.unmatched_dom.length, depth_truncated: r.depth_truncated,
+          // A withheld subtree is in NEITHER unmatched list on purpose — an unmatched row asserts "no
+          // counterpart here", which is a different claim from "I did not look". But then it is in no
+          // count either, and a summary of all-zero unmatched reads as complete coverage over a frame
+          // where two nodes were never judged. So it gets its own count, absent when nothing was
+          // withheld — the same shape as depth_truncated beside it.
+          ...(r.pairs.some((p) => (p as { children_skipped?: true }).children_skipped)
+            ? { children_skipped: r.pairs.filter((p) => (p as { children_skipped?: true }).children_skipped).length } : {}),
           // I1: includes the ROOT dom.childrenTruncated too (not only nested) — additive, the field
           // is absent when there's no truncation anywhere (like depth_truncated). It also folds in the Figma side
           // (spec.childrenTruncated / anyTruncatedSpec) — the same honest signal, mirroring dom.

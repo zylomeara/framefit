@@ -1809,6 +1809,20 @@ describe('matchPairs: the receipt (score/margin/rects/tag) and the descent gate'
     expect(a?.dom_tag).toBe('section');  // the pair row used to hide the one field that rejects a mis-pair by eye
   });
 
+  it('the two rects are the two SIDES, not one number printed twice', () => {
+    // Every other fixture here is same-sized on both sides, so figma_rect and dom_rect could be swapped
+    // - or both sourced from one side - and the whole suite stays green (measured: 2970 passed under the
+    // swap). These are the two fields the tool description sells as "reject a wrong proposal without a
+    // browser"; sourced from one side a 100-vs-200 mis-size prints as agreement. The scorer reads
+    // RELATIVE size, so a DOM captured at twice the scale scores identically while the rects differ -
+    // which makes the swap a red test instead of a documented intention.
+    const r = matchPairs([fc('half', 'INSTANCE', [0, 0, 100, 50])], [dc('> :nth-child(1)', 'div', [0, 0, 200, 100])],
+      { rootFig: { w: 100, h: 100 }, rootDom: { w: 200, h: 200 } });
+    expect(r.pairs[0].score).toBe(45);                        // identical RELATIVE size - the scorer agrees
+    expect(r.pairs[0].figma_rect).toEqual({ w: 100, h: 50 }); // and the receipt still names each side
+    expect(r.pairs[0].dom_rect).toEqual({ w: 200, h: 100 });
+  });
+
   it('honest-null rows carry the size of the side they name (that is how a reader re-pairs them)', () => {
     const par = { w: 100, h: 100 };
     const solo = fc('solo', 'FRAME', [0, 0, 40, 40]);

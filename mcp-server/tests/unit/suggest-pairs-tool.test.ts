@@ -452,3 +452,52 @@ describe('dom_selector (capture root + nth-child path, :is()-scoped)', () => {
     expect(out.unmatched_dom).toContainEqual({ dom_path: '> :nth-child(2)', tag: 'footer', rect: { w: 100, h: 20 }, dom_selector: ':is(main.app) > :nth-child(2)' });
   });
 });
+
+// A withheld subtree is in NEITHER unmatched list on purpose: an unmatched row asserts "no counterpart
+// here", and we did not look. But then it was in no COUNT either, and a summary reading
+// {paired: N, unmatched_figma: 0, unmatched_dom: 0} over a frame where whole nodes were never judged is
+// a claim of complete coverage. This locks the count, and locks that it is ABSENT rather than 0.
+describe('summary.children_skipped (the withheld subtrees are at least countable)', () => {
+  const kidF = (id: string, x: number, y: number) =>
+    ({ id, name: id, type: 'FRAME', absoluteBoundingBox: { x, y, width: 50, height: 50 } });
+  const coinDoc = {
+    id: '3:1', name: 'coin', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 },
+    children: [
+      { id: '3:2', name: 'A', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 50 },
+        children: [kidF('3:3', 0, 0), kidF('3:4', 50, 0)] },
+      { id: '3:5', name: 'B', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 50, width: 100, height: 50 },
+        children: [kidF('3:6', 0, 50), kidF('3:7', 50, 50)] },
+    ],
+  } as unknown as RawSceneNode;
+  const kidD = (path: string, x: number, y: number) =>
+    ({ kind: 'element' as const, tag: 'div', path, rect: { x, y, w: 50, h: 50 } });
+  const coinSnap = {
+    schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok' as const, innerWidth: 100,
+    rect: { x: 0, y: 0, w: 100, h: 100 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
+    scroll: { top: 0, left: 0 },
+    children: [
+      { kind: 'element' as const, tag: 'section', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 100, h: 50 },
+        children: [kidD('> :nth-child(1) > :nth-child(1)', 0, 0), kidD('> :nth-child(1) > :nth-child(2)', 50, 0)] },
+      { kind: 'element' as const, tag: 'div', path: '> :nth-child(2)', rect: { x: 0, y: 50, w: 100, h: 50 },
+        children: [kidD('> :nth-child(2) > :nth-child(1)', 0, 50), kidD('> :nth-child(2) > :nth-child(2)', 50, 50)] },
+    ],
+  };
+
+  it('counts the pairs whose subtree it withheld, and omits the key entirely when it withheld none', async () => {
+    const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '3:1': { document: coinDoc } } })) });
+    const res = await run({ file: 'abc', frame_node_id: '3-1', dom_snapshot: coinSnap });
+    const out = JSON.parse(res.content[0].text);
+    const withheld = out.pairs.filter((p: any) => p.children_skipped);
+    expect(withheld.length).toBeGreaterThan(0);              // PRESENCE: the count below is not a count of nothing
+    expect(out.summary.children_skipped).toBe(withheld.length);
+    // and this is why it had to exist: the withheld nodes are on neither honest-null list, so without
+    // the count the summary reads as full coverage.
+    expect(out.summary.unmatched_figma).toBe(0);
+    expect(out.summary.unmatched_dom).toBe(0);
+
+    const run2 = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: doc } } })) });
+    const clean = JSON.parse((await run2({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot })).content[0].text);
+    expect(clean.pairs.every((p: any) => !p.children_skipped)).toBe(true);
+    expect('children_skipped' in clean.summary).toBe(false);  // absent, not 0 - same shape as depth_truncated
+  });
+});
