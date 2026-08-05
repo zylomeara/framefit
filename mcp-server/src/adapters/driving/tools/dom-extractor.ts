@@ -13,6 +13,20 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   const rectOf = (r) => ({ x: round1(r.x), y: round1(r.y), w: round1(r.width), h: round1(r.height) });
   const padsOf = (cs) => ({ top: num(cs.paddingTop) || 0, right: num(cs.paddingRight) || 0,
     bottom: num(cs.paddingBottom) || 0, left: num(cs.paddingLeft) || 0 });
+  // The geometry gate rests on this flag - diff.ts refuses EVERY geometric row when it is set - so it
+  // has to mean "the box is not where its layout puts it", not "the transform property is set".
+  // A computed transform is always a matrix, and an IDENTITY one moves nothing: promoting a fixed
+  // header with translateZ(0) is the common idiom, and under the old string test it made that header
+  // permanently unmeasurable while the verdict said "wait for the animation to finish" - an
+  // instruction nobody can carry out, since nothing is animating. Anything unparseable stays true:
+  // over-gating loses a measurement, under-gating reports a moved box as a design defect.
+  const IDENT = { 6: [1, 0, 0, 1, 0, 0], 16: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] };
+  const movedBy = (t) => {
+    if (!t || t === 'none') return false;
+    const n = t.slice(t.indexOf('(') + 1, -1).split(',').map(Number);
+    const I = IDENT[n.length];
+    return !I || n.some((v, i) => v !== I[i]);
+  };
   // THE RULE: the DOM side either yields ONE comparable px number, or it says so.
   // Figma carries a single px cornerRadius, so that is the only shape there is anything to compare
   // against. Everything else -- four differing corners, a percentage, an ellipse -- has no axis on
@@ -708,7 +722,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       clientHeight: el.clientHeight,
       scrollHeight: el.scrollHeight,
       scroll: { top: el.scrollTop, left: el.scrollLeft },
-      transformed: cs.transform !== 'none',
+      transformed: movedBy(cs.transform),
       fontsLoaded: document.fonts ? document.fonts.status === 'loaded' : undefined,
       styles: Object.assign({ display: cs.display, backgroundColor: toHex(cs.backgroundColor) },
         rrad.uncomparable ? { borderRadiusUncomparable: true } : { borderRadius: rrad.value },

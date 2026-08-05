@@ -214,6 +214,35 @@ describe('EXTRACTOR_JS', () => {
     expect(snap.borderColors).toEqual({ top: undefined, right: undefined, bottom: undefined, left: undefined });
   });
 
+  // The geometry gate rests on this flag: diff.ts refuses every geometric row when it is true and
+  // tells the reader to "wait for the animation to finish". So the flag must mean "this box is NOT
+  // where its layout puts it", and nothing weaker.
+  describe('transformed: a transform that moves nothing must not gate geometry', () => {
+    const transformedOf = async (transform: string): Promise<unknown> =>
+      ((await buildExtractor({ transform })(['main'])) as any[])[0].transformed;
+
+    it('a transform that really moves/scales the box still gates it', async () => {
+      expect(await transformedOf('matrix(1, 0, 0, 1, 0, 40)')).toBe(true);   // translated
+      expect(await transformedOf('matrix(2, 0, 0, 2, 0, 0)')).toBe(true);    // scaled
+      expect(await transformedOf('matrix(0.7, 0.7, -0.7, 0.7, 0, 0)')).toBe(true); // rotated
+      expect(await transformedOf('matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 30, 0, 1)')).toBe(true);
+      // Found on the live page, not invented: a box collapsed on one axis. It is not identity, it is
+      // not a translation, and a check that only asked "did it move" would have let it through.
+      expect(await transformedOf('matrix(0, 0, 0, 1, 0, 0)')).toBe(true);
+      expect(await transformedOf('rubbish')).toBe(true);                     // unparseable -> conservative
+    });
+
+    it('an IDENTITY matrix does not - the box sits exactly where transform:none would put it', async () => {
+      // Measured on a live page: a fixed site header carries matrix(1, 0, 0, 1, 0, 0) with
+      // transition:none and animationName:none - the GPU-promotion idiom. Under the string test every
+      // geometric row went unmeasured and the verdict told the reader to wait for an animation that
+      // was not running, which is an instruction that can never be carried out.
+      expect(await transformedOf('none')).toBe(false);
+      expect(await transformedOf('matrix(1, 0, 0, 1, 0, 0)')).toBe(false);
+      expect(await transformedOf('matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)')).toBe(false);
+    });
+  });
+
   describe('box-shadow capture', () => {
     const withShadow = (boxShadow: string) => buildExtractor({ boxShadow });
 
