@@ -8,11 +8,25 @@ import { normSnippet } from './diff.js';
 
 export type Confidence = 'high' | 'medium' | 'low';
 export interface ProposedPair { node_id: string; name: string; type: string; dom_path: string; confidence: Confidence; signals: string[];
+  // The receipt: the numbers the ranking actually used, so a reader can tell a text-anchored proposal
+  // from a geometry-only one WITHOUT reading the scorer, and reject a bad one without a browser round
+  // trip. score = the value scoreToConfidence was fed (phase-1 text bijection commits at a flat 100 —
+  // it is not ranked, its uniqueness IS the evidence); margin = lead over the runner-up on the level,
+  // absent when there was no runner-up. text-exact is worth +100 of a ~145 scale, so a score under ~46
+  // means "no text matched on either side", not "weak geometry" — see signals.
+  score: number; margin?: number;
+  // Identity of both sides, for eye-confirmation: unmatched_dom already carried a tag while the pair
+  // rows did not, so the honest-null list was more informative than the proposal list.
+  figma_rect: { w: number; h: number }; dom_rect: { w: number; h: number }; dom_tag: string;
+  // Descent stopped here: this commit was a coin flip (margin < AMBIGUOUS_MARGIN) and children matched
+  // under an unresolved parent inherit its error. Confirm/retarget this pair, then re-run on the
+  // confirmed subtree.
+  children_skipped?: true;
   ambiguous?: boolean; candidates?: { dom_path: string; score: number }[];
   figma_text?: string; dom_text?: string } // matched content (not name — master layer ≠ override); absent if a side has no text
 export interface MatchResult { pairs: ProposedPair[];
-  unmatched_figma: { node_id: string; name: string; reason: string }[];
-  unmatched_dom: { dom_path: string; tag: string }[];
+  unmatched_figma: { node_id: string; name: string; reason: string; rect: { w: number; h: number } }[];
+  unmatched_dom: { dom_path: string; tag: string; rect: { w: number; h: number } }[];
   depth_truncated?: boolean } // honest marker: maxDepth cut off a non-empty subtree (not "empty matched")
 export interface MatchOpts { maxDepth?: number;
   rootFig?: { w: number; h: number }; rootDom?: { w: number; h: number } // the root's real rect — more precise than the max-child proxy
@@ -138,6 +152,7 @@ export function domUnwrap(c: DomChild): DomChild {
 }
 
 const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
+const round2 = (x: number): number => Math.round(x * 100) / 100; // receipt numbers, not a comparison key
 export function scorePair(fig: SpecChild, dom: DomChild, figIdx: number, domIdx: number,
   figParent: { w: number; h: number }, domParent: { w: number; h: number }): number {
   let s = 0;
@@ -338,18 +353,39 @@ export function matchPairs(figs: SpecChild[], doms: DomChild[], opts: MatchOpts 
     const commit = (fx: { f: SpecChild; i: number }, dx: { d: DomChild; j: number }, best: number, runner?: number): ProposedPair => {
       usedFig.add(fx.i); usedDom.add(dx.j);
       const ft = figText(fx.f); const dt = domText(dx.d);
+      // The SAME margin scoreToConfidence bands on (runner absent → the lead is over nothing) — one
+      // quantity, printed and acted on, so the receipt explains the descent instead of narrating it.
+      const margin = best - (runner ?? 0);
       const pair: ProposedPair = { node_id: fx.f.id, name: fx.f.name, type: fx.f.type, dom_path: dx.d.path ?? '',
         confidence: scoreToConfidence(best, runner), signals: signalsOf(fx.f, dx.d),
+        score: round2(best), ...(runner !== undefined ? { margin: round2(margin) } : {}),
+        figma_rect: { w: fx.f.rect.w, h: fx.f.rect.h }, dom_rect: { w: dx.d.rect.w, h: dx.d.rect.h }, dom_tag: dx.d.tag ?? '?',
         ...(ft !== undefined ? { figma_text: ft } : {}), ...(dt !== undefined ? { dom_text: dt } : {}) };
       result.pairs.push(pair);
-      if (fx.f.children?.length && dx.d.children?.length)
+      // The descent gate. A commit whose lead over the runner-up is inside AMBIGUOUS_MARGIN is not a
+      // resolved identity, and children matched below it inherit that coin flip: on the live case one
+      // such level-0 commit (margin 2.67) manufactured four further wrong proposals by recursing the
+      // design's Footer into the page's book cards. We still descend when the descent can bring the
+      // evidence that RESOLVES the parent — the descendant-anchor post-pass below upgrades an unresolved
+      // parent through a high (text-exact) descendant, so text on BOTH sides under the pair is exactly
+      // "a descent may pay for itself". Text on neither side (the live frame: one TEXT node in the
+      // design, none in the capture at that depth) — no descent can ever resolve it, and everything it
+      // would emit is geometry compounded on a coin flip. Stop there, and SAY so (children_skipped);
+      // silence would read as "the subtree matched empty". Phase-1 (unique text on both sides) commits
+      // at 100 with no runner-up — margin 100, unaffected.
+      const fk = fx.f.children ?? []; const dk = dx.d.children ?? [];
+      if (fk.length && dk.length) {
+        const resolvableBelow = fk.some((k) => collectFigSnippets(k).length > 0)
+          && dk.some((k) => collectDomTextUnits(k).length > 0);
+        if (margin < AMBIGUOUS_MARGIN && !resolvableBelow) pair.children_skipped = true;
         // We inherit levelTruncated DOWNWARD — if the CURRENT level (the one dx.d is committed
         // on) was already cut by an ancestor list, dx.d's committed position is unreliable (the true dom
         // dx.d.i could have been dropped by truncation) → ALL descendants committed under dx.d also
         // over-reject, regardless of whether dx.d's OWN children list is cut (dx.d.childrenTruncated===true
         // — whether dx.d's nested children list is cut on the NEXT level). Without the OR the descendants
         // would falsely trust their single local flag and anchor under an unreliable ancestor.
-        walk(fx.f.children, dx.d.children, { w: fx.f.rect.w, h: fx.f.rect.h }, { w: dx.d.rect.w, h: dx.d.rect.h }, depth + 1, levelTruncated || dx.d.childrenTruncated === true);
+        else walk(fk, dk, { w: fx.f.rect.w, h: fx.f.rect.h }, { w: dx.d.rect.w, h: dx.d.rect.h }, depth + 1, levelTruncated || dx.d.childrenTruncated === true);
+      }
       return pair;
     };
     // Phase 1 (I2): a content bijection by text BEFORE structure — unique text on both sides.
@@ -369,7 +405,8 @@ export function matchPairs(figs: SpecChild[], doms: DomChild[], opts: MatchOpts 
         .sort((a, b) => b.s - a.s || a.x.j - b.x.j); // determinism
       const best = scored[0];
       if (!best || best.s < MATCH_FLOOR) { // honest-null
-        result.unmatched_figma.push({ node_id: fx.f.id, name: fx.f.name, reason: best ? 'weak match' : 'no DOM candidate' });
+        result.unmatched_figma.push({ node_id: fx.f.id, name: fx.f.name, reason: best ? 'weak match' : 'no DOM candidate',
+          rect: { w: fx.f.rect.w, h: fx.f.rect.h } }); // the honest-null rows carry size on BOTH sides — that is how a reader re-pairs them by eye
         continue;
       }
       const pair = commit(fx, best.x, best.s, scored[1]?.s);
@@ -399,7 +436,7 @@ export function matchPairs(figs: SpecChild[], doms: DomChild[], opts: MatchOpts 
       }
     }
     // honest-null on the DOM side (I1): worthy doms of this level, taken by no one.
-    for (const x of wd) if (!usedDom.has(x.j)) result.unmatched_dom.push({ dom_path: x.d.path ?? '', tag: x.d.tag ?? '?' });
+    for (const x of wd) if (!usedDom.has(x.j)) result.unmatched_dom.push({ dom_path: x.d.path ?? '', tag: x.d.tag ?? '?', rect: { w: x.d.rect.w, h: x.d.rect.h } });
   };
   // The real rect of the root frame / DOM container is more precise than the "widest child" — both sides
   // are normalized to their true container, not to a proxy. The fallback (opts.root* not given) preserves
