@@ -14,15 +14,37 @@
 // gutter" -- passes every green fixture and is a false-green machine: the RED cases below are the
 // ones that kill it, and a suite with only the green arm would have shipped it.
 //
-// WHAT THE EXPLANATION IS ALLOWED TO COVER. Exactly one row: size.w of the root that IS the layout
-// viewport, where the shortfall equals the gutter by arithmetic and the only slack is the sub-pixel
-// rounding of an integer clientWidth against a fractional rect. The rows the gutter also MOVES --
-// trailing padding, distributed gap, centred cross offset -- move by amounts set by CSS this capture
-// does not measure, so they keep their fails and get a pointer instead of an allowance.
+// WHAT THE EXPLANATION IS ALLOWED TO COVER. Two rows, each because the capture PROVES the quantity.
+// size.w of the root the gutter was taken from, where the shortfall equals the gutter by arithmetic
+// and the only slack is the sub-pixel rounding of an integer clientWidth against a fractional rect.
+// And the cross offset of a child the capture shows CENTRED on both sides, which the same arithmetic
+// puts at exactly half of what the root lost. The rows whose share is set by CSS this capture does
+// NOT measure -- trailing padding, a distributed gap, a cross offset that is not provably centred --
+// keep their fails and get a pointer instead of an allowance, in the rendered row AND in the
+// machine-facing fix_plan entry built from that row.
+//
+// RE-MEASURED, one page (window 1920, body 4000 tall), `main` at width:100%, three children of equal
+// width at Figma offsets 0 / 360 / 720 (leading-anchored / centred / trailing-anchored):
+//
+//     scrollbar-gutter          innerWidth  clientWidth   main x  main w   child offsets
+//     auto / stable, 11px bar         1920         1909        0    1909   0 / 354.5 / 709
+//     stable both-edges, 11px bar     1920         1909       11    1898   0 / 349   / 698
+//     auto / stable, 15px bar         1920         1905        0    1905   0 / 352.5 / 705
+//     stable both-edges, 15px bar     1920         1905       15    1890   0 / 345   / 690
+//
+// Two facts this file previously had wrong. `documentElement.clientWidth` is the VIEWPORT width: under
+// both-edges it does NOT double -- the reserved pair shows up in the ELEMENT instead (x == bar,
+// w == clientWidth - bar). And a centred child loses half of what the ROOT lost (5.5 / 11 / 7.5 / 15
+// above), which is bar/2 only in the spanning shape. The earlier reading recorded clientWidth 1898 /
+// gutter 22 / x 11 for both-edges and gated the second anchoring on x == bar/2 -- a predicate a real
+// both-edges page can never satisfy (it fails the span test outright) and an ordinary 11px page can,
+// which is why the both-edges fixture below is now the measured capture and the x ~ bar/2 band has
+// its own RED.
 import { describe, it, expect } from 'vitest';
 import { diffPair, summarize } from '../../src/domain/layout-spec/diff.js';
 import { renderReport } from '../../src/domain/layout-spec/report.js';
 import { buildVerification } from '../../src/domain/layout-spec/verification.js';
+import { buildFixPlan } from '../../src/adapters/driving/tools/compare-node-to-dom-tool.js';
 import type { LayoutSpec, DomSnapshotOk, DomChild, SpecChild } from '../../src/domain/layout-spec/types.js';
 
 const kid = (x: number, w: number, name: string): { fig: SpecChild; dom: DomChild } => ({
@@ -70,13 +92,19 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
   });
 
   it('a demote is not a pass: verification.complete stays false and mints no blocking action for it', () => {
-    // The root's own size.w is the demoted row; nothing else on this pair is demoted, so a pair whose
-    // ONLY discrepancy is the gutter still reads "not verified" rather than "verified clean".
-    const bar = [kid(0, 200, 'logo'), kid(240, 400, 'navi')];
-    const rows = diffPair(spec(1920, 'row', bar.map((k) => k.fig)),
-      shelfDom({ children: bar.map((k) => k.dom) }), { tolerancePx: 1, frameWidth: 1920 });
+    // The claim is about a pair whose ONLY discrepancy is the gutter, so the fixture has to BE one:
+    // left-anchored children whose DOM offsets match the design exactly, on a col axis where the
+    // paddings are measured on y and match too. Every row but size.w passes -- summary.fail 0 -- so
+    // `complete: false` below can only have come from the demote. The earlier fixture was a row-axis
+    // bar whose padding-right failed by the gutter, which forced the same false through the FAIL and
+    // would have kept passing had a demote started counting as verified.
+    const flush = [kid(0, 200, 'logo'), kid(0, 400, 'navi')];
+    const rows = diffPair(spec(1920, 'col', flush.map((k) => k.fig)),
+      shelfDom({ children: flush.map((k) => k.dom) }), { tolerancePx: 1, frameWidth: 1920 });
     expect(find(rows, 'size.w').status).toBe('demoted');
-    expect(summarize(rows).demoted).toBe(1);
+    const s = summarize(rows);
+    expect({ fail: s.fail, demoted: s.demoted, warn: s.warn, unchecked: s.unchecked, review: s.review })
+      .toEqual({ fail: 0, demoted: 1, warn: 0, unchecked: 0, review: 0 });
     const v = verdict(rows);
     expect(v.complete).toBe(false);
     expect(v.blocking).toEqual([]);
@@ -98,18 +126,44 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     expect(half).toMatchObject({ status: 'fail', dom: 1908.5, delta: 11.5 });
   });
 
-  it('`scrollbar-gutter: stable both-edges` is the same measurement, split across both edges', () => {
-    // Measured in Chrome, same 1920 window and same 11px bar: innerWidth 1920, documentElement
-    // .clientWidth 1898 (BOTH reserved gutters), full-bleed `main` x 11 w 1898. The box is inset by
-    // exactly half the reported gutter on each edge, so the anchoring test takes x == gutter/2 too --
-    // otherwise this page keeps the original defect: a hard ❌ of Δ22 carrying "edit the layout rule".
+  it('`scrollbar-gutter: stable both-edges` is the same bar reserved twice, and the ROOT carries both', () => {
+    // The measured capture (see the table at the top): innerWidth 1920, documentElement.clientWidth
+    // 1909 -- the viewport width, which excludes the PAINTED bar and knows nothing about the one
+    // reserved on the opposite edge -- and a full-bleed `main` at x 11 w 1898, inset by a full bar on
+    // each edge. So the root lost 22 while `innerWidth - clientWidth` reads 11: the anchoring test is
+    // the inset SHAPE (x == bar, w == clientWidth - bar) and the quantity spent is 2*bar. Without it
+    // this page keeps the original defect -- a hard ❌ of Δ22 carrying "edit the layout rule".
     const row = find(diffPair(shelfSpec, shelfDom({
-      innerWidth: 1920, layoutViewportWidth: 1898, rect: { x: 11, y: 0, w: 1898, h: 720 }, clientWidth: 1898,
+      innerWidth: 1920, layoutViewportWidth: 1909, rect: { x: 11, y: 0, w: 1898, h: 720 }, clientWidth: 1898,
     }), { tolerancePx: 1, frameWidth: 1920 }), 'size.w');
     expect(row).toMatchObject({ status: 'demoted', figma: 1920, dom: 1898, delta: 22 });
     expect(row.note).toContain('page scrollbar gutter 22px');
-    expect(row.note).toContain('layout viewport 1898');
+    expect(row.note).toContain('inset by 11px on each edge');
     expect(row.srcChannel).toBeUndefined();
+  });
+
+  it('RED: x == half the bar on an ORDINARY page is a number, not the both-edges shape', () => {
+    // The band the inset shape replaced. At an 11px gutter and a layout viewport of 1909, a box
+    // 1909 wide sitting at x 5.5 overflows the layout viewport by 5.5 -- it is a box on a horizontally
+    // scrolling page, not a root inset by a reserved gutter (which measures x 11 w 1898). The old
+    // `|x - gutter/2| <= structTol` accepted the whole band 4.5..6.5 and demoted every one of them.
+    for (const x of [4.5, 5, 5.4, 5.5, 5.6, 6, 6.5]) {
+      const row = find(diffPair(shelfSpec, shelfDom({ rect: { x, y: 0, w: 1909, h: 720 } }),
+        { tolerancePx: 1, frameWidth: 1920 }), 'size.w');
+      expect(row, `x=${x}`).toMatchObject({ status: 'fail', figma: 1920, dom: 1909, delta: 11 });
+      expect(row.srcChannel, `x=${x}`).toMatchObject({ kind: 'root', editKind: 'layout' });
+    }
+  });
+
+  it('RED: a shortfall SMALLER than the gutter is as unexplained as a larger one', () => {
+    // The span gate accepts rect.w within structTol of the layout viewport, and structTol follows
+    // tolerancePx. At tolerancePx 4 a root of 1913 against a 1909 layout viewport passes the span test
+    // on that slack, and its shortfall against the 1920 frame is 7 -- which an "11px gutter" does not
+    // explain in either direction. A one-sided residual (`short - gutter < 0.5`) demoted it.
+    const row = find(diffPair(shelfSpec, shelfDom({ rect: { x: 0, y: 0, w: 1913, h: 720 }, clientWidth: 1913 }),
+      { tolerancePx: 4, frameWidth: 1920 }), 'size.w');
+    expect(row).toMatchObject({ status: 'fail', figma: 1920, dom: 1913, delta: 7 });
+    expect(row.srcChannel).toMatchObject({ kind: 'root', editKind: 'layout' });
   });
 
   it('the viewport row stops reading "the window is exactly right" without naming the CSS canvas', () => {
@@ -122,10 +176,14 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     // report.ts renders a row only when its status is not `pass`; the viewport row is a pass BY
     // CONSTRUCTION, so the one sentence that explains the 🟰 beside it used to reach the JSON rows
     // only. Without a gutter the row carries no note and stays filtered out.
+    //
+    // The assertion is the rendered LINE, not the phrase. "CSS layout viewport 1909" also lives in the
+    // size.w demote note two lines down, so a `contains` on it was satisfied whether the viewport row
+    // rendered or not: reverting the render gate to `r.prop === 'unwrapped'` passed the whole suite.
     const rows = diffPair(shelfSpec, shelfDom(), { tolerancePx: 1, frameWidth: 1920 });
     const md = renderReport({ file: 'RVVo', tolerancePx: 1,
       pairs: [{ node_id: '12:340', selector: 'main', rows, summary: summarize(rows) } as never] });
-    expect(md).toContain('CSS layout viewport 1909');
+    expect(md.split('\n')).toContainEqual(expect.stringMatching(/^- ✅ viewport: Figma 1920 \/ DOM 1920 — CSS layout viewport 1909\b/));
     expect(md).toContain('🟰 size.w: Figma 1920 / DOM 1909');
 
     const clean = diffPair(shelfSpec, shelfDom({ layoutViewportWidth: 1920 }), { tolerancePx: 1, frameWidth: 1920 });
@@ -145,12 +203,12 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     expect(row.srcChannel).toMatchObject({ kind: 'root', editKind: 'layout' });
   });
 
-  it('RED: a regression of exactly the gutter on a trailing padding / a gap / a cross offset still fails', () => {
-    // The gutter moves each of these by a DIFFERENT amount through a different mechanism -- the
-    // trailing padding only while the slack absorbs the loss, the gap only while the main axis
-    // distributes free space, the cross offset only when centred (measured: HALF the gutter). The
-    // capture measures none of those conditions, so a flat gutter-wide allowance on all three turns a
-    // real 11px regression on a full-bleed container into zero fails. They fail, and they say why.
+  it('RED: a regression of exactly the gutter on a trailing padding / a gap still fails', () => {
+    // The gutter moves these through mechanisms the capture cannot see -- the trailing padding only
+    // while the slack absorbs the loss, the gap only while the main axis distributes free space. A
+    // flat gutter-wide allowance on them turns a real 11px regression on a full-bleed container into
+    // zero fails. They fail, and they say why. (The third row of the old trio, a CENTRED cross offset,
+    // is derivable from this capture and is demoted now -- the two tests after this one.)
     const gutterNote = 'the pair root also lost 11px to a page scrollbar gutter';
 
     // trailing padding: fixed left-anchored children, the trailing slack takes the whole 11.
@@ -169,17 +227,120 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     expect(gapRow).toMatchObject({ status: 'fail', figma: 1320, dom: 1309, delta: 11 });
     expect(gapRow.srcChannel).toMatchObject({ kind: 'root', editKind: 'layout' });
     expect(gapRow.note).toContain(gutterNote);
+  });
 
-    // cross offset on centred content: measured Δ5.5, i.e. HALF the gutter -- so an 11px allowance
-    // here would cover twice what the gutter can even reach.
+  it('a centred child IS derivable: leading == trailing on both sides, so the share is exactly half', () => {
+    // Measured (top of file, 11px bar): fig 360 / dom 354.5, and 360 - 354.5 == 11/2 exactly. Nothing
+    // is assumed -- the capture carries the root rect and every child rect, so "centred" is a fact of
+    // it on both sides, and a centre that sits in the middle of a box which lost 11px of width moves
+    // by 5.5. Demoted, not passed: 🟰 keeps verification.complete false and prints both numbers.
     const offs = diffPair(shelfSpec, shelfDom(), { tolerancePx: 1, frameWidth: 1920 })
       .filter((r) => r.prop.startsWith('offset-cross'));
     expect(offs).toHaveLength(2);
     for (const r of offs) {
-      expect(r).toMatchObject({ status: 'fail', figma: 360, dom: 354.5, delta: 5.5 });
-      expect(r.srcChannel).toMatchObject({ kind: 'child', editKind: 'layout' });
-      expect(r.note).toContain(gutterNote);
+      expect(r).toMatchObject({ status: 'demoted', figma: 360, dom: 354.5, delta: 5.5 });
+      expect(r.note).toContain('centred in the pair root on both sides');
+      expect(r.note).toContain('moves a centred offset by exactly half of itself, 5.5px');
+      expect(r.srcChannel).toBeUndefined();   // and therefore no fix_plan edit
+      expect(r.caveat).toBeUndefined();
     }
+    // The same page under `stable both-edges` (measured: root x 11 w 1898, centred child at x 360, so
+    // an offset of 349 against a designed 360): the root lost 22, half of it is 11, and half of
+    // `innerWidth - clientWidth` -- 5.5 -- would leave this row failing by 5.5 of nothing.
+    const both = diffPair(shelfSpec, shelfDom({
+      layoutViewportWidth: 1909, rect: { x: 11, y: 0, w: 1898, h: 720 }, clientWidth: 1898,
+      children: [kid(360, 1200, 'hero').dom, kid(360, 1200, 'shelf').dom],
+    }), { tolerancePx: 1, frameWidth: 1920 }).filter((r) => r.prop.startsWith('offset-cross'));
+    expect(both).toHaveLength(2);
+    for (const r of both) expect(r).toMatchObject({ status: 'demoted', figma: 360, dom: 349, delta: 11 });
+  });
+
+  it('RED: a cross offset that is not provably centred keeps its fail, its delta and its address', () => {
+    // Same page, same gutter, the children NOT centred: measured trailing-anchored offsets are 709
+    // against a designed 720 -- a loss of the WHOLE gutter, twice the centred share, through an
+    // alignment this capture does not measure. It is derivable in principle and is not derived here,
+    // so it keeps everything a fail keeps, plus the pointer.
+    const trailing = [kid(720, 1200, 'hero'), kid(720, 1200, 'shelf')];
+    const rows = diffPair(spec(1920, 'col', trailing.map((k) => k.fig)),
+      shelfDom({ children: trailing.map((k) => ({ ...k.dom, rect: { ...k.dom.rect, x: 709 } })) }),
+      { tolerancePx: 1, frameWidth: 1920 });
+    const offs = rows.filter((r) => r.prop.startsWith('offset-cross'));
+    expect(offs).toHaveLength(2);
+    for (const r of offs) {
+      expect(r).toMatchObject({ status: 'fail', figma: 720, dom: 709, delta: 11 });
+      expect(r.srcChannel).toMatchObject({ kind: 'child', editKind: 'layout' });
+      expect(r.note).toContain('the pair root also lost 11px to a page scrollbar gutter');
+    }
+
+    // The case that makes the centring test load-bearing rather than decorative: a child short by
+    // EXACTLY half the gutter and not centred by either side's measurement (leading 100 against a
+    // trailing 1620). A left-anchored child does not move when the gutter is taken -- measured offset
+    // 0 -> 0 -- so these 5.5px are 5.5px of layout. With the residual test alone this demotes.
+    const pinned = kid(100, 200, 'badge');
+    const off = find(diffPair(spec(1920, 'col', [pinned.fig]),
+      shelfDom({ children: [{ ...pinned.dom, rect: { x: 94.5, y: 0, w: 200, h: 80 } }] }),
+      { tolerancePx: 1, frameWidth: 1920 }), 'offset-cross');
+    expect(off).toMatchObject({ status: 'fail', figma: 100, dom: 94.5, delta: 5.5 });
+    expect(off.srcChannel).toMatchObject({ kind: 'child', editKind: 'layout' });
+    expect(off.note).toContain('the pair root also lost 11px to a page scrollbar gutter');
+    expect(off.caveat).toContain('confirm this delta is not that before editing');
+
+    // And BOTH sides have to prove it. The DOM side alone is not enough: a 200-wide box centred in the
+    // DOM (854.5) against a 300-wide box the design puts at 860 -- not centred, leading 860 vs
+    // trailing 760 -- differs by exactly 5.5 too. The design did not ask for centring, so nothing here
+    // says the gutter is what moved it.
+    const dropped = find(diffPair(spec(1920, 'col', [kid(860, 300, 'badge').fig]),
+      shelfDom({ children: [{ ...kid(0, 200, 'badge').dom, rect: { x: 854.5, y: 0, w: 200, h: 80 } }] }),
+      { tolerancePx: 1, frameWidth: 1920 }), 'offset-cross');
+    expect(dropped).toMatchObject({ status: 'fail', figma: 860, dom: 854.5, delta: 5.5 });
+    expect(dropped.srcChannel).toMatchObject({ kind: 'child', editKind: 'layout' });
+  });
+
+  it('RED: a centred child short by MORE than half the gutter is short by something else', () => {
+    // Centring is proved on both sides and the allowance is still exactly 5.5: this child is at 353.5,
+    // one real pixel further left than the gutter accounts for. Same subtract-then-compare as size.w.
+    const off = kid(360, 1200, 'hero');
+    const rows = diffPair(spec(1920, 'col', [off.fig]),
+      shelfDom({ children: [{ ...off.dom, rect: { x: 353.5, y: 0, w: 1202, h: 80 } }] }),
+      { tolerancePx: 1, frameWidth: 1920 });
+    const row = find(rows, 'offset-cross');
+    expect(row).toMatchObject({ status: 'fail', figma: 360, dom: 353.5, delta: 6.5 });
+    expect(row.srcChannel).toMatchObject({ kind: 'child', editKind: 'layout' });
+  });
+
+  it('the caveat reaches the PLAN, which is the surface this tool is read by', () => {
+    // The rendered row said "the pair root also lost 11px to a page scrollbar gutter (see size.w)" and
+    // four lines below it the Edits block prescribed "edit the layout rule, not px" over those same
+    // pixels with nothing attached -- and fix_plan in the JSON likewise. A consumer reading only the
+    // plan got the un-caveated instruction, which is the original defect surviving in the machine
+    // channel. The caveat now travels on the edit.
+    const bar = [kid(0, 200, 'logo'), kid(240, 400, 'navi')];
+    const rows = diffPair(spec(1920, 'row', bar.map((k) => k.fig)),
+      shelfDom({ children: bar.map((k) => k.dom) }), { tolerancePx: 1, frameWidth: 1920 });
+    const source = { root: { module: 'Shelf.module.css', local: 'bar', raw: 'Shelf-module__bar' } };
+    const plan = buildFixPlan(rows, source)!;
+    const edit = plan.fix_plan[0].edits.find((e) => e.prop === 'padding-right')!;
+    expect(edit.kind).toBe('layout');
+    expect(edit.caveat).toBe('the pair root lost 11px to a page scrollbar gutter (see size.w): confirm this delta is not that before editing');
+
+    const md = renderReport({ file: 'RVVo', tolerancePx: 1,
+      pairs: [{ node_id: '12:340', selector: 'main', rows, summary: summarize(rows), fix_plan: plan.fix_plan } as never] });
+    const editLine = md.split('\n').find((l) => l.includes('layout: padding-right'))!;
+    expect(editLine).toContain('edit the layout rule, not px');
+    expect(editLine).toContain('a page scrollbar gutter (see size.w)');
+  });
+
+  it('and the shelf page, whose every remaining discrepancy IS the gutter, prescribes no edits at all', () => {
+    // The live shape: a centred page under a classic scrollbar. Both offset rows are derived and
+    // demoted, size.w carries no channel -> buildFixPlan has nothing to emit. This is the whole point
+    // of the round; the previous commit reached it by allowing a number it had not measured, and the
+    // one after it reached TWO edits by refusing to derive a number it could.
+    const rows = diffPair(shelfSpec, shelfDom(), { tolerancePx: 1, frameWidth: 1920 });
+    expect(rows.filter((r) => r.status === 'fail')).toEqual([]);
+    expect(buildFixPlan(rows, { root: { module: 'Shelf.module.css', local: 'main', raw: 'Shelf-module__main' } })).toBeUndefined();
+    // ...and it is still not a green: three rows are demoted, so the pair reads "not verified".
+    expect(summarize(rows).demoted).toBe(3);
+    expect(verdict(rows).complete).toBe(false);
   });
 
   it('RED: the same width at the wrong x is a coincidence of magnitude, not the layout viewport', () => {

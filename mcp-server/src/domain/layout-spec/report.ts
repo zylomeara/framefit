@@ -61,10 +61,13 @@ function propBase(prop: string): string {
 // line we show the BASE (without the bracket suffix of one specific place), on an unfolded line edit.prop
 // as-is. A layout kind carries a fixed honest note ("edit the RULE, not px"); the ×N
 // annotation is mutually exclusive with layout (fold ONLY for kind='property').
+// e.caveat is appended to whatever trailer the caller chose: it is a reason the delta may not be a
+// defect at all, and it belongs on the line that prescribes the edit, not four lines above it.
 function renderEditLine(target: string, prop: string, e: FixPlanEdit, trailer?: string): string {
   const prefix = e.kind === 'layout' ? 'layout: ' : '';
   const delta = e.delta !== undefined ? ` (Δ${e.delta})` : '';
-  const note = trailer ? ` — ${trailer}` : '';
+  const joined = [trailer, e.caveat].filter(Boolean).join(' — ');
+  const note = joined ? ` — ${joined}` : '';
   return `- ≈ ${target}: ${prefix}${prop} ${fmt(e.expected)} ← ${fmt(e.actual)}${delta}${note}`;
 }
 
