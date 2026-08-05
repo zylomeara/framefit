@@ -163,7 +163,10 @@ already refused to accept unless it matched exactly one element) `:is()`-scoped 
 `dom_path`. It is pasteable as the *extractor's* root selector to re-capture that element -
 `compare_node_to_dom` itself takes a snapshot or a `dom_ref`, never a selector, and a `dom_ref`
 selector has to match the string the extractor was given byte-for-byte. No root selector in the
-snapshot means no `dom_selector` field: an address is never synthesized. Read the receipt, not the word - an
+snapshot means no `dom_selector` field: an address is never synthesized. Each entry of
+`candidates[]` on an ambiguous row carries the same `dom_tag` and `dom_rect` as the pair row: two
+near-tied candidates print the same rounded `score`, and the tie then falls to document order, so
+the identity fields are what actually decide it. Read the receipt, not the word - an
 exact text match is worth +100 of a ~145 scale, so on a frame of containers every proposal reads
 `low`, which says *no text on either side here*, not *bad geometry*. Those are yours to confirm,
 and the two rects are usually enough to do it by eye. `children_skipped: true` means the lead over

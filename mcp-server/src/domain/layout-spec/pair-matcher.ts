@@ -22,7 +22,11 @@ export interface ProposedPair { node_id: string; name: string; type: string; dom
   // under an unresolved parent inherit its error. Confirm/retarget this pair, then re-run on the
   // confirmed subtree.
   children_skipped?: true;
-  ambiguous?: boolean; candidates?: { dom_path: string; score: number }[];
+  // The runner-up rows carry the SAME identity as the pair row. Without it the reported case reads as
+  // two nth-child paths and two scores rounded to the same integer - the live 0.19-margin contest
+  // printed the design's Footer over the page <header> at "41" with the actual <footer> at "41" - and
+  // the reader has no way to decide it short of opening a browser. With it the heights alone decide it.
+  ambiguous?: boolean; candidates?: { dom_path: string; score: number; dom_tag: string; dom_rect: { w: number; h: number } }[];
   figma_text?: string; dom_text?: string } // matched content (not name — master layer ≠ override); absent if a side has no text
 export interface MatchResult { pairs: ProposedPair[];
   unmatched_figma: { node_id: string; name: string; reason: string; rect: { w: number; h: number } }[];
@@ -432,7 +436,8 @@ export function matchPairs(figs: SpecChild[], doms: DomChild[], opts: MatchOpts 
         pair.ambiguous = true;
         // The display top-3 "what to show" — the ≥FLOOR filter STAYS here (not an anchor-soundness question).
         pair.candidates = scored.filter((c) => c.s >= MATCH_FLOOR).slice(0, 3)
-          .map((c) => ({ dom_path: c.x.d.path ?? '', score: Math.round(c.s) }));
+          .map((c) => ({ dom_path: c.x.d.path ?? '', score: Math.round(c.s),
+            dom_tag: c.x.d.tag ?? '?', dom_rect: { w: c.x.d.rect.w, h: c.x.d.rect.h } }));
       }
     }
     // honest-null on the DOM side (I1): worthy doms of this level, taken by no one.

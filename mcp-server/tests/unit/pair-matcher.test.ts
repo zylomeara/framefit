@@ -1823,6 +1823,27 @@ describe('matchPairs: the receipt (score/margin/rects/tag) and the descent gate'
     expect(r.pairs[0].dom_rect).toEqual({ w: 200, h: 100 });
   });
 
+  it('the runner-up carries the same identity as the winner - the reported "41 vs 41" is decidable on the row', () => {
+    // The live contest reduced to a fixture: the design's Footer instance against two DOM candidates
+    // whose scores are IDENTICAL, so the printed integers cannot separate them and the tie falls to
+    // document order - which puts the wrong one first, exactly as reported. candidates[] used to hold a
+    // path and that same integer, i.e. nothing a reader could decide on without opening a browser.
+    const par = { w: 100, h: 100 };
+    const r = matchPairs(
+      [fc('Footer', 'INSTANCE', [0, 0, 100, 8])],
+      [dc('> :nth-child(1)', 'header', [0, 0, 100, 24]), dc('> :nth-child(2)', 'footer', [0, 92, 100, 7])],
+      { rootFig: par, rootDom: par });
+    const p = r.pairs[0];
+    expect(p.ambiguous).toBe(true);
+    expect(p.candidates?.map((c) => c.score)).toEqual([41, 41]); // the two numbers a reader used to get
+    expect(p.dom_tag).toBe('header');                            // and the one it leads with is the wrong one
+    expect(p.candidates).toEqual([
+      { dom_path: '> :nth-child(1)', score: 41, dom_tag: 'header', dom_rect: { w: 100, h: 24 } },
+      { dom_path: '> :nth-child(2)', score: 41, dom_tag: 'footer', dom_rect: { w: 100, h: 7 } },
+    ]);
+    expect(p.figma_rect).toEqual({ w: 100, h: 8 }); // the design side: the runner-up's height decides it
+  });
+
   it('honest-null rows carry the size of the side they name (that is how a reader re-pairs them)', () => {
     const par = { w: 100, h: 100 };
     const solo = fc('solo', 'FRAME', [0, 0, 40, 40]);
