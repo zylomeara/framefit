@@ -39,6 +39,10 @@ function buildExtractor(styleOverrides: Record<string, string> = {}): (selectors
     querySelectorAll: () => [root],
     createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0, 0, 1, 1) }),
     fonts: { status: 'loaded' },
+    // 405 against a 420 window = a 15px page scrollbar gutter, the shape diff.ts's gutter demote
+    // reads. A real document always has a documentElement; a fake that omits it made the extractor
+    // throw instead of emitting the field, which is a hole in the fixture, not a missing guard.
+    documentElement: { clientWidth: 405 },
   };
   const fakeWindow = { innerWidth: 420 };
   const fakeNode = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
@@ -169,6 +173,7 @@ function buildExtractorCSS(opts: {
     querySelectorAll: () => [el],
     createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0, 0, 1, 1) }),
     fonts: { status: 'loaded' },
+    documentElement: { clientWidth: 405 },
     styleSheets,
   };
   const fakeWindow = {
@@ -266,6 +271,7 @@ describe('EXTRACTOR_JS', () => {
       querySelectorAll: () => [root],
       createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0) }),
       fonts: { status: 'loaded' },
+      documentElement: { clientWidth: 405 },
     };
     const fakeWindow = { innerWidth: 420 };
     const fakeNode = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
@@ -303,6 +309,7 @@ describe('EXTRACTOR_JS', () => {
       querySelectorAll: () => [root],
       createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0) }),
       fonts: { status: 'loaded' },
+      documentElement: { clientWidth: 405 },
     };
     const fakeWindow = { innerWidth: 420 };
     const fakeNode = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
@@ -351,6 +358,7 @@ describe('EXTRACTOR_JS', () => {
       querySelectorAll: () => [root],
       createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0) }),
       fonts: { status: 'loaded' },
+      documentElement: { clientWidth: 405 },
     };
     const fakeWindow = { innerWidth: 420 };
     const fakeNode = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
@@ -408,6 +416,7 @@ describe('EXTRACTOR_JS', () => {
       querySelectorAll: () => [root],
       createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0, 0, 1, 1) }),
       fonts: { status: 'loaded' },
+      documentElement: { clientWidth: 405 },
     };
     const fakeWindow = { innerWidth: 420 };
     const fakeNode = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
@@ -479,6 +488,7 @@ describe('EXTRACTOR_JS', () => {
       querySelectorAll: () => [root],
       createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0) }),
       fonts: { status: 'loaded' },
+      documentElement: { clientWidth: 405 },
     };
     const fakeWindow = { innerWidth: 420 };
     const fakeNode = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
@@ -1336,6 +1346,7 @@ function buildExtractorPerEl(childStyles: Record<string, string>,
     createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0, 0, 1, 1) }),
     get styleSheets() { sheetsReads++; return []; },
     fonts: { status: 'loaded' },
+    documentElement: { clientWidth: 405 },
   };
   const fakeCS = (el: any) => ({ ...base, ...(el === child ? childStyles : {}) });
   const run = new Function('document', 'window', 'Node', 'getComputedStyle', `return (${EXTRACTOR_JS})`)(

@@ -175,6 +175,7 @@ export interface DomSnapshotOk {
   status?: 'ok';
   selector?: string;
   innerWidth: number;
+  layoutViewportWidth?: number; // documentElement.clientWidth — the width CSS laid the page out in; innerWidth minus it = the page scrollbar gutter
   rect: SpecRect;           // getBoundingClientRect (border-box)
   borders: Edges;           // computed border widths — diff subtracts them when computing paddings
   borderColors?: { top?: string; right?: string; bottom?: string; left?: string };
@@ -223,6 +224,12 @@ export interface DiffRow {
   // (rows is assembled from three arrays via spreads + the tool's unshift). editKind: property = a literal edit
   // "set it to 550"; layout = "fix the layout rule (gap/flex/width logic), do not hardcode px".
   srcChannel?: { kind: 'root' | 'child' | 'anchor' | 'text'; i?: number; label?: string; editKind: 'property' | 'layout' };
+  // fix-plan: a one-sentence warning that must travel WITH the edit, not only in the rendered row —
+  // buildFixPlan copies it verbatim onto the FixPlanEdit. Set where the differ knows the delta may not
+  // be a defect at all (today: a row a page scrollbar gutter can reach — notePageGutter, diff.ts).
+  // Without it fix_plan — the machine-facing surface — says "edit the layout rule, not px" over pixels
+  // the row beside it has already explained away.
+  caveat?: string;
   // A profile-scope skip (an axis outside the layout profile) — a SEPARATE representation from
   // an environmental skip: coverageHoleRows/holeToBlocking EXCLUDE it
   // (a deliberate narrowing — not an environmental hole, blocking is not flooded with resolve_skips), deriveCoverage
@@ -266,6 +273,7 @@ export interface FixPlanEdit {
   expected: string | number | null;   // row.figma AS IS (no tolerance recomputation)
   actual: string | number | null;     // row.dom AS IS
   delta?: number;                     // row.delta (if the row carried it)
+  caveat?: string;                    // row.caveat AS IS — a reason this delta may not be a defect (e.g. a page scrollbar gutter reaches this row)
 }
 export interface FixPlanGroup {
   target: SourceHint | null;          // the channel's source resolve; null = the address was not determined

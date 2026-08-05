@@ -291,6 +291,192 @@ function applyTextWidthOverride(row: DiffRow, demote: boolean): DiffRow {
       .filter(Boolean).join('; ') };
 }
 
+// PAGE SCROLLBAR GUTTER. A classic (non-overlay) page scrollbar takes its width off the LAYOUT
+// VIEWPORT: window.innerWidth stays 1920 while CSS lays the page out in documentElement.clientWidth
+// = 1909, so a full-bleed element measures 1909 against a Figma frame that says 1920. The two
+// existing scrollbar terms (size.w/size.h below) subtract the PAIRED ELEMENT's OWN bar --
+// `rect.w - borders - clientWidth`, which on that same full-bleed element is 0, because its rect and
+// its clientWidth are BOTH the reduced 1909. They look one level too low, and the page gutter never
+// entered any formula. The two are independent and opposite in sign (own bar SUBTRACTS from the DOM
+// side, the page gutter is a shortfall to EXPLAIN), so this never double-counts against them.
+//
+// THE GATE IS A MEASUREMENT, NOT AN ARITHMETIC COINCIDENCE. "the shortfall equals the gutter" was
+// the obvious rule and it is a false-green machine: a `max-width:1200` container never paid an 8px
+// page gutter, so a real 8px stray padding on it -- 1200 vs 1192 -- matches that predicate exactly
+// and ships clean. What is actually being claimed is "this element's width IS the layout viewport",
+// and that is directly measurable: rect.w == documentElement.clientWidth. A 1200 container, a 400px
+// sidebar and a `width:100vw` header (1920 against a 1912 layout viewport -- the case every "is it
+// the frame root" gate waves through) all fail it and keep their fails.
+//
+// WIDTH IS HALF THE CLAIM -- POSITION IS THE OTHER HALF. A box that merely HAPPENS to be exactly as
+// wide as the layout viewport is not the layout viewport: an equal width with a non-zero x is a
+// coincidence of magnitude, and the gutter argument needs the box to be ANCHORED where the gutter
+// was taken from. Two anchorings are real, and both are RE-measured in Chrome (1920 window, one page
+// scrolling `main` at width:100%, at an 11px `::-webkit-scrollbar` and again at the 15px native bar):
+//
+//     scrollbar-gutter      innerWidth  clientWidth  innerWidth-clientWidth  main x   main w
+//     auto / stable              1920         1909                      11       0     1909
+//     stable both-edges          1920         1909                      11      11     1898
+//     auto / stable (15px)       1920         1905                      15       0     1905
+//     stable both-edges (15px)   1920         1905                      15      15     1890
+//
+// `documentElement.clientWidth` is the VIEWPORT width: it excludes the bar that is actually painted
+// and knows nothing about the gutter reserved on the opposite edge. So under both-edges it does NOT
+// double -- it stays the one-bar number, and the reserved pair shows up in the ELEMENT instead: the
+// root is inset by a full bar on each edge (x == bar, w == clientWidth - bar). An earlier reading of
+// this branch recorded clientWidth 1898 / gutter 22 / x 11 and gated the second anchoring on
+// `x == gutter/2`; the numbers above are what Chrome produces, and they say that predicate is
+// unreachable for the shape it was written for (a real both-edges root fails the span test outright,
+// 1898 != 1909) while staying wide open for an ORDINARY 11px page -- any box at x ~ 5.5 that happens
+// to be layout-viewport wide, i.e. one overflowing the layout viewport to the right, was demoted.
+// The gate now tests the two shapes as they measure:
+//     spanning  x == 0    && w == clientWidth          -> the root lost the one painted bar
+//     inset     x == bar  && w == clientWidth - bar    -> the root lost a reserved bar on EACH edge
+// The width the root lost is `bar` in the first shape and `2*bar` in the second, and that -- not
+// `innerWidth - clientWidth` -- is the quantity every consumer below spends. Anything else (a centred
+// `max-width` container, a sidebar, a nested box, the x ~ bar/2 band) is rejected and keeps its fails.
+//
+// AND IT IS A DEMOTE, NOT A PASS. `width: calc(100vw - 15px)` -- the hack people write BECAUSE of
+// the scrollbar -- spans the layout viewport too, and its capture is byte-identical to a correct
+// page's: nothing in the snapshot separates them. Correcting the comparison basis (compare against
+// frameWidth - gutter) would resolve BOTH to pass, i.e. a green over a difference this capture
+// cannot see. 🟰 keeps verification.complete false, mints no blocking action, prints both measured
+// widths, and carries no srcChannel -- so fix_plan emits no edit for it, which is the half of this
+// defect that was actually expensive: telling the reader to change a working CSS rule.
+//
+// ponytail: WIDTH ONLY. A horizontally scrolling page has the same gutter on the bottom edge and
+// size.h lies the same way; carrying documentElement.clientHeight would fix it. Not carried, because
+// a horizontal page scrollbar is itself a defect worth surfacing, not explaining away. Add the height
+// twin when a real report needs it.
+function pageGutterOf(d: DomSnapshotOk, structTol: number): { px: number; note: string } | undefined {
+  if (d.layoutViewportWidth === undefined) return undefined;
+  const lvw = d.layoutViewportWidth;
+  const bar = round1(d.innerWidth - lvw);
+  if (bar <= structTol) return undefined;
+  // structTol, not `===`, on every geometry test below: rect.w/rect.x are fractional
+  // getBoundingClientRect values while clientWidth is an integer, and at fractional device-scale
+  // factors (Windows 125/150/175%) they differ by up to 0.5px on an element that genuinely spans.
+  // An exact test never fires there. getBoundingClientRect is viewport-relative and a pair root with
+  // a non-zero page scroll is stopped upstream by the `scroll≠0` geometry reason, so the raw x is the
+  // whole position test. The two shapes are measured, see ANCHORING above.
+  const spanning = Math.abs(d.rect.w - lvw) <= structTol && Math.abs(d.rect.x) <= structTol;
+  const inset = Math.abs(d.rect.x - bar) <= structTol && Math.abs(d.rect.w - (lvw - bar)) <= structTol;
+  if (!spanning && !inset) return undefined;
+  // px = the width the ROOT lost, which is what every consumer spends: one painted bar when the root
+  // spans, a reserved bar on each edge when it is inset. `bar` alone would under-explain both-edges by
+  // half and the demote would refuse the row it exists for.
+  const px = spanning ? bar : round1(bar * 2);
+  const where = spanning
+    ? 'the pair root spans the layout viewport'
+    : `the pair root is inset by ${bar}px on each edge (\`scrollbar-gutter: stable both-edges\`: the painted bar is excluded from the layout viewport, the reserved one is not)`;
+  return { px,
+    note: `page scrollbar gutter ${px}px (window ${round1(d.innerWidth)}, CSS layout viewport ${round1(lvw)}) — `
+      + `${where}, so this row is short by at most the gutter, not by a layout rule; `
+      + 'a layout defect of the same size is not separable from it in this capture — verify visually' };
+}
+
+// THE GUTTER IS AN EXACT QUANTITY, SO THE ALLOWANCE IS NOT A TOLERANCE. On the one row this fires
+// on, size.w of a spanning root, the identity is arithmetic and total: the layout viewport is
+// `innerWidth - gutter` BECAUSE the bar took the gutter, so a shortfall of gutter+1 is the gutter
+// plus 1px of something else -- and the something else is exactly what the reader needs told. An
+// allowance of `gutter + tolerancePx` (default 1) made the window 12px wide where the gutter is 11
+// and demoted that case, which is the one this whole detector's red arm was written to keep failing.
+//
+// The only slack kept is sub-pixel, and it is a measured artifact of the capture, not of the layout:
+// `documentElement.clientWidth` is an INTEGER while `getBoundingClientRect().width` is fractional, so
+// on a fractional layout viewport (real browser zoom) a genuinely spanning box reports a width that
+// differs from the gutter arithmetic by the rounding alone. Measured through the real extractor:
+// exactly 0 at an integral layout viewport (Chrome, window 1920, 11px bar, deviceScaleFactor 1 /
+// 1.25 / 2 -- span residual 0.000 in all three), and 0.400 / 0.333 / 0.143 under fractional zoom,
+// every one of them below half a pixel, which is the bound a single integer rounding can produce.
+// So: strictly less than half a CSS pixel of residual is capture noise; 0.5px and up is layout, and
+// layout is a fail. The test is TWO-SIDED (|short - gutter| < 0.5), not "short - gutter < 0.5": the
+// span gate accepts rect.w within structTol of the layout viewport, and at a tolerancePx of 4 that
+// slack made a root of 1913 against a 1909 layout viewport and a 1920 frame -- short by 7, explained
+// by an "11px gutter" -- read `demoted`, which is not the arithmetic identity this file claims. A
+// shortfall SMALLER than the gutter is as unexplained as a larger one. Two-sided also subsumes the
+// old `short <= 0` guard (a gutter is > structTol >= 1, so any non-positive shortfall is more than
+// half a pixel away from it) -- one predicate, not two. That is two orders of magnitude below the 1px
+// this tool calls a defect by default, so no real regression -- not even a 1px one -- can hide under
+// it. The residual is taken
+// from the row's own figma/dom, which numRow has already rounded to 0.1 -- deliberately: it is
+// measured on the numbers the reader is shown, and the rounding pushes a borderline case AWAY from
+// the demote (a true 0.46 reads 0.5 and fails) rather than into it.
+const GUTTER_RESIDUAL_MAX = 0.5;
+
+// SCOPE: size.w OF THE ROOT, PLUS THE ONE DERIVED ROW THIS CAPTURE CAN PROVE. The gutter also MOVES
+// the trailing padding, a distributed gap and a centred cross offset -- measured at a 1920 frame with
+// an 11px gutter: the trailing padding by the full 11 (fig 1280 / dom 1269), a space-between gap by
+// the full 11 (fig 1320 / dom 1309), a centred child's cross offset by HALF of it (fig 360 / dom
+// 354.5). Three amounts through three mechanisms, and WHICH one applies is a property of the CSS, not
+// of the gutter -- but the three conditions are NOT equally unknown to the capture, and treating them
+// as one was the previous version's mistake:
+//
+//   - trailing padding: moves only while the slack absorbs the loss. NOT measured -- the capture has
+//     no free-space budget, and a full-bleed container with a real regression looks identical.
+//   - distributed gap: moves only while the main axis distributes free space. NOT measured -- the
+//     justify-content keyword says a distribution is REQUESTED, not that this gap received the loss.
+//   - centred cross offset: moves by half, and only while the content is centred. THIS ONE IS
+//     MEASURED. DomSnapshotOk carries the root rect and every DomChild carries rect{x,w}, so
+//     "leading gap == trailing gap" is a fact of the capture on both sides, and the loss it implies
+//     is arithmetic: both centres sit at the middle of their own content box, so the offset drops by
+//     exactly half of what the box lost. Measured on one page (window 1920), three children of the
+//     same width at fig offsets 0 / 360 / 720, leading-anchored / centred / trailing-anchored:
+//         auto, 11px bar        root x 0  w 1909   offsets 0 / 354.5 / 709   losses 0 / 5.5 / 11
+//         both-edges, 11px bar  root x 11 w 1898   offsets 0 / 349   / 698   losses 0 / 11  / 22
+//     i.e. exactly half of what the root lost, under both anchorings -- and NOT `bar/2`, which is why
+//     the demote spends the root's loss (pageGutterOf's px) and not `innerWidth - clientWidth`.
+//
+// So the centred cross offset gets an exact allowance derived from the capture (crossGutterShare in
+// crossAndPaddingRows), and everything not proved keeps its fail, its delta and its edit address with
+// a pointer to the row where the quantity IS exact (notePageGutter below). A flat `gutter` allowance
+// on all three -- what shipped before -- was a lie in the opposite direction: an 11px regression on a
+// full-bleed container produced zero fails and an empty fix_plan.
+// ponytail: only the centred case is derived. A child flush to the trailing edge provably loses the
+// WHOLE gutter (measured above: 709 / 698) and is the next one to derive; not derived here because
+// nothing in the live reports asks for it yet.
+//
+// WHAT THIS COSTS, stated rather than hidden: a genuine defect SMALLER than the gutter, on a pair
+// root that spans the layout viewport, lands in 🟰 instead of ❌. It buys no green -- 🟰 keeps
+// verification.complete false and prints both numbers -- but it is coverage, and it is the price of
+// not inventing a separation the capture cannot support.
+// WHEN IT DOES NOT DEMOTE, IT STILL KNOWS SOMETHING. A shortfall that is not the gutter keeps its
+// fail, its delta and its edit address -- but part of that delta IS the gutter, and this is the one
+// row where the differ has computed exactly how much. It said so in the rendered note while the
+// fix_plan entry built from the same row prescribed a bare "edit the layout rule, not px" over pixels
+// it had just accounted for. fix_plan is the machine-facing surface; the caveat travels on the row so
+// buildFixPlan copies it verbatim, the same way the sibling rows carry theirs. Guarded (`?? `) rather
+// than overwritten: crossGutterShare comes through here too and notePageGutter may have spoken first.
+function applyPageGutterDemote(row: DiffRow, gutter: { px: number; note: string } | undefined): DiffRow {
+  if (gutter === undefined || row.status !== 'fail') return row;
+  if (typeof row.figma !== 'number' || typeof row.dom !== 'number') return row;
+  const short = row.figma - row.dom;               // the gutter only ever makes the DOM side SHORT
+  if (Math.abs(short - gutter.px) >= GUTTER_RESIDUAL_MAX) {
+    return short <= 0 ? row : { ...row,
+      caveat: row.caveat ?? `${round1(short - gutter.px)}px of this delta is layout; the other ${gutter.px}px is a page scrollbar gutter`,
+      note: [row.note, `of which ${gutter.px}px is the page scrollbar gutter — the remaining `
+        + `${round1(short - gutter.px)}px is not explained by it`].filter(Boolean).join('; ') };
+  }
+  return { ...stripSrc(row), status: 'demoted', note: [row.note, gutter.note].filter(Boolean).join('; ') };
+}
+
+// The rows the gutter can also move (see SCOPE above) — they stay ❌ with their channel, and say so.
+// Only on a fail: a passing row needs no explanation, and annotating one would move it out of the
+// bulk-pass fold (isBulk tests `!r.note`) for nothing.
+//
+// `caveat` is the same fact sized for the MACHINE surface. The rendered row carried this warning while
+// the fix_plan entry built from the very same row carried a bare "edit the layout rule, not px" — and
+// fix_plan, not the markdown, is what this product is read by. It travels on the row (buildFixPlan
+// copies it verbatim into the edit) rather than being re-derived there: the tool would have to parse
+// a note to find it, and parsing notes is how the caveat gets lost again.
+function notePageGutter(row: DiffRow, gutter: { px: number; note: string } | undefined): DiffRow {
+  if (gutter === undefined || row.status !== 'fail') return row;
+  return { ...withNote(row, `the pair root also lost ${gutter.px}px to a page scrollbar gutter (see size.w) — `
+    + 'how much of that reaches THIS row depends on the distribution/alignment this capture does not measure, '
+    + 'so the delta above is the whole measured one and is not reduced by the gutter'),
+  caveat: `the pair root lost ${gutter.px}px to a page scrollbar gutter (see size.w): confirm this delta is not that before editing` };
+}
+
 // E (hug-vs-fill): the Figma root hugs its content by width (hugWidth), while the DOM container stretches wider
 // to the parent (fill) — the container's size/paddings on this axis are incomparable (the content is pinned, the "extra"
 // width = fill slack, not a defect). We demote the fail → 🟰. Gate on hugWidth: fixed-width + wider DOM =
@@ -408,7 +594,15 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
     // makes this branch reachable with off-tolerance numbers, and a hardcoded 'pass' on them is a second,
     // contradicting signal next to the preflight warn. overlay_width fully takes over the viewport role.
     if (opts.frameWidth !== undefined && opts.expectedOverlayWidth === undefined) {
-      rows.push({ prop: 'viewport', figma: opts.frameWidth, dom: d.innerWidth, status: 'pass' });
+      // The row measures the WINDOW and that stays true, but on a page with a classic scrollbar the
+      // CSS canvas is narrower than the window, and a bare "viewport ✅ 1920 vs 1920" next to an
+      // 11px width shortfall reads as "the window is exactly right, so your CSS is wrong". Naming
+      // the layout viewport here is what makes the demote below legible as a capture artifact
+      // instead of a special case. Status stays pass: the window IS the requested width.
+      const lv = d.layoutViewportWidth;
+      const gut = lv !== undefined ? round1(d.innerWidth - lv) : 0;
+      rows.push({ prop: 'viewport', figma: opts.frameWidth, dom: d.innerWidth, status: 'pass',
+        ...(gut > 0 ? { note: `CSS layout viewport ${round1(lv!)} — a ${gut}px page scrollbar gutter is inside the window width, and every full-bleed box is laid out in the narrower number` } : {}) });
     }
     rows.push(...geometryRows(spec, d, opts));
   }
@@ -441,6 +635,10 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   // not be classified as a fill demotion (otherwise it is SOFTER, false-green risk); a real fill is >1px.
   const containerHugFill = spec.hugWidth === true && d.rect.w > rect.w + structTol;
 
+  // page scrollbar gutter — see pageGutterOf. Undefined unless the pair root IS the layout viewport
+  // (width AND anchoring), so a nested/max-width/sidebar pair keeps every fail it has today.
+  const pageGutter = pageGutterOf(d, structTol);
+
   // (1) Cardinality-repair unwrap — BEFORE the size rows: unwrapBase (5.4) switches size to border-box.
   let figKids: SpecChild[] = spec.children;
   let domKids2: DomChild[] = d.children;
@@ -467,7 +665,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     const scrollbarW = (d.clientWidth !== undefined)
       ? Math.max(0, d.rect.w - d.borders.left - d.borders.right - d.clientWidth) : 0;
     rows.push(applyOverlayWidthOverride(
-      applyContainerHugFillDemote(applyTextWidthOverride(numRow('size.w', rect.w, d.rect.w - scrollbarW, tol, undefined, SRC_ROOT_LAYOUT), textWidthDemote), containerHugFill),
+      applyContainerHugFillDemote(applyTextWidthOverride(applyPageGutterDemote(numRow('size.w', rect.w, d.rect.w - scrollbarW, tol, undefined, SRC_ROOT_LAYOUT), pageGutter), textWidthDemote), containerHugFill),
       opts.expectedOverlayWidth,
     ));
   } else if (d.paddings !== undefined && d.clientWidth !== undefined) {
@@ -476,7 +674,10 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     rows.push(applyOverlayWidthOverride(
       applyContainerHugFillDemote(
         applyTextWidthOverride(
-          numRow('size.w', rect.w - (spec.autoLayout ? spec.autoLayout.padding.left + spec.autoLayout.padding.right : 0), domW, tol, undefined, SRC_ROOT_LAYOUT),
+          applyPageGutterDemote(
+            numRow('size.w', rect.w - (spec.autoLayout ? spec.autoLayout.padding.left + spec.autoLayout.padding.right : 0), domW, tol, undefined, SRC_ROOT_LAYOUT),
+            pageGutter,
+          ),
           textWidthDemote,
         ),
         containerHugFill,
@@ -485,7 +686,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     ));
   } else {
     rows.push(applyOverlayWidthOverride(
-      applyContainerHugFillDemote(applyTextWidthOverride(numRow('size.w', rect.w, d.rect.w, tol, undefined, SRC_ROOT_LAYOUT), textWidthDemote), containerHugFill),
+      applyContainerHugFillDemote(applyTextWidthOverride(applyPageGutterDemote(numRow('size.w', rect.w, d.rect.w, tol, undefined, SRC_ROOT_LAYOUT), pageGutter), textWidthDemote), containerHugFill),
       opts.expectedOverlayWidth,
     ));
   }
@@ -673,7 +874,12 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         - (end(domKids2[i - 1].rect, axis) - padEnd(eff(domKids2[i - 1].paddings), axis));
     }
     const label = `gap[${i - 1}] ${childLabel(figKids[i - 1])}↔${childLabel(figKids[i])}`;
-    rows.push(withNote(numRow(label, figGap, domGap, tol, undefined, SRC_ROOT_LAYOUT), gapNote));
+    // page gutter: only a HORIZONTAL main axis spends the width the gutter took (measured, space-between
+    // at 1920: fig 1320 / dom 1309). On axis='col' the gap is vertical and the gutter cannot touch it.
+    // A pointer, never an allowance — the gap moves only while the main axis DISTRIBUTES free space,
+    // which this capture does not measure, so an 11px gap regression stays an 11px fail (see SCOPE).
+    rows.push(notePageGutter(withNote(numRow(label, figGap, domGap, tol, undefined, SRC_ROOT_LAYOUT), gapNote),
+      axis === 'row' ? pageGutter : undefined));
   }
 
   rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx));
@@ -949,6 +1155,14 @@ function crossAndPaddingRows(
   const structTol = Math.max(opts.tolerancePx, 1);
   // descentFor(maxDepth) — see collectFigTexts/collectDomTexts/domHugEndEvidence below.
   const maxDescent = descentFor(opts.maxDepth ?? 4);
+  // page scrollbar gutter (see pageGutterOf) — recomputed rather than threaded through a 12th
+  // parameter. NOTE ONLY here: no row in this function has an exact gutter share (see SCOPE at
+  // applyPageGutterDemote), so the rows the gutter can plausibly reach get a pointer to size.w and
+  // keep their fail. Which those are is decided by which of them measure the WIDTH: on a row axis the
+  // trailing padding (measured, left-anchored children at 1920: fig 1280 / dom 1269), on a col axis
+  // the cross offset (measured, centred content: half the gutter, 5.5). The LEADING edge never moves
+  // on either axis — domCStart is built from the left edge — so padding-start gets no note either.
+  const pageGutter = pageGutterOf(d, structTol);
   const [startName, endName] = axis === 'col' ? ['padding-top', 'padding-bottom'] : ['padding-left', 'padding-right'];
   const borderStart = axis === 'col' ? d.borders.top : d.borders.left;
   const borderEnd = axis === 'col' ? d.borders.bottom : d.borders.right;
@@ -1011,10 +1225,10 @@ function crossAndPaddingRows(
       // of the demotion detector to sub-pixel fractions under strict tol=0 (otherwise a legit text-hug → false red).
       || (figTextsForEnd.items.length > 0 && domHugEndEvidence(lastDom, axis, structTol, maxDescent));
     rows.push(applyContainerHugFillDemote(applyJustifyDemote(applyTextWidthOverride(
-      withNote(
+      notePageGutter(withNote(
         numRow(endName, figCEnd - (end(figLast.rect, axis) - figPadEnd), domCEnd - (end(lastDom.rect, axis) - domPadEnd), tol, undefined, SRC_ROOT_LAYOUT),
         endNote,
-      ),
+      ), axis === 'row' ? pageGutter : undefined),
       endDemote,
     ), jd.end, jc, endName), hugFillMainAxis));
   }
@@ -1026,6 +1240,27 @@ function crossAndPaddingRows(
   const domCrossStart = domWrapper
     ? crossStart(domWrapper.rect, axis) + padCross(eff(domWrapper.paddings), axis)
     : crossStart(d.rect, axis) + borderCross + padCross(eff(d.paddings), axis);
+  // The one gutter share this capture PROVES (see SCOPE at applyPageGutterDemote). A child centred in
+  // the root's cross content box sits at the middle of that box on both sides, so a root that lost
+  // `gutter.px` of width moves it by exactly half — and centring is a fact of the capture, not an
+  // assumption: the root rect and the child rect are both here, on the Figma side and the DOM side.
+  // Both sides must prove it: a child centred in the DOM but pinned in the design moved for a reason
+  // that is not the gutter. Anchored to the pair ROOT only (no wrapper) — the gutter gate measured the
+  // root, and a wrapper's cross box is a different, unmeasured container. Cross axis of `col` is x,
+  // which is the axis the gutter is taken from; on a `row` axis the cross is y and nothing is derived.
+  const cross = axis === 'col' ? 'row' : 'col';
+  const centredIn = (r: SpecRect, cStart: number, cEnd: number): boolean =>
+    Math.abs((start(r, cross) - cStart) - (cEnd - end(r, cross))) <= structTol;
+  const figCrossEnd = end(rect, cross) - padEnd(eff(spec.autoLayout?.padding), cross);
+  const domCrossEnd = end(d.rect, cross) - (axis === 'col' ? d.borders.right : d.borders.bottom) - padEnd(eff(d.paddings), cross);
+  const crossGutterShare = (c: SpecChild, dk: DomChild): { px: number; note: string } | undefined => {
+    if (pageGutter === undefined || axis !== 'col' || figWrapper !== undefined || domWrapper !== undefined) return undefined;
+    if (!centredIn(c.rect, figCrossStart, figCrossEnd) || !centredIn(dk.rect, domCrossStart, domCrossEnd)) return undefined;
+    const half = round1(pageGutter.px / 2);
+    return { px: half,
+      note: `centred in the pair root on both sides (leading gap == trailing gap, measured) — a page scrollbar gutter of ${pageGutter.px}px `
+        + `moves a centred offset by exactly half of itself, ${half}px, and that is the whole of what is explained here (see size.w)` };
+  };
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the offset is mis-attributed
     if (domKids[i].kind === 'text') return; // intrinsic line — the offset is not a defect
@@ -1035,7 +1270,12 @@ function crossAndPaddingRows(
     const domOff = crossStart(domKids[i].rect, axis) - domCrossStart;
     // fix-plan: a cross offset is also fixed in the child (align-self/margin) → child(i)/layout
     // (consistent with typography[i]; a container align-items is seen by the consumer via the root's neighbors).
-    rows.push(numRow(`offset-cross[${i}] ${childLabel(c)}`, figOff, domOff, tol, undefined, { kind: 'child', i, editKind: 'layout' }));
+    const row = numRow(`offset-cross[${i}] ${childLabel(c)}`, figOff, domOff, tol, undefined, { kind: 'child', i, editKind: 'layout' });
+    // The derived share goes through the SAME residual test as size.w: a centred child short by more
+    // than half the gutter is short by something else, and that something else keeps its fail.
+    const share = crossGutterShare(c, domKids[i]);
+    const out = share !== undefined ? applyPageGutterDemote(row, share) : row;
+    rows.push(out.status === 'fail' ? notePageGutter(out, axis === 'col' ? pageGutter : undefined) : out);
   });
 
   figKids.forEach((c, i) => {

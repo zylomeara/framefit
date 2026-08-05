@@ -61,10 +61,13 @@ function propBase(prop: string): string {
 // line we show the BASE (without the bracket suffix of one specific place), on an unfolded line edit.prop
 // as-is. A layout kind carries a fixed honest note ("edit the RULE, not px"); the ×N
 // annotation is mutually exclusive with layout (fold ONLY for kind='property').
+// e.caveat is appended to whatever trailer the caller chose: it is a reason the delta may not be a
+// defect at all, and it belongs on the line that prescribes the edit, not four lines above it.
 function renderEditLine(target: string, prop: string, e: FixPlanEdit, trailer?: string): string {
   const prefix = e.kind === 'layout' ? 'layout: ' : '';
   const delta = e.delta !== undefined ? ` (Δ${e.delta})` : '';
-  const note = trailer ? ` — ${trailer}` : '';
+  const joined = [trailer, e.caveat].filter(Boolean).join(' — ');
+  const note = joined ? ` — ${joined}` : '';
   return `- ≈ ${target}: ${prefix}${prop} ${fmt(e.expected)} ← ${fmt(e.actual)}${delta}${note}`;
 }
 
@@ -175,7 +178,18 @@ export function renderReport(input: {
     // profiles: profileScoped rows are excluded from the rowLine loop — they carry ONLY a bare dim
     // with no figma/dom (nothing to show but placeholder dashes); renderProfileSkips below gives them an
     // honest summary form from p.coverage.skipped instead of a noisy "Figma — / DOM —".
-    for (const r of p.rows) if ((r.status !== 'pass' || r.prop === 'unwrapped') && r.profileScoped !== true) lines.push(rowLine(r));
+    //
+    // 'viewport' with a note joins 'unwrapped' as the second pass row that still renders. The viewport
+    // row is a pass BY CONSTRUCTION (the window really is the requested width) and it is the only
+    // place the CSS layout viewport is named — on a page with a classic scrollbar it is what makes the
+    // demoted `size.w` beside it legible instead of contradictory. Filtered out of the markdown, that
+    // explanation reached JSON consumers only, while the reader who gets the rendered report saw a
+    // 🟰 shortfall with nothing to explain it. Gated on the NOTE, not the prop: without a gutter the
+    // row carries none and this stays byte-identical.
+    for (const r of p.rows) {
+      const shown = r.status !== 'pass' || r.prop === 'unwrapped' || (r.prop === 'viewport' && r.note !== undefined);
+      if (shown && r.profileScoped !== true) lines.push(rowLine(r));
+    }
     lines.push(...renderProfileSkips(p));
     if (p.source) {
       const srcLine = renderSourceLine(p.source);

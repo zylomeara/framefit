@@ -157,6 +157,10 @@ export function buildFixPlan(
       prop: r.prop, kind: ch.editKind,
       expected: r.figma ?? null, actual: r.dom ?? null,
       ...(r.delta !== undefined ? { delta: r.delta } : {}),
+      // fix-plan: the row's caveat travels INTO the edit. A plan entry is read without the row beside
+      // it, so "edit the layout rule, not px" over pixels the differ has already half-explained is the
+      // original defect surviving in the machine channel. Copied verbatim, never re-derived from the note.
+      ...(r.caveat !== undefined ? { caveat: r.caveat } : {}),
     };
     const target = resolve(ch);
     if (target === null) { nullEdits.push(edit); continue; }

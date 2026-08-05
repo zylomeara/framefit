@@ -691,6 +691,8 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     return {
       schema: SCHEMA, status: 'ok', selector,
       innerWidth: window.innerWidth,
+      // the width CSS laid the page out in: innerWidth includes the page scrollbar, this does not
+      layoutViewportWidth: document.documentElement.clientWidth,
       rect: rectOf(r),
       borders: { top: num(cs.borderTopWidth) || 0, right: num(cs.borderRightWidth) || 0,
                  bottom: num(cs.borderBottomWidth) || 0, left: num(cs.borderLeftWidth) || 0 },
