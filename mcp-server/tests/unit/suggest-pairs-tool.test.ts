@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { registerSuggestPairsTool, InputSchema } from '../../src/adapters/driving/tools/suggest-pairs-tool.js';
+import { registerSuggestPairsTool, InputSchema, domSelector } from '../../src/adapters/driving/tools/suggest-pairs-tool.js';
 import { DOM_SNAPSHOT_SCHEMA_VERSION } from '../../src/adapters/driving/tools/dom-snapshot-schema.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
@@ -433,11 +433,27 @@ describe('dom_selector (capture root + nth-child path, :is()-scoped)', () => {
       .toEqual([':is(.a, .b) > :nth-child(2)', ':is(.a, .b) > :nth-child(3)']);
   });
 
+  it('the guards: nothing to scope, or nothing to scope it to, yields NO address rather than a bad one', () => {
+    // Measured in Chrome: dropping the path guard emits ':is(.a) ' which is 1 match - the capture ROOT
+    // itself, i.e. a wrong address answering status ok. `path` is optional in the snapshot schema, so
+    // this is reachable input, not a hypothetical.
+    expect(domSelector(undefined, '> :nth-child(1)')).toBeUndefined();
+    expect(domSelector('', '> :nth-child(1)')).toBeUndefined();
+    expect(domSelector('.a', '')).toBeUndefined();
+    expect(domSelector('.a', '> :nth-child(1)')).toBe(':is(.a) > :nth-child(1)');
+    // The trade :is() makes, recorded rather than discovered later: it is a FORGIVING selector list, so
+    // a syntactically bad root stops throwing and silently matches nothing - unreachable from a snapshot
+    // the extractor produced (it refuses a root that does not match exactly one element), and the price
+    // of closing the real defect, a comma-carrying root silently resolving to the wrong element.
+    expect(domSelector('.a::before', '> :nth-child(1)')).toBe(':is(.a::before) > :nth-child(1)');
+  });
+
   it('no root selector in the snapshot -> NO dom_selector field (an address is never synthesized)', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
     const run = harness({ getNodesRaw });
     const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot }); // no .selector
     const out = JSON.parse(res.content[0].text);
+    expect(out.pairs.length).toBe(2);   // an empty pairs array satisfies both `every`s below
     expect(out.pairs.every((p: any) => !('dom_selector' in p))).toBe(true);
     expect(out.pairs.every((p: any) => typeof p.dom_path === 'string')).toBe(true); // dom_path still there
   });

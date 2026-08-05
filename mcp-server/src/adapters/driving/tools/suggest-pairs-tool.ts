@@ -66,9 +66,10 @@ export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): voi
       'browser. dom_selector is pasteable as the EXTRACTOR root selector to re-capture that element - compare_node_to_dom ' +
       'itself takes a snapshot or a ref, not a selector - and only against the page the snapshot came from: an nth-child ' +
       'chain always resolves to something, so after a navigation it lands on a different element and the compare reports ' +
-      'two unrelated elements as a design defect. dom_rect is how you catch that. On an ambiguous row each ' +
-      'entry of candidates[] carries the same dom_tag and dom_rect, so a contest whose scores print as the same ' +
-      'integer is still decided on the row rather than in a browser. Read the receipt, not the word: an exact ' +
+      'two unrelated elements as a design defect. dom_rect is how you catch that. Wherever candidates[] is ' +
+      'present - an ambiguous row, or a children_skipped one naming what stopped the descent - each entry ' +
+      'carries the same dom_tag and dom_rect, so a contest whose scores print as the same integer is still ' +
+      'decided on the row rather than in a browser. Read the receipt, not the word: an exact ' +
       'text match is worth +100 of a ~145 scale, so on a container-only frame every proposal reads low - that says "no text ' +
       'on either side here", not "bad geometry", and such pairs are yours to confirm by hand. children_skipped means the ' +
       'margin over the runner-up was inside the ambiguity band AND no text on either side below could have settled it, so ' +

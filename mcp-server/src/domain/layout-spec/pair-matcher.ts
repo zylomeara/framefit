@@ -175,6 +175,11 @@ function scoreToConfidence(best: number, runnerUp?: number): Confidence {
   if (best >= 55) return 'medium';
   return 'low';
 }
+// The runner-up rows, built once for both callers below: an ambiguity and a withheld subtree show the
+// same thing, and the top-3 cut is a display decision, not a soundness one.
+const candidateRows = (cs: { x: { d: DomChild }; s: number }[]): { dom_path: string; score: number; dom_tag: string; dom_rect: { w: number; h: number } }[] =>
+  cs.slice(0, 3).map((c) => ({ dom_path: c.x.d.path ?? '', score: Math.round(c.s),
+    dom_tag: c.x.d.tag ?? '?', dom_rect: { w: c.x.d.rect.w, h: c.x.d.rect.h } }));
 function signalsOf(f: SpecChild, d: DomChild): string[] {
   const out: string[] = [];
   const ft = figText(f); const dt = domText(d);
@@ -379,9 +384,10 @@ export function matchPairs(figs: SpecChild[], doms: DomChild[], opts: MatchOpts 
       // at 100 with no runner-up — margin 100, unaffected.
       const fk = fx.f.children ?? []; const dk = dx.d.children ?? [];
       if (fk.length && dk.length) {
-        const resolvableBelow = fk.some((k) => collectFigSnippets(k).length > 0)
-          && dk.some((k) => collectDomTextUnits(k).length > 0);
-        if (margin < AMBIGUOUS_MARGIN && !resolvableBelow) pair.children_skipped = true;
+        // margin first: on a resolved commit the two subtree scans below are computed and thrown away.
+        if (margin < AMBIGUOUS_MARGIN
+          && !(fk.some((k) => collectFigSnippets(k).length > 0) && dk.some((k) => collectDomTextUnits(k).length > 0)))
+          pair.children_skipped = true;
         // We inherit levelTruncated DOWNWARD — if the CURRENT level (the one dx.d is committed
         // on) was already cut by an ancestor list, dx.d's committed position is unreliable (the true dom
         // dx.d.i could have been dropped by truncation) → ALL descendants committed under dx.d also
@@ -435,10 +441,16 @@ export function matchPairs(figs: SpecChild[], doms: DomChild[], opts: MatchOpts 
       if (runnerUp && runnerUp.s >= MATCH_FLOOR && best.s - runnerUp.s < AMBIGUOUS_MARGIN) {
         pair.ambiguous = true;
         // The display top-3 "what to show" — the ≥FLOOR filter STAYS here (not an anchor-soundness question).
-        pair.candidates = scored.filter((c) => c.s >= MATCH_FLOOR).slice(0, 3)
-          .map((c) => ({ dom_path: c.x.d.path ?? '', score: Math.round(c.s),
-            dom_tag: c.x.d.tag ?? '?', dom_rect: { w: c.x.d.rect.w, h: c.x.d.rect.h } }));
+        pair.candidates = candidateRows(scored.filter((c) => c.s >= MATCH_FLOOR));
       }
+      // A withheld subtree and an ambiguity are gated on the SAME number by two different rules:
+      // children_skipped needs only margin < AMBIGUOUS_MARGIN, while ambiguous ALSO demands a runner-up
+      // >= MATCH_FLOOR ("a weak second candidate is not a real alternative"). A runner-up in between -
+      // strong enough to stop a descent, too weak to be called an alternative - left the row saying "I
+      // withheld the children" with nothing on it to say what stopped them. If a candidate was decisive
+      // enough to withdraw a whole subtree it is decisive enough to name, so the list is emitted without
+      // the >= FLOOR filter and WITHOUT pair.ambiguous, which would be a different and false claim.
+      if (pair.children_skipped && pair.candidates === undefined) pair.candidates = candidateRows(scored);
     }
     // honest-null on the DOM side (I1): worthy doms of this level, taken by no one.
     for (const x of wd) if (!usedDom.has(x.j)) result.unmatched_dom.push({ dom_path: x.d.path ?? '', tag: x.d.tag ?? '?', rect: { w: x.d.rect.w, h: x.d.rect.h } });
