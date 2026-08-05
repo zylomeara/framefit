@@ -319,7 +319,19 @@ do NOT hardcode a px literal; `kind:'property'` (color/font/border/…) — set 
 0. **The whole frame at once** → `suggest_pairs {file, frame_node_id, dom_snapshot: <the frame-root
    snapshot from step 3>}` — it proposes `node_id` ↔ `dom_path` pairs with a confidence and an
    `ambiguous` flag, and lists `unmatched_figma` / `unmatched_dom` honestly. Confirm the confident
-   ones, resolve the ambiguous ones by hand, and go to step 4 with the result. On stdio pass the
+   ones, resolve the ambiguous ones by hand, and go to step 4 with the result. Confirm from the
+   receipt on each row, not from the word: `score` below ~46 means no text matched on either side
+   (on a frame of containers that is EVERY row — `low` there reports an absence of text, not weak
+   geometry), `margin` is the lead over the runner-up, and `figma_rect` vs `dom_rect` + `dom_tag`
+   reject a wrong proposal without a browser. `dom_selector` is pasteable as the *extractor's* root
+   selector (step 3) to re-capture that one element; step 4 takes the snapshot, not a selector. And
+   only against the capture it came from. An `nth-child` chain always resolves to something: navigate or
+   re-render in between and it lands on a different element with `status: "ok"`, and step 4 reports
+   two unrelated elements as a design defect. Re-capture, or check `dom_rect` against what you are
+   about to compare.
+   `children_skipped` means the pair was too close to call and its subtree was deliberately NOT
+   matched under it — confirm that pair first, then re-run rooted on the element you confirmed.
+   On stdio pass the
    snapshot INLINE — handed a `dom_ref` there it throws the snapshot-store refusal quoted in step 3.
    Skip this call entirely when you already know the node ids: it proposes pairs, it does not
    license the compare. The unmatched lists are the same regions the Step 6 receipt will hold you

@@ -1775,3 +1775,150 @@ describe('matchChildrenOneLevel phase-0 (nested bijection)', () => {
     });
   });
 });
+
+// The receipt + the descent gate. Confidence is deliberately NOT touched here: `high` needs text-exact
+// (+100 of a ~145 scale) and the descendant-anchor post-pass above reads exactly that word, so a
+// friendlier band over the same evidence would silently re-point diff.ts's salvage. What a reader gets
+// instead is the arithmetic that produced the ranking, and a matcher that refuses to build a subtree on
+// top of a coin flip.
+describe('matchPairs: the receipt (score/margin/rects/tag) and the descent gate', () => {
+  // Two same-sized fig containers over two same-sized dom containers: the winner leads by the order term
+  // alone (25 + 15 = 40 vs 25 + 11.25 = 36.25) — a 3.75 margin, i.e. an unresolved identity.
+  const coinFlip = (withText: boolean) => {
+    const kidF = (id: string, x: number, t?: string): SpecChild =>
+      fc(id, 'FRAME', [x, 0, 50, 50], t !== undefined ? { textSnippet: t, type: 'TEXT' } as Partial<SpecChild> : {});
+    const kidD = (path: string, x: number, t?: string): DomChild =>
+      dc(path, 'div', [x, 0, 50, 50], t !== undefined ? { text: t } : {});
+    const figs = [
+      fc('A', 'FRAME', [0, 0, 100, 50], { children: [kidF('A1', 0, withText ? 'AlphaUnique' : undefined), kidF('A2', 50)] }),
+      fc('B', 'FRAME', [0, 50, 100, 50], { children: [kidF('B1', 0), kidF('B2', 50)] }),
+    ];
+    const doms = [
+      dc('> :nth-child(1)', 'section', [0, 0, 100, 50], { children: [kidD('> :nth-child(1) > :nth-child(1)', 0, withText ? 'AlphaUnique' : undefined), kidD('> :nth-child(1) > :nth-child(2)', 50)] }),
+      dc('> :nth-child(2)', 'div', [0, 50, 100, 50], { children: [kidD('> :nth-child(2) > :nth-child(1)', 0), kidD('> :nth-child(2) > :nth-child(2)', 50)] }),
+    ];
+    return matchPairs(figs, doms);
+  };
+
+  it('every proposal carries the numbers it was ranked by, and both sides identity (rects + dom tag)', () => {
+    const a = coinFlip(false).pairs.find((p) => p.node_id === 'A');
+    expect(a?.score).toBe(40);           // size 25 + order 15, no text anywhere → the non-text ceiling
+    expect(a?.margin).toBe(3.75);        // the lead over the runner-up the ambiguity band is measured on
+    expect(a?.figma_rect).toEqual({ w: 100, h: 50 });
+    expect(a?.dom_rect).toEqual({ w: 100, h: 50 });
+    expect(a?.dom_tag).toBe('section');  // the pair row used to hide the one field that rejects a mis-pair by eye
+  });
+
+  it('the two rects are the two SIDES, not one number printed twice', () => {
+    // Every other fixture here is same-sized on both sides, so figma_rect and dom_rect could be swapped
+    // - or both sourced from one side - and the whole suite stays green (measured: 2970 passed under the
+    // swap). These are the two fields the tool description sells as "reject a wrong proposal without a
+    // browser"; sourced from one side a 100-vs-200 mis-size prints as agreement. The scorer reads
+    // RELATIVE size, so a DOM captured at twice the scale scores identically while the rects differ -
+    // which makes the swap a red test instead of a documented intention.
+    const r = matchPairs([fc('half', 'INSTANCE', [0, 0, 100, 50])], [dc('> :nth-child(1)', 'div', [0, 0, 200, 100])],
+      { rootFig: { w: 100, h: 100 }, rootDom: { w: 200, h: 200 } });
+    expect(r.pairs[0].score).toBe(45);                        // identical RELATIVE size - the scorer agrees
+    expect(r.pairs[0].figma_rect).toEqual({ w: 100, h: 50 }); // and the receipt still names each side
+    expect(r.pairs[0].dom_rect).toEqual({ w: 200, h: 100 });
+  });
+
+  it('the runner-up carries the same identity as the winner - the reported "41 vs 41" is decidable on the row', () => {
+    // The live contest reduced to a fixture: the design's Footer instance against two DOM candidates
+    // whose scores are IDENTICAL, so the printed integers cannot separate them and the tie falls to
+    // document order - which puts the wrong one first, exactly as reported. candidates[] used to hold a
+    // path and that same integer, i.e. nothing a reader could decide on without opening a browser.
+    const par = { w: 100, h: 100 };
+    const r = matchPairs(
+      [fc('Footer', 'INSTANCE', [0, 0, 100, 8])],
+      [dc('> :nth-child(1)', 'header', [0, 0, 100, 24]), dc('> :nth-child(2)', 'footer', [0, 92, 100, 7])],
+      { rootFig: par, rootDom: par });
+    const p = r.pairs[0];
+    expect(p.ambiguous).toBe(true);
+    expect(p.candidates?.map((c) => c.score)).toEqual([41, 41]); // the two numbers a reader used to get
+    expect(p.dom_tag).toBe('header');                            // and the one it leads with is the wrong one
+    expect(p.candidates).toEqual([
+      { dom_path: '> :nth-child(1)', score: 41, dom_tag: 'header', dom_rect: { w: 100, h: 24 } },
+      { dom_path: '> :nth-child(2)', score: 41, dom_tag: 'footer', dom_rect: { w: 100, h: 7 } },
+    ]);
+    expect(p.figma_rect).toEqual({ w: 100, h: 8 }); // the design side: the runner-up's height decides it
+  });
+
+  it('a candidate too weak to be an ALTERNATIVE but strong enough to stop a descent is still named', () => {
+    // children_skipped is gated on the margin alone; ambiguous ALSO demands runner-up >= MATCH_FLOOR.
+    // A runner-up between the two rules used to withdraw a whole subtree and leave nothing on the row
+    // to say what did it - no flag, no candidates - while the docs tell the reader to retarget the pair.
+    const par = { w: 100, h: 100 };
+    const r = matchPairs(
+      [fc('P', 'FRAME', [0, 0, 100, 50], { children: [fc('k1', 'FRAME', [0, 0, 50, 50]), fc('k2', 'FRAME', [50, 0, 50, 50])] })],
+      [dc('> :nth-child(1)', 'section', [0, 0, 100, 26], { children: [
+        dc('> :nth-child(1) > :nth-child(1)', 'div', [0, 0, 50, 26]),
+        dc('> :nth-child(1) > :nth-child(2)', 'div', [50, 0, 50, 26])] }),
+       dc('> :nth-child(2)', 'div', [0, 30, 100, 1])],
+      { rootFig: par, rootDom: par });
+    const p = r.pairs.find((x) => x.node_id === 'P');
+    expect(p?.score).toBe(34);
+    expect(p?.margin).toBe(10);              // inside AMBIGUOUS_MARGIN -> the subtree is withheld
+    expect(p?.children_skipped).toBe(true);
+    expect(p?.ambiguous).toBeUndefined();    // runner-up under MATCH_FLOOR: not called an alternative
+    expect(p?.candidates).toEqual([          // but named, because it is what stopped the descent
+      { dom_path: '> :nth-child(1)', score: 34, dom_tag: 'section', dom_rect: { w: 100, h: 26 } },
+      { dom_path: '> :nth-child(2)', score: 24, dom_tag: 'div', dom_rect: { w: 100, h: 1 } },
+    ]);
+  });
+
+  it('honest-null rows carry the size of the side they name (that is how a reader re-pairs them)', () => {
+    const par = { w: 100, h: 100 };
+    const solo = fc('solo', 'FRAME', [0, 0, 40, 40]);
+    const far = fc('far', 'FRAME', [0, 0, 4000, 4000]);           // relative size nowhere near — below FLOOR
+    const r = matchPairs([solo, far], [dc('> :nth-child(1)', 'aside', [0, 0, 40, 40])], { rootFig: par, rootDom: par });
+    expect(r.unmatched_figma[0]).toMatchObject({ node_id: 'far', rect: { w: 4000, h: 4000 } });
+    const r2 = matchPairs([solo], [dc('> :nth-child(1)', 'aside', [0, 0, 40, 40]), dc('> :nth-child(2)', 'footer', [0, 900, 300, 77])], { rootFig: par, rootDom: par });
+    expect(r2.unmatched_dom[0]).toEqual({ dom_path: '> :nth-child(2)', tag: 'footer', rect: { w: 300, h: 77 } });
+  });
+
+  it('a coin-flip commit with no text under EITHER side does not father a subtree — children_skipped, no descendants', () => {
+    const r = coinFlip(false);
+    const a = r.pairs.find((p) => p.node_id === 'A');
+    expect(a?.margin).toBeLessThan(12);                                   // inside AMBIGUOUS_MARGIN
+    expect(a?.children_skipped).toBe(true);                               // and we SAY we stopped
+    // Nothing under A is proposed, and nothing under A is claimed unmatched either — we withdrew the
+    // level, we did not judge it. (B is left with a single candidate, i.e. no runner-up and no coin flip
+    // — it descends, which is the same rule, not an exception.)
+    expect(r.pairs.filter((p) => p.dom_path.startsWith('> :nth-child(1) >'))).toEqual([]);
+    expect(r.unmatched_dom.filter((u) => u.dom_path.startsWith('> :nth-child(1) >'))).toEqual([]);
+    expect(r.unmatched_figma.map((u) => u.node_id)).toEqual([]);
+  });
+
+  it('CONTROL: the same coin flip WITH text on both sides below still descends — the descent can resolve it', () => {
+    const r = coinFlip(true);
+    const a = r.pairs.find((p) => p.node_id === 'A');
+    expect(a?.margin).toBe(3.75);                        // the same unresolved margin as above
+    expect(a?.children_skipped).toBeUndefined();         // but text below is evidence a descent can bring
+    expect(r.pairs.some((p) => p.node_id === 'A1')).toBe(true);
+    // and that is exactly the evidence the descendant-anchor post-pass consumes:
+    expect(a?.signals).toContain('descendant-anchored');
+  });
+
+  it('INVARIANT the anchor post-pass rests on: high => text-exact, quantified over a set that HAS a high', () => {
+    // The post-pass anchors a parent through a descendant it trusts by `confidence === 'high'` and reads
+    // that descendant's dom_text — a string that is only PROVEN to be in the design when high implies
+    // text-exact. Nothing asserts it in the banding itself; it holds by arithmetic (90 > 25+15+5).
+    // Two different breaks, two different assertions, and it is worth being exact about which is which:
+    // a banding change that lets geometry reach high is caught by the `low` assertion below, while the
+    // `every` catches a high that does NOT carry text-exact - a scoring change that grants the +100
+    // without the equality test, which is the one that would poison the anchor. The population must
+    // contain a high for the `every` to mean anything at all, so presence is asserted too.
+    const par = { w: 100, h: 100 };
+    const r = matchPairs(
+      [fc('zText', 'TEXT', [0, 0, 100, 20], { textSnippet: 'ZedUnique' }), fc('zInst', 'INSTANCE', [0, 20, 100, 50])],
+      [dc('> :nth-child(1)', 'span', [0, 0, 100, 20], { text: 'ZedUnique' }), dc('> :nth-child(2)', 'div', [0, 20, 100, 50])],
+      { rootFig: par, rootDom: par });
+    const inst = r.pairs.find((p) => p.node_id === 'zInst');
+    expect(inst?.score).toBe(45);                 // identical relative size + identical index + INSTANCE
+    expect(inst?.confidence).toBe('low');         // the non-text ceiling is 45 of a 90 bar
+    const highs = r.pairs.filter((p) => p.confidence === 'high');
+    expect(highs.map((p) => p.node_id)).toEqual(['zText']); // PRESENCE co-lock: the `every` is not vacuous
+    expect(highs.every((p) => p.signals.includes('text-exact'))).toBe(true);
+  });
+});

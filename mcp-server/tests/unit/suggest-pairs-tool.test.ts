@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { registerSuggestPairsTool, InputSchema } from '../../src/adapters/driving/tools/suggest-pairs-tool.js';
+import { registerSuggestPairsTool, InputSchema, domSelector } from '../../src/adapters/driving/tools/suggest-pairs-tool.js';
 import { DOM_SNAPSHOT_SCHEMA_VERSION } from '../../src/adapters/driving/tools/dom-snapshot-schema.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
@@ -402,5 +402,118 @@ describe('suggest_pairs tool', () => {
       expect(res.isError).toBe(true);
       expect(res.content[0].text).toMatch(/snapshot store unavailable/);
     });
+  });
+});
+
+// dom_selector: the address a reader can paste, assembled — not invented. Uniqueness is a property of
+// the document, and the server only sees the captured subtree, so the ONLY thing here that can be wrong
+// is the join: a capture root that is a selector LIST ('.a, .b') read as '.a' OR '.b > path'.
+describe('dom_selector (capture root + nth-child path, :is()-scoped)', () => {
+  const withSelector = (selector: string) => ({ ...okDomSnapshot, selector });
+
+  it('emits root + path on pairs, candidates and unmatched_dom; a comma-carrying root stays one scope', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+    const run = harness({ getNodesRaw });
+    // A third dom element the same size as the button, one index further out: the Button instance now has
+    // a runner-up 3.75 behind (45 vs 41.25) — inside AMBIGUOUS_MARGIN — so the row carries candidates[].
+    // Without it this fixture has no ambiguity at all and the candidates arm below would quantify over an
+    // empty array, i.e. pass whether or not the tool ever addresses a candidate.
+    const twoWay = { ...withSelector('.a, .b'), children: [...okDomSnapshot.children,
+      { kind: 'element' as const, tag: 'div', path: '> :nth-child(3)', rect: { x: 0, y: 32, w: 300, h: 40 } }] };
+    const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: twoWay });
+    const out = JSON.parse(res.content[0].text);
+    const titlePair = out.pairs.find((p: any) => p.node_id === '1:2');
+    // NOT '.a, .b > :nth-child(1)', which parses as '.a' OR '.b > :nth-child(1)' and silently resolves
+    // to the capture root itself.
+    expect(titlePair.dom_selector).toBe(':is(.a, .b) > :nth-child(1)');
+    const btn = out.pairs.find((p: any) => p.node_id === COMPOUND_ID);
+    expect(btn.ambiguous).toBe(true);
+    expect(btn.candidates.map((c: any) => c.dom_path)).toEqual(['> :nth-child(2)', '> :nth-child(3)']); // PRESENCE
+    expect(btn.candidates.map((c: any) => c.dom_selector))
+      .toEqual([':is(.a, .b) > :nth-child(2)', ':is(.a, .b) > :nth-child(3)']);
+  });
+
+  it('the guards: nothing to scope, or nothing to scope it to, yields NO address rather than a bad one', () => {
+    // Measured in Chrome: dropping the path guard emits ':is(.a) ' which is 1 match - the capture ROOT
+    // itself, i.e. a wrong address answering status ok. `path` is optional in the snapshot schema, so
+    // this is reachable input, not a hypothetical.
+    expect(domSelector(undefined, '> :nth-child(1)')).toBeUndefined();
+    expect(domSelector('', '> :nth-child(1)')).toBeUndefined();
+    expect(domSelector('.a', '')).toBeUndefined();
+    expect(domSelector('.a', '> :nth-child(1)')).toBe(':is(.a) > :nth-child(1)');
+    // The trade :is() makes, recorded rather than discovered later: it is a FORGIVING selector list, so
+    // a syntactically bad root stops throwing and silently matches nothing - unreachable from a snapshot
+    // the extractor produced (it refuses a root that does not match exactly one element), and the price
+    // of closing the real defect, a comma-carrying root silently resolving to the wrong element.
+    expect(domSelector('.a::before', '> :nth-child(1)')).toBe(':is(.a::before) > :nth-child(1)');
+  });
+
+  it('no root selector in the snapshot -> NO dom_selector field (an address is never synthesized)', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot }); // no .selector
+    const out = JSON.parse(res.content[0].text);
+    expect(out.pairs.length).toBe(2);   // an empty pairs array satisfies both `every`s below
+    expect(out.pairs.every((p: any) => !('dom_selector' in p))).toBe(true);
+    expect(out.pairs.every((p: any) => typeof p.dom_path === 'string')).toBe(true); // dom_path still there
+  });
+
+  it('unmatched_dom rows are pasteable too — that is the list a mis-pair is retargeted from', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '2:1': { document: nestedDoc } } }));
+    const run = harness({ getNodesRaw });
+    const snap = { ...nestedDomSnapshot, selector: 'main.app',
+      children: [...nestedDomSnapshot.children, { kind: 'element' as const, tag: 'footer', path: '> :nth-child(2)', rect: { x: 0, y: 900, w: 100, h: 20 } }] };
+    const res = await run({ file: 'abc', frame_node_id: '2-1', dom_snapshot: snap });
+    const out = JSON.parse(res.content[0].text);
+    expect(out.unmatched_dom).toContainEqual({ dom_path: '> :nth-child(2)', tag: 'footer', rect: { w: 100, h: 20 }, dom_selector: ':is(main.app) > :nth-child(2)' });
+  });
+});
+
+// A withheld subtree is in NEITHER unmatched list on purpose: an unmatched row asserts "no counterpart
+// here", and we did not look. But then it was in no COUNT either, and a summary reading
+// {paired: N, unmatched_figma: 0, unmatched_dom: 0} over a frame where whole nodes were never judged is
+// a claim of complete coverage. This locks the count, and locks that it is ABSENT rather than 0.
+describe('summary.children_skipped (the withheld subtrees are at least countable)', () => {
+  const kidF = (id: string, x: number, y: number) =>
+    ({ id, name: id, type: 'FRAME', absoluteBoundingBox: { x, y, width: 50, height: 50 } });
+  const coinDoc = {
+    id: '3:1', name: 'coin', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 },
+    children: [
+      { id: '3:2', name: 'A', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 50 },
+        children: [kidF('3:3', 0, 0), kidF('3:4', 50, 0)] },
+      { id: '3:5', name: 'B', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 50, width: 100, height: 50 },
+        children: [kidF('3:6', 0, 50), kidF('3:7', 50, 50)] },
+    ],
+  } as unknown as RawSceneNode;
+  const kidD = (path: string, x: number, y: number) =>
+    ({ kind: 'element' as const, tag: 'div', path, rect: { x, y, w: 50, h: 50 } });
+  const coinSnap = {
+    schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok' as const, innerWidth: 100,
+    rect: { x: 0, y: 0, w: 100, h: 100 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
+    scroll: { top: 0, left: 0 },
+    children: [
+      { kind: 'element' as const, tag: 'section', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 100, h: 50 },
+        children: [kidD('> :nth-child(1) > :nth-child(1)', 0, 0), kidD('> :nth-child(1) > :nth-child(2)', 50, 0)] },
+      { kind: 'element' as const, tag: 'div', path: '> :nth-child(2)', rect: { x: 0, y: 50, w: 100, h: 50 },
+        children: [kidD('> :nth-child(2) > :nth-child(1)', 0, 50), kidD('> :nth-child(2) > :nth-child(2)', 50, 50)] },
+    ],
+  };
+
+  it('counts the pairs whose subtree it withheld, and omits the key entirely when it withheld none', async () => {
+    const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '3:1': { document: coinDoc } } })) });
+    const res = await run({ file: 'abc', frame_node_id: '3-1', dom_snapshot: coinSnap });
+    const out = JSON.parse(res.content[0].text);
+    const withheld = out.pairs.filter((p: any) => p.children_skipped);
+    expect(withheld.length).toBeGreaterThan(0);              // PRESENCE: the count below is not a count of nothing
+    expect(out.summary.children_skipped).toBe(withheld.length);
+    // and this is why it had to exist: the withheld nodes are on neither honest-null list, so without
+    // the count the summary reads as full coverage.
+    expect(out.summary.unmatched_figma).toBe(0);
+    expect(out.summary.unmatched_dom).toBe(0);
+
+    const run2 = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: doc } } })) });
+    const clean = JSON.parse((await run2({ file: 'abc', frame_node_id: '1-1', dom_snapshot: okDomSnapshot })).content[0].text);
+    expect(clean.pairs.every((p: any) => !p.children_skipped)).toBe(true);
+    expect('children_skipped' in clean.summary).toBe(false);  // absent, not 0 - same shape as depth_truncated
   });
 });

@@ -10,27 +10,46 @@
       "node_id": "12:341",
       "name": "title",
       "type": "TEXT",
-      "dom_path": "1",
+      "dom_path": "> :nth-child(1)",
       "confidence": "high",
       "signals": [
         "text-exact",
         "size",
         "order"
       ],
+      "score": 100,
+      "figma_rect": {
+        "w": 288,
+        "h": 24
+      },
+      "dom_rect": {
+        "w": 288,
+        "h": 24
+      },
+      "dom_tag": "h3",
       "figma_text": "Product card",
-      "dom_text": "Product card"
+      "dom_text": "Product card",
+      "dom_selector": ":is(.card) > :nth-child(1)"
     }
   ],
   "unmatched_figma": [
     {
       "node_id": "12:344",
       "name": "price",
-      "reason": "no DOM candidate"
+      "reason": "no DOM candidate",
+      "rect": {
+        "w": 288,
+        "h": 20
+      }
     },
     {
       "node_id": "12:350",
       "name": "list",
-      "reason": "no DOM candidate"
+      "reason": "no DOM candidate",
+      "rect": {
+        "w": 288,
+        "h": 304
+      }
     }
   ],
   "unmatched_dom": [],

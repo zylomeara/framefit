@@ -1364,7 +1364,7 @@ const MARKED_QUOTES: Record<string, number> = {
  * more; there is no reason for this one to be looser than the marked count beside it.
  */
 const CANDIDATE_COUNT: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 48,
+  'docs/agents/design-qa-skill.md': 49, // 48 -> 49: the staleness clause on dom_selector quotes status: "ok"
   'docs/coverage.md': 6,
 };
 
