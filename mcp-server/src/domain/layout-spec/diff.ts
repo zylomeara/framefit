@@ -440,11 +440,23 @@ const GUTTER_RESIDUAL_MAX = 0.5;
 // root that spans the layout viewport, lands in 🟰 instead of ❌. It buys no green -- 🟰 keeps
 // verification.complete false and prints both numbers -- but it is coverage, and it is the price of
 // not inventing a separation the capture cannot support.
+// WHEN IT DOES NOT DEMOTE, IT STILL KNOWS SOMETHING. A shortfall that is not the gutter keeps its
+// fail, its delta and its edit address -- but part of that delta IS the gutter, and this is the one
+// row where the differ has computed exactly how much. It said so in the rendered note while the
+// fix_plan entry built from the same row prescribed a bare "edit the layout rule, not px" over pixels
+// it had just accounted for. fix_plan is the machine-facing surface; the caveat travels on the row so
+// buildFixPlan copies it verbatim, the same way the sibling rows carry theirs. Guarded (`?? `) rather
+// than overwritten: crossGutterShare comes through here too and notePageGutter may have spoken first.
 function applyPageGutterDemote(row: DiffRow, gutter: { px: number; note: string } | undefined): DiffRow {
   if (gutter === undefined || row.status !== 'fail') return row;
   if (typeof row.figma !== 'number' || typeof row.dom !== 'number') return row;
   const short = row.figma - row.dom;               // the gutter only ever makes the DOM side SHORT
-  if (Math.abs(short - gutter.px) >= GUTTER_RESIDUAL_MAX) return row;
+  if (Math.abs(short - gutter.px) >= GUTTER_RESIDUAL_MAX) {
+    return short <= 0 ? row : { ...row,
+      caveat: row.caveat ?? `${round1(short - gutter.px)}px of this delta is layout; the other ${gutter.px}px is a page scrollbar gutter`,
+      note: [row.note, `of which ${gutter.px}px is the page scrollbar gutter — the remaining `
+        + `${round1(short - gutter.px)}px is not explained by it`].filter(Boolean).join('; ') };
+  }
   return { ...stripSrc(row), status: 'demoted', note: [row.note, gutter.note].filter(Boolean).join('; ') };
 }
 

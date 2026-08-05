@@ -255,6 +255,30 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     for (const r of both) expect(r).toMatchObject({ status: 'demoted', figma: 360, dom: 349, delta: 11 });
   });
 
+  it('RED: centred by DESIGN but not in the DOM keeps its fail -- the proof is two-sided', () => {
+    // The mirror of the row above, and the half that had no fixture. The Figma side IS centred, the
+    // DOM side is NOT, and the offset delta is exactly half the gutter anyway. A predicate that
+    // proved centring on the Figma side alone would demote a real defect whose number happens to
+    // coincide -- measured: dropping the DOM-side test from crossGutterShare left the whole suite
+    // green while this case turned into a demote, losing its fail, its channel and its caveat. It is
+    // the same coincidence the span gate refuses one level up.
+    //
+    // Designed: root 1920, child 1200 centred at 360 (leading 360 == trailing 360).
+    // Rendered:  root 1909 (gutter 11), child at x 354.5 but 1190 wide -- leading 354.5, trailing
+    // 364.5, not centred. The 5.5 is real: the child is 10px narrower than it should be.
+    const offCentre = [kid(360, 1200, 'hero'), kid(360, 1200, 'shelf')];
+    const offs = diffPair(spec(1920, 'col', offCentre.map((k) => k.fig)),
+      shelfDom({ children: offCentre.map((k) => ({ ...k.dom, rect: { x: 354.5, y: 0, w: 1190, h: 80 } })) }),
+      { tolerancePx: 1, frameWidth: 1920 }).filter((r) => r.prop.startsWith('offset-cross'));
+    expect(offs.length).toBeGreaterThan(0);
+    for (const r of offs) {
+      expect(r.status, 'a DOM that is not centred must not borrow the centred share').toBe('fail');
+      expect(r.delta).toBe(5.5);
+      expect(r.srcChannel, 'and it keeps the address of the edit').toMatchObject({ editKind: 'layout' });
+      expect(r.caveat, 'with the pointer, so the gutter is checked before editing').toContain('page scrollbar gutter');
+    }
+  });
+
   it('RED: a cross offset that is not provably centred keeps its fail, its delta and its address', () => {
     // Same page, same gutter, the children NOT centred: measured trailing-anchored offsets are 709
     // against a designed 720 -- a loss of the WHOLE gutter, twice the centred share, through an
