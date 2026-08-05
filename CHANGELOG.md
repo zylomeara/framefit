@@ -3,6 +3,63 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.14.0
+
+`suggest_pairs` used to hand back a row you could not act on. This release makes the row decidable
+and stops it inventing pairs under an unresolved parent. Nothing was removed, but one behaviour
+changed: you will get fewer proposals on container-heavy frames, and that is the point.
+
+### Changed
+
+**A pair whose identity is unresolved no longer gets its subtree matched.**
+
+When the winning candidate's lead over the runner-up falls inside the ambiguity band, the pair is a
+coin flip, and children matched underneath it inherit that coin flip. Measured against a real page,
+one such commit manufactured four further wrong proposals by recursing a design footer into the
+cards of an unrelated content grid. Those children are no longer proposed. The pair carries
+`children_skipped`, and the count of such pairs appears in the summary.
+
+A withheld subtree is deliberately in NEITHER `unmatched_figma` nor `unmatched_dom`: those lists
+assert "no counterpart here", and we did not look. Confirm or retarget the pair, then call again
+rooted on the element you confirmed. The descent still happens when text on both sides below could
+resolve the parent, so a pair with a real text anchor under it is unaffected.
+
+**The tool description changed, so reconnect the client** to see it. It previously told you to paste
+the proposed address into `compare_node_to_dom`; that tool takes a node id and a snapshot or a
+snapshot ref, and has no selector input at all.
+
+### Added
+
+**Every proposal ships the numbers it was ranked by.** `score`, `margin` over the runner-up,
+`figma_rect`, `dom_rect` and `dom_tag`. An exact text match is worth +100 of a roughly 145-point
+scale, so on a frame made of containers no proposal can pass 46 and every row reads `low`: that is
+a report of absent text, not of bad geometry, and the score is how you tell. The two rects are how
+you reject a wrong proposal without opening a browser. `unmatched_figma` and `unmatched_dom` rows
+carry rects too.
+
+**A pasteable address: `dom_selector`.** The capture-root selector, which the extractor already
+refused to accept unless it matched exactly one element, scoped over the nth-child path. Use it as
+the extractor's root selector to re-capture that one element. It is absent when the snapshot carries
+no root selector - an address is never synthesized - in which case `dom_path` is still there,
+relative to your own root.
+
+It is only as fresh as the capture it came from. An nth-child chain always resolves to something, so
+after a navigation the same address lands on a different element, the extractor answers `ok`, and
+the comparison reports two unrelated elements as a design defect. Check `dom_rect` against what you
+are about to compare, or re-capture.
+
+**The runner-up carries the winner's identity.** Each entry of `candidates[]` now has `dom_tag` and
+`dom_rect`. Two near-tied candidates print the same rounded `score` and the tie falls to document
+order, so those fields are what actually decide it. A `children_skipped` row carries the list too,
+even when the runner-up was too weak to be called an alternative: if it was decisive enough to
+withdraw a subtree, it is named.
+
+### Unchanged, deliberately
+
+The `confidence` banding. It is not a display field - an internal pass gates on it - and every
+re-banding variant that was built and measured promoted a known-wrong pair. `low` on a
+container-only frame is correct; the receipt above is what makes it readable.
+
 ## 0.13.0
 
 This release closes a set of defects that made the server unsafe or dishonest to run outside the
