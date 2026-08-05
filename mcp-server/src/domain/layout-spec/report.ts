@@ -175,7 +175,18 @@ export function renderReport(input: {
     // profiles: profileScoped rows are excluded from the rowLine loop — they carry ONLY a bare dim
     // with no figma/dom (nothing to show but placeholder dashes); renderProfileSkips below gives them an
     // honest summary form from p.coverage.skipped instead of a noisy "Figma — / DOM —".
-    for (const r of p.rows) if ((r.status !== 'pass' || r.prop === 'unwrapped') && r.profileScoped !== true) lines.push(rowLine(r));
+    //
+    // 'viewport' with a note joins 'unwrapped' as the second pass row that still renders. The viewport
+    // row is a pass BY CONSTRUCTION (the window really is the requested width) and it is the only
+    // place the CSS layout viewport is named — on a page with a classic scrollbar it is what makes the
+    // demoted `size.w` beside it legible instead of contradictory. Filtered out of the markdown, that
+    // explanation reached JSON consumers only, while the reader who gets the rendered report saw a
+    // 🟰 shortfall with nothing to explain it. Gated on the NOTE, not the prop: without a gutter the
+    // row carries none and this stays byte-identical.
+    for (const r of p.rows) {
+      const shown = r.status !== 'pass' || r.prop === 'unwrapped' || (r.prop === 'viewport' && r.note !== undefined);
+      if (shown && r.profileScoped !== true) lines.push(rowLine(r));
+    }
     lines.push(...renderProfileSkips(p));
     if (p.source) {
       const srcLine = renderSourceLine(p.source);
