@@ -881,3 +881,36 @@ describe('buildVerification — blocking priority order', () => {
     expect(md).toContain('more (full list in verification.blocking)'); // the tail is honestly counted
   });
 });
+
+
+// max_depth is capped at 8 by every schema that accepts it, so "raise max_depth" at 8 is an action
+// nobody can carry out: the blocker never clears and verification.complete can never go true on a
+// frame deep enough to hit it. Two sibling branches in this file were already guarded this way -
+// uncheckedToBlocking swaps to add_text_pair, and the enumeration branch stops emitting a blocker at
+// all. This was the last one, and it could not even see the depth: it was the only *ToBlocking that
+// was called without it.
+describe('a blocking item never names an action the caller cannot carry out', () => {
+  const truncatedPair = {
+    node_id: '1:1', selector: '.card',
+    rows: [{ prop: 'children_truncated', status: 'warn' as const, note: 'the tail of children beyond the cap/depth was not checked' }],
+    summary: { pass: 1, fail: 0, warn: 1, skip: 0, info: 0, unchecked: 0, review: 0 },
+  } as unknown as Parameters<typeof buildVerification>[0][number];
+
+  const childrenBlockers = (depthLevels: number) =>
+    (buildVerification([truncatedPair], { depthLevels }).blocking ?? [])
+      .filter((b) => b.kind === 'children_truncated');
+
+  it('below the ceiling it still says raise max_depth, because there it works', () => {
+    const b = childrenBlockers(4);
+    expect(b).toHaveLength(1);                       // PRESENCE: the arm below is not quantifying over nothing
+    expect(b[0].action).toBe('raise_max_depth');
+  });
+
+  it('AT the ceiling it names something executable instead', () => {
+    const b = childrenBlockers(8);
+    expect(b).toHaveLength(1);                       // still blocking - the hole is real, only the advice changed
+    expect(b[0].action).toBe('add_pairs_on_children');
+    expect(b[0].detail).toContain('maximum capture depth');
+    expect(buildVerification([truncatedPair], { depthLevels: 8 }).complete).toBe(false);
+  });
+});
