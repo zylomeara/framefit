@@ -3,6 +3,72 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.15.0
+
+Three measurements this release, each one a case where the tool stopped measuring and explained
+itself with the wrong reason. None of them looked like a defect from inside the code; all three were
+found by running the cycle against a real page and reading what came back.
+
+**Re-run `get_layout_spec` with `include_extractor: true` and reconnect your client.** The extractor
+changed and so did a tool description; an old cached script and an old session both keep the old
+behaviour.
+
+### Changed
+
+**1. A transform that moves nothing no longer disables the geometry gate.**
+
+The gate read the transform as a string: anything other than `none` meant "this box is not where its
+layout puts it", and every geometric row on that pair went unmeasured with the note *wait for the
+animation to finish*.
+
+A computed transform is always a matrix, and an identity matrix puts the box exactly where `none`
+would. Promoting a fixed header with `translateZ(0)` is the ordinary idiom, so on such a page nothing
+geometric was ever measured and the verdict blamed an animation that was not running - an instruction
+nobody could carry out. Measured on a live page: a site header carrying an identity matrix, with no
+transition and no animation, hiding a real 6px height difference against its design frame.
+
+The matrix is now compared to identity in both its 2D and 3D forms. Anything unparseable still gates:
+over-gating costs a measurement, under-gating would report a moved box as a design defect.
+
+**If you have pages with a promoted header or sticky bar, expect rows you have never seen before, and
+some of them may fail.** That is the tool measuring what it previously skipped.
+
+**2. Children excluded for being out of flow are counted, and the advice about them is now correct.**
+
+`position: absolute` and `position: fixed` children are not part of their parent's layout, and the
+extractor excludes them on purpose. It used to drop them without a trace, so a box whose children are
+all out of flow was indistinguishable from a true leaf: the diff reported a child-count mismatch and
+advised capturing deeper, which can never return a child that was never a candidate. Measured live, a
+fixed site header - the entire navigation - disappeared exactly this way.
+
+The snapshot now carries `outOfFlow` on any box that skipped some, absent when none were skipped. The
+`structure_mismatch` note says how many there were, that a deeper capture will not reveal them, and
+what does work: pair such an element directly by its own selector.
+
+**3. A wrapper that carries layout of its own is no longer unwrapped away. This changes pairings.**
+
+"Has one child" was the entire test for a pass-through wrapper, and such a box was replaced by its
+child before scoring. But a box whose single child is hundreds of pixels narrower than itself is not
+passing anything through - it is centring, and that centring is layout being compared against the
+design.
+
+A single-child box is now a pass-through only when its own box is its child's box, within 1px.
+Measured on a live frame: a design node that spans a page region moved off a 1280x877 inner container
+(score 25.93) and onto the `main` that actually spans it (score 36.19), and the address in the receipt
+became the element a person would have paired by hand.
+
+**Expect different proposals from `suggest_pairs` on pages that centre their content in a wrapper**,
+and a different structural reading in `compare_node_to_dom` where such a wrapper sits between the pair
+root and its content. The pairings get better; they do not stay the same.
+
+### Unchanged, deliberately
+
+The position of a box is still not used for ranking. `scorePair` reads width and height and never x or
+y, and a proposal to break score ties by relative vertical position was built, measured on two real
+pages, and rejected: it is blind in half the contests it would be consulted on, it costs a real pair
+where it interacts with the match floor, and the contest it does fix is already decidable from the
+receipt - the tag and the two rects are on the row.
+
 ## 0.14.0
 
 `suggest_pairs` used to hand back a row you could not act on. This release makes the row decidable
