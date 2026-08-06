@@ -363,6 +363,12 @@ read ❌ as defects:
    descend and do not raise `max_depth`: those children are excluded from this box's layout by
    definition, and no capture depth returns them. Pair such an element directly by its own selector
    — a fixed site header is the ordinary case.
+- a `degraded_stages` entry on the response — an enrichment that did not arrive, with what it cost.
+  Today that is the variables index: the token rows read unresolved rather than verified, the verdict
+  stays incomplete, and the entry carries the ms. It is only fetched when a pair binds a colour to a
+  variable, so its absence on a geometry-only compare means *not needed*, not *failed*. If the detail
+  starts with `cached:` the failure is being replayed from an earlier attempt — this call did not wait
+  and the next one will not retry; `get_variables` with a larger `timeout_ms` is what gets past it.
 - a `passes_condensed` row among a pair's rows — bulk-pass rows were folded for the response
   budget: individual pass axes are NOT in rows, take the count from `summary.pass` (signal rows
   fail/warn/info/review/unchecked and meta style_anchor/unwrapped are always complete).

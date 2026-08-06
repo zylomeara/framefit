@@ -257,7 +257,14 @@ export function renderReport(input: {
   const vBlock = renderVerification(input.verification);
   if (vBlock.length) lines.push('', ...vBlock);
   for (const d of input.degradedStages ?? []) {
-    lines.push('', `ℹ️ ${d.stage}: not resolved after ${Math.round(d.ms / 1000)}s (${d.reason}: ${d.detail}) — that wait is inside this call's duration, and the rows it feeds read as unresolved rather than verified`);
+    // A REPLAYED failure cost this call nothing: the negative cache answered from an earlier attempt,
+    // so ms is ~0 and the detail carries the `cached:` prefix (a contract with the caching adapter).
+    // Printing "that wait is inside this call's duration" there was plainly false, and it buried the
+    // one fact a reader can act on — the failure is remembered, so the next call will not retry it
+    // either, and only a larger explicit timeout gets past the marker.
+    lines.push('', d.detail.startsWith('cached:')
+      ? `ℹ️ ${d.stage}: not resolved (${d.reason}: ${d.detail}) — remembered from an earlier attempt, so this call did not wait for it and the next one will not retry it either; the rows it feeds read as unresolved rather than verified`
+      : `ℹ️ ${d.stage}: not resolved after ${Math.round(d.ms / 1000)}s (${d.reason}: ${d.detail}) — that wait is inside this call's duration, and the rows it feeds read as unresolved rather than verified`);
   }
   lines.push('', `⚠️ NOT covered by this tool (verify visually): ${NOT_COVERED_BY_TOOL.join(', ')}`);
   lines.push('ℹ️ icons: size/position are measured geometrically, the diff does not check glyph/shape — verify visually or get_screenshot focus-crop');

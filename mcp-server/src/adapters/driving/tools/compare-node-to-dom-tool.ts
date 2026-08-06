@@ -258,6 +258,11 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
       'offsets, typography, colors, component identity (warn-only). Returns machine-readable rows ' +
       '{prop, figma, dom, delta, status} per pair + a ready "Verified against Figma" markdown block. ' +
       'Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). ' +
+      'The variables index is fetched only when a pair binds a colour to a variable - a call with no bound ' +
+      'colour never waits on it. When it IS needed and does not arrive, degraded_stages says so with the ms ' +
+      'it cost: the token rows then read unresolved rather than verified, the verdict stays incomplete, and a ' +
+      'failure is remembered per file for a few minutes - so a later call does not re-pay the wait and does ' +
+      'not retry it either. get_variables with a larger timeout_ms is what gets past that. ' +
       'Token rows with status `review` carry `figma`/`dom` token names - judge them: return **same token** ' +
       '(-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote ' +
       'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
@@ -322,16 +327,32 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // 90 of a 124-second call spent in this one endpoint, with the reason on stderr only, which
         // an MCP caller does not read - so the caller cannot tell waiting from hanging. Same shape as
         // get_design_context's degraded_stages, plus the ms, because the ms IS the missing fact.
+        // Demand gate. The index has exactly two readers, and both refuse to touch it unless a paint
+        // is bound to a variable: resolveColorToken returns on a missing boundVariables.color BEFORE
+        // reading it, and needsModes is already gated on hasBoundPaintColor. So a call whose pairs
+        // bind no colour reads the index never — and fetching it anyway costs the caller the whole
+        // variables budget, up to 90s on stdio where no fallback exists, for an enrichment nothing
+        // consumes. Deliberately NO degraded_stages entry on the skip path: nothing degraded, and the
+        // payload is byte-identical to a successful fetch, which is the honest report of "not needed".
+        // ponytail: the predicate mirrors today's two consumers. A future consumer that reads
+        // variableIndex WITHOUT a bound paint would make it under-trigger in silence — the upgrade
+        // path then is a lazily memoised index, not a wider predicate.
+        const anyPairBindsColor = pairIds.some((pid) => {
+          const doc = res.nodes[pid]?.document;
+          return doc !== undefined && hasBoundPaintColor(doc);
+        });
         const variablesStartedAt = Date.now();
-        try {
-          variableIndex = buildVariableIndex(await variablesApi.getVariablesLocal(parsed.value));
-        } catch (err) {
-          if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
-          deps.logger.info({ err: (err as Error).message }, 'compare.variables_unavailable');
-          degradedStages.push({
-            stage: 'variables', reason: 'error', ms: Date.now() - variablesStartedAt,
-            detail: (err as Error).message,
-          });
+        if (anyPairBindsColor) {
+          try {
+            variableIndex = buildVariableIndex(await variablesApi.getVariablesLocal(parsed.value));
+          } catch (err) {
+            if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
+            deps.logger.info({ err: (err as Error).message }, 'compare.variables_unavailable');
+            degradedStages.push({
+              stage: 'variables', reason: 'error', ms: Date.now() - variablesStartedAt,
+              detail: (err as Error).message,
+            });
+          }
         }
 
         // Build the single-tenant env library graph before ANY variableGraph read below — the

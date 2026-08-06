@@ -2484,18 +2484,26 @@ describe('compare_node_to_dom spacing_audit wiring', () => {
 // single compare.done observability log at the end of the handler. Part of the giant-file
 // latency-polish behavior for large-file fetches.
 describe('compare_node_to_dom variables cap 20s (MT-only) + compare.done', () => {
+  // These two pin WHICH api instance the variables fetch is routed through. The index is only
+  // fetched when some pair binds a colour to a variable, so the fixture has to bind one - with the
+  // plain `card` the fetch never happens and both tests would assert about a call nobody makes.
+  const cardBoundCap: RawSceneNode = {
+    id: '1:1', name: 'Card', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 },
+    fills: [{ type: 'SOLID', visible: true, color: { r: 0, g: 0, b: 1, a: 1 },
+      boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:cap0/1:1' } } }],
+  };
   // Note (minor): the lock is NOT positional — buildApi TAGS instances (a capped/uncapped ROUTER
   // keyed on the capMs argument) and binds each consumer to its own instance, instead of asserting
   // "the Nth buildApi call got capMs=20000" (positional, brittle to call-order refactors).
   it('variables cap: graph wired → variables through the buildApi(token, 20000) instance; main fetch — through the UNcapped one', async () => {
-    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: card } } }));
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundCap } } }));
     const uncappedGetVars = vi.fn(async () => emptyVars);
     const cappedGetVars = vi.fn(async () => emptyVars);
     const uncapped = withFrameRaw({ getNodesRaw, getVariablesLocal: uncappedGetVars }) as FigmaApi;
     const capped = { ...uncapped, getVariablesLocal: cappedGetVars } as FigmaApi;
     const buildApi = vi.fn((_t: string, capMs?: number) => (capMs === 20000 ? capped : uncapped));
     const run = harness({}, 40000, { buildApi, variableGraph: { resolve: () => undefined } });
-    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(card) }] });
+    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundCap) }] });
     expect(res.isError).toBeFalsy();
     expect(buildApi.mock.calls.filter((c: unknown[]) => c[1] === 20000).length).toBe(1);
     expect(cappedGetVars).toHaveBeenCalledTimes(1);     // variables went through the capped instance
@@ -2503,11 +2511,11 @@ describe('compare_node_to_dom variables cap 20s (MT-only) + compare.done', () =>
   });
 
   it('variables cap: no graph/snapshot → variables through the main api WITHOUT a cap (single-tenant untouched)', async () => {
-    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: card } } }));
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundCap } } }));
     const getVariablesLocal = vi.fn(async () => emptyVars);
     const buildApi = vi.fn(() => withFrameRaw({ getNodesRaw, getVariablesLocal }) as FigmaApi);
     const run = harness({}, 40000, { buildApi }); // extra WITHOUT variableGraph/variableSnapshot
-    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(card) }] });
+    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundCap) }] });
     expect(res.isError).toBeFalsy();
     expect(buildApi.mock.calls.some((c: unknown[]) => c[1] === 20000)).toBe(false); // NOT a single capped call
     expect(getVariablesLocal).toHaveBeenCalledTimes(1); // variables still went — through the single (uncapped) instance
@@ -2611,5 +2619,42 @@ describe('style-anchor v5 through the handler (integration lock) + v4 hard-rejec
     const rows = JSON.parse(res.content[0].text).pairs[0].rows;
     expect(rows).toHaveLength(1);
     expect(rows[0].prop).toBe('snapshot_schema');
+  });
+});
+
+// The variables index is fetched only when some pair binds a colour to a variable. That is a latency
+// change on the stdio path - where no fallback exists, the fetch keeps the full request budget, and a
+// large file spends up to 90s on an enrichment nothing in the call consumes. It is also a change that
+// CAN make a row read differently if the gate ever under-triggers, so the three assertions below run
+// in this order on purpose: the skip case alone quantifies over the situation where nothing could
+// change, and would pass just as happily if the gate had broken the other two.
+describe('the variables index is fetched on demand, not on principle', () => {
+  const divergentDom = { ...domFor(cardBoundFill), styles: { backgroundColor: '#ff0000' } };
+
+  it('1. a bound colour still fetches, still resolves, and still calls a wrong colour wrong', async () => {
+    const getVariablesLocal = vi.fn(async () => varsBoundFill);
+    const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } })), getVariablesLocal });
+    const out = JSON.parse((await run({ file: 'abc', pairs: [{ node_id: '1:1', dom: divergentDom }] })).content[0].text);
+    expect(getVariablesLocal).toHaveBeenCalledTimes(1);
+    expect(out.pairs[0].rows.find((r: any) => r.prop === 'fill')?.status).toBe('fail');
+    expect(out.summary.fail).toBeGreaterThan(0);
+  });
+
+  it('2. and when that fetch times out the call is degraded, NOT complete', async () => {
+    const getVariablesLocal = vi.fn(async () => { throw new FigmaApiError('network', 0, 'Figma request timed out after 90000ms'); });
+    const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } })), getVariablesLocal });
+    const out = JSON.parse((await run({ file: 'abc', pairs: [{ node_id: '1:1', dom: divergentDom }] })).content[0].text);
+    expect(getVariablesLocal).toHaveBeenCalledTimes(1);
+    expect(out.verification.complete).toBe(false);
+    expect(out.degraded_stages?.[0]?.stage).toBe('variables');
+  });
+
+  it('3. only THEN: a pair that binds no colour does not pay for the index at all', async () => {
+    const getVariablesLocal = vi.fn(async () => emptyVars);
+    const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: card } } })), getVariablesLocal });
+    const out = JSON.parse((await run({ file: 'abc', pairs: [{ node_id: '1:1', dom: domFor(card) }] })).content[0].text);
+    expect(getVariablesLocal).not.toHaveBeenCalled();
+    expect(out.degraded_stages).toBeUndefined();  // nothing degraded - the payload is the successful shape
+    expect(out.pairs[0].rows.length).toBeGreaterThan(0);
   });
 });
