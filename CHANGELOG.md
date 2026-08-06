@@ -3,6 +3,52 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.16.0
+
+A latency release, and a correction. `compare_node_to_dom` used to fetch your file's variables on
+every call; it now fetches them only when a pair actually needs them. Nothing about a verdict
+changes, and no capture has to be re-taken - but the tool description changed, so reconnect your
+client to see it.
+
+### Changed
+
+**The variables index is fetched on demand.**
+
+Two things read that index, and neither touches it unless a paint is bound to a variable. A compare
+whose pairs bind no colour never read it - and waited for it anyway, on the single-tenant and stdio
+paths for as long as the Figma variables endpoint took, which on a large file is the dominant cost of
+the call.
+
+Such a call now skips the fetch. The response is byte-identical to one where the fetch succeeded:
+there is no `degraded_stages` entry, because nothing degraded. If any pair does bind a colour, nothing
+is faster - the index is still needed, still fetched, and still waited for.
+
+**A remembered failure is no longer reported as a wait you just paid.**
+
+When the variables endpoint times out, the failure is cached for a few minutes per file, so the next
+call answers immediately instead of blocking again. The report line printed for that cached answer
+still said the wait was inside the current call. It now says what is true and what to do: the failure
+is remembered, this call did not wait for it, the next one will not retry it, and `get_variables` with
+a larger `timeout_ms` is what gets past the marker.
+
+### Added
+
+**`degraded_stages` is documented where it is read.**
+
+It was in the response and in no guidance. Both the tool description and the agent skill now say what
+it means: an enrichment that did not arrive, with the milliseconds it cost, the rows it feeds reading
+unresolved rather than verified, and the verdict staying incomplete. Its *absence* on a compare with
+no bound colour means the stage was not needed, not that it silently passed.
+
+### Considered and not done
+
+Capping the variables request on the stdio path, which would have cut the worst case by about seventy
+seconds. It was rejected on measurement: because a cached timeout can only be bypassed by a request
+with a larger budget than the cap that produced it, a cap below a file's real latency is permanent
+rather than transient. On a file whose variables endpoint answers a little slower than the cap, that
+would permanently remove the tool's ability to tell a wrong colour from an unconfirmed one - a live
+divergence would stop being reported as a failure at all. Seventy seconds is not worth that.
+
 ## 0.15.0
 
 Three measurements this release, each one a case where the tool stopped measuring and explained
