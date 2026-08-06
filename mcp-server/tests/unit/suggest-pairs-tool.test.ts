@@ -517,3 +517,45 @@ describe('summary.children_skipped (the withheld subtrees are at least countable
     expect('children_skipped' in clean.summary).toBe(false);  // absent, not 0 - same shape as depth_truncated
   });
 });
+
+
+// The handler passes the captured root's real rect as matchOpts.rootDom. Delete that one field and the
+// matcher falls back to a "tallest child" proxy for the DOM denominator while the Figma side keeps the
+// true frame - the two sides of every relative-size comparison normalised by different numbers. On a
+// real capture that flips a level-0 winner onto the wrong element and, because the wrong winner has no
+// children, collapses the descent from 21 proposals to 9.
+// It was guarded only by accident: deleting the field turned exactly ONE test of 3040 red, and that one
+// is about selector pasteability - its message says nothing about normalisation, so the natural repair
+// is to update the expected row, which re-opens the defect and consumes the accidental lock in the same
+// commit. This is the deliberate lock.
+describe('the captured root normalises the DOM side (matchOpts.rootDom)', () => {
+  const tallDoc = {
+    id: '4:1', name: 'page', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 1000, height: 1000 },
+    children: [
+      { id: '4:2', name: 'head', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 1000, height: 70 } },
+      { id: '4:3', name: 'foot', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 920, width: 1000, height: 80 } },
+    ],
+  } as unknown as RawSceneNode;
+  // The property that makes the two denominators disagree: the root is 1000 tall and its tallest child
+  // is 80, so the proxy is 12.5x off. Widths are equal everywhere, so only the height axis carries it.
+  const tallSnap = {
+    schema: DOM_SNAPSHOT_SCHEMA_VERSION, status: 'ok' as const, innerWidth: 1000,
+    rect: { x: 0, y: 0, w: 1000, h: 1000 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
+    scroll: { top: 0, left: 0 },
+    children: [
+      { kind: 'element' as const, tag: 'div', path: '> :nth-child(1)', rect: { x: 0, y: 0, w: 1000, h: 70 } },
+      { kind: 'element' as const, tag: 'footer', path: '> :nth-child(2)', rect: { x: 0, y: 920, w: 1000, h: 80 } },
+    ],
+  };
+
+  it('a root far taller than its tallest child still pairs on TRUE relative size', async () => {
+    const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '4:1': { document: tallDoc } } })) });
+    const out = JSON.parse((await run({ file: 'abc', frame_node_id: '4-1', dom_snapshot: tallSnap })).content[0].text);
+    // PRESENCE first: under the proxy both nodes fall below MATCH_FLOOR and become honest-null, and
+    // every `find` below would then return undefined and assert nothing.
+    expect(out.pairs).toHaveLength(2);
+    expect(out.summary.unmatched_figma).toBe(0);
+    expect(out.pairs.find((p: any) => p.node_id === '4:3')?.dom_path).toBe('> :nth-child(2)'); // foot -> <footer>
+    expect(out.pairs.find((p: any) => p.node_id === '4:2')?.dom_path).toBe('> :nth-child(1)'); // head -> the top div
+  });
+});
