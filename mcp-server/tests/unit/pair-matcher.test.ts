@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { matchPairs, matchChildrenOneLevel, figText, domText, figWorthy, domWorthy, figUnwrap, collectFigSnippets, collectDomTextUnits, figContentUnknown, domContentUnknown, buildNestedAnchorMap, detectChildrenReorder } from '../../src/domain/layout-spec/pair-matcher.js';
+import { matchPairs, matchChildrenOneLevel, figText, domText, figWorthy, domWorthy, figUnwrap, domUnwrap, collectFigSnippets, collectDomTextUnits, figContentUnknown, domContentUnknown, buildNestedAnchorMap, detectChildrenReorder } from '../../src/domain/layout-spec/pair-matcher.js';
 import type { SpecChild, DomChild } from '../../src/domain/layout-spec/types.js';
 import { SNIPPET_CAP } from '../../src/domain/layout-spec/types.js';
 
@@ -16,6 +16,41 @@ describe('worthiness + unwrap + text', () => {
     expect(figWorthy(fc('w','FRAME',[0,0,10,10],{ children:[fc('only','TEXT',[0,0,10,10],{ textSnippet:'X' })] }))).toBe(false);
     expect(figWorthy(fc('c','FRAME',[0,0,10,10],{ children:[fc('a','TEXT',[0,0,5,5],{textSnippet:'A'}),fc('b','TEXT',[5,0,5,5],{textSnippet:'B'})] }))).toBe(true);
   });
+  // "Single child" was the whole test for a pass-through wrapper, so a box that centres or pads its
+  // one child counted as one and got replaced by it. Measured live: a <main> 1909x973 whose only
+  // child was a 1280x877 container - the unwrap handed the matcher the container, and with it a
+  // worse score and an address the design never meant.
+  it('a single-child box that ADDS geometry is worthy - only a same-box wrapper passes through', () => {
+    const kidF = fc('kid', 'FRAME', [315, 48, 1280, 877], { children: [fc('a', 'TEXT', [0, 0, 10, 10], { textSnippet: 'A' }), fc('b', 'TEXT', [0, 0, 10, 10], { textSnippet: 'B' })] });
+    expect(figWorthy(fc('main', 'FRAME', [0, 0, 1909, 973], { children: [kidF] }))).toBe(true);   // centres its child
+    expect(figWorthy(fc('thru', 'FRAME', [0, 0, 1280, 877], { children: [kidF] }))).toBe(false);  // same box = pass-through
+    const kidD = dc('> :nth-child(1) > :nth-child(1)', 'div', [315, 48, 1280, 877], { children: [dc('x', 'span', [0, 0, 5, 5], { text: 'A' }), dc('y', 'span', [0, 0, 5, 5], { text: 'B' })] });
+    expect(domWorthy(dc('> :nth-child(1)', 'main', [0, 0, 1909, 973], { children: [kidD] }))).toBe(true);
+    expect(domWorthy(dc('> :nth-child(1)', 'div', [315, 48, 1280, 877], { children: [kidD] }))).toBe(false);
+  });
+
+  it('and the unwrap stops at it instead of throwing its layout away', () => {
+    const kidD = dc('> :nth-child(1) > :nth-child(1)', 'div', [315, 48, 1280, 877], { children: [dc('x', 'span', [0, 0, 5, 5], { text: 'A' }), dc('y', 'span', [0, 0, 5, 5], { text: 'B' })] });
+    const centring = dc('> :nth-child(1)', 'main', [0, 0, 1909, 973], { children: [kidD] });
+    expect(domUnwrap(centring).tag).toBe('main');          // kept - it is 629px wider than its child
+    const passthrough = dc('> :nth-child(1)', 'div', [315, 48, 1280, 877], { children: [kidD] });
+    expect(domUnwrap(passthrough)).toBe(kidD);             // fallen through - same box, adds nothing
+  });
+
+  it('END TO END, the live shape: the design node commits onto the box that spans it, not onto its inner container', () => {
+    const par = { w: 1920, h: 1108 };
+    const inner = dc('> :nth-child(2) > :nth-child(1)', 'div', [315, 48, 1280, 877], { children: [dc('a', 'span', [0, 0, 5, 5], { text: 'A' }), dc('b', 'span', [0, 0, 5, 5], { text: 'B' })] });
+    const r = matchPairs(
+      [fc('banner & body', 'FRAME', [0, 0, 1920, 960], { children: [fc('h', 'FRAME', [0, 0, 1920, 76]), fc('p', 'FRAME', [0, 76, 1920, 852])] })],
+      [dc('> :nth-child(1)', 'div', [0, 0, 1909, 70]), dc('> :nth-child(2)', 'main', [0, 70, 1909, 973], { children: [inner] })],
+      { rootFig: par, rootDom: { w: 1909, h: 1120 } });
+    const p = r.pairs.find((x) => x.node_id === 'banner & body');
+    expect(p?.dom_tag).toBe('main');
+    expect(p?.dom_rect).toEqual({ w: 1909, h: 973 });
+    expect(p?.dom_path).toBe('> :nth-child(2)');   // the address a reader would retarget from
+    expect(p?.score).toBeGreaterThan(35);          // the inner container scored 25.93 on the live data
+  });
+
   it('figUnwrap falls through a single-child wrapper to the worthy descendant (C1)', () => {
     const inner = fc('col','FRAME',[0,0,10,10],{ children:[fc('a','TEXT',[0,0,5,5],{textSnippet:'A'}),fc('b','TEXT',[5,0,5,5],{textSnippet:'B'})] });
     const wrapper = fc('card','FRAME',[0,0,10,10],{ children:[inner] });

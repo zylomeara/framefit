@@ -122,15 +122,31 @@ export function domText(c: DomChild): string | undefined {
   return texts.length === 1 ? texts[0].text : undefined;
 }
 
+// A single-child box is a PASS-THROUGH wrapper only when it actually passes its geometry through -
+// when its own box is its child's box. One that centres, pads or otherwise sizes its child carries
+// layout of its own, and unwrapping through it throws that layout away along with the address a
+// reader would retarget from. Measured on a live page: a <main> 1909x973 whose only child was a
+// 1280x877 container scored 36.19 against the design node that spans that region, and the unwrap
+// replaced it with the container, which scored 25.93 - a worse match AND a worse address, from a
+// box the design never meant.
+// 1px, not a tolerance knob: the question is "same box or not", and a wrapper that differs by a
+// fraction of a pixel is the rounding of a capture, not a layout decision.
+const SAME_BOX_PX = 1;
+const passesThrough = (own: { w: number; h: number }, kid: { w: number; h: number }): boolean =>
+  Math.abs(own.w - kid.w) <= SAME_BOX_PX && Math.abs(own.h - kid.h) <= SAME_BOX_PX;
+
 export function figWorthy(c: SpecChild): boolean {
   if (figText(c) !== undefined || c.type === 'INSTANCE') return true;
-  return (c.children?.length ?? 0) !== 1; // a single-child wrapper — not worthy (unwrap falls through it)
+  const kids = c.children ?? [];
+  if (kids.length !== 1) return true;
+  return !passesThrough(c.rect, kids[0].rect); // a single-child wrapper — worthy only if it adds geometry
 }
 export function domWorthy(c: DomChild): boolean {
   if (c.kind === 'text') return false; // text is diffed on the parent element
   if (domText(c) !== undefined) return true;
   const elemKids = (c.children ?? []).filter((k) => k.kind === 'element');
-  return elemKids.length !== 1;
+  if (elemKids.length !== 1) return true;
+  return !passesThrough(c.rect, elemKids[0].rect);
 }
 
 // C1: fall through single-child non-worthy wrappers to the first worthy descendant (otherwise the whole
