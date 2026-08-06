@@ -3,6 +3,7 @@ import { sizeOf } from '../../infrastructure/response-size.js';
 import { residentBytes, withinParseCap } from '../../infrastructure/frame-budget.js';
 import type { FrameHandle } from '../../infrastructure/frame-hydration-store.js';
 import type { Semaphore } from '../../infrastructure/semaphore.js';
+import { isTimeoutMessage } from './figma-rest.js';
 import type { FrameRawResult } from '../../ports/figma-api.js';
 import type { NodeRefMap, RawComment } from '../../domain/types.js';
 import type { FileStructure } from '../../domain/file-structure.js';
@@ -289,7 +290,7 @@ export class CachingFigmaApiAdapter implements FigmaApi {
       // shorter-cap marker can never deny a longer-cap caller. The genuinely-broken-file case still
       // gets cached via any caller's timeout (whatever cap it ran under) or its fast
       // token-independent 4xx/5xx moods.
-      const isTimeout = e instanceof FigmaApiError && e.kind === 'network' && e.message.includes('timed out');
+      const isTimeout = e instanceof FigmaApiError && e.kind === 'network' && isTimeoutMessage(e.message);
       // Eclipse guard (R8-F1): delete-on-success (above) can be raced — a fast success deletes any
       // existing marker, then a SLOW concurrent failure for the SAME key (a stale request that lost
       // the race) lands here and would write a FRESH marker, resurrecting "broken" for a file a

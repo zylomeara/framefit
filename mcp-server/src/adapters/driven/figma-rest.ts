@@ -25,6 +25,16 @@ type NodesResponse = {
   nodes: Record<string, NodeDoc | null>;
 };
 
+// The negative cache in caching-figma-api.ts arms on this phrase and on nothing else: a timeout is
+// the only network failure worth remembering, because it is the one that costs the caller its whole
+// budget. Thrower and matcher both read it from here, so a reword cannot silently disarm the cache -
+// which it could, with the entire suite green, when the phrase was a literal on both sides and
+// hand-copied into eight assertions besides.
+export const TIMEOUT_PHRASE = 'timed out';
+export const timeoutMessage = (ms: number, note = ''): string =>
+  `Figma request ${TIMEOUT_PHRASE} after ${ms}ms${note}`;
+export const isTimeoutMessage = (message: string): boolean => message.includes(TIMEOUT_PHRASE);
+
 export class FigmaRestAdapter implements FigmaApi {
   constructor(
     private readonly token: string,
@@ -341,7 +351,7 @@ export class FigmaRestAdapter implements FigmaApi {
       // Dequeued (or invoked) past the deadline — bail before issuing the fetch so this runs in ~1ms
       // and frees any semaphore slot immediately. 'timed out' + kind 'network' keep every existing
       // timeout classifier matching.
-      throw new FigmaApiError('network', 0, 'Figma request timed out after 0ms (deadline exceeded while queued)');
+      throw new FigmaApiError('network', 0, timeoutMessage(0, ' (deadline exceeded while queued)'));
     }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), effectiveMs);
@@ -391,7 +401,7 @@ export class FigmaRestAdapter implements FigmaApi {
       if ((err as { name?: string }).name === 'AbortError') {
         // Report the cap that actually fired (the deadline-clamped effectiveMs), not the nominal
         // requestTimeoutMs — with no deadline the two are identical.
-        throw new FigmaApiError('network', 0, `Figma request timed out after ${effectiveMs}ms`);
+        throw new FigmaApiError('network', 0, timeoutMessage(effectiveMs));
       }
       const msg = (err as Error).message ?? String(err);
       throw new FigmaApiError('network', 0, `Could not reach Figma API: ${msg}`);

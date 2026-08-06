@@ -5,6 +5,7 @@ import { TtlCache } from '../../src/infrastructure/node-cache.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
+import { timeoutMessage, isTimeoutMessage } from '../../src/adapters/driven/figma-rest.js';
 
 const logger = createLogger({ level: 'silent' });
 afterEach(() => vi.useRealTimers());
@@ -445,5 +446,19 @@ describe('negative variables-error cache', () => {
 
     // The failure must NOT have written a marker — the live success eclipses it as stale evidence.
     expect(caches.variablesErrorCache?.get('F|v1')).toBeNull();
+  });
+});
+
+// The negative cache is what turns a 90-second variables hang into a one-off per file: it arms on a
+// timeout and on nothing else. That armament used to rest on two independent string literals in two
+// files - the adapter built one, the cache matched the other - while the eight assertions in this
+// file threw errors they wrote themselves. So rewording the adapter's message disarmed the cache
+// with the whole suite green. They now read one symbol; this asserts the round trip.
+describe('the phrase the adapter throws is the phrase the negative cache arms on', () => {
+  it('round-trips, and is not a predicate that says yes to everything', () => {
+    expect(isTimeoutMessage(timeoutMessage(20_000))).toBe(true);
+    expect(isTimeoutMessage(timeoutMessage(0, ' (deadline exceeded while queued)'))).toBe(true);
+    expect(isTimeoutMessage('cached: ' + timeoutMessage(20_000))).toBe(true); // the replay path keeps it
+    expect(isTimeoutMessage('Figma API 500 Internal Server Error')).toBe(false); // co-lock: it discriminates
   });
 });
