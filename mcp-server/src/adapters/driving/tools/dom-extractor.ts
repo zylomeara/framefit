@@ -695,6 +695,31 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       if (parsed.kind === 'unknown') model.whole = { unknown: 'repeating' };
       return model;
     };
+  // A gutter can be RESERVED without being painted (scrollbar-gutter: stable, page does not scroll):
+  // innerWidth - clientWidth reads 0 while the page root really lost it, and only the ROOT BOX shows
+  // it. Omitted unless a gutter is DECLARED, and the html margins are subtracted: measured,
+  // html{margin-left:15px} alone reports exactly one bar, and with stable set it reports two - the
+  // both-edges shape. Read-only: nothing is written to the page.
+  const docEl = document.documentElement;
+  const docCs = getComputedStyle(docEl);
+  const docBox = docCs.scrollbarGutter && docCs.scrollbarGutter !== 'auto'
+    ? docEl.getBoundingClientRect() : undefined;
+  const docMl = docBox ? (num(docCs.marginLeft) || 0) : 0;
+  const rawGutter = docBox
+    ? Math.max(0, round1(docEl.clientWidth - docBox.width - docMl - (num(docCs.marginRight) || 0)))
+    : undefined;
+  // ...and how much of it sits on the LEADING edge (both-edges reserves half there). Without this,
+  // "root at half a gutter, full width" is indistinguishable from a box overflowing to the right.
+  const rawLeft = docBox ? Math.max(0, round1(docBox.x - docMl)) : undefined;
+  // A NARROWED html is byte-identical to a reserve. Measured at 1280 with stable declared and no
+  // scroll: html{max-width:1200px} -> 80, html{width:1200px} -> 80, transform:scale(.9) -> 141.5, each
+  // demoting a shortfall that IS a layout rule. No second witness exists (media-query width and
+  // visualViewport are both blind to a reserve, measured), so the reserve is bounded per edge by what
+  // a scrollbar can BE and an over-wide reading is DROPPED, not clamped - the page keeps its fail.
+  // ponytail: 20px prior; measured bars 11 and 15, and both-edges is 15 PER EDGE. Raise on evidence.
+  const gutterOk = rawGutter !== undefined && rawGutter - rawLeft <= 20 && rawLeft <= 20;
+  const reservedGutter = gutterOk ? rawGutter : undefined;
+  const reservedGutterLeft = gutterOk ? rawLeft : undefined;
   const snapshots = selectors.map((selector) => {
     let found;
     try { found = document.querySelectorAll(selector); }
@@ -715,7 +740,10 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       schema: SCHEMA, status: 'ok', selector,
       innerWidth: window.innerWidth,
       // the width CSS laid the page out in: innerWidth includes the page scrollbar, this does not
-      layoutViewportWidth: document.documentElement.clientWidth,
+      layoutViewportWidth: docEl.clientWidth,
+      // ...and this is the part clientWidth does NOT see: a gutter reserved but not painted (above)
+      reservedGutter,
+      reservedGutterLeft,
       rect: rectOf(r),
       borders: { top: num(cs.borderTopWidth) || 0, right: num(cs.borderRightWidth) || 0,
                  bottom: num(cs.borderBottomWidth) || 0, left: num(cs.borderLeftWidth) || 0 },

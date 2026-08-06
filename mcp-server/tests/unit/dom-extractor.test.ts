@@ -1646,3 +1646,152 @@ describe('v5: the style bundle on children', () => {
     expect(c.borderColors.top).toBe('#ff0000');
   });
 });
+
+// ── the page scrollbar gutter that clientWidth cannot see ────────────────────────────────────────
+//
+// `scrollbar-gutter: stable` on a page that does NOT scroll reserves the bar's width and paints
+// nothing, and `documentElement.clientWidth` is the VIEWPORT width -- it does not subtract a reserve.
+// So `innerWidth - clientWidth` reads 0 while the page root really lost the gutter, and diff.ts's
+// demote went silent on exactly that page (live: Figma 1280 / DOM 1269, a hard ❌ prescribing an edit
+// to a working CSS rule). The reserve is visible only on the html BOX, which is what these two fields
+// measure.
+//
+// EVERY NUMBER HERE WAS MEASURED IN A REAL CHROME by toggling one property at a time and restoring
+// it -- on the live page at window 1280 (an 11px `::-webkit-scrollbar`) and on a synthetic page at
+// the 15px native bar, which is where the margin rows come from:
+//
+//     state                          clientWidth  html x  html w   reserved  lead
+//     auto, scrolls                         1269       0    1269      (omitted)
+//     stable, scrolls                       1269       0    1269          0     0
+//     stable, does NOT scroll               1280       0    1269         11     0
+//     both-edges, scrolls                   1269      11    1258         11    11
+//     both-edges, does NOT scroll           1280      11    1258         22    11
+//     html{margin:0 15px}, auto             1280      15    1250      (omitted)
+//     html{margin-left:15px}, stable        1280      15    1250         15     0
+function pageShapeExtractor(page: {
+  clientWidth: number; htmlX: number; htmlW: number;
+  scrollbarGutter?: string; marginLeft?: string; marginRight?: string;
+}): (selectors: string[]) => Promise<any> {
+  const rect = (x: number, y: number, w: number, h: number) => ({ x, y, width: w, height: h, left: x, top: y, right: x + w, bottom: y + h });
+  const base = {
+    display: 'block', position: 'static', transform: 'none',
+    fontFamily: 'X', fontWeight: '400', fontSize: '10px', lineHeight: '12px', letterSpacing: 'normal',
+    color: 'rgb(0, 0, 0)', backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none',
+    borderTopWidth: '0px', borderRightWidth: '0px', borderBottomWidth: '0px', borderLeftWidth: '0px',
+    borderTopColor: 'rgb(0, 0, 0)', borderRightColor: 'rgb(0, 0, 0)',
+    borderBottomColor: 'rgb(0, 0, 0)', borderLeftColor: 'rgb(0, 0, 0)', boxShadow: 'none',
+    paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px',
+    borderTopLeftRadius: '0px', borderTopRightRadius: '0px',
+    borderBottomRightRadius: '0px', borderBottomLeftRadius: '0px', opacity: '1', justifyContent: 'normal',
+    marginLeft: '0px', marginRight: '0px',
+  };
+  const root: any = {
+    nodeType: 1, tagName: 'MAIN', classList: ['root'], dataset: {}, childNodes: [], children: [],
+    getBoundingClientRect: () => rect(page.htmlX, 0, page.htmlW, 720),
+    scrollTop: 0, scrollLeft: 0, clientWidth: page.htmlW, clientHeight: 720, scrollHeight: 720,
+  };
+  const htmlEl: any = {
+    clientWidth: page.clientWidth,
+    getBoundingClientRect: () => rect(page.htmlX, 0, page.htmlW, 720),
+  };
+  const fakeDoc = {
+    querySelectorAll: () => [root],
+    createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0, 0, 1, 1) }),
+    styleSheets: [], fonts: { status: 'loaded' }, documentElement: htmlEl,
+  };
+  const fakeCS = (el: any) => (el === htmlEl
+    ? { ...base, scrollbarGutter: page.scrollbarGutter, marginLeft: page.marginLeft ?? '0px', marginRight: page.marginRight ?? '0px' }
+    : base);
+  return new Function('document', 'window', 'Node', 'getComputedStyle', `return (${EXTRACTOR_JS})`)(
+    fakeDoc, { innerWidth: 1280 }, { TEXT_NODE: 3, ELEMENT_NODE: 1 }, fakeCS,
+  ) as (selectors: string[]) => Promise<any>;
+}
+
+describe('reservedGutter / reservedGutterLeft: the half of the page gutter clientWidth is blind to', () => {
+  const shot = async (page: Parameters<typeof pageShapeExtractor>[0]) =>
+    (await pageShapeExtractor(page)(['main']))[0];
+
+  it('emits both numbers for every state of a page that DECLARES a gutter', async () => {
+    const cases: [string, Parameters<typeof pageShapeExtractor>[0], number, number][] = [
+      ['stable, scrolls', { clientWidth: 1269, htmlX: 0, htmlW: 1269, scrollbarGutter: 'stable' }, 0, 0],
+      ['stable, does NOT scroll', { clientWidth: 1280, htmlX: 0, htmlW: 1269, scrollbarGutter: 'stable' }, 11, 0],
+      ['both-edges, scrolls', { clientWidth: 1269, htmlX: 11, htmlW: 1258, scrollbarGutter: 'stable both-edges' }, 11, 11],
+      ['both-edges, does NOT scroll', { clientWidth: 1280, htmlX: 11, htmlW: 1258, scrollbarGutter: 'stable both-edges' }, 22, 11],
+    ];
+    for (const [state, page, reserved, lead] of cases) {
+      const s = await shot(page);
+      expect(s.reservedGutter, state).toBe(reserved);
+      expect(s.reservedGutterLeft, state).toBe(lead);
+      expect(DomSnapshotSchema.safeParse(s).success, state).toBe(true);
+    }
+  });
+
+  it('emits NEITHER when the page declares no gutter — an html margin is not a bar', async () => {
+    // The whole point of the gate. `html{margin:0 15px}` on a page with overlay scrollbars measures
+    // clientWidth 1280 against an html box of 1250 -- 30px that is margin, nothing else. Ungated,
+    // that is byte-identical to a `both-edges` capture, and this fixture is what a false demote of
+    // 30px on a page with no scrollbar at all would ride in on.
+    const margined = await shot({ clientWidth: 1280, htmlX: 15, htmlW: 1250, scrollbarGutter: 'auto', marginLeft: '15px', marginRight: '15px' });
+    expect(margined.reservedGutter).toBeUndefined();
+    expect(margined.reservedGutterLeft).toBeUndefined();
+    // ...and a browser that does not support the property at all (computed value undefined) is the
+    // same absence, not a crash and not a zero.
+    const old = await shot({ clientWidth: 1280, htmlX: 0, htmlW: 1269 });
+    expect(old.reservedGutter).toBeUndefined();
+    expect(old.layoutViewportWidth).toBe(1280);   // the pre-existing field is untouched
+  });
+
+  it('subtracts the html margins, because a declared gutter does not stop a margin from measuring', async () => {
+    // Measured: `html{margin-left:15px; scrollbar-gutter:stable}` on a page that does not scroll --
+    // clientWidth 1280, html box x 15 w 1250. Raw, that reports reserved 30 / lead 15, which IS the
+    // both-edges shape (root at half the gutter, full width) and demotes a 30px shortfall of which
+    // 15px is a margin the reader may want to know about. Margins out: 15 and 0.
+    const s = await shot({ clientWidth: 1280, htmlX: 15, htmlW: 1250, scrollbarGutter: 'stable', marginLeft: '15px' });
+    expect(s.reservedGutter).toBe(15);
+    expect(s.reservedGutterLeft).toBe(0);
+
+    // Symmetric margins, same reserve: 1280 - 1225 = 55 raw, of which 40 is margin.
+    const both = await shot({ clientWidth: 1280, htmlX: 20, htmlW: 1225, scrollbarGutter: 'stable', marginLeft: '20px', marginRight: '20px' });
+    expect(both.reservedGutter).toBe(15);
+    expect(both.reservedGutterLeft).toBe(0);
+  });
+
+  it('never goes negative: an html box WIDER than the viewport reports no reserve, not a negative one', async () => {
+    // `html{width:1400px}` under a declared gutter. A negative reserve would shrink the computed
+    // gutter below the painted bar and hand the demote a number that is not the page's.
+    const s = await shot({ clientWidth: 1280, htmlX: 0, htmlW: 1400, scrollbarGutter: 'stable' });
+    expect(s.reservedGutter).toBe(0);
+    expect(s.reservedGutterLeft).toBe(0);
+  });
+
+  it('RED: a NARROWED html is not a reserve — an over-wide reading is dropped, never spent', async () => {
+    // The one shape this measurement cannot tell apart from itself. Measured in Chrome at window 1280
+    // on a page that declares `stable` and does not scroll, one property at a time:
+    //
+    //     html{max-width:1200px}      html box 1200  ->  raw reserved 80    lead 0
+    //     html{width:1200px}          html box 1200  ->  raw reserved 80    lead 0
+    //     html{transform:scale(.9)}   html box 1138.5 -> raw reserved 141.5 lead 0
+    //
+    // Every one of them is `spanning` (lead 0), so the symmetry lock in diff.ts has nothing to bite
+    // on, and every one of them demotes a size.w shortfall that IS a layout rule -- the page really is
+    // capped at 1200 against a 1280 design. There is no second witness: media-query width and
+    // visualViewport are both blind to a reserve (measured), so the bound below is a prior on how wide
+    // a scrollbar can be, not a derivation. Dropped, not clamped: a clamped 20 would still demote 20px.
+    for (const [state, htmlW] of [['max-width:1200px', 1200], ['transform:scale(.9)', 1138.5]] as const) {
+      const s = await shot({ clientWidth: 1280, htmlX: 0, htmlW, scrollbarGutter: 'stable' });
+      expect(s.reservedGutter, state).toBeUndefined();
+      expect(s.reservedGutterLeft, state).toBeUndefined();
+      expect(s.layoutViewportWidth, state).toBe(1280);   // ...and the page keeps its fail, as before
+    }
+
+    // The inset twin -- `both-edges` + a capped html -- was already rejected downstream by the
+    // symmetry lock (80 != 2*15); it now stops one step earlier, at the measurement.
+    const inset = await shot({ clientWidth: 1280, htmlX: 15, htmlW: 1200, scrollbarGutter: 'stable both-edges' });
+    expect(inset.reservedGutter).toBeUndefined();
+
+    // ...and the bound does NOT touch a real bar, at either edge: the both-edges truth is 15 PER EDGE.
+    const wide = await shot({ clientWidth: 1280, htmlX: 15, htmlW: 1250, scrollbarGutter: 'stable both-edges' });
+    expect(wide.reservedGutter).toBe(30);
+    expect(wide.reservedGutterLeft).toBe(15);
+  });
+});

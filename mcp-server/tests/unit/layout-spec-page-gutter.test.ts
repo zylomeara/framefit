@@ -134,7 +134,8 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     // the inset SHAPE (x == bar, w == clientWidth - bar) and the quantity spent is 2*bar. Without it
     // this page keeps the original defect -- a hard ❌ of Δ22 carrying "edit the layout rule".
     const row = find(diffPair(shelfSpec, shelfDom({
-      innerWidth: 1920, layoutViewportWidth: 1909, rect: { x: 11, y: 0, w: 1898, h: 720 }, clientWidth: 1898,
+      innerWidth: 1920, layoutViewportWidth: 1909, reservedGutter: 11, reservedGutterLeft: 11,
+      rect: { x: 11, y: 0, w: 1898, h: 720 }, clientWidth: 1898,
     }), { tolerancePx: 1, frameWidth: 1920 }), 'size.w');
     expect(row).toMatchObject({ status: 'demoted', figma: 1920, dom: 1898, delta: 22 });
     expect(row.note).toContain('page scrollbar gutter 22px');
@@ -248,7 +249,8 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     // an offset of 349 against a designed 360): the root lost 22, half of it is 11, and half of
     // `innerWidth - clientWidth` -- 5.5 -- would leave this row failing by 5.5 of nothing.
     const both = diffPair(shelfSpec, shelfDom({
-      layoutViewportWidth: 1909, rect: { x: 11, y: 0, w: 1898, h: 720 }, clientWidth: 1898,
+      layoutViewportWidth: 1909, reservedGutter: 11, reservedGutterLeft: 11,
+      rect: { x: 11, y: 0, w: 1898, h: 720 }, clientWidth: 1898,
       children: [kid(360, 1200, 'hero').dom, kid(360, 1200, 'shelf').dom],
     }), { tolerancePx: 1, frameWidth: 1920 }).filter((r) => r.prop.startsWith('offset-cross'));
     expect(both).toHaveLength(2);
@@ -446,5 +448,141 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     // .clientWidth 1920. A 1909-wide `main` there is a REAL 11px defect and must read as one.
     const row = find(diffPair(shelfSpec, shelfDom({ layoutViewportWidth: 1920 }), { tolerancePx: 1, frameWidth: 1920 }), 'size.w');
     expect(row).toMatchObject({ status: 'fail', delta: 11 });
+  });
+});
+
+// ── A gutter that is RESERVED and never painted ──────────────────────────────────────────────────
+//
+// THE SECOND MECHANISM, found and reproduced live. `scrollbar-gutter: stable` on a page that does
+// NOT scroll reserves the bar's width and paints nothing. `documentElement.clientWidth` is the
+// VIEWPORT width and does not subtract a reserve, so `innerWidth - clientWidth` is 0, the detector
+// above returned undefined, and the shortfall shipped as a hard ❌ carrying `edit the layout rule`
+// on `base-layout.module.scss (.root)` -- the exact defect this file exists to prevent, arriving
+// through a door it did not cover.
+//
+// MEASURED IN A REAL CHROME on that page (window 1280, an 11px
+// `::-webkit-scrollbar`), toggling ONE property at a time and restoring it, and re-measured on a
+// synthetic page at the 15px native bar (same shape, every number scaled by the bar):
+//
+//     state                        innerWidth  clientWidth  painted  reserved  root x  root w
+//     auto, scrolls                      1280         1269       11         -       0    1269
+//     stable, scrolls                    1280         1269       11         0       0    1269
+//     stable, does NOT scroll            1280         1280        0        11       0    1269
+//     both-edges, scrolls                1280         1269       11        11      11    1258
+//     both-edges, does NOT scroll        1280         1280        0        22      11    1258
+//
+// painted and reserved are MUTUALLY EXCLUSIVE per edge and their SUM is invariant across the states
+// of one page -- and equal to exactly what the page layout root lost. `reserved` is the extractor's
+// new `reservedGutter` (the html BOX, minus the html margins; see dom-extractor.test.ts for why the
+// margins and the declared-gutter gate are both load-bearing).
+describe('a gutter that is RESERVED and not painted is the same gutter', () => {
+  const head = kid(0, 400, 'head');
+  const pageSpec = spec(1280, 'col', [head.fig]);
+  // The live page's shape: a 1280 frame, a full-bleed root, one left-anchored child that matches.
+  const pageDom = (over: Partial<DomSnapshotOk> = {}): DomSnapshotOk => snap({
+    innerWidth: 1280, layoutViewportWidth: 1280, reservedGutter: 11,
+    rect: { x: 0, y: 0, w: 1269, h: 720 }, clientWidth: 1269,
+    children: [head.dom], ...over,
+  });
+  const rowsFor = (over: Partial<DomSnapshotOk> = {}) =>
+    diffPair(pageSpec, pageDom(over), { tolerancePx: 1, frameWidth: 1280 });
+
+  it('the live case: reserved-but-not-painted is demoted, and prescribes no edit', () => {
+    const rows = rowsFor();
+    const row = find(rows, 'size.w');
+    expect(row).toMatchObject({ status: 'demoted', figma: 1280, dom: 1269, delta: 11 });
+    expect(row.note).toContain('page scrollbar gutter 11px');
+    // The window and the viewport read the SAME 1280 here -- nothing but the reserve explains the
+    // 11px, so the note has to say which half of the gutter it is or the numbers look like a typo.
+    expect(row.note).toContain('window 1280, CSS layout viewport 1280');
+    expect(row.note).toContain('11px is reserved by scrollbar-gutter and not painted');
+    // The half that costs the reader real work: no channel => fix_plan emits no edit for this row.
+    expect(row.srcChannel).toBeUndefined();
+    const plan = buildFixPlan(rows, { root: { module: 'page-shell.module.scss', local: 'root', raw: 'page-shell-module-scss-module__aBc123__root' } });
+    expect(plan?.fix_plan.flatMap((p) => p.edits).filter((e) => e.prop === 'size.w') ?? []).toEqual([]);
+  });
+
+  it('the viewport row names the width the page was laid out in, which is NOT its clientWidth here', () => {
+    // `innerWidth - clientWidth` is 0 in this state, so the old note went silent on the one page
+    // whose size.w is short by a gutter -- leaving "viewport ✅ 1280 vs 1280" next to it.
+    const vp = find(rowsFor(), 'viewport');
+    expect(vp).toMatchObject({ status: 'pass', figma: 1280, dom: 1280 });
+    expect(vp.note).toContain('CSS layout viewport 1269');
+    expect(vp.note).toContain('11px page scrollbar gutter');
+  });
+
+  it('all five measured states of one page resolve to the same gutter and the same demote', () => {
+    // The table at the top, row by row. The quantity is `painted + reserved` in every one of them,
+    // and it is exactly what the root lost -- 1280 - root w.
+    const states: { state: string; lvw: number; reserved?: number; lead?: number; x: number; w: number; px: number }[] = [
+      { state: 'auto, scrolls', lvw: 1269, reserved: undefined, lead: undefined, x: 0, w: 1269, px: 11 },
+      { state: 'stable, scrolls', lvw: 1269, reserved: 0, lead: 0, x: 0, w: 1269, px: 11 },
+      { state: 'stable, does NOT scroll', lvw: 1280, reserved: 11, lead: 0, x: 0, w: 1269, px: 11 },
+      { state: 'both-edges, scrolls', lvw: 1269, reserved: 11, lead: 11, x: 11, w: 1258, px: 22 },
+      { state: 'both-edges, does NOT scroll', lvw: 1280, reserved: 22, lead: 11, x: 11, w: 1258, px: 22 },
+    ];
+    for (const s of states) {
+      const row = find(rowsFor({
+        layoutViewportWidth: s.lvw, reservedGutter: s.reserved, reservedGutterLeft: s.lead,
+        rect: { x: s.x, y: 0, w: s.w, h: 720 }, clientWidth: s.w,
+      }), 'size.w');
+      expect(row, s.state).toMatchObject({ status: 'demoted', figma: 1280, dom: s.w, delta: 1280 - s.w });
+      expect(row.note, s.state).toContain(`page scrollbar gutter ${s.px}px`);
+      expect(row.srcChannel, s.state).toBeUndefined();
+    }
+  });
+
+  it('RED: one pixel more than a RESERVED gutter is one pixel of layout, and it keeps its address', () => {
+    const row = find(diffPair(spec(1281, 'col', [head.fig]), pageDom(), { tolerancePx: 1, frameWidth: 1281 }), 'size.w');
+    expect(row).toMatchObject({ status: 'fail', figma: 1281, dom: 1269, delta: 12 });
+    expect(row.srcChannel).toMatchObject({ kind: 'root', editKind: 'layout' });
+  });
+
+  it('RED: a reserved gutter does not license a box that is not anchored where it was taken from', () => {
+    // Same page, same reserve, a section pushed to x 356 by an oversized sibling: it never paid the
+    // gutter. And the both-edges band (x == gutter/2 == 5.5) is a number, not the both-edges shape:
+    // this page reserved its whole gutter on the TRAILING edge (measured `reservedGutterLeft` 0), so
+    // a box at 5.5 is a box overflowing to the right by 5.5. Deriving the inset from the gutter
+    // instead of measuring it demotes every one of these.
+    for (const x of [356, 5.5, 5, 6]) {
+      const row = find(rowsFor({ rect: { x, y: 0, w: 1269, h: 720 } }), 'size.w');
+      expect(row, `x=${x}`).toMatchObject({ status: 'fail', figma: 1280, dom: 1269, delta: 11 });
+      expect(row.srcChannel, `x=${x}`).toMatchObject({ kind: 'root', editKind: 'layout' });
+    }
+  });
+
+  it('RED: an ASYMMETRIC reserve is a shape nothing has measured, and it keeps its fail', () => {
+    // The whole 11px reserved on the LEADING edge. The root would sit at x == lead with exactly the
+    // right width, so the anchoring alone accepts it -- and the receipt would then read "inset by
+    // 11px on each edge" over a page that lost 11 in total. No browser here produces this state
+    // (`lead` is 0 in every measured state but both-edges, where it is exactly half), so it is not
+    // demoted on the strength of prose that does not match its own numbers.
+    const row = find(rowsFor({ reservedGutterLeft: 11, rect: { x: 11, y: 0, w: 1269, h: 720 } }), 'size.w');
+    expect(row).toMatchObject({ status: 'fail', figma: 1280, dom: 1269, delta: 11 });
+    expect(row.srcChannel).toMatchObject({ kind: 'root', editKind: 'layout' });
+  });
+
+  it('a pre-this-release capture of a both-edges page LOSES the explanation, it never gains one', () => {
+    // The direction that keeps this additive and un-versioned. An old extractor emits no
+    // `reservedGutter`, so a both-edges capture reads one bar where the root lost two, falls out of
+    // both anchorings, and keeps the FAIL it would now be demoted from. A demote invented for a
+    // capture that cannot prove it is the failure mode this whole detector is built against.
+    const row = find(rowsFor({
+      layoutViewportWidth: 1269, reservedGutter: undefined,
+      rect: { x: 11, y: 0, w: 1258, h: 720 }, clientWidth: 1258,
+    }), 'size.w');
+    expect(row).toMatchObject({ status: 'fail', figma: 1280, dom: 1258, delta: 22 });
+    expect(row.srcChannel).toMatchObject({ kind: 'root', editKind: 'layout' });
+  });
+
+  it('RED: no declared gutter at all and the page still fails everything it failed before', () => {
+    // Overlay scrollbars: nothing painted, nothing reserved, the field absent. An 11px shortfall is
+    // an 11px defect.
+    const row = find(rowsFor({ layoutViewportWidth: 1280, reservedGutter: undefined }), 'size.w');
+    expect(row).toMatchObject({ status: 'fail', figma: 1280, dom: 1269, delta: 11 });
+    expect(row.srcChannel).toMatchObject({ kind: 'root', editKind: 'layout' });
+    // ...and a declared gutter that this state paints nowhere is the same nothing.
+    const zero = find(rowsFor({ layoutViewportWidth: 1280, reservedGutter: 0 }), 'size.w');
+    expect(zero).toMatchObject({ status: 'fail', delta: 11 });
   });
 });
