@@ -217,6 +217,23 @@ describe('EXTRACTOR_JS', () => {
   // The geometry gate rests on this flag: diff.ts refuses every geometric row when it is true and
   // tells the reader to "wait for the animation to finish". So the flag must mean "this box is NOT
   // where its layout puts it", and nothing weaker.
+  // A box whose children are ALL out of flow used to be indistinguishable from a true leaf, so the
+  // diff blamed the depth cut and told the reader to raise max_depth - which can never return them.
+  describe('out-of-flow children are excluded from the layout but COUNTED', () => {
+    it('a fixed/absolute child is not in children, and the box says how many it dropped', async () => {
+      const snap = ((await buildExtractor({ position: 'fixed' })(['main'])) as any[])[0];
+      expect(snap.children).toEqual([]);  // right: they are not part of this box's layout
+      expect(snap.outOfFlow).toBe(2);     // and the box is not a leaf - now it says so
+      expect(snap.childrenTruncated).toBeUndefined(); // and it is NOT a depth/cap cut, which is the whole point
+    });
+
+    it('absent when nothing was dropped - the count never reads as zero', async () => {
+      const snap = ((await buildExtractor()(['main'])) as any[])[0];
+      expect(snap.children).toHaveLength(2);
+      expect(snap.outOfFlow).toBeUndefined();
+    });
+  });
+
   describe('transformed: a transform that moves nothing must not gate geometry', () => {
     const transformedOf = async (transform: string): Promise<unknown> =>
       ((await buildExtractor({ transform })(['main'])) as any[])[0].transformed;

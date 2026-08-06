@@ -411,7 +411,7 @@ describe('Gate 5 reads a capture that is pinned against drift', () => {
     }
     expect(census).toEqual({
       minLength: 74, maxLength: 2, pattern: 23, enum: 15,
-      minimum: 60, maximum: 34, minItems: 5, maxItems: 9,
+      minimum: 64, maximum: 34, minItems: 5, maxItems: 9, // 60 -> 64: outOfFlow is nonnegative, and the DOM schema sits in two tools x two places
     });
   });
 });

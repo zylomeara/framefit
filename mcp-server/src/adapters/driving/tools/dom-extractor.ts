@@ -181,6 +181,12 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   };
   const flowChildren = (el, depthLeft, basePath) => {
     const out = [];
+    // Out-of-flow children are correctly excluded from this box's layout, but dropping them without
+    // a trace makes the box read as a true leaf. On a real page a fixed site header - the whole
+    // navigation - vanished this way, and the diff then blamed the depth cut and told the reader to
+    // raise max_depth, which can never reveal them. Count them so the diff can name the action that
+    // does work: pair such an element directly.
+    out.outOfFlow = 0;
     for (const n of el.childNodes) {
       if (n.nodeType === Node.TEXT_NODE) {
         if (!n.textContent || !n.textContent.trim()) continue;
@@ -207,10 +213,12 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         // depthLeft is NOT decremented: contents is layout-transparent (doesn't consume the layout
         // depth budget) but not selector-transparent.
         const nodePath = (basePath + ' > :nth-child(' + (Array.from(el.children).indexOf(n) + 1) + ')').trim();
-        out.push(...flowChildren(n, depthLeft, nodePath));
+        const sub = flowChildren(n, depthLeft, nodePath);
+        out.outOfFlow += sub.outOfFlow; // display:contents is layout-transparent - its skips are this box's
+        out.push(...sub);
         continue;
       }
-      if (cs.position === 'absolute' || cs.position === 'fixed') continue;
+      if (cs.position === 'absolute' || cs.position === 'fixed') { out.outOfFlow++; continue; }
       const r = n.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
       const childSel = '> :nth-child(' + (Array.from(el.children).indexOf(n) + 1) + ')';
@@ -262,6 +270,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         const kids = flowChildren(n, depthLeft - 1, nodePath);
         child.children = kids.slice(0, 15);
         if (kids.length > 15) child.childrenTruncated = true;
+        if (kids.outOfFlow) child.outOfFlow = kids.outOfFlow;
       } else if (hasFlowContent(n)) {
         // depth budget exhausted, but there IS real flow content below — honest, not a fake leaf.
         child.childrenTruncated = true;
@@ -734,6 +743,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         data: Object.fromEntries(Object.entries(el.dataset || {}).slice(0, 10)) },
       children,
       childrenTruncated: kids.length > 30 ? true : undefined,
+      outOfFlow: kids.outOfFlow || undefined,
     };
   });
   // Back-compat: no uploadUrl -> the historical plain-array return (byte-for-byte).

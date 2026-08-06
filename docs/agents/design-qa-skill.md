@@ -359,7 +359,10 @@ read ❌ as defects:
    **The diff auto-unwraps single wrappers** when child counts differ (an `unwrapped` row in the
    report — the matching became an interpretation, check the chain); if it could not unwrap, the
    structure_mismatch note says `unwrap attempted → rejected: <reason>` — then descend manually
-   with a pair.
+   with a pair. **If the note counts children as out of flow** (`position: absolute/fixed`), do not
+   descend and do not raise `max_depth`: those children are excluded from this box's layout by
+   definition, and no capture depth returns them. Pair such an element directly by its own selector
+   — a fixed site header is the ordinary case.
 - a `passes_condensed` row among a pair's rows — bulk-pass rows were folded for the response
   budget: individual pass axes are NOT in rows, take the count from `summary.pass` (signal rows
   fail/warn/info/review/unchecked and meta style_anchor/unwrapped are always complete).

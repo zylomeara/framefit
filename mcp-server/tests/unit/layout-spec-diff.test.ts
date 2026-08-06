@@ -71,6 +71,22 @@ describe('diffPair — guards & structure & gaps', () => {
     expect(gap?.prop).toBe('gap[0] title↔list');
   });
 
+  // The advice on a structure mismatch used to be "raise max_depth", which cannot return a child the
+  // extractor excluded for being out of flow. Measured live: a fixed site header vanished this way.
+  it('an out-of-flow child is named, together with the action that can actually reach it', () => {
+    const rows = diffPair(spec(), snap({ children: [snap().children[0]], outOfFlow: 2 }), { tolerancePx: 1 });
+    const note = row(rows, 'structure_mismatch')?.note ?? '';
+    expect(note).toContain('2 DOM child(ren) are out of flow');
+    expect(note).toContain('a deeper capture will NOT reveal them');
+    expect(note).toContain('pair such an element directly');
+  });
+
+  it('and says nothing of the kind when nothing was out of flow', () => {
+    // the co-lock: without it the clause could be unconditional and the test above would still pass
+    const rows = diffPair(spec(), snap({ children: [snap().children[0]] }), { tolerancePx: 1 });
+    expect(row(rows, 'structure_mismatch')?.note ?? '').not.toContain('out of flow');
+  });
+
   it('cardinality mismatch → structure_mismatch warn, no pairwise rows', () => {
     const rows = diffPair(spec(), snap({ children: [snap().children[0]] }), { tolerancePx: 1 });
     const sm = row(rows, 'structure_mismatch');

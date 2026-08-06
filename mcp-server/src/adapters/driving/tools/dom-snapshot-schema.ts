@@ -89,6 +89,7 @@ const DomChildSchema: z.ZodType<DomChild> = z.lazy(() => z.object({
   paddings: EdgesSchema.optional(),
   children: z.array(DomChildSchema).max(15).optional(),
   childrenTruncated: z.boolean().optional(),
+  outOfFlow: z.number().int().nonnegative().optional(),
 })) as z.ZodType<DomChild>;
 
 export const OkSchema = z.object({
@@ -120,6 +121,7 @@ export const OkSchema = z.object({
   componentHints: z.object({ tag: z.string(), classList: z.array(z.string()), data: z.record(z.string()) }).optional(),
   children: z.array(DomChildSchema).max(30),
   childrenTruncated: z.boolean().optional(),
+  outOfFlow: z.number().int().nonnegative().optional(),
 });
 
 const FailedSchema = z.object({
