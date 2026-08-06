@@ -177,7 +177,9 @@ export interface DomSnapshotOk {
   status?: 'ok';
   selector?: string;
   innerWidth: number;
-  layoutViewportWidth?: number; // documentElement.clientWidth — the width CSS laid the page out in; innerWidth minus it = the page scrollbar gutter
+  layoutViewportWidth?: number; // documentElement.clientWidth — the width CSS laid the page out in; innerWidth minus it = the PAINTED page scrollbar
+  reservedGutter?: number;  // scrollbar-gutter space reserved but NOT painted (clientWidth is blind to it) — the other half of the gutter; absent unless the page declares a gutter
+  reservedGutterLeft?: number; // ...of which this much is on the leading edge (both-edges reserves half there); same gate
   rect: SpecRect;           // getBoundingClientRect (border-box)
   borders: Edges;           // computed border widths — diff subtracts them when computing paddings
   borderColors?: { top?: string; right?: string; bottom?: string; left?: string };

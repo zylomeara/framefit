@@ -308,33 +308,43 @@ function applyTextWidthOverride(row: DiffRow, demote: boolean): DiffRow {
 // sidebar and a `width:100vw` header (1920 against a 1912 layout viewport -- the case every "is it
 // the frame root" gate waves through) all fail it and keep their fails.
 //
-// WIDTH IS HALF THE CLAIM -- POSITION IS THE OTHER HALF. A box that merely HAPPENS to be exactly as
-// wide as the layout viewport is not the layout viewport: an equal width with a non-zero x is a
-// coincidence of magnitude, and the gutter argument needs the box to be ANCHORED where the gutter
-// was taken from. Two anchorings are real, and both are RE-measured in Chrome (1920 window, one page
-// scrolling `main` at width:100%, at an 11px `::-webkit-scrollbar` and again at the 15px native bar):
+// PAINTED IS NOT THE WHOLE GUTTER. `innerWidth - clientWidth` counts the bar that is PAINTED, and
+// `scrollbar-gutter: stable` on a page that does not scroll reserves the space without painting
+// anything: clientWidth is the VIEWPORT width and does not subtract a reserve, so that page reads
+// bar 0 and every consumer below went silent on it. Measured live on a real page (window
+// 1280, an 11px `::-webkit-scrollbar`) and re-measured on a synthetic page at the 15px native bar,
+// toggling one property at a time. `reserved`/`lead` are the extractor's two new fields -- the html
+// BOX, which is the only place a reserve shows up (see dom-extractor.ts), minus the html margins:
 //
-//     scrollbar-gutter      innerWidth  clientWidth  innerWidth-clientWidth  main x   main w
-//     auto / stable              1920         1909                      11       0     1909
-//     stable both-edges          1920         1909                      11      11     1898
-//     auto / stable (15px)       1920         1905                      15       0     1905
-//     stable both-edges (15px)   1920         1905                      15      15     1890
+//     state                        innerWidth  clientWidth  painted  reserved  lead  root x  root w
+//     auto, scrolls                      1280         1269       11         -     -       0    1269
+//     stable, scrolls                    1280         1269       11         0     0       0    1269
+//     stable, does NOT scroll            1280         1280        0        11     0       0    1269
+//     both-edges, scrolls                1280         1269       11        11    11      11    1258
+//     both-edges, does NOT scroll        1280         1280        0        22    11      11    1258
 //
-// `documentElement.clientWidth` is the VIEWPORT width: it excludes the bar that is actually painted
-// and knows nothing about the gutter reserved on the opposite edge. So under both-edges it does NOT
-// double -- it stays the one-bar number, and the reserved pair shows up in the ELEMENT instead: the
-// root is inset by a full bar on each edge (x == bar, w == clientWidth - bar). An earlier reading of
-// this branch recorded clientWidth 1898 / gutter 22 / x 11 and gated the second anchoring on
-// `x == gutter/2`; the numbers above are what Chrome produces, and they say that predicate is
-// unreachable for the shape it was written for (a real both-edges root fails the span test outright,
-// 1898 != 1909) while staying wide open for an ORDINARY 11px page -- any box at x ~ 5.5 that happens
-// to be layout-viewport wide, i.e. one overflowing the layout viewport to the right, was demoted.
-// The gate now tests the two shapes as they measure:
-//     spanning  x == 0    && w == clientWidth          -> the root lost the one painted bar
-//     inset     x == bar  && w == clientWidth - bar    -> the root lost a reserved bar on EACH edge
-// The width the root lost is `bar` in the first shape and `2*bar` in the second, and that -- not
-// `innerWidth - clientWidth` -- is the quantity every consumer below spends. Anything else (a centred
-// `max-width` container, a sidebar, a nested box, the x ~ bar/2 band) is rejected and keeps its fails.
+// painted and reserved are MUTUALLY EXCLUSIVE per edge, their SUM is invariant across the states of
+// one page, and that sum is exactly what the page root lost. So the gutter is `painted + reserved`,
+// the width the page was really laid out in is `innerWidth - gutter` (call it `avail`), and the two
+// anchorings collapse into ONE test against two measured numbers:
+//     w == avail   &&   x == lead        lead == 0    -> the whole gutter went to the trailing edge
+//                                        lead == px/2 -> `both-edges`: half of it on each edge
+// The quantity every consumer below spends is the gutter itself in BOTH shapes -- the root lost all
+// of it either way. Anything else (a centred `max-width` container, a sidebar, a nested box) is
+// rejected and keeps its fails.
+//
+// WHY `lead` IS MEASURED AND NOT DERIVED FROM px. `x == px/2 && w == avail` is the band an earlier
+// version demoted by accident: a box overflowing the layout viewport to the right by half a bar
+// satisfies it exactly. Deriving the inset from px re-opens it for every page that declares a gutter
+// -- measured on the fixture below, a root at x 5.5 on an 11px `stable` page demoted. The html box's
+// own left offset settles it instead: it is 0 in EVERY measured state but both-edges (LTR and RTL
+// alike -- `dir=rtl` does not move the bar in Chrome/macOS), so the band is closed by measurement.
+//
+// WHAT AN OLD CAPTURE LOSES. A pre-this-release snapshot of a `both-edges` page carries neither
+// field, so it reads gutter = painted = one bar, its root is a bar narrower than `avail`, and it
+// falls out of the anchoring: it keeps the FAIL it would have been demoted from. That is the safe
+// direction (an explanation is lost, never invented) and it is the reason this is still not a schema
+// bump; the spanning shape, which is every ordinary page, is unaffected.
 //
 // AND IT IS A DEMOTE, NOT A PASS. `width: calc(100vw - 15px)` -- the hack people write BECAUSE of
 // the scrollbar -- spans the layout viewport too, and its capture is byte-identical to a correct
@@ -351,26 +361,35 @@ function applyTextWidthOverride(row: DiffRow, demote: boolean): DiffRow {
 function pageGutterOf(d: DomSnapshotOk, structTol: number): { px: number; note: string } | undefined {
   if (d.layoutViewportWidth === undefined) return undefined;
   const lvw = d.layoutViewportWidth;
-  const bar = round1(d.innerWidth - lvw);
-  if (bar <= structTol) return undefined;
+  const reserved = d.reservedGutter ?? 0;   // absent (old capture / no declared gutter) == none reserved
+  const px = round1(d.innerWidth - lvw + reserved);   // painted + reserved: the width the page lost
+  if (px <= structTol) return undefined;
+  const avail = round1(d.innerWidth - px);            // ...and the width it was actually laid out in
   // structTol, not `===`, on every geometry test below: rect.w/rect.x are fractional
   // getBoundingClientRect values while clientWidth is an integer, and at fractional device-scale
   // factors (Windows 125/150/175%) they differ by up to 0.5px on an element that genuinely spans.
   // An exact test never fires there. getBoundingClientRect is viewport-relative and a pair root with
   // a non-zero page scroll is stopped upstream by the `scroll≠0` geometry reason, so the raw x is the
   // whole position test. The two shapes are measured, see ANCHORING above.
-  const spanning = Math.abs(d.rect.w - lvw) <= structTol && Math.abs(d.rect.x) <= structTol;
-  const inset = Math.abs(d.rect.x - bar) <= structTol && Math.abs(d.rect.w - (lvw - bar)) <= structTol;
-  if (!spanning && !inset) return undefined;
-  // px = the width the ROOT lost, which is what every consumer spends: one painted bar when the root
-  // spans, a reserved bar on each edge when it is inset. `bar` alone would under-explain both-edges by
-  // half and the demote would refuse the row it exists for.
-  const px = spanning ? bar : round1(bar * 2);
+  const lead = d.reservedGutterLeft ?? 0;   // measured, not inferred: where the page root starts
+  const anchored = Math.abs(d.rect.w - avail) <= structTol && Math.abs(d.rect.x - lead) <= structTol;
+  // An inset root must be inset SYMMETRICALLY -- that IS the both-edges shape (measured: lead is
+  // exactly half the gutter there, and exactly 0 in every other state, LTR and RTL alike). An
+  // asymmetric reserve is a shape nothing here has measured, and it keeps its fail.
+  const spanning = lead <= structTol;
+  if (!anchored || !(spanning || Math.abs(px - 2 * lead) <= structTol)) return undefined;
   const where = spanning
-    ? 'the pair root spans the layout viewport'
-    : `the pair root is inset by ${bar}px on each edge (\`scrollbar-gutter: stable both-edges\`: the painted bar is excluded from the layout viewport, the reserved one is not)`;
+    ? 'the pair root spans the width the page was laid out in'
+    : `the pair root is inset by ${round1(lead)}px on each edge (scrollbar-gutter: stable both-edges)`;
+  // Flat, not nested in the template below: docs-complete-lists Gate 5C scans this module for the
+  // string literals the doc pages quote, and a template literal inside a `${}` blinded it to five of
+  // them (measured — four marked quotes went "unemitted" the moment one was introduced here).
+  const reservedNote = reserved > 0
+    ? `, of which ${round1(reserved)}px is reserved by scrollbar-gutter and not painted`
+    : '';
   return { px,
-    note: `page scrollbar gutter ${px}px (window ${round1(d.innerWidth)}, CSS layout viewport ${round1(lvw)}) — `
+    note: `page scrollbar gutter ${px}px (window ${round1(d.innerWidth)}, CSS layout viewport ${round1(lvw)}`
+      + `${reservedNote}) — `
       + `${where}, so this row is short by at most the gutter, not by a layout rule; `
       + 'a layout defect of the same size is not separable from it in this capture — verify visually' };
 }
@@ -599,10 +618,14 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
       // 11px width shortfall reads as "the window is exactly right, so your CSS is wrong". Naming
       // the layout viewport here is what makes the demote below legible as a capture artifact
       // instead of a special case. Status stays pass: the window IS the requested width.
+      // The gutter is painted + reserved (see pageGutterOf): under `scrollbar-gutter: stable` on a
+      // page that does not scroll the whole gutter is reserved, `innerWidth - clientWidth` is 0, and
+      // this note went silent on exactly the page whose size.w is short by it. The number named is
+      // the width the page was laid out in, which is the one the reader is comparing against.
       const lv = d.layoutViewportWidth;
-      const gut = lv !== undefined ? round1(d.innerWidth - lv) : 0;
+      const gut = lv !== undefined ? round1(d.innerWidth - lv + (d.reservedGutter ?? 0)) : 0;
       rows.push({ prop: 'viewport', figma: opts.frameWidth, dom: d.innerWidth, status: 'pass',
-        ...(gut > 0 ? { note: `CSS layout viewport ${round1(lv!)} — a ${gut}px page scrollbar gutter is inside the window width, and every full-bleed box is laid out in the narrower number` } : {}) });
+        ...(gut > 0 ? { note: `CSS layout viewport ${round1(d.innerWidth - gut)} — a ${gut}px page scrollbar gutter is inside the window width, and every full-bleed box is laid out in the narrower number` } : {}) });
     }
     rows.push(...geometryRows(spec, d, opts));
   }

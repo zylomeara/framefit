@@ -104,6 +104,16 @@ export const OkSchema = z.object({
   // FAIL. The DIRECTION is what settles it -- an old snapshot loses an explanation, it never gains a
   // green over a difference nobody measured, so nothing has to be rejected to stay honest.
   layoutViewportWidth: z.number().positive().optional(),
+  // The other half of the gutter, and additive/optional for exactly the same reason. `stable` on a
+  // page that does not scroll reserves the bar without painting one, and `layoutViewportWidth` above
+  // is blind to it (it is the VIEWPORT width). Present only when the page DECLARES a gutter, and 0 is
+  // a real value (declared, but this state paints it instead of reserving it) — hence min(0), not
+  // positive(). A pre-this-release capture omits it and the demote sees exactly what it sees today.
+  reservedGutter: z.number().min(0).optional(),
+  // ...and its share on the LEADING edge (`stable both-edges` puts half the reserve there), which is
+  // what tells an inset page root apart from a box overflowing to the right. Same gate, same
+  // optionality: absent unless the page declares a gutter.
+  reservedGutterLeft: z.number().min(0).optional(),
   rect: Rect,
   borders: EdgesSchema,
   borderColors: StringEdges.optional(),
