@@ -160,6 +160,8 @@ export interface DomChild {
   paddings?: Edges;         // own CSS paddings (content-edge metrics)
   children?: DomChild[];       // nested in-flow children (4 levels below the pair root; the field is present on L1/L2/L3, absent on L4 = beyond the cut); [] = leaf WITHIN the capture
   childrenTruncated?: boolean; // this level was cut by a cap
+  outOfFlow?: number;          // children skipped as position:absolute/fixed - out of THIS box layout,
+                               // and unreachable by a deeper capture; absent when none were skipped
 }
 
 export interface DomShadow {
@@ -193,6 +195,7 @@ export interface DomSnapshotOk {
   componentHints?: { tag: string; classList: string[]; data: Record<string, string> };
   children: DomChild[];     // visible in-flow (including bare text nodes), in DOM order
   childrenTruncated?: boolean;
+  outOfFlow?: number;       // see DomChild.outOfFlow - the same count for the captured root
 }
 
 export interface DomSnapshotFailed {

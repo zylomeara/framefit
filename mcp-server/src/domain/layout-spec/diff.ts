@@ -722,6 +722,16 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   if (figKids.length !== domKids2.length) {
     const domDescOf = (ks: DomChild[]): string => ks.map((c) => (c.tag ? `${c.tag}${c.classList?.length ? '.' + c.classList[0] : ''}` : `text:"${c.text ?? ''}"`)).join(', ');
     const sal = matchChildrenOneLevel(figKids, domKids2, { w: rect.w, h: rect.h }, { w: d.rect.w, h: d.rect.h });
+    // The extractor drops position:absolute/fixed children on purpose - they are not in this box's
+    // layout - but a box whose children are ALL out of flow then reads as a leaf, and the depth hint
+    // below sends the reader after something a deeper capture can never return. Measured on a live
+    // page: a fixed site header, carrying the whole navigation, disappeared exactly this way and the
+    // verdict said "raise max_depth". Name the action that does work instead.
+    const oofHint = d.outOfFlow
+      ? `; ${d.outOfFlow} DOM child(ren) are out of flow (position: absolute/fixed) and are not part of `
+        + 'this box layout - a deeper capture will NOT reveal them; pair such an element directly if the '
+        + 'design counts it as a child'
+      : '';
     const high = sal.matched.filter((m) => m.confidence === 'high');
     if (high.length === 0) {
       const figDesc = figKids.map((c) => `${c.name}(${c.type})`).join(', ');
@@ -741,7 +751,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         : '';
       rows.push({ prop: 'structure_mismatch', status: 'warn',
         figma: `${figKids.length} children: ${figDesc}`, dom: `${domKids2.length} children: ${domDescOf(domKids2)}`,
-        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
       // source-hint: unpaired — the MAIN "add pairs" flow (0 high-conf: nothing
       // matched). All DOM children are unpaired; cap 10 AT the collection site. navigation-to-investigate.
       collectUnpaired(opts, domKids2);
@@ -756,7 +766,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     collectUnpaired(opts, domKids2.filter((_, i) => !matchedDom.has(i)));
     rows.push({ prop: 'structure_mismatch', status: 'warn',
       figma: `${figKids.length} children`, dom: `${domKids2.length} children`,
-      note: `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${rejectedNote ? `; ${rejectedNote}` : ''}` });
+      note: `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
     const figSub = high.map((m) => figKids[m.figIdx]);
     const domSub = high.map((m) => domKids2[m.domIdx]);
     salvageAdj = high.map((m, k) => k > 0 && m.figIdx === high[k - 1].figIdx + 1 && m.domIdx === high[k - 1].domIdx + 1);

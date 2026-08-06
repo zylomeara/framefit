@@ -27,7 +27,7 @@
       "pairs",
       "tolerance_px"
     ],
-    "digest": "a0200af47380fbef420bf4b4b5ccccc45af9b5ecaec2172eeb52a891b44a94ea",
+    "digest": "6f5334772550351c16358c78533bedae1beb691c6a2a0f254135e497bd5acf2f",
     "annotations": {
       "readOnlyHint": true
     }
@@ -396,7 +396,7 @@
       "frame_node_id",
       "max_depth"
     ],
-    "digest": "ab3565479ab8acd89178269a1b97c6283378d130916f7fa08b572dbaabdc8680",
+    "digest": "fe8c625ecebdbd846acdf062985421d90130a1153955f5501b1561202c1432ad",
     "annotations": {
       "readOnlyHint": true
     }
