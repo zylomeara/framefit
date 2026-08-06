@@ -224,11 +224,20 @@ export function frameCoverage(frame: LayoutSpec, pairIds: Set<string>, enumMeta:
   return frameCoverageDetailed(frame, pairIds, enumMeta).coverage;
 }
 
-function holeToBlocking(r: DiffRow, p: PairResult): BlockingItem {
+function holeToBlocking(r: DiffRow, p: PairResult, depthLevels: number): BlockingItem {
   const base = { node_id: p.node_id, ...(p.selector ? { selector: p.selector } : {}), detail: r.note ?? r.prop };
   switch (dimensionOf(r.prop)) {
     case 'structure_mismatch': return { ...base, kind: 'structure_mismatch', action: 'add_pairs_on_children' };
-    case 'children_truncated': return { ...base, kind: 'children_truncated', action: 'raise_max_depth' };
+    // The last unguarded "raise max_depth" in this file. max_depth is capped at 8 by every schema that
+    // takes it, so at 8 that action cannot be carried out and the blocker can never clear - the
+    // done-gate stays false forever on any frame deep enough to hit it. Its two siblings were already
+    // fixed this way: uncheckedToBlocking swaps to add_text_pair at 8, and the enumeration branch
+    // stops emitting a blocker at all and says so in a caveat. What IS executable here is pairing the
+    // deep node directly, which starts its own depth budget - the action already in the vocabulary.
+    case 'children_truncated': return depthLevels < 8
+      ? { ...base, kind: 'children_truncated', action: 'raise_max_depth' }
+      : { ...base, kind: 'children_truncated', action: 'add_pairs_on_children',
+          detail: `${base.detail} - already at the maximum capture depth (8), so a deeper capture is not available: pair the nested node directly` };
     case 'snapshot':
     case 'snapshot_schema':
     case 'snapshot_ref': return { ...base, kind: 'snapshot', action: 're_extract_dom' };
@@ -292,7 +301,7 @@ export function buildVerification(pairs: PairResult[], opts: {
     if (p.summary.unchecked > 0) anyUnchecked = true;
     if (holes.length > 0) anyHole = true;
     if (p.summary.review > 0) anyReview = true;
-    for (const h of holes) blocking.push(holeToBlocking(h, p));
+    for (const h of holes) blocking.push(holeToBlocking(h, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'unchecked') blocking.push(uncheckedToBlocking(r, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'review') {
       const key = (r.token && r.token !== '(paint)') ? `tok:${r.token}` : r.tokenReason ? `rsn:${r.tokenReason}` : undefined;

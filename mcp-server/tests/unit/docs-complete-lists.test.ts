@@ -1055,11 +1055,15 @@ describe('Gate 5B: both pages that enumerate the blocking actions name all thirt
     // radius that is not one comparable px number is routed to the existing resolve_skip instead of
     // falling through to "raise max_depth", which fixes no border radius. It REUSES an action rather than inventing a
     // fourteenth, so these three counters move and the vocabulary below does not.
-    expect(sites.length, 'the number of `action` keys under src/ changed').toBe(25);
-    expect(vocabularySites.length, `the number of \`action\` value sites in ${VERIFICATION_FILE} changed`).toBe(20);
+    // 25 -> 26, 20 -> 21: holeToBlocking's children_truncated branch split on depth. At the maximum
+    // capture depth "raise max_depth" is not an action anyone can carry out, so the blocker could
+    // never clear and the done-gate could never close; at 8 it routes to the existing
+    // add_pairs_on_children instead. Another REUSE, so the vocabulary below is unchanged again.
+    expect(sites.length, 'the number of `action` keys under src/ changed').toBe(26);
+    expect(vocabularySites.length, `the number of \`action\` value sites in ${VERIFICATION_FILE} changed`).toBe(21);
     expect(ACTION_TYPE_MEMBER_SITES).toHaveLength(5);
     // 20 sites yielding 21 literals: one site is a conditional and contributes both of its branches.
-    expect(literals, 'the resolved literal count changed -- a conditional branch gained or lost').toBe(21);
+    expect(literals, 'the resolved literal count changed -- a conditional branch gained or lost').toBe(22);
     expect(values.size, 'the extractor no longer finds thirteen distinct actions').toBe(13);
     // By name, both directions of the recipe's failure. `add_text_pair` is reachable ONLY through the
     // conditional, and `fix_frame_id` is the value both pages were missing.
