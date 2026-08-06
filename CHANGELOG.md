@@ -3,6 +3,52 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.17.0
+
+Two places the tool was wrong about a page it had never seen. Both were found the same way - by
+running the documented cycle against a real page and reading what came back - and one of them changes
+what your reports say.
+
+**Re-request the extractor** (`get_layout_spec` with `include_extractor: true`) **and reconnect your
+client.** The extractor grew a field and the snapshot schema gained two; a cached script and an old
+session both keep the old behaviour.
+
+### Changed
+
+**1. A page scrollbar gutter that is reserved and never painted is now recognised. Some failures will
+disappear, and not because the CSS was fixed.**
+
+`scrollbar-gutter: stable` takes the bar's width from the layout whether or not a bar is painted. On
+a page that does not scroll nothing is painted, and the browser measurement this tool used to detect
+a gutter reports zero - so a full-bleed box came back short by exactly the gutter, as a hard `size.w`
+failure carrying an edit against a working CSS rule. That was the most expensive thing this tool
+could do, and it is the second mechanism by which it did it.
+
+Such a row is now demoted and named. The delta is still printed, the verdict is still not complete -
+a demote is not a pass - but the edit is gone from the plan, because there is nothing to edit.
+
+**The detector is deliberately narrow, and you should know where it declines.** A reserve is only
+read when the page declares a gutter; the root element's own margins are subtracted; the pair root
+must be anchored where the gutter was taken from; an inset must be symmetric; and each edge is
+bounded by what a scrollbar can be. A reading too wide for a scrollbar is dropped rather than
+trimmed - a page that narrows its own root with a width or a max-width keeps its failure and its
+edit, which is the answer we want when the tool cannot tell whose space it was.
+
+**2. A blocking item at the maximum capture depth now names something you can do.**
+
+A pair whose children were cut asked you to raise the capture depth - unconditionally, including when
+you were already at the maximum, where there is nothing to raise it to. The item could never clear,
+so the done-gate could never close on a frame deep enough to reach it. At the ceiling it now asks for
+a pair on the nested node instead, which starts its own depth budget. The item stays blocking and the
+verdict stays incomplete: the hole is real, only the advice changed.
+
+### Added
+
+Two optional snapshot fields carrying the reserved gutter and how much of it sits on the leading
+edge. They are present only when the page declares a gutter. No schema bump: a snapshot captured
+before this release omits them and gets exactly the verdict it gets today - it can lose an
+explanation it never had, it can never gain one nobody measured.
+
 ## 0.16.0
 
 A latency release, and a correction. `compare_node_to_dom` used to fetch your file's variables on
