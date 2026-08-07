@@ -3,7 +3,7 @@
 // the AI swallows. A separate module (not diff.ts) — the frame-coverage frontier reuses figWorthy from
 // pair-matcher, and we keep diff.ts focused.
 import type { PairResult, LayoutSpec, SpecChild, DiffRow, BlockingItem, FrameCoverage, VerificationReceipt, CaptureInfo, SpacingAuditEntry, MatchProfile } from './types.js';
-import { coverageHoleRows, dimensionOf } from './diff.js';
+import { coverageHoleRows, dimensionOf, rowValuesMatched } from './diff.js';
 import { figWorthy } from './pair-matcher.js';
 import { auditContainer } from './spacing-audit.js';
 import { normalizeCompoundNodeId } from '../node-id.js';
@@ -300,10 +300,13 @@ export function buildVerification(pairs: PairResult[], opts: {
     if (p.summary.demoted > 0) anyDemoted = true;
     if (p.summary.unchecked > 0) anyUnchecked = true;
     if (holes.length > 0) anyHole = true;
-    if (p.summary.review > 0) anyReview = true;
+    // Matched-value review rows are advisory (rowValuesMatched): they neither hold complete=false
+    // nor enter blocking below — the summary.review count and the 📝 rows themselves stay visible.
+    if (p.rows.some((r) => r.status === 'review' && !rowValuesMatched(r))) anyReview = true;
     for (const h of holes) blocking.push(holeToBlocking(h, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'unchecked') blocking.push(uncheckedToBlocking(r, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'review') {
+      if (rowValuesMatched(r)) continue; // advisory — see anyReview above
       const key = (r.token && r.token !== '(paint)') ? `tok:${r.token}` : r.tokenReason ? `rsn:${r.tokenReason}` : undefined;
       if (!key) { blocking.push({ kind: 'unconfirmed_token', node_id: p.node_id, ...(p.selector ? { selector: p.selector } : {}), action: 'confirm_token', detail: r.note ?? r.prop }); continue; }
       const g = tokenGroups.get(key) ?? { places: [], reasons: new Map<string, number>(), firstNote: r.note ?? r.prop };

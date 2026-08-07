@@ -279,7 +279,9 @@ a `fix_plan` (grouped edits derived from fail rows). See the
 
 Colors are enriched from the file's variables, and that fetch is the slowest thing this tool does on
 a large file. When it fails or times out, the run degrades honestly - token rows read as unresolved
-and a `confirm_token` blocker appears - and says so in two places a caller sees: a
+and a `confirm_token` blocker appears for every row whose two values did not already match
+byte-for-byte (a matched pair stays a visible `review` row without blocking) - and says so in two
+places a caller sees: a
 `degraded_stages: [{ stage, reason, ms, detail }]` key, and one `ℹ️` line in `report_markdown`. `ms`
 is the point. Measured on this transport, that one endpoint took 90 seconds of a 93-second call, and
 without it the caller has a two-minute silence and no way to tell a slow call from a hung one.

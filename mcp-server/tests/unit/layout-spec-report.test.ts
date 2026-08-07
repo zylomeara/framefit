@@ -142,14 +142,26 @@ describe('renderReport — honest review signal (awaiting token confirmation) in
     node_id: '1:1', label: 'row', selector: '.row', rows: [], coverage: { measured: [], skipped: [] },
     summary: { pass: 0, fail: 0, warn: 0, skip: 0, info: 0, demoted: 0, unchecked: 0, review: 0 }, ...over,
   });
-  it('R1: a review-only pair (fail=0, review>0) does NOT read as clean — "awaiting token confirmation"', () => {
+  it('R1: a review pair with DIVERGED values (fail=0, review>0) does NOT read as clean — "awaiting token confirmation"', () => {
     const md = renderReport({ file: 'abc', tolerancePx: 1, pairs: [mkPairR({
-      rows: [{ prop: 'fill', figma: '#8b6afb', dom: '#8b6afb', status: 'review', note: 'token mode not confirmed' }],
+      rows: [{ prop: 'fill', figma: '#8b6afb', dom: '#7a59ea', status: 'review', note: 'token mode not confirmed' }],
       summary: { pass: 1, fail: 0, warn: 0, skip: 0, info: 0, demoted: 0, unchecked: 0, review: 1 },
     })] });
     expect(md).toContain('awaiting token confirmation');       // mutation: remove the review push → it disappears
     expect(md).toContain('verify visually');
     expect(md).not.toContain('no discrepancies above tolerance'); // ← would have been a silent false green
+  });
+  it('R1a: a review pair with byte-equal values is advisory — green verdict, 📝 stays visible', () => {
+    // Live-run p.11: "the node's mode is not confirmed" over two identical hexes is a property of the
+    // design file, not of the code; the verdict must mirror verification.complete (which no longer
+    // gates on such rows), while the 📝 counter and the row itself keep the residue visible.
+    const md = renderReport({ file: 'abc', tolerancePx: 1, pairs: [mkPairR({
+      rows: [{ prop: 'fill', figma: '#8b6afb', dom: '#8b6afb', status: 'review', note: 'token mode not confirmed' }],
+      summary: { pass: 1, fail: 0, warn: 0, skip: 0, info: 0, demoted: 0, unchecked: 0, review: 1 },
+    })] });
+    expect(md).toContain('no discrepancies above tolerance');
+    expect(md).not.toContain('awaiting token confirmation');
+    expect(md).toMatch(/Total: ✅1 ❌0 📝1/); // visible, just not a blocker
   });
   it('R1b: the counter token 📝N in the HEADER and the Total (isolated lock of revHead/revTotal)', () => {
     // Mutation: remove revHead → header "❌0 ⚠️0" → RED; remove revTotal → Total "❌0 ⚠️0" → RED. The head

@@ -256,6 +256,20 @@ export function coverageHoleRows(rows: DiffRow[]): DiffRow[] {
     (r.status === 'skip' && r.profileScoped !== true)
     || (r.status === 'warn' && COVERAGE_HOLING_WARN.has(dimensionOf(r.prop))));
 }
+// A review row whose two MEASURED values already read byte-equal (hex casing is presentation, not
+// value) asks for judgment the tool cannot supply — token/mode semantics, a property of the design
+// setup, not of the code under review. Both gates (verification.complete and the report verdict)
+// treat such a row as advisory: it stays visible as 📝, but neither blocks nor forbids green.
+// Measured on a live run: a badge at 11 pass / 0 fail was held at complete:false by a confirm_token
+// whose both sides read the same hex — a perpetually red gate teaches the reader to explain red
+// away, which is the erosion the gate exists to prevent. A missing side or a type mismatch is NOT
+// a match: nothing was measured equal there.
+export function rowValuesMatched(r: Pick<DiffRow, 'figma' | 'dom'>): boolean {
+  if (r.figma === undefined || r.figma === null || r.dom === undefined || r.dom === null) return false;
+  if (typeof r.figma === 'string' && typeof r.dom === 'string') return r.figma.toLowerCase() === r.dom.toLowerCase();
+  return r.figma === r.dom;
+}
+
 export function countCoverageHoles(rows: DiffRow[]): number {
   return coverageHoleRows(rows).length;
 }
