@@ -6,10 +6,10 @@ handshake reports as `serverInfo.version` and what `framefit status` prints in i
 ## 0.19.0
 
 Three fixes, each born the same way - by running the documented cycle against a real page and
-reading what came back - and each one moves what your reports say. No schema change, no new tool,
-no extractor change: **you do not need to reconnect your client or re-request the extractor.** But
-two verdict behaviours changed, so reread items 1 and 2 before trusting an old mental model of a
-report.
+reading what came back - and each one moves what your reports say. No snapshot-schema bump, no new
+tool, no extractor change - the spec response gains one additive optional field (`outOfFlow`, item
+2): **you do not need to reconnect your client or re-request the extractor.** But two verdict
+behaviours changed, so reread items 1 and 2 before trusting an old mental model of a report.
 
 ### Changed
 
@@ -21,17 +21,22 @@ is a property of the design file, not of the code under review, and a perpetuall
 the reader to explain red away - the erosion the gate exists to prevent. Such a row is now
 advisory: it stays visible (the pencil counter and the row itself), but it neither enters
 `blocking` nor holds `verification.complete` at `false`, and the report verdict follows the same
-rule, so the verdict line stays equivalent to `verification.complete`. Diverged and one-sided reviews block exactly as before.
-If your agent gates on `complete`, expect `true` on token-heavy pages where it previously never
-arrived.
+rule, so the verdict line stays equivalent to `verification.complete`. The rule is per row and per
+the values the row itself carries: a row whose values diverged, or where a side carries no value,
+blocks exactly as before - which means a solid-color row (it carries the two hexes) is silenced by
+a hex match even when the DOM token was not read, while a gradient provenance row (it carries the
+two token names) still blocks on an unread side. If your agent gates on `complete`, expect `true`
+on token-heavy pages where it previously never arrived.
 
 The adversarial pass over this change caught its own hole before it shipped. The gradient
 provenance rows (`gradient-token`, `gradient-stop-N-token`) used to carry the literal placeholders
 `whole`/`stop` in `figma`/`dom` - values the new rule would have read as "matched" on every
 gradient, silently disabling that gate over gradients wired to different tokens. Those rows now
-carry the compared token names themselves, null for a side that has none. This is the one output
-VALUE the release changes: if you parsed the literals `whole`/`stop` out of those two rows, parse
-the token names instead - every other consumer gains a more readable row.
+carry the compared token names themselves, null for a side that has none. If you parsed the
+literals `whole`/`stop` out of those two rows, parse the token names instead - every other consumer
+gains a more readable row. The remaining output deltas are textual or additive: the
+structure-mismatch note extended by item 2, the no-address source note now pointing at a doc (item
+3), and the `outOfFlow` field itself.
 
 **2. Absolutely positioned children are counted, not vanished.**
 
@@ -56,10 +61,12 @@ plus a tier table of what each class shape buys.
 
 ### Repository
 
-`pnpm dev` no longer dies with ENOENT on Node 22 when `.env` does not exist yet: the
-`--env-file-if-exists` + `--watch` pair puts the missing path into the watch set on that Node major
-alone (measured per-runtime), and an ensure-guard now creates an empty `.env` first. The guard is
-tested as shipped - extracted from `package.json`, not copied.
+`pnpm dev` no longer depends on `.env` existing before the first run. On the Node 22 line as
+measured in early August, the `--env-file-if-exists` + `--watch` pair with a missing file exited
+with ENOENT (the missing path landed in the watch set); the newest 22.x patches no longer
+reproduce it, so the upstream regression appears fixed. The ensure-guard stays regardless - it
+creates an empty `.env` first, making the run order-independent on every Node rather than betting
+on patch levels. The guard is tested as shipped - extracted from `package.json`, not copied.
 
 ## 0.18.0
 

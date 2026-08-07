@@ -35,11 +35,21 @@ Three shapes parse today (`mcp-server/src/domain/layout-spec/class-source.ts`):
 }
 ```
 
-**Next.js (webpack mode)** — the same key, through the webpack override in `next.config.js`
-(find the existing css-loader rule and set `modules.localIdentName` on it).
+One caveat, measured: `[name]` keeps everything before the last extension, so for
+`Card.module.css` it emits `Card.module` — and the dot stops the parser (`\w` has no dot). The
+shape above parses as emitted for module files named without the `.module` infix; for
+`*.module.css` files strip the suffix with a custom `getLocalIdent` (replace `.module` at the end
+of the name), or accept the local-only tier.
 
-**Vite** — the production default (`_[local]_[hash]`) already gives the local-only tier out of the
-box; add the module name for the full bridge:
+**Next.js (webpack mode)** — the same key, through the webpack override in `next.config.js`
+(find the existing css-loader rule and set `modules.localIdentName` on it); the `.module` caveat
+above applies unchanged.
+
+**Vite** — the production default (`_[local]_[hash]`) yields the local-only tier only when the
+emitted hash happens to be all-lowercase with a digit — the parser's Vite shape is deliberately
+that narrow, and most base64 hashes carry an uppercase letter, so treat local-only-by-default as
+the exception rather than the rule. For the full bridge set the module name explicitly (same
+`.module` caveat as webpack when your files are `*.module.css`):
 
 ```js
 // vite.config.js
@@ -58,7 +68,7 @@ carry a digit in almost every emission.
 
 | Your classes | `source` / `fix_plan` |
 | --- | --- |
-| full `name`+`local` | module-file candidate + authored class — edits are routed to the file |
+| full `name`+`local` | module + authored class — edits are routed by name. The Turbopack shape carries the module **file** (`name.module.scss`); the webpack/Vite shapes carry the module **name** without an extension — resolve it to a file before editing (the target is a candidate either way) |
 | `local` only | the authored class without its module — grep the local across the codebase |
 | pure hash | no address; rows still carry the measured values and the note names this page's fix |
 
