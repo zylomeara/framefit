@@ -148,12 +148,25 @@ describe('package.json publication metadata', () => {
     expect(pkg.bin).toEqual({ 'framefit': 'dist/index.js' });
   });
 
-  it('npm pack ships only dist (files field pins the tarball surface)', () => {
+  it('the tarball carries dist AND the front page AND the licence', () => {
+    // `files` pins what npm takes out of the package tree, and dist is all of it. README.md and
+    // LICENSE are absent from that list and do not belong in it: npm adds them on its own, but
+    // only from the PACKAGE root -- this directory -- while both files live one level up, at the
+    // repo root. So the pin alone published a blank npm page and shipped MIT code with no licence
+    // text. prepack copies them in, postpack takes them back out; the pin and the copy are one
+    // mechanism, and asserting either half by itself is what kept the hole open.
     expect(pkg.files).toEqual(['dist']);
+    expect(pkg.scripts.prepack, 'prepack must put the front page in the package root').toContain('README.md');
+    expect(pkg.scripts.prepack, 'prepack must put the licence in the package root').toContain('LICENSE');
+    expect(pkg.scripts.postpack, 'postpack must remove the copies so they cannot be committed').toContain('rmSync');
   });
 
-  it('license is MIT and the LICENSE file ships with the repo', () => {
+  it('the two files prepack reads are where it looks for them', () => {
+    // prepack reads ../README.md and ../LICENSE. Rename either at the repo root and publish dies
+    // -- loudly, but only in the hands of whoever runs publish, once, irreversibly. This row is
+    // where that rename is supposed to be caught instead.
     expect(read('../LICENSE')).toContain('MIT License');
+    expect(read('../README.md')).toContain('framefit');
     expect(pkg.license).toBe('MIT');
   });
 

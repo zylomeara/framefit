@@ -11,3 +11,9 @@ coverage/
 token*.txt
 
 .superpowers/
+
+# prepack copies these from the repo root into the package root so the tarball has a front
+# page and a licence; postpack removes them. A stray copy must never reach the index -- two
+# LICENSE files in one repo drift, and the drift is invisible until someone reads the tarball.
+mcp-server/README.md
+mcp-server/LICENSE
