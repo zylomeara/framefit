@@ -4,7 +4,11 @@
 // (P2 without the guard would eat turbopack classes with a garbage parse).
 export interface SourceHint { module?: string; local: string; raw: string }
 
-const P1_TURBOPACK = /^(.+?)-module-(s?css|sass|less)-module__[A-Za-z0-9-]+__(.+)$/;
+// The hash is base64url — `_` is in the alphabet (a live run produced 6-char hashes with an
+// underscore, and the parser answered "not a CSS module" exactly on the code under review).
+// LAZY quantifier: the FIRST `__` ends the hash, so a local that itself contains `__` keeps its
+// full name instead of donating its head to the hash.
+const P1_TURBOPACK = /^(.+?)-module-(s?css|sass|less)-module__[A-Za-z0-9_-]+?__(.+)$/;
 // digit-lookahead: the tail must contain a digit, otherwise `grid_col__spacing_lg` parses.
 // A conscious FN: fully alphabetic base64 hashes → null (FP worse than FN).
 // The P1→P2 ORDER is the only guard against a P2 stub eating turbopack classes

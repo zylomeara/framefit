@@ -10,6 +10,16 @@ describe('parseCssModuleClass — conservative CSS-modules parse', () => {
     expect(parseCssModuleClass('foo-module-sass-module__aB12cd__root')?.module).toBe('foo.module.sass');
     expect(parseCssModuleClass('foo-module-less-module__aB12cd__root')?.module).toBe('foo.module.less');
   });
+  // Turbopack hashes are base64url, and `_` is in that alphabet. Live-run form: a 6-char hash
+  // with an underscore made the parser answer "none was recognized as a CSS module", and
+  // source/fix_plan went empty exactly on the code under review. The hash quantifier is LAZY,
+  // so the FIRST `__` ends the hash — the overlap class below keeps its full local.
+  it('P1: a base64url hash with an underscore parses (with and without a digit)', () => {
+    expect(parseCssModuleClass('user-settings-panel-module-scss-module__pQ_r7S__grid'))
+      .toEqual({ module: 'user-settings-panel.module.scss', local: 'grid', raw: 'user-settings-panel-module-scss-module__pQ_r7S__grid' });
+    expect(parseCssModuleClass('side-nav-module-scss-module__aBc_dE__root'))
+      .toEqual({ module: 'side-nav.module.scss', local: 'root', raw: 'side-nav-module-scss-module__aBc_dE__root' });
+  });
   // P2 Webpack: digit-lookahead, PascalCase local
   it('P2: both formats, PascalCase, module without an extension', () => {
     expect(parseCssModuleClass('header_logoWrapper__1a2b3c')).toEqual({ module: 'header', local: 'logoWrapper', raw: 'header_logoWrapper__1a2b3c' });
