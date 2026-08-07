@@ -127,8 +127,14 @@ const EXECUTABLE_FLOOR: Record<string, number> = {
 // a fence that needs it -- `every declared reason is actually used` below refuses dead vocabulary,
 // so a speculative reason fails rather than sitting here inviting misuse.
 const EXCLUSION_REASONS = new Set([
-  // `git clone` of this repository: it is private, so an unauthenticated clone cannot succeed.
-  'requires-public-repo',
+  // `git clone` of this repository. It is public now, so the clone WOULD succeed -- and that is the
+  // problem: it fetches the published default branch, so running it would verify main rather than
+  // the branch under review, and pay a full install and build to do it.
+  'clones-published-main',
+  // Fetches the package from the npm registry. Same shape as clones-published-main: it would verify
+  // the published artifact rather than the branch under review. Verified by hand instead -- from an
+  // empty npm cache, `npx -y framefit status` answers in about ten seconds and exits 0.
+  'runs-published-package',
   // Needs the `claude` CLI, which CI does not have, AND mutates the caller's MCP client config.
   'requires-mcp-host',
   // Pulls from the GHCR package, which is private: an anonymous token carries no pull scope.
@@ -150,8 +156,6 @@ const EXCLUSION_REASONS = new Set([
   'contains-placeholder',
   // Contains a command that never returns (`pnpm dev`, `ssh -N`), so nothing after it would run.
   'long-running-process',
-  // Depends on an npm package that is not published yet.
-  'unpublished-package',
 ]);
 
 // At most one per page, and it must also be stated in the page's prose.

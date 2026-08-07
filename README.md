@@ -48,10 +48,59 @@ planning batch usage.
 
 ### Tier 1 — local stdio (the 10-minute path)
 
-No server to host, no database, no auth. Claude Code spawns and tears down the process itself.
-Prerequisites: Node 20+ and [pnpm](https://pnpm.io/installation).
+No server to host, no database, no auth, and nothing to clone: Claude Code spawns and tears down
+the process itself. Prerequisite: Node 20+.
 
-One prerequisite is not a package: the design-QA cycle measures a *rendered* page, so it drives a
+```bash
+# not-executed: runs-published-package
+npx -y framefit status
+```
+
+That is [`framefit status`](docs/status.md), a full diagnosis of the instance and worth meeting
+before anything else here breaks. It needs no token, exits 0, and marks everything it cannot see
+`[SKIP]` instead of guessing — including the token itself, which on stdio lives in your MCP host's
+env block and not in your shell. Measured from an empty npm cache: about ten seconds to download
+and answer.
+
+Register it with Claude Code and supply a [Figma token](#figma-token):
+
+```bash
+# not-executed: requires-mcp-host,contains-placeholder
+claude mcp add framefit \
+  --env MCP_TRANSPORT=stdio \
+  --env FIGMA_TOKEN=figd_your_token_here \
+  -- npx -y framefit
+```
+
+Run `/mcp` inside Claude Code to confirm the 26 tools are live. Ready-to-copy config variants
+(project-scoped `.mcp.json`, global) are in [`examples/mcp-config/`](examples/mcp-config/).
+
+#### From source instead
+
+If you want to read or change the code, the checkout replaces `npx` and nothing else does. It
+additionally needs [pnpm](https://pnpm.io/installation):
+
+```bash
+# not-executed: clones-published-main
+git clone https://github.com/zylomeara/framefit.git && cd framefit/mcp-server
+pnpm install
+pnpm build
+node dist/index.js status   # the same diagnosis, from this checkout
+```
+
+Register that form by absolute path instead of `npx`:
+
+```bash
+# not-executed: requires-mcp-host,contains-placeholder
+claude mcp add framefit \
+  --env MCP_TRANSPORT=stdio \
+  --env FIGMA_TOKEN=figd_your_token_here \
+  -- node /absolute/path/to/framefit/mcp-server/dist/index.js
+```
+
+#### One prerequisite is not a package
+
+The design-QA cycle measures a *rendered* page, so it drives a
 real browser through a browser-automation MCP running alongside framefit (the
 [agent skill](docs/agents/design-qa-skill.md) is written against chrome-devtools tool names). On
 stdio there is no server for that browser to fetch the DOM extractor from, so `get_layout_spec`
@@ -72,37 +121,17 @@ of thousands. What that does NOT change is the tool contract: `compare_node_to_d
 the client standing between you and the tools. An agent driving the tools directly, or a different
 client, still pays both costs in full.
 
-```bash
-# not-executed: requires-public-repo
-git clone https://github.com/zylomeara/framefit.git && cd framefit/mcp-server
-pnpm install
-pnpm build
-node dist/index.js status   # sanity check: is this checkout able to do its job?
-```
-
-That last line is [`framefit status`](docs/status.md) — a full diagnosis of the instance, worth
-knowing about before anything else here breaks.
-
-Register it with Claude Code — replace the path with your absolute checkout path and supply a
-[Figma token](#figma-token):
-
-```bash
-# not-executed: requires-mcp-host,contains-placeholder
-claude mcp add framefit \
-  --env MCP_TRANSPORT=stdio \
-  --env FIGMA_TOKEN=figd_your_token_here \
-  -- node /absolute/path/to/framefit/mcp-server/dist/index.js
-```
-
-Run `/mcp` inside Claude Code to confirm the 26 tools are live. Ready-to-copy config variants
-(project-scoped `.mcp.json`, global) are in [`examples/mcp-config/`](examples/mcp-config/).
-
 ### Your first verdict
 
 [`examples/first-verdict.mjs`](examples/first-verdict.mjs) walks the
-[design-QA cycle](docs/tools/design-qa.md#the-cycle) over stdio and needs nothing installed. It is
-honest about the one step it cannot do: node has no browser, so it hands you two short thunks to
-paste into whatever browser automation you have, and does everything on either side of that.
+[design-QA cycle](docs/tools/design-qa.md#the-cycle) over stdio and installs nothing. It is honest
+about the one step it cannot do: node has no browser, so it hands you two short thunks to paste
+into whatever browser automation you have, and does everything on either side of that.
+
+It is a script **in this repository**, so it belongs to the [from-source path](#from-source-instead)
+above. If you registered framefit with `npx` and have no checkout, clone it for this walkthrough —
+or skip straight to the [tutorial](docs/design-qa-tutorial.md), which drives the same cycle through
+the tools themselves and needs no files of ours on your disk.
 
 A Figma URL ends `?node-id=12-340`. The tools take `12:340`, with a **colon** — both spellings parse,
 and this client rewrites the dash, so paste the id straight out of the address bar.

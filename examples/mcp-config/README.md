@@ -132,21 +132,19 @@ add it. `--import` is resolved as an ESM specifier, so a drive-letter path parse
 scheme is the drive letter — measured with `D:\...`:
 `ERR_UNSUPPORTED_ESM_URL_SCHEME ... Received protocol 'd:'`, the same with forward slashes.
 
-## 4. Future — npx one-liner
+## 4. npx one-liner
 
-Once the npm package is published, the clone-and-build step disappears and registration becomes a
-single line (no absolute paths):
+The package is on npm, so registration takes one line with no clone, no build and no absolute path.
+This is the form the README leads with:
 
 ```bash
-# not-executed: requires-mcp-host,unpublished-package,contains-placeholder
+# not-executed: requires-mcp-host,contains-placeholder
 claude mcp add framefit --env FIGMA_TOKEN=figd_your_token_here --env MCP_TRANSPORT=stdio -- npx -y framefit
 ```
 
 The transport flag is not optional: the server defaults to the HTTP transport, which is the shape
 the container deployments rely on, so without it this line boots an HTTP server the host never
 speaks to.
-
-This section will be updated with the published package name.
 
 ## HTTP transport
 
