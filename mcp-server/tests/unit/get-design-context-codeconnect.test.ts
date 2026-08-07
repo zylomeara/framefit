@@ -62,13 +62,13 @@ describe('get_design_context component descriptions', () => {
   it('surfaces the component-SET description (componentSetId from the per-node components ref)', async () => {
     const run = mkDoc({
       // componentSetId lives on the components ref in the /nodes response, not on getComponent's meta.
-      getNodesRaw: async () => ({ nodes: { '1:5': { document: frame, components: { 'C:1': { key: 'KEY1', componentSetId: '2534:50016' } } } } }),
+      getNodesRaw: async () => ({ nodes: { '1:5': { document: frame, components: { 'C:1': { key: 'KEY1', componentSetId: '12:395' } } } } }),
       getComponent: async (key: string) => ({ key, file_key: 'LIB', node_id: '7:7', name: 'navbar / controlAccent', description: '' }),
-      getFileComponentSets: async (fk: string) => fk === 'LIB' ? [{ key: 'SK', file_key: 'LIB', node_id: '2534:50016', name: 'navbar', description: 'navbar, topbar, навигация' }] : [],
+      getFileComponentSets: async (fk: string) => fk === 'LIB' ? [{ key: 'SK', file_key: 'LIB', node_id: '12:395', name: 'navbar', description: 'navbar, topbar' }] : [],
     });
     const res = await run({ file: 'abc', node_id: '1-5', depth: 4, include_component_docs: true });
     const body = JSON.parse(res.content[0].text);
-    expect(body.components['C:1'].componentSet).toEqual({ name: 'navbar', description: 'navbar, topbar, навигация' });
+    expect(body.components['C:1'].componentSet).toEqual({ name: 'navbar', description: 'navbar, topbar' });
     expect(body.components['C:1'].description).toBeUndefined();
   });
 

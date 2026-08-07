@@ -14,10 +14,10 @@ describe('buildSetNames (meta-first resolution)', () => {
   it('meta covers setId → name from meta, REST is NOT called', async () => {
     const a = api();
     const names = await buildSetNames(a, {
-      components: { '5:1': { key: 'k1', name: 'type=active, size=Big', componentSetId: '29780:9322' } },
-      componentSets: { '29780:9322': { key: 'sk1', name: 'subscrip banner' } },
+      components: { '5:1': { key: 'k1', name: 'type=active, size=Big', componentSetId: '12:380' } },
+      componentSets: { '12:380': { key: 'sk1', name: 'promo banner' } },
     }, logger);
-    expect(names.get('29780:9322')).toBe('subscrip banner');
+    expect(names.get('12:380')).toBe('promo banner');
     expect((a.getComponent as any)).not.toHaveBeenCalled();
     expect((a.getFileComponentSets as any)).not.toHaveBeenCalled();
   });

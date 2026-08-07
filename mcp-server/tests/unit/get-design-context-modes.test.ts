@@ -18,8 +18,8 @@ const doc = {
 };
 const variables = { meta: {
   variableCollections: { 'C': { id: 'C', name: 'Theme', defaultModeId: 'm1',
-    modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'MonogramDark' }] } },
-  variables: { 'V:1': { id: 'V:1', name: 'text icon/accent', resolvedType: 'COLOR', variableCollectionId: 'C',
+    modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'Dusk' }] } },
+  variables: { 'V:1': { id: 'V:1', name: 'text color/accent', resolvedType: 'COLOR', variableCollectionId: 'C',
     valuesByMode: { m1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, m2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } } } },
 } };
 
@@ -79,7 +79,7 @@ describe('get_design_context node-mode resolution', () => {
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text icon/accent', value: '#8b6afb', mode: 'MonogramDark', mode_source: 'node',
+      token: 'text color/accent', value: '#8b6afb', mode: 'Dusk', mode_source: 'node',
     });
   });
 
@@ -173,7 +173,7 @@ describe('get_design_context modes_applied', () => {
       resolve: () => undefined,
       isMultiMode: () => true,
       resolveInMode: () => ({
-        token: 'text icon/accent', value: '#8b6afb', mode: 'Light',
+        token: 'text color/accent', value: '#8b6afb', mode: 'Light',
         mode_dependent: true, mode_source: 'default',
         modes_applied: { Theme: 'Light (default)', 'sub-brand': 'Solar (node)' },
         pinned_axis_used: true, unconfirmed_default_used: false,
@@ -184,7 +184,7 @@ describe('get_design_context modes_applied', () => {
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text icon/accent', value: '#8b6afb', mode_source: 'default',
+      token: 'text color/accent', value: '#8b6afb', mode_source: 'default',
       modes_applied: { Theme: 'Light (default)', 'sub-brand': 'Solar (node)' },
       hint: "⚠️ mode-default — do not port the hex; see get_variables 'modes' for the per-mode value",
     });

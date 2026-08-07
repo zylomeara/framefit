@@ -28,8 +28,8 @@ describe('getComponent', () => {
     await expect(api().getComponent('CKEY')).rejects.toMatchObject({ kind: 'not_found' });
   });
   it('normalizes Figma snake_case component_set_id → componentSetId', async () => {
-    stub({ meta: { key: 'CKEY', file_key: 'LIB', node_id: '7:7', name: 'Btn', component_set_id: '2534:50016' } });
-    expect((await api().getComponent('CKEY')).componentSetId).toBe('2534:50016');
+    stub({ meta: { key: 'CKEY', file_key: 'LIB', node_id: '7:7', name: 'Btn', component_set_id: '12:395' } });
+    expect((await api().getComponent('CKEY')).componentSetId).toBe('12:395');
   });
   it('normalizes snake_case documentation_links → documentationLinks', async () => {
     stub({ meta: { key: 'CKEY', file_key: 'LIB', node_id: '7:7', name: 'Btn', documentation_links: [{ uri: 'http://d' }] } });
@@ -41,10 +41,10 @@ describe('getFileComponentSets', () => {
   it('returns the file library component sets from meta.component_sets', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       expect(url).toContain('/files/abc/component_sets');
-      return new Response(JSON.stringify({ meta: { component_sets: [{ key: 'SK', file_key: 'LIB', node_id: '2534:50016', name: 'navbar', description: 'navbar, topbar' }] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ meta: { component_sets: [{ key: 'SK', file_key: 'LIB', node_id: '12:395', name: 'navbar', description: 'navbar, topbar' }] } }), { status: 200, headers: { 'content-type': 'application/json' } });
     }));
     const sets = await api().getFileComponentSets('abc');
-    expect(sets).toEqual([{ key: 'SK', file_key: 'LIB', node_id: '2534:50016', name: 'navbar', description: 'navbar, topbar' }]);
+    expect(sets).toEqual([{ key: 'SK', file_key: 'LIB', node_id: '12:395', name: 'navbar', description: 'navbar, topbar' }]);
   });
   it('returns [] when meta.component_sets is absent', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: {} }), { status: 200, headers: { 'content-type': 'application/json' } })));

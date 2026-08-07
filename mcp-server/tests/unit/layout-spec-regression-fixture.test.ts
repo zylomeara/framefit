@@ -16,33 +16,33 @@ const box = (x: number, y: number, w: number, h: number) => ({ x, y, width: w, h
 
 // ── Figma-сторона (эталон) ──
 const drawerBody: RawSceneNode = {
-  id: '30872:96206', name: 'DrawerBody', type: 'FRAME', absoluteBoundingBox: box(0, 0, 343, 400),
+  id: '12:360', name: 'DrawerBody', type: 'FRAME', absoluteBoundingBox: box(0, 0, 343, 400),
   layoutMode: 'VERTICAL', itemSpacing: 20,
   children: [
-    { id: '30872:1', name: 'title', type: 'TEXT', absoluteBoundingBox: box(16, 0, 300, 24), characters: 'Почему уходите?',
-      style: { fontFamily: 'ABC Favorit', fontWeight: 650, fontSize: 19, lineHeightPx: 24, lineHeightUnit: 'PIXELS', letterSpacing: 0 },
+    { id: '12:1', name: 'title', type: 'TEXT', absoluteBoundingBox: box(16, 0, 300, 24), characters: 'Почему уходите?',
+      style: { fontFamily: 'Inter', fontWeight: 650, fontSize: 19, lineHeightPx: 24, lineHeightUnit: 'PIXELS', letterSpacing: 0 },
       fills: [{ type: 'SOLID', color: { r: 0.08, g: 0.08, b: 0.08 } }] },
-    { id: '30872:2', name: 'reasons', type: 'FRAME', absoluteBoundingBox: box(16, 44, 311, 200) }, // gap title→list = 20
+    { id: '12:2', name: 'reasons', type: 'FRAME', absoluteBoundingBox: box(16, 44, 311, 200) }, // gap title→list = 20
   ],
 } as RawSceneNode;
 
 const listItem: RawSceneNode = {
-  id: '30872:10', name: 'reason-item', type: 'INSTANCE', absoluteBoundingBox: box(16, 44, 311, 56),
+  id: '12:10', name: 'reason-item', type: 'INSTANCE', absoluteBoundingBox: box(16, 44, 311, 56),
   layoutMode: 'HORIZONTAL', itemSpacing: 16, componentId: '5:1',
   componentProperties: { 'Size#1:0': { type: 'VARIANT', value: 'medium' } },
   children: [
-    { id: '30872:11', name: 'radio', type: 'INSTANCE', absoluteBoundingBox: box(32, 62, 20, 20) },
-    { id: '30872:12', name: 'text', type: 'TEXT', absoluteBoundingBox: box(68, 60, 200, 24), characters: 'Дорого', // 68-52=16 gap
-      style: { fontFamily: 'ABC Favorit', fontWeight: 400, fontSize: 16, lineHeightPx: 22, lineHeightUnit: 'PIXELS', letterSpacing: 0 } },
+    { id: '12:11', name: 'radio', type: 'INSTANCE', absoluteBoundingBox: box(32, 62, 20, 20) },
+    { id: '12:12', name: 'text', type: 'TEXT', absoluteBoundingBox: box(68, 60, 200, 24), characters: 'Дорого', // 68-52=16 gap
+      style: { fontFamily: 'Inter', fontWeight: 400, fontSize: 16, lineHeightPx: 22, lineHeightUnit: 'PIXELS', letterSpacing: 0 } },
   ],
 } as RawSceneNode;
 
 const footer: RawSceneNode = {
-  id: '30872:20', name: 'footer', type: 'FRAME', absoluteBoundingBox: box(0, 500, 343, 120),
+  id: '12:20', name: 'footer', type: 'FRAME', absoluteBoundingBox: box(0, 500, 343, 120),
   layoutMode: 'VERTICAL', itemSpacing: 6,
   children: [
-    { id: '30872:21', name: 'stay', type: 'FRAME', absoluteBoundingBox: box(16, 516, 311, 44) },
-    { id: '30872:22', name: 'leave', type: 'FRAME', absoluteBoundingBox: box(16, 566, 311, 44) }, // gap 6
+    { id: '12:21', name: 'stay', type: 'FRAME', absoluteBoundingBox: box(16, 516, 311, 44) },
+    { id: '12:22', name: 'leave', type: 'FRAME', absoluteBoundingBox: box(16, 566, 311, 44) }, // gap 6
   ],
 } as RawSceneNode;
 
@@ -54,7 +54,7 @@ const domDrawerBody: DomSnapshotOk = {
   scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,
   children: [
     { kind: 'element', tag: 'h2', classList: ['title'], rect: { x: 16, y: 0, w: 300, h: 24 },
-      styles: { fontFamily: 'ABC Favorit', fontWeight: 700, fontSize: 18, lineHeight: 24, letterSpacing: 0, color: '#141414' } }, // Δ4: 18/700
+      styles: { fontFamily: 'Inter', fontWeight: 700, fontSize: 18, lineHeight: 24, letterSpacing: 0, color: '#141414' } }, // Δ4: 18/700
     { kind: 'element', tag: 'div', classList: ['reasons'], rect: { x: 16, y: 72, w: 311, h: 172 } }, // Δ1: gap 48; h=172 → end 244 = figma (44+200)
   ],
 };
@@ -68,7 +68,7 @@ const domListItem: DomSnapshotOk = {
   children: [
     { kind: 'element', tag: 'input', rect: { x: 32, y: 62, w: 20, h: 20 } },
     { kind: 'text', rect: { x: 52, y: 60, w: 216, h: 24 }, text: 'Дорого', // Δ2: gap 0 (52-52), голый text node; w=216 → end 268 = figma (68+200)
-      styles: { fontFamily: 'ABC Favorit', fontWeight: 400, fontSize: 16, lineHeight: 22, letterSpacing: 0 } },
+      styles: { fontFamily: 'Inter', fontWeight: 400, fontSize: 16, lineHeight: 22, letterSpacing: 0 } },
   ],
 };
 

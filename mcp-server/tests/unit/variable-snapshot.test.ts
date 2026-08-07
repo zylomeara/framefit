@@ -27,7 +27,7 @@ describe('normalizeEntries', () => {
   });
 
   it('extractLibraryKey pulls the 40-hex key out of a subscribed alias id', () => {
-    expect(extractLibraryKey('VariableID:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/13128:1691')).toBe('b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2');
+    expect(extractLibraryKey('VariableID:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/45:67')).toBe('b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2');
     expect(extractLibraryKey('V:1')).toBeNull();
     expect(extractLibraryKey('VariableID:nothex!/1:2')).toBeNull();
     // exactly 40 hex required: 41+ or 39 fails closed (→ null), not a wrong key

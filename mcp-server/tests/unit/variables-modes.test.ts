@@ -6,11 +6,11 @@ import type { ModeStack } from '../../src/domain/mode-resolve.js';
 const resp: RawVariablesResponse = { meta: {
   variableCollections: {
     'VC:1': { id: 'VC:1', name: 'Theme', defaultModeId: 'm1',
-      modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'MonogramDark' }] },
+      modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'Dusk' }] },
     'VC:2': { id: 'VC:2', name: 'Prim', defaultModeId: 'p', modes: [{ modeId: 'p', name: 'Only' }] },
   },
   variables: {
-    'V:1': { id: 'V:1', name: 'text icon/accent', resolvedType: 'COLOR', variableCollectionId: 'VC:1',
+    'V:1': { id: 'V:1', name: 'text color/accent', resolvedType: 'COLOR', variableCollectionId: 'VC:1',
       valuesByMode: { m1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, m2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } } },
     'V:2': { id: 'V:2', name: 'space/md', resolvedType: 'FLOAT', variableCollectionId: 'VC:2',
       valuesByMode: { p: 16 } },
@@ -21,7 +21,7 @@ describe('resolveAllModes', () => {
   it('returns per-mode hex keyed by mode NAME for a multi-mode COLOR', () => {
     const idx = buildVariableIndex(resp);
     const r = resolveAllModes(resp.meta!.variables['V:1'], idx);
-    expect(r).toEqual({ mode_dependent: true, modes: { Default: '#a73afd', MonogramDark: '#8b6afb' } });
+    expect(r).toEqual({ mode_dependent: true, modes: { Default: '#a73afd', Dusk: '#8b6afb' } });
   });
 
   it('returns null for a single-mode collection (no bloat)', () => {
@@ -172,9 +172,9 @@ describe('resolveBoundVariableInMode modes_applied (local path)', () => {
 describe('listTokens attaches modes', () => {
   it('marks a local multi-mode token mode_dependent with per-mode values', () => {
     const tokens = listTokens(resp);
-    const accent = tokens.find((t) => t.name === 'text icon/accent')!;
+    const accent = tokens.find((t) => t.name === 'text color/accent')!;
     expect(accent.mode_dependent).toBe(true);
-    expect(accent.modes).toEqual({ Default: '#a73afd', MonogramDark: '#8b6afb' });
+    expect(accent.modes).toEqual({ Default: '#a73afd', Dusk: '#8b6afb' });
     const space = tokens.find((t) => t.name === 'space/md')!;
     expect(space.mode_dependent).toBeUndefined();
     expect(space.modes).toBeUndefined();

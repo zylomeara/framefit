@@ -20,7 +20,7 @@ export interface ViewCaps {
 }
 
 // branch.maxTotalNodes = 90 (was 60, measured empirically): a typical
-// 15-row mo-list card (card-body→mo-list→mo-list-item×15→[icon,label,value]×15, 4 levels)
+// 15-row ds-list card (card-body→ds-list→ds-list-item×15→[icon,label,value]×15, 4 levels)
 // yields 62 live nodes — fits WITHOUT truncation (60 would already truncate such a card from ~row 15
 // at the L3→L4 seam, honestly flagged childrenTruncated, but truncated nonetheless). The three mirrors
 // (branch.maxTotalNodes + the extractor.ts literal + the Zod gate in dom-snapshot-schema.ts) must stay in sync.

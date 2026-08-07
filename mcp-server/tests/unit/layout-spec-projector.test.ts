@@ -126,11 +126,11 @@ describe('buildLayoutSpec', () => {
     const text: RawSceneNode = {
       id: '1:9', name: 'title', type: 'TEXT', absoluteBoundingBox: box(16, 12, 200, 24), characters: 'Причина',
       // letterSpacing: REST TypeStyle returns px (including fractional) — passthrough without conversion (a conscious drop of PERCENT→px)
-      style: { fontFamily: 'ABC Favorit', fontWeight: 650, fontSize: 19, lineHeightPx: 24, lineHeightUnit: 'PIXELS', letterSpacing: 0.25 },
+      style: { fontFamily: 'Inter', fontWeight: 650, fontSize: 19, lineHeightPx: 24, lineHeightUnit: 'PIXELS', letterSpacing: 0.25 },
       fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }],
     } as RawSceneNode;
     const spec = buildLayoutSpec(text);
-    expect(spec.text).toEqual({ fontFamily: 'ABC Favorit', fontWeight: 650, fontSize: 19, lineHeightPx: 24, lineHeightUnit: 'PIXELS', letterSpacing: 0.25, colorHex: '#000000' });
+    expect(spec.text).toEqual({ fontFamily: 'Inter', fontWeight: 650, fontSize: 19, lineHeightPx: 24, lineHeightUnit: 'PIXELS', letterSpacing: 0.25, colorHex: '#000000' });
     const parent = buildLayoutSpec({ id: '1:1', name: 'p', type: 'FRAME', layoutMode: 'VERTICAL', absoluteBoundingBox: box(0, 0, 300, 60), children: [text] } as RawSceneNode);
     expect(parent.children[0].text?.fontSize).toBe(19);
   });

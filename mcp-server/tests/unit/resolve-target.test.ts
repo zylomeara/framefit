@@ -288,7 +288,7 @@ describe('computeConfidence', () => {
     expect(c.boundaryMarginPx).toBe(0);
   });
 
-  // Real board 2334:41996 calibration (see spec). Equal-width prod/ref so discrepancy === |prodH − 1000|.
+  // Calibration anchors (see spec). Equal-width prod/ref so discrepancy === |prodH − 1000|.
   it('real lane-1 #1 (margin 65, discrepancy 34 → 1.9) → high (the board\'s high anchor)', () => {
     const c = computeConfidence({ x: 0, y: 0, w: 768, h: 1034 }, ref, 265, band(200, 400), false);
     expect(c.scaleDiscrepancyPx).toBe(34);

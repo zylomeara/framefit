@@ -6,7 +6,7 @@ const okSnapshot = {
   rect: { x: 16, y: 100, w: 343, h: 120 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,
-  styles: { display: 'flex', backgroundColor: '#ffffff', borderRadius: 16, fontFamily: 'ABC Favorit', fontWeight: 700, fontSize: 18, lineHeight: 24, letterSpacing: 0, color: '#000000' },
+  styles: { display: 'flex', backgroundColor: '#ffffff', borderRadius: 16, fontFamily: 'Inter', fontWeight: 700, fontSize: 18, lineHeight: 24, letterSpacing: 0, color: '#000000' },
   componentHints: { tag: 'div', classList: ['custom-radio'], data: {} },
   children: [
     { kind: 'element', tag: 'h2', classList: ['title'], rect: { x: 16, y: 112, w: 200, h: 24 }, styles: { fontSize: 18, fontWeight: 700, lineHeight: 24 } },

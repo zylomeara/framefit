@@ -1321,7 +1321,7 @@ function crossAndPaddingRows(
       // Depth 4: textBeyondCut used to block the descent BEFORE collectFigTexts —
       // correct while the spec tree caught at most 2 hops from c (collectTexts, in contrast, looks at the raw tree
       // without such a limit and saw "there is something deeper" exactly where the spec tree stopped). At
-      // capture depth 4 the path to a TEXT (e.g. mo-typography in mo-list-item, 3 hops from c) now ACTUALLY
+      // capture depth 4 the path to a TEXT (e.g. ds-typography in ds-list-item, 3 hops from c) now ACTUALLY
       // lands in spec.children — but collectTexts(c,2) (see projector.ts, below) still does not see it
       // directly (a 2-hop limit) and keeps honestly setting textBeyondCut = "not sure if there is anything
       // deeper". Previously that was equivalent to "there is no data deeper" — now it is NOT equivalent: the data

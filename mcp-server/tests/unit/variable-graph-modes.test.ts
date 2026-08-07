@@ -3,11 +3,11 @@ import { buildGraph, resolveKeyModes, resolveKeyInMode, collectionLibKey, keyIsM
 
 const K = (h: string) => h.padEnd(40, '0');
 const colls = [{ collection_id: 'C', default_mode: 'm1',
-  modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'MonogramDark' }] }];
+  modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'Dusk' }] }];
 const libs = [
   { fileKey: 'L1', colls, vars: [{ library_key: K('aaa'), local_id: 'VariableID:1:1', collection_id: 'C',
     values_by_mode: { m1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, m2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } },
-    name: 'text icon/accent', resolved_type: 'COLOR' }] },
+    name: 'text color/accent', resolved_type: 'COLOR' }] },
 ];
 
 describe('keyIsMultiMode', () => {
@@ -46,7 +46,7 @@ describe('resolveKeyModes', () => {
   it('returns per-mode hex by name and by id for a cross-library variable', () => {
     const g = buildGraph(libs);
     const r = resolveKeyModes(g, K('aaa'))!;
-    expect(r.modesByName).toEqual({ Default: '#a73afd', MonogramDark: '#8b6afb' });
+    expect(r.modesByName).toEqual({ Default: '#a73afd', Dusk: '#8b6afb' });
     expect(r.modesById).toEqual({ m1: '#a73afd', m2: '#8b6afb' });
     expect(r.collectionId).toBe('C');
   });
@@ -82,7 +82,7 @@ describe('resolveKeyInMode', () => {
   it('resolves the node mode for the source collection (node source)', () => {
     const g = buildGraph(libs);            // libs[0] variable is in collection 'C'
     const r = resolveKeyInMode(g, K('aaa'), new Map([['C', 'm2']]))!;
-    expect(r).toMatchObject({ token: 'text icon/accent', value: '#8b6afb', mode: 'MonogramDark', mode_dependent: true, mode_source: 'node' });
+    expect(r).toMatchObject({ token: 'text color/accent', value: '#8b6afb', mode: 'Dusk', mode_dependent: true, mode_source: 'node' });
   });
   it('falls back to default mode when the stack has no entry for the collection', () => {
     const g = buildGraph(libs);
@@ -204,8 +204,8 @@ describe('resolveKeyInMode single-mode-top + downstream multi-mode fellback (gra
 });
 
 // Honest mode_source under COMPLETE ancestor coverage. The cross-library chain is:
-// text icon/accent (Theme, multi-mode Light/Dark, DEFAULT Light) --alias--> brand/600 (sub-brand
-// collection 511f94…, multi-mode Lunar(default)/Solar) --alias--> purple/600 (single-mode).
+// text color/accent (Theme, multi-mode Light/Dark, DEFAULT Light) --alias--> brand/600 (sub-brand
+// collection a1a1a1…, multi-mode Lunar(default)/Solar) --alias--> purple/600 (single-mode).
 // When the stack confirms the sub-brand Solar mode but has NO Theme entry, the TOP (Theme)
 // collection takes its default. Under COMPLETE coverage that default genuinely renders on screen,
 // so the composite (#8b6afb, Solar) equals on-screen → mode_source:'node'. Under INCOMPLETE
@@ -215,11 +215,11 @@ describe('resolveKeyInMode: honest mode_source under complete coverage', () => {
   const brandKey = K('b6006000');
   const purpleMarketKey = K('9600aa00');
   const purpleSolarKey = K('9600bb00');
-  const themeCollId = 'VariableCollectionId:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3/12228:2318';
-  const subBrandCollId = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/15515:117';
+  const themeCollId = 'VariableCollectionId:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3/78:90';
+  const subBrandCollId = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/34:57';
   // The stack names the SAME sub-brand library collection under a DIFFERENT subscribed-instance
-  // suffix (7856:948) than the graph's library-instance (15515:117) — same 40-hex library key.
-  const subBrandSubscribedId = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/7856:948';
+  // suffix (34:56) than the graph's library-instance (34:57) — same 40-hex library key.
+  const subBrandSubscribedId = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/34:56';
 
   function crossLibGraph() {
     return buildGraph([
@@ -230,14 +230,14 @@ describe('resolveKeyInMode: honest mode_source under complete coverage', () => {
           values_by_mode: {
             ThemeLight: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + brandKey + '/9:9' },
             ThemeDark: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + brandKey + '/9:9' },
-          }, name: 'text icon/accent', resolved_type: 'COLOR' }] },
+          }, name: 'text color/accent', resolved_type: 'COLOR' }] },
       { fileKey: 'FSubBrand',
-        colls: [{ collection_id: subBrandCollId, default_mode: '15436:0',
-          modes: [{ modeId: '15436:0', name: 'Lunar' }, { modeId: '12398:0', name: 'Solar' }] }],
+        colls: [{ collection_id: subBrandCollId, default_mode: '12:0',
+          modes: [{ modeId: '12:0', name: 'Lunar' }, { modeId: '34:0', name: 'Solar' }] }],
         vars: [{ library_key: brandKey, local_id: 'VariableID:9:9', collection_id: subBrandCollId,
           values_by_mode: {
-            '15436:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleMarketKey + '/1:1' },
-            '12398:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleSolarKey + '/1:1' },
+            '12:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleMarketKey + '/1:1' },
+            '34:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleSolarKey + '/1:1' },
           }, name: 'brand/600', resolved_type: 'COLOR' }] },
       { fileKey: 'FPurpleMarket',
         colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
@@ -252,7 +252,7 @@ describe('resolveKeyInMode: honest mode_source under complete coverage', () => {
 
   it('#1 complete coverage: Solar confirmed downstream, Theme absent → #8b6afb, mode_source:node (headline)', () => {
     const g = crossLibGraph();
-    const r = resolveKeyInMode(g, accentKey, new Map([[subBrandSubscribedId, '12398:0']]), true)!;
+    const r = resolveKeyInMode(g, accentKey, new Map([[subBrandSubscribedId, '34:0']]), true)!;
     expect(r.value).toBe('#8b6afb');
     expect(r.mode_dependent).toBe(true);
     expect(r.mode_source).toBe('node');
@@ -260,14 +260,14 @@ describe('resolveKeyInMode: honest mode_source under complete coverage', () => {
 
   it('#1 same stack but coverage INCOMPLETE → mode_source:default (value still #8b6afb)', () => {
     const g = crossLibGraph();
-    const r = resolveKeyInMode(g, accentKey, new Map([[subBrandSubscribedId, '12398:0']]), false)!;
+    const r = resolveKeyInMode(g, accentKey, new Map([[subBrandSubscribedId, '34:0']]), false)!;
     expect(r.value).toBe('#8b6afb');
     expect(r.mode_source).toBe('default');
   });
 
   it('#2 all modes explicit (no multi-mode default anywhere) → node regardless of coverage', () => {
     const g = crossLibGraph();
-    const stack = new Map([[themeCollId, 'ThemeLight'], [subBrandSubscribedId, '12398:0']]);
+    const stack = new Map([[themeCollId, 'ThemeLight'], [subBrandSubscribedId, '34:0']]);
     expect(resolveKeyInMode(g, accentKey, stack, false)!.mode_source).toBe('node');
     expect(resolveKeyInMode(g, accentKey, stack, true)!.mode_source).toBe('node');
   });
@@ -280,7 +280,7 @@ describe('resolveKeyInMode: honest mode_source under complete coverage', () => {
   });
 
   it('never-wrong: an invalid explicit mode stays default even under complete coverage', () => {
-    const g = buildGraph(libs);   // simple text icon/accent in collection 'C' (m1/m2)
+    const g = buildGraph(libs);   // simple text color/accent in collection 'C' (m1/m2)
     const r = resolveKeyInMode(g, K('aaa'), new Map([['C', 'bogus-mode-id']]), true)!;
     expect(r.value).toBe('#a73afd');
     expect(r.mode_source).toBe('default');
@@ -297,7 +297,7 @@ describe('resolveKeyInMode: honest mode_source under complete coverage', () => {
 
 describe('collectionLibKey', () => {
   it('strips the prefix and returns the substring before the first "/"', () => {
-    expect(collectionLibKey('VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/7856:948'))
+    expect(collectionLibKey('VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/34:56'))
       .toBe('a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1');
   });
   it('returns the whole id (minus prefix) when there is no "/"', () => {
@@ -306,22 +306,22 @@ describe('collectionLibKey', () => {
 });
 
 // Cross-library collection matching by library key. Fixture mirrors the
-// ground-truth cross-library chain: text icon/accent (Theme, multi-mode Light/Dark) --alias--> brand/600
-// (sub-brand collection VariableCollectionId:511f94.../15515:117, modes Lunar 15436:0
-// (default) / Solar 12398:0) --alias--> purple/600 (single-mode, literal color, one variant per
+// ground-truth cross-library chain: text color/accent (Theme, multi-mode Light/Dark) --alias--> brand/600
+// (sub-brand collection VariableCollectionId:a1a1a1.../34:57, modes Lunar 12:0
+// (default) / Solar 34:0) --alias--> purple/600 (single-mode, literal color, one variant per
 // sub-brand mode). The page's explicitVariableModes names the SAME library collection by a
-// DIFFERENT (subscribed-instance) suffix: .../7856:948 — same 40-hex library key, 511f94....
+// DIFFERENT (subscribed-instance) suffix: .../34:56 — same 40-hex library key, a1a1a1....
 describe('resolveKeyInMode: cross-library collection matching by library key (Task B)', () => {
   const K40 = (h: string) => h.padEnd(40, '0');
   const accentKey = 'd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4';
   const brandKey = K40('b6006000');
   const purpleMarketKey = K40('9600aa00');
   const purpleSolarKey = K40('9600bb00');
-  const themeCollId = 'VariableCollectionId:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3/12228:2318';
-  const subBrandCollId = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/15515:117';
-  // The page's explicitVariableModes uses this SUBSCRIBED-instance suffix (7856:948), never
-  // the graph's own library-instance suffix (15515:117) — same library key, different string.
-  const subBrandSubscribedId = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/7856:948';
+  const themeCollId = 'VariableCollectionId:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3/78:90';
+  const subBrandCollId = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/34:57';
+  // The page's explicitVariableModes uses this SUBSCRIBED-instance suffix (34:56), never
+  // the graph's own library-instance suffix (34:57) — same library key, different string.
+  const subBrandSubscribedId = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/34:56';
 
   function crossLibGraph() {
     return buildGraph([
@@ -332,14 +332,14 @@ describe('resolveKeyInMode: cross-library collection matching by library key (Ta
           values_by_mode: {
             ThemeLight: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + brandKey + '/9:9' },
             ThemeDark: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + brandKey + '/9:9' },
-          }, name: 'text icon/accent', resolved_type: 'COLOR' }] },
+          }, name: 'text color/accent', resolved_type: 'COLOR' }] },
       { fileKey: 'FSubBrand',
-        colls: [{ collection_id: subBrandCollId, default_mode: '15436:0',
-          modes: [{ modeId: '15436:0', name: 'Lunar' }, { modeId: '12398:0', name: 'Solar' }] }],
+        colls: [{ collection_id: subBrandCollId, default_mode: '12:0',
+          modes: [{ modeId: '12:0', name: 'Lunar' }, { modeId: '34:0', name: 'Solar' }] }],
         vars: [{ library_key: brandKey, local_id: 'VariableID:9:9', collection_id: subBrandCollId,
           values_by_mode: {
-            '15436:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleMarketKey + '/1:1' },
-            '12398:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleSolarKey + '/1:1' },
+            '12:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleMarketKey + '/1:1' },
+            '34:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleSolarKey + '/1:1' },
           }, name: 'brand/600', resolved_type: 'COLOR' }] },
       { fileKey: 'FPurpleMarket',
         colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
@@ -354,7 +354,7 @@ describe('resolveKeyInMode: cross-library collection matching by library key (Ta
 
   it('matches the sub-brand collection by library key despite the differing subscribed-instance suffix (RED before B: #a73afd, GREEN after: #8b6afb)', () => {
     const g = crossLibGraph();
-    const r = resolveKeyInMode(g, accentKey, new Map([[subBrandSubscribedId, '12398:0']]))!;
+    const r = resolveKeyInMode(g, accentKey, new Map([[subBrandSubscribedId, '34:0']]))!;
     expect(r.value).toBe('#8b6afb'); // Solar, via library-key match
   });
 
@@ -367,12 +367,12 @@ describe('resolveKeyInMode: cross-library collection matching by library key (Ta
   it('does not apply a stack entry for a DIFFERENT library key', () => {
     const g = crossLibGraph();
     const otherLibId = 'VariableCollectionId:' + 'deadbeef'.repeat(5) + '/1:1';
-    const r = resolveKeyInMode(g, accentKey, new Map([[otherLibId, '12398:0']]))!;
+    const r = resolveKeyInMode(g, accentKey, new Map([[otherLibId, '34:0']]))!;
     expect(r.value).toBe('#a73afd'); // untouched — falls back to the sub-brand's own default
   });
 
   it('local id without "/": exact match still works; a differing local id does not match', () => {
-    const g = buildGraph(libs); // simple fixture: 'text icon/accent' in collection 'C' (no '/'), modes m1/m2
+    const g = buildGraph(libs); // simple fixture: 'text color/accent' in collection 'C' (no '/'), modes m1/m2
     const exact = resolveKeyInMode(g, K('aaa'), new Map([['C', 'm2']]))!;
     expect(exact.value).toBe('#8b6afb');
     const differing = resolveKeyInMode(g, K('aaa'), new Map([['D', 'm2']]))!;
@@ -391,7 +391,7 @@ const crossLibs = () => [
       values_by_mode: {
         t1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' },
         t2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' },
-      }, name: 'text icon/accent', resolved_type: 'COLOR' }] },
+      }, name: 'text color/accent', resolved_type: 'COLOR' }] },
   { fileKey: 'L2', colls: [{ collection_id: 'CS', default_mode: 's1', name: 'sub-brand',
     modes: [{ modeId: 's1', name: 'default' }, { modeId: 's2', name: 'Solar' }] }],
     vars: [{ library_key: K('cab'), local_id: 'VariableID:9:9', collection_id: 'CS',
@@ -439,7 +439,7 @@ describe('resolveKeyInMode modes_applied', () => {
           { library_key: K('acc'), local_id: 'VariableID:1:1', collection_id: 'CT',
             values_by_mode: { t1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' },
                               t2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' } },
-            name: 'text icon/accent', resolved_type: 'COLOR' },
+            name: 'text color/accent', resolved_type: 'COLOR' },
           { library_key: K('ccc'), local_id: 'VariableID:2:2', collection_id: 'CT',
             values_by_mode: { t1: { r: 1, g: 1, b: 1, a: 1 }, t2: { r: 0, g: 0, b: 0, a: 1 } },
             name: 'core/base', resolved_type: 'COLOR' },
@@ -476,17 +476,17 @@ const originLibs = () => [
       values_by_mode: {
         t1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('bab') + '/9:9' },
         t2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('bab') + '/9:9' },
-      }, name: 'text icon/accent', resolved_type: 'COLOR' }] },
-  { fileKey: 'ORIGIN', colls: [{ collection_id: 'VariableCollectionId:206:40514', default_mode: 's1',
+      }, name: 'text color/accent', resolved_type: 'COLOR' }] },
+  { fileKey: 'ORIGIN', colls: [{ collection_id: 'VariableCollectionId:21:43', default_mode: 's1',
     name: 'SubBrand', key: K('5eed'),
     modes: [{ modeId: 's1', name: 'Lunar' }, { modeId: 's2', name: 'Solar' }] }],
-    vars: [{ library_key: K('bab'), local_id: 'VariableID:9:9', collection_id: 'VariableCollectionId:206:40514',
+    vars: [{ library_key: K('bab'), local_id: 'VariableID:9:9', collection_id: 'VariableCollectionId:21:43',
       values_by_mode: { s1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, s2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } },
       name: 'brand/600', resolved_type: 'COLOR' }] },
 ];
 
 describe('resolveKeyInMode plain-id origin join via published collection key', () => {
-  const pin = 'VariableCollectionId:' + K('5eed') + '/7856:948';   // subscribed form of the SAME collection
+  const pin = 'VariableCollectionId:' + K('5eed') + '/34:56';   // subscribed form of the SAME collection
 
   it('subscribed-form pin joins the origin (plain-id) collection and resolves the pinned mode', () => {
     const g = buildGraph(originLibs());
@@ -522,7 +522,7 @@ describe('resolveKeyInMode plain-id origin join via published collection key', (
 
   it('join is case-insensitive: UPPERCASE pin prefix still joins the lower-hex stored key', () => {
     const g = buildGraph(originLibs());
-    const upperPin = 'VariableCollectionId:' + K('5eed').toUpperCase() + '/7856:948';
+    const upperPin = 'VariableCollectionId:' + K('5eed').toUpperCase() + '/34:56';
     const r = resolveKeyInMode(g, K('acc'), new Map([[upperPin, 's2']]), true)!;
     expect(r.value).toBe('#8b6afb');
     expect(r.mode_source).toBe('node');
@@ -539,7 +539,7 @@ describe('resolveKeyInMode plain-id origin join via published collection key', (
   it('an exact-but-invalid pin is TERMINAL — never rescued by a farther same-key entry', () => {
     const g = buildGraph(originLibs());
     const stack = new Map([
-      ['VariableCollectionId:206:40514', 'junk-mode'],                       // exact pin, unmappable mode
+      ['VariableCollectionId:21:43', 'junk-mode'],                       // exact pin, unmappable mode
       ['VariableCollectionId:' + K('5eed') + '/9999:1', 's2'],               // farther same-key entry
     ]);
     const r = resolveKeyInMode(g, K('acc'), stack, true)!;

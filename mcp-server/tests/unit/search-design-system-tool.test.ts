@@ -69,9 +69,9 @@ describe('search_design_system tool', () => {
   it('extracts the team id from a Figma team URL', async () => {
     let seenTeam = '';
     const run = harness(async (teamId) => { seenTeam = teamId; return { components: [], componentSets: [], styles: [] }; });
-    const res = await run({ team_id: 'https://www.figma.com/files/1379448576167521267/team/1593514226249264149', query: 'x' });
-    expect(seenTeam).toBe('1593514226249264149');
-    expect(res.content[0].text).toContain('"team_id":"1593514226249264149"');
+    const res = await run({ team_id: 'https://www.figma.com/files/9876543210987654321/team/1234567890123456789', query: 'x' });
+    expect(seenTeam).toBe('1234567890123456789');
+    expect(res.content[0].text).toContain('"team_id":"1234567890123456789"');
   });
 
   it('maps forbidden to a scope/Enterprise hint', async () => {

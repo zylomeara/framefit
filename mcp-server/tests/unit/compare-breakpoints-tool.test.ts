@@ -28,11 +28,11 @@ describe('compare_breakpoints tool', () => {
       ],
     });
     const getNodesRaw = vi.fn(async (_k: string, ids: string[]) => ({
-      nodes: { '27997:221404': { document: frame('27997:221404', 'desktop', 1280, 40) },
-               '27997:221765': { document: mobFrameNoTabs('27997:221765', 'mob', 360) } },
+      nodes: { '12:390': { document: frame('12:390', 'desktop', 1280, 40) },
+               '12:391': { document: mobFrameNoTabs('12:391', 'mob', 360) } },
     }));
     const run = harness({ getNodesRaw });
-    const res = await run({ file: 'abc', node_ids: ['27997-221404', '27997-221765'], name: 'tabs', depth: 8 });
+    const res = await run({ file: 'abc', node_ids: ['12-390', '12-391'], name: 'tabs', depth: 8 });
     const out = JSON.parse(res.content[0].text);
     const desktop = out.breakpoints.find((b: any) => b.frame_name === 'desktop');
     const mob = out.breakpoints.find((b: any) => b.frame_name === 'mob');
@@ -48,12 +48,12 @@ describe('compare_breakpoints tool', () => {
 
   it('returns the element style per breakpoint in one batched fetch', async () => {
     const getNodesRaw = vi.fn(async (_k: string, ids: string[]) => ({
-      nodes: { '27997:221404': { document: frame('27997:221404', 'desktop', 1280, 40) },
-               '27997:221765': { document: frame('27997:221765', 'mob', 360, 24) } },
+      nodes: { '12:390': { document: frame('12:390', 'desktop', 1280, 40) },
+               '12:391': { document: frame('12:391', 'mob', 360, 24) } },
     }));
     const run = harness({ getNodesRaw });
-    const res = await run({ file: 'abc', node_ids: ['27997-221404', '27997-221765'], name: 'tabs', depth: 8 });
-    expect(getNodesRaw).toHaveBeenCalledWith('abc', ['27997:221404', '27997:221765'], 8);
+    const res = await run({ file: 'abc', node_ids: ['12-390', '12-391'], name: 'tabs', depth: 8 });
+    expect(getNodesRaw).toHaveBeenCalledWith('abc', ['12:390', '12:391'], 8);
     const out = JSON.parse(res.content[0].text);
     expect(out.element).toBe('tabs');
     const desktop = out.breakpoints.find((b: any) => b.frame_name === 'desktop');

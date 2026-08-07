@@ -91,9 +91,9 @@ describe('dedupeTokens', () => {
     // Case A: same 4 core fields, DIFFERENT per-mode maps → both must survive (the modes key change).
     const out = dedupeTokens([
       t({ name: 'text/accent', collection: 'Theme', value: '#a73afd', type: 'COLOR',
-        modes: { Default: '#a73afd', MonogramDark: '#8b6afb' }, mode_dependent: true }),
+        modes: { Default: '#a73afd', Dusk: '#8b6afb' }, mode_dependent: true }),
       t({ name: 'text/accent', collection: 'Theme', value: '#a73afd', type: 'COLOR',
-        modes: { Default: '#a73afd', MonogramLight: '#c9a7ff' }, mode_dependent: true }),
+        modes: { Default: '#a73afd', Dawn: '#c9a7ff' }, mode_dependent: true }),
     ]);
     expect(out).toHaveLength(2);
   });
@@ -102,9 +102,9 @@ describe('dedupeTokens', () => {
     // Case B: identical in all five fields including modes → still collapses to one.
     const out = dedupeTokens([
       t({ name: 'text/accent', collection: 'Theme', value: '#a73afd', type: 'COLOR',
-        modes: { Default: '#a73afd', MonogramDark: '#8b6afb' }, mode_dependent: true }),
+        modes: { Default: '#a73afd', Dusk: '#8b6afb' }, mode_dependent: true }),
       t({ name: 'text/accent', collection: 'Theme', value: '#a73afd', type: 'COLOR',
-        modes: { Default: '#a73afd', MonogramDark: '#8b6afb' }, mode_dependent: true }),
+        modes: { Default: '#a73afd', Dusk: '#8b6afb' }, mode_dependent: true }),
     ]);
     expect(out).toHaveLength(1);
   });

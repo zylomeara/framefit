@@ -318,20 +318,20 @@ describe('get_variables tool', () => {
     const deps: ToolDeps = {
       buildApi: () => ({ getVariablesLocal: async () => ({ meta: {
         variableCollections: { 'VC': { id: 'VC', name: 'Local', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
-        variables: { 'V': { id: 'V', name: 'text icon/accent', resolvedType: 'COLOR', variableCollectionId: 'VC',
+        variables: { 'V': { id: 'V', name: 'text color/accent', resolvedType: 'COLOR', variableCollectionId: 'VC',
           valuesByMode: { m: { type: 'VARIABLE_ALIAS', id: `VariableID:${KEY}/9:9` } } } },
       } }) } as unknown as FigmaApi),
       defaultToken: 'figd_x', logger,
       variableGraph: { resolve: (k) => k === KEY
-        ? { value: '#a73afd', name: 'text icon/accent', modesByName: { Default: '#a73afd', MonogramDark: '#8b6afb' } }
+        ? { value: '#a73afd', name: 'text color/accent', modesByName: { Default: '#a73afd', Dusk: '#8b6afb' } }
         : undefined },
     };
     registerGetVariablesTool(server, deps);
     const res = await call('get_variables', { file: 'abc' });
     const body = JSON.parse(textOf(res.content[0]));
-    const t = body.tokens.find((x: any) => x.name === 'text icon/accent');
+    const t = body.tokens.find((x: any) => x.name === 'text color/accent');
     expect(t.mode_dependent).toBe(true);
-    expect(t.modes).toEqual({ Default: '#a73afd', MonogramDark: '#8b6afb' });
+    expect(t.modes).toEqual({ Default: '#a73afd', Dusk: '#8b6afb' });
   });
 
   it('byte-clamps the tokens page and reports clamped + advancing next_offset', async () => {

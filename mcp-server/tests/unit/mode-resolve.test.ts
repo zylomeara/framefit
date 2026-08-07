@@ -61,29 +61,29 @@ describe('buildModeByCollection (nearest-ancestor-wins, de-duped by library key)
   // collection under DIFFERENT subscribed-instance id suffixes, the NEAREST ancestor's
   // mode must win — and be first in map order so the resolver picks it.
   const LIBKEY = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
-  const pageColl = `VariableCollectionId:${LIBKEY}/7856:948`;   // subscribed instance on the page
+  const pageColl = `VariableCollectionId:${LIBKEY}/34:56`;   // subscribed instance on the page
   const frameColl = `VariableCollectionId:${LIBKEY}/9999:1`;    // a different instance on a nearer frame
 
   it('keeps the nearest ancestor mode when the same library collection is set at two levels', () => {
     // root -> parent order: PAGE (shallowest) sets Lunar, nearer FRAME sets Solar.
     const stack = buildModeByCollection([
-      { id: 'PAGE', name: 'Page', type: 'CANVAS', explicitVariableModes: { [pageColl]: '15436:0' } },   // Lunar
-      { id: 'FRAME', name: 'Sub', type: 'FRAME', explicitVariableModes: { [frameColl]: '12398:0' } },   // Solar (nearest)
+      { id: 'PAGE', name: 'Page', type: 'CANVAS', explicitVariableModes: { [pageColl]: '12:0' } },   // Lunar
+      { id: 'FRAME', name: 'Sub', type: 'FRAME', explicitVariableModes: { [frameColl]: '34:0' } },   // Solar (nearest)
     ]);
     // Exactly one entry for the library key, and it carries the NEAREST (Solar) mode id.
     const entries = [...stack].filter(([k]) => k.includes(LIBKEY));
     expect(entries.length).toBe(1);
-    expect(entries[0][1]).toBe('12398:0');
+    expect(entries[0][1]).toBe('34:0');
     // Nearest entry is first in map order (so the resolver's first-match lib-key fallback picks it).
     expect([...stack.keys()][0]).toContain(LIBKEY);
   });
 
   it('exact-id override still keeps the nearest mode for the same full collection id', () => {
     const stack = buildModeByCollection([
-      { id: 'PAGE', name: 'Page', type: 'CANVAS', explicitVariableModes: { [pageColl]: '15436:0' } },
-      { id: 'FRAME', name: 'Sub', type: 'FRAME', explicitVariableModes: { [pageColl]: '12398:0' } },
+      { id: 'PAGE', name: 'Page', type: 'CANVAS', explicitVariableModes: { [pageColl]: '12:0' } },
+      { id: 'FRAME', name: 'Sub', type: 'FRAME', explicitVariableModes: { [pageColl]: '34:0' } },
     ]);
-    expect(stack.get(pageColl)).toBe('12398:0');
+    expect(stack.get(pageColl)).toBe('34:0');
   });
 
   it('unrelated collections from different levels all survive', () => {
@@ -102,13 +102,13 @@ describe('collectSubtreeChains + buildModeByCollection (within-subtree nearest-w
   // first-match could pick the shallower one. Lib-key-folding the ORDERED chain instead keeps only
   // the DEEPER (nearest) node's mode, first in map order.
   const LIBKEY = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
-  const rootColl = `VariableCollectionId:${LIBKEY}/7856:948`;   // shallower: request root
+  const rootColl = `VariableCollectionId:${LIBKEY}/34:56`;   // shallower: request root
   const deepColl = `VariableCollectionId:${LIBKEY}/8888:2`;     // deeper: inner frame (nearest to leaf)
 
   const tree: RawSceneNode = {
-    id: 'ROOT', name: 'Header', type: 'FRAME', explicitVariableModes: { [rootColl]: '15436:0' },   // Lunar
+    id: 'ROOT', name: 'Header', type: 'FRAME', explicitVariableModes: { [rootColl]: '12:0' },   // Lunar
     children: [
-      { id: 'INNER', name: 'Sub', type: 'FRAME', explicitVariableModes: { [deepColl]: '12398:0' },  // Solar
+      { id: 'INNER', name: 'Sub', type: 'FRAME', explicitVariableModes: { [deepColl]: '34:0' },  // Solar
         children: [{ id: 'LEAF', name: 'Union', type: 'VECTOR' }] },
     ],
   };
@@ -124,7 +124,7 @@ describe('collectSubtreeChains + buildModeByCollection (within-subtree nearest-w
     const stack = buildModeByCollection(chains.get('LEAF')!);   // root→node order
     const entries = [...stack].filter(([k]) => k.includes(LIBKEY));
     expect(entries.length).toBe(1);
-    expect(entries[0][1]).toBe('12398:0');                      // Solar (deeper INNER), not Lunar
+    expect(entries[0][1]).toBe('34:0');                      // Solar (deeper INNER), not Lunar
     expect([...stack.keys()][0]).toContain(LIBKEY);            // nearest entry is first for the lib-key scan
   });
 });
@@ -172,16 +172,16 @@ describe('ancestorChainFromSubtree — the document chain', () => {
     expect(ancestorChainFromSubtree(tree, 'ZZ:9')).toBeUndefined();
   });
   it('MUTATION LOCK L1-min-2: a compound without the leading I finds the I-form of raw (normalized match)', () => {
-    const t2 = plain('F', [plain('A', [{ ...plain('I30872:1;5:5') }])]);
-    expect(ancestorChainFromSubtree(t2, '30872:1;5:5')!.map((n) => n.id)).toEqual(['F', 'A']);
+    const t2 = plain('F', [plain('A', [{ ...plain('I12:1;5:5') }])]);
+    expect(ancestorChainFromSubtree(t2, '12:1;5:5')!.map((n) => n.id)).toEqual(['F', 'A']);
   });
-  it('plain ids do NOT collapse under the normalized match (30872:1 ≠ I30872:1;5:5)', () => {
-    const t3 = plain('F', [plain('30872:1')]);
-    expect(ancestorChainFromSubtree(t3, '30872:1;5:5')).toBeUndefined();
+  it('plain ids do NOT collapse under the normalized match (12:1 ≠ I12:1;5:5)', () => {
+    const t3 = plain('F', [plain('12:1')]);
+    expect(ancestorChainFromSubtree(t3, '12:1;5:5')).toBeUndefined();
   });
   it('MUTATION LOCK on the want side: a targetId WITH a leading I also finds the I-form of raw (stripI is mandatory on BOTH sides — the calling tool passes pairId as-is)', () => {
-    const t4 = plain('F', [plain('A', [{ ...plain('I30872:1;5:5') }])]);
-    expect(ancestorChainFromSubtree(t4, 'I30872:1;5:5')!.map((n) => n.id)).toEqual(['F', 'A']);
+    const t4 = plain('F', [plain('A', [{ ...plain('I12:1;5:5') }])]);
+    expect(ancestorChainFromSubtree(t4, 'I12:1;5:5')!.map((n) => n.id)).toEqual(['F', 'A']);
   });
 });
 

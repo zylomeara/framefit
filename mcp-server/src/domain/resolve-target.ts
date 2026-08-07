@@ -92,7 +92,7 @@ export type ResolveResult =
 // of the resolved zone ⟹ the answer is provably correct → 'high' (the no-false-high invariant, now
 // unconditional in the width relationship). A middling margin → 'medium'; margin ≪ drift → 'low'.
 // max(.,1) lets a perfectly-aligned lane (discrepancy ≈ 0) return 'high' for any hit ≥ 1px inside its
-// band. Thresholds calibrated on board 2334:41996 (see spec). A coarse (frame-only) hit is always 'low'.
+// band. Thresholds calibrated on a reference board (see spec). A coarse (frame-only) hit is always 'low'.
 export function computeConfidence(
   prodBox: Box, refBox: Box, pointY: number, suggestedBox: Box, coarse: boolean,
 ): Confidence {
