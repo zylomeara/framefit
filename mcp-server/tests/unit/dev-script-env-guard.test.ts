@@ -1,8 +1,9 @@
-// `pnpm dev` on Node 22 with no .env: --env-file-if-exists puts the MISSING path into the watch
-// set and fs.watch throws ENOENT (measured per-runtime: node 20 and 24 tolerate the pair, node 22
-// exits non-zero). The documented sequence copies .env first, so no page lies — but the natural
-// "does it even start?" run before that step greets a contributor with a stack trace on exactly
-// one Node major. The dev script therefore ensures the file exists BEFORE the watching node starts.
+// `pnpm dev` on the Node 22 line as measured in early August: --env-file-if-exists put the
+// MISSING path into the watch set and fs.watch threw ENOENT (nodes 20 and 24 tolerated the pair).
+// Re-measured later on 22.23: no longer reproduces — the upstream regression appears fixed in
+// newer 22.x patches. The guard stays regardless: it makes the run order-independent on every
+// Node instead of betting on patch levels, and the documented cp-then-dev sequence stays optional
+// for a first "does it even start?" run.
 // These tests execute the guard AS SHIPPED (extracted from package.json, not a copy), so a rewrite
 // of the script that drops or reorders the guard goes red here.
 import { describe, it, expect } from 'vitest';
