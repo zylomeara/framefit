@@ -279,6 +279,22 @@ function inFlowChildren(raw: RawSceneNode): RawSceneNode[] {
 // the short `inFlowChildren` name; consumers get the disambiguated `inFlowSceneChildren`.
 export { inFlowChildren as inFlowSceneChildren };
 
+// Mirror of the extractor's DomChild.outOfFlow: children that ARE rendered but do not participate
+// in this box's flow — visible, non-zero-area, layoutPositioning ABSOLUTE. A live run lost a
+// frame's overlay and three modals to the silent filter above, and the truncation note ("cut by
+// DEPTH") then pointed the reader at a knob that cannot reveal them: they were DIRECT children.
+// Count them so the reader is told to pair such a node directly (the DOM side already says this).
+// Invisible and zero-area children stay silent on both sides — they render nothing to pair.
+function outOfFlowCount(raw: RawSceneNode): number {
+  return (raw.children ?? []).filter((c) =>
+    c.visible !== false &&
+    c.layoutPositioning === 'ABSOLUTE' &&
+    !!c.absoluteBoundingBox &&
+    c.absoluteBoundingBox.width > 0 &&
+    c.absoluteBoundingBox.height > 0,
+  ).length;
+}
+
 function sortByAxis(kids: RawSceneNode[], axis: 'row' | 'col' | undefined): RawSceneNode[] {
   return [...kids].sort((a, b) => (axis === 'row'
     ? a.absoluteBoundingBox!.x - b.absoluteBoundingBox!.x
@@ -362,6 +378,8 @@ function projectChildren(kids: RawSceneNode[], axisOf: (n: RawSceneNode) => 'row
       const sub = projectChildren(grand, axisOf, depthLeft - 1, caps.maxNestedChildren, caps, ctx);
       child.children = sub.list;
       if (sub.truncated) { child.childrenTruncated = true; child.truncationCause = 'breadth'; }
+      const oof = outOfFlowCount(c);
+      if (oof > 0) child.outOfFlow = oof;
     } else if (inFlowChildren(c).length > 0) {
       // the depth budget is exhausted, but there IS real in-flow content under the node — honest, not a
       // fake list. Mirrors dom-extractor.ts hasFlowContent. Requires raw one level deeper than the
@@ -522,6 +540,8 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
   );
   spec.children = list;
   if (truncated) { spec.childrenTruncated = true; spec.truncationCause = 'breadth'; }
+  const rootOof = outOfFlowCount(raw);
+  if (rootOof > 0) spec.outOfFlow = rootOof;
   pruneToBudget(spec.children, { n: 0 }, budgetForCaps(caps, maxDepth));
 
   return spec;

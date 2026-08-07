@@ -27,6 +27,35 @@ describe('buildLayoutSpec', () => {
     expect(spec.children.map((c) => c.id)).toEqual(['1:2', '1:3']);
   });
 
+  // Live-run p.2/p.8: a frame's overlay and three modals — DIRECT children, layoutPositioning
+  // ABSOLUTE — vanished from the spec without a trace, and the truncation note ("cut by DEPTH")
+  // pointed at a knob that cannot reveal them. Mirror of DomChild.outOfFlow: every enumerated
+  // level carries the count of visible, non-zero-area ABSOLUTE children the flow filter dropped.
+  it('counts visible ABSOLUTE children as outOfFlow at the root and on nested levels', () => {
+    const raw = {
+      id: '1:1', name: 'screen', type: 'FRAME', absoluteBoundingBox: box(0, 0, 400, 800), layoutMode: 'VERTICAL',
+      children: [
+        child('1:2', 'content', 0, 0, 400, 700, { children: [
+          child('1:5', 'row', 0, 0, 400, 40),
+          child('1:6', 'toast', 0, 0, 200, 40, { layoutPositioning: 'ABSOLUTE' } as Partial<RawSceneNode>)] }),
+        child('1:3', 'overlay', 0, 0, 400, 800, { layoutPositioning: 'ABSOLUTE' } as Partial<RawSceneNode>),
+        child('1:4', 'modal', 40, 100, 320, 500, { layoutPositioning: 'ABSOLUTE' } as Partial<RawSceneNode>),
+      ],
+    } as RawSceneNode;
+    const spec = buildLayoutSpec(raw);
+    expect(spec.outOfFlow).toBe(2);                          // overlay + modal, dropped from the root flow
+    expect(spec.children.map((c) => c.id)).toEqual(['1:2']); // the filter itself is unchanged
+    expect(spec.children[0].outOfFlow).toBe(1);              // the nested toast
+  });
+  it('invisible and zero-area ABSOLUTE children stay silent (both sides skip them without a count)', () => {
+    const raw = { id: '1:1', name: 'f', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 100),
+      children: [child('1:2', 'a', 0, 0),
+        child('1:3', 'hidden', 0, 0, 20, 20, { layoutPositioning: 'ABSOLUTE', visible: false } as Partial<RawSceneNode>),
+        child('1:4', 'flat', 0, 0, 0, 0, { layoutPositioning: 'ABSOLUTE' } as Partial<RawSceneNode>)] } as RawSceneNode;
+    const spec = buildLayoutSpec(raw);
+    expect(spec.outOfFlow).toBeUndefined();
+  });
+
   it('projects strokeHex/strokeWeight/strokeBoundVar from raw.strokes', () => {
     const spec = buildLayoutSpec({ id: '1:1', name: 'n', type: 'FRAME',
       strokes: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 } }], strokeWeight: 2 } as any);

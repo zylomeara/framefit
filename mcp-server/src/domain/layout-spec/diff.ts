@@ -769,6 +769,16 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         + 'this box layout - a deeper capture will NOT reveal them; pair such an element directly if the '
         + 'design counts it as a child'
       : '';
+    // The same class in the other direction (measured live: a frame's overlay and three modals,
+    // DIRECT children, vanished from the spec and the reader was sent after a depth knob). The
+    // projector counts what its flow filter drops — name it here symmetrically. After a figma-side
+    // unwrap the children under comparison belong to the WRAPPER, so its count is the honest one.
+    const figOof = (unwrapInfo?.side === 'figma' ? unwrapInfo.figWrapper?.outOfFlow : spec.outOfFlow) ?? 0;
+    const figOofHint = figOof
+      ? `; ${figOof} Figma child(ren) are out of flow (layoutPositioning ABSOLUTE - overlay/modal/pin class) `
+        + 'and are not in the spec flow - raising max_depth will NOT reveal them; pair such a node directly if it '
+        + 'must be verified'
+      : '';
     const high = sal.matched.filter((m) => m.confidence === 'high');
     if (high.length === 0) {
       const figDesc = figKids.map((c) => `${c.name}(${c.type})`).join(', ');
@@ -788,7 +798,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         : '';
       rows.push({ prop: 'structure_mismatch', status: 'warn',
         figma: `${figKids.length} children: ${figDesc}`, dom: `${domKids2.length} children: ${domDescOf(domKids2)}`,
-        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${figOofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
       // source-hint: unpaired — the MAIN "add pairs" flow (0 high-conf: nothing
       // matched). All DOM children are unpaired; cap 10 AT the collection site. navigation-to-investigate.
       collectUnpaired(opts, domKids2);
@@ -803,7 +813,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     collectUnpaired(opts, domKids2.filter((_, i) => !matchedDom.has(i)));
     rows.push({ prop: 'structure_mismatch', status: 'warn',
       figma: `${figKids.length} children`, dom: `${domKids2.length} children`,
-      note: `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+      note: `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
     const figSub = high.map((m) => figKids[m.figIdx]);
     const domSub = high.map((m) => domKids2[m.domIdx]);
     salvageAdj = high.map((m, k) => k > 0 && m.figIdx === high[k - 1].figIdx + 1 && m.domIdx === high[k - 1].domIdx + 1);

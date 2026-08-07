@@ -144,6 +144,12 @@ Response (abridged), from the stdio server:
 }
 ```
 
+The spec keeps flow children only. When a node's direct children include rendered but absolutely
+positioned layers (`layoutPositioning: ABSOLUTE` - overlays, modals, pins), that node carries
+`outOfFlow: N` (mirroring the DOM snapshot's field of the same name) instead of listing them:
+raising `max_depth` will NOT reveal such a child - request its node id directly, or pair it as its
+own pair in `compare_node_to_dom`.
+
 ---
 
 ### suggest_pairs
