@@ -17,7 +17,8 @@ not vibes — and it is built to **not lie**:
   silently passed off as verified.
 - **Source hint** — *which file*. Diffs carry a code address parsed from CSS-module class names
   (works in production builds too), so a failing row points at `ProductCard.module.css`, not just
-  "font-weight is wrong".
+  "font-weight is wrong". Minified builds can turn this on with one bundler setting — see
+  [docs/named-classes.md](docs/named-classes.md).
 - **Fix plan** — *what to change*. Fail rows are regrouped into concrete edits per candidate file.
 - **Strictness profiles** — `strict` / `layout` / `token-aware`: a named tolerance-and-scope preset
   per run. A profile never relaxes a verdict; `layout` even blocks a final green until you re-run

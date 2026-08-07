@@ -460,7 +460,9 @@ the compare, repeat until `complete: true`.
 ## Step 6 — navigate to the code: source hints and fix_plan
 
 When the DOM uses CSS modules, class names carry a deterministic file address
-(`ComponentName.module.css` → local class). The differ surfaces this as:
+(`ComponentName.module.css` → local class). If your production build minifies class names into
+bare hashes, one bundler setting restores the address — see
+[named classes](named-classes.md). The differ surfaces this as:
 
 - `pairs[].source` — per-channel hints: `root` (the pair root), `anchor` (the styled wrapper that
   actually carries fills/borders/radius), `children[]` (per gap/offset row), `text[]` (per
