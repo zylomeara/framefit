@@ -393,7 +393,7 @@ const NEUTRAL_TEAM_IDS = ['1234567890123456789', '9876543210987654321'];
 /** Real hosts this project legitimately names. Project-specific, so it can rot: every entry is
  *  asserted to match at least one live occurrence -- in a URL OR bare, since R7 sees bare ones and
  *  ghcr.io (the image registry, 8 occurrences) is only ever written without a scheme. */
-const ALLOWED_HOSTS = ['figma.com', 'www.figma.com', 'api.figma.com', 'developers.figma.com', 'github.com', 'pnpm.io', 'ghcr.io'];
+const ALLOWED_HOSTS = ['figma.com', 'www.figma.com', 'api.figma.com', 'developers.figma.com', 'github.com', 'pnpm.io', 'ghcr.io', 'www.npmjs.com'];
 
 /** Loopback ports that belong to THIS stack. Same no-dead-entry assertion as ALLOWED_HOSTS. */
 const ALLOWED_PORTS = [3846, 8080, 5432];

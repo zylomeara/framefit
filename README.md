@@ -178,10 +178,13 @@ A build that throws, or that comes back with zero libraries, is not confirmed an
 that clock: it is retried by the next graph-needing call past a fixed 60-second interval, so
 until one confirmed build lands the cadence is a minute, not a day.
 
-> An npm package is on the way - it will replace the clone-and-build step with a one-line
-> `claude mcp add framefit --env MCP_TRANSPORT=stdio -- npx -y framefit`. The transport flag is
-> not optional: the server defaults to the HTTP transport, which is the shape the container
-> deployments rely on. Until the package is published, use the path form above.
+> Published on npm as [`framefit`](https://www.npmjs.com/package/framefit), which replaces the
+> clone-and-build step above with `claude mcp add framefit --env MCP_TRANSPORT=stdio -- npx -y
+> framefit`. The transport flag is not optional: the server defaults to the HTTP transport, which
+> is the shape the container deployments rely on. The clone-and-build path above stays documented
+> and stays first here until the npx form has been run end to end by someone who is not its
+> author; a quickstart is a promise about a stranger's ten minutes, and this one is not measured
+> yet.
 
 ### Tier 2 — Docker (single-tenant or the production stack)
 
@@ -324,6 +327,9 @@ layout.
 
 ## Project status
 
-Early `0.x` — the tool surface may still change between minor versions. The verification layer is
-production-tested against one large design system; broader coverage and an npm release are in
-progress. MIT-licensed (see [`LICENSE`](LICENSE)).
+Early `0.x` — the tool surface may still change between minor versions, and `0.x` is the honest
+number: semver's promise about breaking changes is one this project cannot yet keep cheaply,
+because nobody outside it has used the tool surface long enough to say what breaking it costs. The
+verification layer is production-tested against one large design system; broader coverage is in
+progress. Published on npm as [`framefit`](https://www.npmjs.com/package/framefit), MIT-licensed
+(see [`LICENSE`](LICENSE)).
