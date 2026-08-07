@@ -129,6 +129,14 @@ jobs:
       # and with whatever the maintainer runs locally, or the config is read and its
       # entries silently ignored (that cost a red CI once already).
       GITLEAKS_VERSION: "8.30.1"
+    # The workflow-level default is `mcp-server`, and this job's steps belong at the repo
+    # root, where .gitleaks.toml and the history live. Same override publish-image needs,
+    # for the same reason. The action this job replaced never needed it: `defaults.run`
+    # does not govern a JS action's working directory, so the move to a `run:` step is
+    # what exposed the dependency.
+    defaults:
+      run:
+        working-directory: .
     steps:
       - uses: actions/checkout@v4
         with:
@@ -185,7 +193,16 @@ jobs:
             expected=$(git rev-list --count HEAD)
           fi
 
-          gitleaks detect --redact --exit-code=2 --log-level=info --log-opts="$opts" 2>&1 | tee scan.log
+          # --config is explicit and absolute on purpose. gitleaks looks for .gitleaks.toml in
+          # the CURRENT directory and, not finding one, scans with its built-in rules and says
+          # nothing about it - so every allowlisted fixture in this repository reports as a leak
+          # and the job fails for a reason that has nothing to do with a secret. Measured: run
+          # from mcp-server/ it reports 15 findings, from the root none, over the same 137
+          # commits. A wrong path exits 1 rather than falling back, which is why the path is
+          # passed rather than inherited. Same family as the version pin above: a config that is
+          # read but not applied looks exactly like a config that is applied.
+          gitleaks detect --redact --exit-code=2 --log-level=info \
+            --config "${GITHUB_WORKSPACE}/.gitleaks.toml" --log-opts="$opts" 2>&1 | tee scan.log
 
           scanned=$(sed -E 's/\x1b\[[0-9;]*m//g' scan.log \
             | grep -oE '[0-9]+ commits scanned' | grep -oE '^[0-9]+' | tail -1 || true)
