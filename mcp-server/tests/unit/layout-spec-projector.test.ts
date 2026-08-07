@@ -47,6 +47,18 @@ describe('buildLayoutSpec', () => {
     expect(spec.children.map((c) => c.id)).toEqual(['1:2']); // the filter itself is unchanged
     expect(spec.children[0].outOfFlow).toBe(1);              // the nested toast
   });
+  it('a depth-terminal node still counts its ABSOLUTE children (raw is one level deeper by FETCH)', () => {
+    // Adversarial-pass hole: at the projection boundary neither branch fired for a node whose
+    // children are ALL out of flow — no childrenTruncated (nothing in flow) and no outOfFlow
+    // (counted only in the recursion branch). The very loss class this change was written to close.
+    const raw = { id: '1:1', name: 'f', type: 'FRAME', absoluteBoundingBox: box(0, 0, 200, 200), layoutMode: 'VERTICAL',
+      children: [child('1:2', 'row', 0, 0, 200, 40, { children: [
+        child('1:3', 'tooltip', 0, 0, 100, 30, { layoutPositioning: 'ABSOLUTE' } as Partial<RawSceneNode>)] })] } as RawSceneNode;
+    const spec = buildLayoutSpec(raw, {}, { maxDepth: 1 }); // children are terminal immediately
+    expect(spec.children[0].outOfFlow).toBe(1);
+    expect(spec.children[0].childrenTruncated).toBeUndefined(); // nothing in flow was cut
+  });
+
   it('invisible and zero-area ABSOLUTE children stay silent (both sides skip them without a count)', () => {
     const raw = { id: '1:1', name: 'f', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 100),
       children: [child('1:2', 'a', 0, 0),

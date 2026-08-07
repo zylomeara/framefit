@@ -295,14 +295,17 @@ export function buildVerification(pairs: PairResult[], opts: {
   const tokenGroups = new Map<string, { places: { node_id: string; selector?: string; prop: string }[]; reasons: Map<string, number>; firstNote: string }>();
   for (const p of pairs) {
     const holes = coverageHoleRows(p.rows);
-    if (p.summary.fail === 0 && p.summary.demoted === 0 && p.summary.unchecked === 0 && p.summary.review === 0 && holes.length === 0) clean += 1;
+    // Matched-value review rows are advisory (rowValuesMatched): they neither hold complete=false
+    // nor enter blocking below, and they do not cost a pair its `clean` — a receipt saying
+    // complete:true over checked:1/clean:0 would contradict itself. The summary.review count and
+    // the 📝 rows themselves stay visible.
+    const gatingReview = p.rows.some((r) => r.status === 'review' && !rowValuesMatched(r));
+    if (p.summary.fail === 0 && p.summary.demoted === 0 && p.summary.unchecked === 0 && !gatingReview && holes.length === 0) clean += 1;
     if (p.summary.fail > 0) anyFail = true;
     if (p.summary.demoted > 0) anyDemoted = true;
     if (p.summary.unchecked > 0) anyUnchecked = true;
     if (holes.length > 0) anyHole = true;
-    // Matched-value review rows are advisory (rowValuesMatched): they neither hold complete=false
-    // nor enter blocking below — the summary.review count and the 📝 rows themselves stay visible.
-    if (p.rows.some((r) => r.status === 'review' && !rowValuesMatched(r))) anyReview = true;
+    if (gatingReview) anyReview = true;
     for (const h of holes) blocking.push(holeToBlocking(h, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'unchecked') blocking.push(uncheckedToBlocking(r, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'review') {

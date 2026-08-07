@@ -521,6 +521,22 @@ describe('review gate', () => {
     expect(md).not.toContain('awaiting token confirmation');
     expect(md).toContain('📝1'); // the row is not hidden — only no longer a blocker
   });
+  // Adversarial pass, two holes in the same change:
+  it('a review row whose values are DIFFERENT tokens (gradient provenance class) still blocks', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'gradient-token', figma: 'grad/brand', dom: '--legacy',
+      status: 'review', note: 'both from a token — confirm the semantics', token: 'grad/brand', tokenReason: 'semantic-confirm' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking.some((b) => b.kind === 'unconfirmed_token')).toBe(true);
+  });
+  it('a pair whose only finding is an advisory matched review counts clean (no self-contradictory receipt)', () => {
+    const v = buildVerification([pairFromRows([
+      { prop: 'size.w', figma: 100, dom: 100, status: 'pass' },
+      { prop: 'color[x]', figma: '#242429', dom: '#242429', status: 'review', note: 'mode unconfirmed', token: 'tok/x', tokenReason: 'mode-unconfirmed' },
+    ])], { depthLevels: 4 });
+    expect(v.complete).toBe(true);
+    expect(v.pairs.clean).toBe(1); // complete:true with clean 0/1 would contradict itself
+  });
+
   it('matched-value rows do not join the confirm_token aggregation (no phantom places)', () => {
     const matched = pairFromRows([{ prop: 'color[a]', figma: '#333333', dom: '#333333',
       status: 'review', note: 'confirm', token: 'tok/y', tokenReason: 'semantic-confirm' }]);

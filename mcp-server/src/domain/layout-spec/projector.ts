@@ -373,13 +373,17 @@ function projectChildren(kids: RawSceneNode[], axisOf: (n: RawSceneNode) => 'row
       ...(td.fixedWidth ? { textFixedWidth: true } : {}),
       ...(pads ? { paddings: pads } : {}),
       ...(c.layoutSizingHorizontal === 'HUG' ? { hugWidth: true as const } : {}) };
+    // Counted at EVERY projected level, the depth-terminal one included (raw is one level deeper
+    // than the projection by FETCH=projection+1, so the count is real there) — at the boundary a
+    // node whose children are ALL out of flow fires neither branch below and used to lose them
+    // with zero signal on either channel.
+    const oof = outOfFlowCount(c);
+    if (oof > 0) child.outOfFlow = oof;
     if (depthLeft > 0) {
       const grand = sortByAxis(inFlowChildren(c), axisOf(c));
       const sub = projectChildren(grand, axisOf, depthLeft - 1, caps.maxNestedChildren, caps, ctx);
       child.children = sub.list;
       if (sub.truncated) { child.childrenTruncated = true; child.truncationCause = 'breadth'; }
-      const oof = outOfFlowCount(c);
-      if (oof > 0) child.outOfFlow = oof;
     } else if (inFlowChildren(c).length > 0) {
       // the depth budget is exhausted, but there IS real in-flow content under the node — honest, not a
       // fake list. Mirrors dom-extractor.ts hasFlowContent. Requires raw one level deeper than the

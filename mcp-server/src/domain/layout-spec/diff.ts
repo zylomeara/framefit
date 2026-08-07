@@ -771,9 +771,10 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       : '';
     // The same class in the other direction (measured live: a frame's overlay and three modals,
     // DIRECT children, vanished from the spec and the reader was sent after a depth knob). The
-    // projector counts what its flow filter drops — name it here symmetrically. After a figma-side
-    // unwrap the children under comparison belong to the WRAPPER, so its count is the honest one.
-    const figOof = (unwrapInfo?.side === 'figma' ? unwrapInfo.figWrapper?.outOfFlow : spec.outOfFlow) ?? 0;
+    // projector counts what its flow filter drops — name it here symmetrically. No unwrap case to
+    // handle: a SUCCESSFUL unwrap equalizes the cardinalities, so this mismatch block and
+    // unwrapInfo never coexist — the pair root's own count is the only reachable one.
+    const figOof = spec.outOfFlow ?? 0;
     const figOofHint = figOof
       ? `; ${figOof} Figma child(ren) are out of flow (layoutPositioning ABSOLUTE - overlay/modal/pin class) `
         + 'and are not in the spec flow - raising max_depth will NOT reveal them; pair such a node directly if it '
