@@ -65,6 +65,8 @@ export interface SpecChild {
   children?: SpecChild[];      // symmetric with DomChild.children
   childrenTruncated?: boolean;
   truncationCause?: 'depth' | 'breadth' | 'budget'; // which cap cut children; only 'depth' is drill-fixable
+  outOfFlow?: number;          // mirror of DomChild.outOfFlow: visible non-zero-area ABSOLUTE children dropped
+                               // from this box's flow — a deeper capture will NOT reveal them; pair directly
 }
 
 export interface TextLeaf {
@@ -109,6 +111,7 @@ export interface LayoutSpec {
   children: SpecChild[];       // visible, in-flow, sorted by the main-axis coordinate
   childrenTruncated?: boolean; // the MAX_SPEC_CHILDREN cap fired
   truncationCause?: 'depth' | 'breadth' | 'budget'; // which cap cut children; only 'depth' is drill-fixable
+  outOfFlow?: number;          // see SpecChild.outOfFlow — the same count for the requested root
 }
 
 // ── DOM side (produced by the canonical extractor, validated by a Zod schema in adapters) ──

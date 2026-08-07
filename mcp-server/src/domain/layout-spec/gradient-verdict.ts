@@ -63,11 +63,17 @@ export function gradientVerdict(figG: GradientModel | undefined, domG: GradientM
     // unverified geometry. NEVER a difference → cannot create a false-red. FULL geometry capture is deferred.
     rows.push({ prop: 'gradient-geometry', figma: f.kind, dom: d.kind, status: 'unchecked', note: 'radial/conic: center/radius/shape/rotation not compared — verify visually' });
   }
-  { const v = provenance(f.whole as TS, d.whole as TS, 'gradient'); rows.push({ prop: 'gradient-token', figma: 'whole', dom: 'whole', status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}) }); }
+  // figma/dom carry the COMPARED provenance (the token name per side, null where a side has none) —
+  // never a placeholder. The advisory demotion (rowValuesMatched) reads exactly figma/dom, and the
+  // literals 'whole'/'stop' that used to sit here read as "matched" by construction: every gradient
+  // token review became advisory, complete:true over gradients wired to DIFFERENT tokens and over a
+  // DOM side that was never read. Null for an unread side keeps the null-guard gating honest.
+  const tokOf = (t: TS): string | null => ('token' in t ? t.token : null);
+  { const v = provenance(f.whole as TS, d.whole as TS, 'gradient'); rows.push({ prop: 'gradient-token', figma: tokOf(f.whole as TS), dom: tokOf(d.whole as TS), status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}) }); }
   if (f.stops.length === d.stops.length) {
     for (let i = 0; i < f.stops.length; i++) {
       const v = provenance(f.stops[i].token as TS, d.stops[i].token as TS, `stop ${i}`);
-      if (v.status !== 'pass') rows.push({ prop: `gradient-stop-${i}-token`, figma: 'stop', dom: 'stop', status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}) });
+      if (v.status !== 'pass') rows.push({ prop: `gradient-stop-${i}-token`, figma: tokOf(f.stops[i].token as TS), dom: tokOf(d.stops[i].token as TS), status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}) });
     }
   }
   return rows;

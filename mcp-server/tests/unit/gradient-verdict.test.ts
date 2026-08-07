@@ -86,6 +86,27 @@ describe('gradientVerdict token axes', () => {
     const dom = T({literal:true}, [{literal:true},{literal:true}]);
     expect(status(gradientVerdict(fig, dom, undefined), 'gradient-stop-0-token')).toBe('fail');
   });
+  // Adversarial-pass blocker: the provenance rows used to carry the literal placeholders
+  // 'whole'/'stop' in figma/dom, and the advisory demotion (rowValuesMatched) compares exactly
+  // figma/dom — every gradient token review read as "matched" by construction, complete:true over
+  // gradients wired to DIFFERENT tokens and over a DOM side that was never read. The rows must
+  // carry the compared provenance itself: the token name per side, null for a side that has none.
+  it('provenance rows carry the compared token names in figma/dom, null for an unread side', () => {
+    const both = gradientVerdict(T({token:'grad/brand'}), T({token:'--legacy'}), undefined)
+      .find((r) => r.prop === 'gradient-token')!;
+    expect(both.figma).toBe('grad/brand');
+    expect(both.dom).toBe('--legacy');
+    const unread = gradientVerdict(T({token:'grad/brand'}), T({unknown:'unattributed'}), undefined)
+      .find((r) => r.prop === 'gradient-token')!;
+    expect(unread.figma).toBe('grad/brand');
+    expect(unread.dom).toBeNull();
+    const stop = gradientVerdict(T({literal:true}, [{token:'brand/0'},{literal:true}]),
+      T({literal:true}, [{token:'--b0'},{literal:true}]), undefined)
+      .find((r) => r.prop === 'gradient-stop-0-token')!;
+    expect(stop.figma).toBe('brand/0');
+    expect(stop.dom).toBe('--b0');
+  });
+
   it('provenance review branches carry token/tokenReason: semantic-confirm and the open unknown code', () => {
     const rows = gradientVerdict(
       { kind: 'linear', stops: [], whole: { token: 'grad/main' } } as any,

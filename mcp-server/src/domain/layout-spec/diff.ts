@@ -256,6 +256,20 @@ export function coverageHoleRows(rows: DiffRow[]): DiffRow[] {
     (r.status === 'skip' && r.profileScoped !== true)
     || (r.status === 'warn' && COVERAGE_HOLING_WARN.has(dimensionOf(r.prop))));
 }
+// A review row whose two MEASURED values already read byte-equal (hex casing is presentation, not
+// value) asks for judgment the tool cannot supply — token/mode semantics, a property of the design
+// setup, not of the code under review. Both gates (verification.complete and the report verdict)
+// treat such a row as advisory: it stays visible as 📝, but neither blocks nor forbids green.
+// Measured on a live run: a badge at 11 pass / 0 fail was held at complete:false by a confirm_token
+// whose both sides read the same hex — a perpetually red gate teaches the reader to explain red
+// away, which is the erosion the gate exists to prevent. A missing side or a type mismatch is NOT
+// a match: nothing was measured equal there.
+export function rowValuesMatched(r: Pick<DiffRow, 'figma' | 'dom'>): boolean {
+  if (r.figma === undefined || r.figma === null || r.dom === undefined || r.dom === null) return false;
+  if (typeof r.figma === 'string' && typeof r.dom === 'string') return r.figma.toLowerCase() === r.dom.toLowerCase();
+  return r.figma === r.dom;
+}
+
 export function countCoverageHoles(rows: DiffRow[]): number {
   return coverageHoleRows(rows).length;
 }
@@ -755,6 +769,17 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         + 'this box layout - a deeper capture will NOT reveal them; pair such an element directly if the '
         + 'design counts it as a child'
       : '';
+    // The same class in the other direction (measured live: a frame's overlay and three modals,
+    // DIRECT children, vanished from the spec and the reader was sent after a depth knob). The
+    // projector counts what its flow filter drops — name it here symmetrically. No unwrap case to
+    // handle: a SUCCESSFUL unwrap equalizes the cardinalities, so this mismatch block and
+    // unwrapInfo never coexist — the pair root's own count is the only reachable one.
+    const figOof = spec.outOfFlow ?? 0;
+    const figOofHint = figOof
+      ? `; ${figOof} Figma child(ren) are out of flow (layoutPositioning ABSOLUTE - overlay/modal/pin class) `
+        + 'and are not in the spec flow - raising max_depth will NOT reveal them; pair such a node directly if it '
+        + 'must be verified'
+      : '';
     const high = sal.matched.filter((m) => m.confidence === 'high');
     if (high.length === 0) {
       const figDesc = figKids.map((c) => `${c.name}(${c.type})`).join(', ');
@@ -774,7 +799,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         : '';
       rows.push({ prop: 'structure_mismatch', status: 'warn',
         figma: `${figKids.length} children: ${figDesc}`, dom: `${domKids2.length} children: ${domDescOf(domKids2)}`,
-        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${figOofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
       // source-hint: unpaired — the MAIN "add pairs" flow (0 high-conf: nothing
       // matched). All DOM children are unpaired; cap 10 AT the collection site. navigation-to-investigate.
       collectUnpaired(opts, domKids2);
@@ -789,7 +814,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     collectUnpaired(opts, domKids2.filter((_, i) => !matchedDom.has(i)));
     rows.push({ prop: 'structure_mismatch', status: 'warn',
       figma: `${figKids.length} children`, dom: `${domKids2.length} children`,
-      note: `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+      note: `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
     const figSub = high.map((m) => figKids[m.figIdx]);
     const domSub = high.map((m) => domKids2[m.domIdx]);
     salvageAdj = high.map((m, k) => k > 0 && m.figIdx === high[k - 1].figIdx + 1 && m.domIdx === high[k - 1].domIdx + 1);

@@ -20,7 +20,7 @@ See the [Design QA tutorial](design-qa-tutorial.md) for the workflow and
 | Cross-axis alignment | offset-cross of each in-flow child | measured on the child's box edges (content alignment inside the child needs its own pair) |
 | Structure | child count, single-wrapper auto-unwrap, equal-count child reorder detection | mismatches are ⚠️ warn (pair quality), reorders come with an anchor map |
 | Typography | font-size, font-weight, font-family, line-height, letter-spacing, text color | direct TEXT children + auto-descent into containers with several texts; text below the capture cut is flagged 👁 unchecked, never assumed |
-| Colors (token-aware) | solid fills and text colors with token provenance on BOTH sides | Figma variable vs DOM CSS-var: hex-match under an unconfirmed mode → `review` (confirm the semantic token), token-vs-hardcoded-literal → ❌ fail even when hexes match; mode-aware resolution with graph + snapshot fallback |
+| Colors (token-aware) | solid fills and text colors with token provenance on BOTH sides | Figma variable vs DOM CSS-var: hex-match under an unconfirmed mode → `review` (confirm the semantic token), token-vs-hardcoded-literal → ❌ fail even when hexes match; mode-aware resolution with graph + snapshot fallback. A `review` row whose two hexes already matched byte-for-byte is advisory: it stays in the report but neither enters `blocking` nor holds `complete` false — the residue (mode/token semantics) is a property of the design setup, not of the code |
 | Borders | border-color + border-width on the pair root | per-side asymmetries and partial borders (Figma stroke is whole-perimeter) → ⚠️ warn, not silence |
 | Shadows | the FIRST box-shadow: x/y/blur/spread/color/inset | spread is a regular axis (Figma REST provides it); >1 shadow → ⚠️ warn `"the shadow list was not matched (single-shadow-first) — verify visually"` |
 | Corner radius | one uniform px corner radius | the DOM side yields ONE comparable px number or it says so: all four CSS corners equal **and** a px length → diffed as that number (including the exponent form, which is not a size threshold but Chrome's six-significant-digit serialization: measured, `999999.4px` reads back as `999999px`, and `999999.5px` — seven digits once rounded — as `1e+06px`); **anything else the browser computed** → 👁 unchecked, never a pass (see limits). The corners are compared as strings rather than parsed values, because `parseFloat('8px 4px')` is 8 and would read an 8×4 ellipse as a circle. The one silence left is an empty computed value: nothing was computed, so no number and no row |
@@ -66,7 +66,7 @@ See the [Design QA tutorial](design-qa-tutorial.md) for the workflow and
 
 - ❌ fail — a real measured delta above tolerance.
 - ⚠️ warn — needs judgment (pair quality, heuristics, unmatched lists).
-- ℹ️ info / `review` — diagnostic or semantic-confirmation rows (token provenance).
+- ℹ️ info / `review` — diagnostic or semantic-confirmation rows (token provenance). A review row with byte-equal values is advisory (does not gate `complete`); one with diverged or missing values blocks until confirmed.
 - 🟰 demoted — structurally explained non-defect (hug/fill, spacers), still visible.
 - 👁 unchecked — NOT reached; verify by eye or fix the environment. Never counts as green.
 - ⏭ skip — nothing to compare (inapplicable axis). Reads clean.

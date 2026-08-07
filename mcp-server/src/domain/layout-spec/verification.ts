@@ -3,7 +3,7 @@
 // the AI swallows. A separate module (not diff.ts) — the frame-coverage frontier reuses figWorthy from
 // pair-matcher, and we keep diff.ts focused.
 import type { PairResult, LayoutSpec, SpecChild, DiffRow, BlockingItem, FrameCoverage, VerificationReceipt, CaptureInfo, SpacingAuditEntry, MatchProfile } from './types.js';
-import { coverageHoleRows, dimensionOf } from './diff.js';
+import { coverageHoleRows, dimensionOf, rowValuesMatched } from './diff.js';
 import { figWorthy } from './pair-matcher.js';
 import { auditContainer } from './spacing-audit.js';
 import { normalizeCompoundNodeId } from '../node-id.js';
@@ -295,15 +295,21 @@ export function buildVerification(pairs: PairResult[], opts: {
   const tokenGroups = new Map<string, { places: { node_id: string; selector?: string; prop: string }[]; reasons: Map<string, number>; firstNote: string }>();
   for (const p of pairs) {
     const holes = coverageHoleRows(p.rows);
-    if (p.summary.fail === 0 && p.summary.demoted === 0 && p.summary.unchecked === 0 && p.summary.review === 0 && holes.length === 0) clean += 1;
+    // Matched-value review rows are advisory (rowValuesMatched): they neither hold complete=false
+    // nor enter blocking below, and they do not cost a pair its `clean` — a receipt saying
+    // complete:true over checked:1/clean:0 would contradict itself. The summary.review count and
+    // the 📝 rows themselves stay visible.
+    const gatingReview = p.rows.some((r) => r.status === 'review' && !rowValuesMatched(r));
+    if (p.summary.fail === 0 && p.summary.demoted === 0 && p.summary.unchecked === 0 && !gatingReview && holes.length === 0) clean += 1;
     if (p.summary.fail > 0) anyFail = true;
     if (p.summary.demoted > 0) anyDemoted = true;
     if (p.summary.unchecked > 0) anyUnchecked = true;
     if (holes.length > 0) anyHole = true;
-    if (p.summary.review > 0) anyReview = true;
+    if (gatingReview) anyReview = true;
     for (const h of holes) blocking.push(holeToBlocking(h, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'unchecked') blocking.push(uncheckedToBlocking(r, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'review') {
+      if (rowValuesMatched(r)) continue; // advisory — see anyReview above
       const key = (r.token && r.token !== '(paint)') ? `tok:${r.token}` : r.tokenReason ? `rsn:${r.tokenReason}` : undefined;
       if (!key) { blocking.push({ kind: 'unconfirmed_token', node_id: p.node_id, ...(p.selector ? { selector: p.selector } : {}), action: 'confirm_token', detail: r.note ?? r.prop }); continue; }
       const g = tokenGroups.get(key) ?? { places: [], reasons: new Map<string, number>(), firstNote: r.note ?? r.prop };

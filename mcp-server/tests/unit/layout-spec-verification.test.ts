@@ -483,6 +483,70 @@ describe('review gate', () => {
     expect(md).not.toContain('no discrepancies above tolerance');
     expect(md).toContain('CHECK INCOMPLETE');
   });
+
+  // Live-run p.11: a badge ran 11 pass / 0 fail and still complete:false — the only blocker was
+  // confirm_token on a color where BOTH sides read the same byte-for-byte hex. "The node's mode is
+  // not confirmed" is a property of the design file, not of the code under review; a perpetually
+  // red gate teaches the reader to explain red away — the exact erosion the gate exists to prevent.
+  it('a review row with byte-equal values neither blocks nor holds complete false', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'color[badge]', figma: '#242429', dom: '#242429',
+      status: 'review', note: 'mode unconfirmed', token: 'tok/badge', tokenReason: 'mode-unconfirmed' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(true);
+    expect(v.blocking).toEqual([]);
+  });
+  it('the value match is case-insensitive (hex casing is presentation, not value)', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'color[x]', figma: '#ABCDEF', dom: '#abcdef',
+      status: 'review', note: 'confirm', token: 'tok/x', tokenReason: 'semantic-confirm' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(true);
+    expect(v.blocking).toEqual([]);
+  });
+  it('control: diverged values still block and hold complete false', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'color[x]', figma: '#111111', dom: '#222222',
+      status: 'review', note: 'confirm', token: 'tok/x', tokenReason: 'mode-unconfirmed' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking.some((b) => b.kind === 'unconfirmed_token')).toBe(true);
+  });
+  it('control: a missing side still blocks (nothing was matched)', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'color[x]', figma: null, dom: '#222222',
+      status: 'review', note: 'the token cannot be checked', tokenReason: 'fig-unresolved' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking.some((b) => b.kind === 'unconfirmed_token')).toBe(true);
+  });
+  it('a matched-value review row keeps the green headline and stays visible as a review count', () => {
+    const p = pairFromRows([{ prop: 'color[badge]', figma: '#242429', dom: '#242429',
+      status: 'review', note: 'mode unconfirmed', token: 'tok/badge', tokenReason: 'mode-unconfirmed' }]);
+    const v = buildVerification([p], { depthLevels: 4 });
+    const md = renderReport({ file: 'F', tolerancePx: 1, pairs: [p], depthLevels: 4, verification: v });
+    expect(md).toContain('no discrepancies above tolerance');
+    expect(md).not.toContain('awaiting token confirmation');
+    expect(md).toContain('📝1'); // the row is not hidden — only no longer a blocker
+  });
+  // Adversarial pass, two holes in the same change:
+  it('a review row whose values are DIFFERENT tokens (gradient provenance class) still blocks', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'gradient-token', figma: 'grad/brand', dom: '--legacy',
+      status: 'review', note: 'both from a token — confirm the semantics', token: 'grad/brand', tokenReason: 'semantic-confirm' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking.some((b) => b.kind === 'unconfirmed_token')).toBe(true);
+  });
+  it('a pair whose only finding is an advisory matched review counts clean (no self-contradictory receipt)', () => {
+    const v = buildVerification([pairFromRows([
+      { prop: 'size.w', figma: 100, dom: 100, status: 'pass' },
+      { prop: 'color[x]', figma: '#242429', dom: '#242429', status: 'review', note: 'mode unconfirmed', token: 'tok/x', tokenReason: 'mode-unconfirmed' },
+    ])], { depthLevels: 4 });
+    expect(v.complete).toBe(true);
+    expect(v.pairs.clean).toBe(1); // complete:true with clean 0/1 would contradict itself
+  });
+
+  it('matched-value rows do not join the confirm_token aggregation (no phantom places)', () => {
+    const matched = pairFromRows([{ prop: 'color[a]', figma: '#333333', dom: '#333333',
+      status: 'review', note: 'confirm', token: 'tok/y', tokenReason: 'semantic-confirm' }]);
+    const diverged = pairFromRows([{ prop: 'color[b]', figma: '#333333', dom: '#444444',
+      status: 'review', note: 'confirm', token: 'tok/y', tokenReason: 'mode-unconfirmed' }]);
+    const v = buildVerification([matched, diverged], { depthLevels: 4 });
+    const toks = v.blocking.filter((b) => b.kind === 'unconfirmed_token');
+    expect(toks).toHaveLength(1);
+    expect((toks[0] as { places?: unknown[] }).places).toBeUndefined(); // 1 real place → single-record format
+  });
 });
 
 // ── confirm-token-aggregation: two-axis cross-pair grouping of confirm_token in blocking ──

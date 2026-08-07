@@ -87,6 +87,17 @@ describe('diffPair — guards & structure & gaps', () => {
     expect(row(rows, 'structure_mismatch')?.note ?? '').not.toContain('out of flow');
   });
 
+  // The same class in the other direction (live-run p.2/p.8): the SPEC filter drops ABSOLUTE
+  // overlays/modals, the child counts then differ, and without a name the reader goes hunting
+  // for a capture knob. The projector now counts them (LayoutSpec.outOfFlow) — the mismatch
+  // note must name the Figma side symmetrically.
+  it('a Figma-side out-of-flow child is named symmetrically in the mismatch note', () => {
+    const rows = diffPair({ ...spec(), outOfFlow: 3 }, snap({ children: [snap().children[0]] }), { tolerancePx: 1 });
+    const note = row(rows, 'structure_mismatch')?.note ?? '';
+    expect(note).toContain('3 Figma child(ren) are out of flow');
+    expect(note).toContain('pair such a node directly');
+  });
+
   it('cardinality mismatch → structure_mismatch warn, no pairwise rows', () => {
     const rows = diffPair(spec(), snap({ children: [snap().children[0]] }), { tolerancePx: 1 });
     const sm = row(rows, 'structure_mismatch');

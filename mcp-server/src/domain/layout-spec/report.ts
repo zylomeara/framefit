@@ -4,7 +4,7 @@ import type {
   PairResult, DiffRow, PairSummary, VerificationReceipt, SpacingAuditEntry, SpacingAuditGap, PairSource,
   FixPlanGroup, FixPlanEdit, MatchProfile,
 } from './types.js';
-import { NOT_COVERED_BY_TOOL, countCoverageHoles } from './diff.js';
+import { NOT_COVERED_BY_TOOL, countCoverageHoles, rowValuesMatched } from './diff.js';
 import type { SourceHint } from './class-source.js';
 
 const EMOJI: Record<DiffRow['status'], string> = { pass: '✅', fail: '❌', warn: '⚠️', skip: '⏭', info: 'ℹ️', demoted: '🟰', unchecked: '👁', review: '📝' };
@@ -212,7 +212,11 @@ export function renderReport(input: {
   const notVerified: string[] = [];
   if (total.demoted > 0) notVerified.push(`${total.demoted} not verified (demoted)`);
   if (total.unchecked > 0) notVerified.push(`${total.unchecked} not verified (out of reach)`);
-  if (total.review > 0) notVerified.push(`${total.review} awaiting token confirmation`);
+  // Verdict ⟺ verification.complete: matched-value reviews are advisory there (rowValuesMatched in
+  // verification.ts), so the verdict must not count them either — else complete:true would render
+  // under a "CHECK INCOMPLETE" headline. They stay visible: 📝 in the Total line and the rows themselves.
+  const reviewGating = input.pairs.reduce((n, p) => n + p.rows.filter((r) => r.status === 'review' && !rowValuesMatched(r)).length, 0);
+  if (reviewGating > 0) notVerified.push(`${reviewGating} awaiting token confirmation`);
   if (holes > 0) notVerified.push(`${holes} not verified (structure/truncation/environment)`);
   // A1: frame coverage also lowers the verdict — else "no discrepancies" with uncovered regions = a
   // frame-level false green (the AI paired 2 of 8 regions). Verdict ⟺ verification.complete.

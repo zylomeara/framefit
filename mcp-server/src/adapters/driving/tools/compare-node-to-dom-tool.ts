@@ -67,7 +67,7 @@ export function resolveTolerance(profile: MatchProfile, raw: number | undefined)
 // channel parsed. The signal "there are classes, but not CSS-modules" (minified/utility/BEM) —
 // the address isn't derived, but we can't stay silent either (otherwise indistinguishable from "there were no classes").
 export const SOURCE_NOTE_NO_PARSE =
-  'the DOM nodes have classes, but none was recognized as a CSS module (minified / utility-CSS / BEM) — no code address derived';
+  'the DOM nodes have classes, but none was recognized as a CSS module (minified / utility-CSS / BEM) — no code address derived; named classes are one bundler setting away, see docs/named-classes.md';
 
 // source-hint: the differ deposits the RAW material (attributionOut), the tool parses it and assembles
 // PairSource. The parser (parseCssModuleClass) lives ONLY here — it doesn't leak into diff.ts. rootClassList
