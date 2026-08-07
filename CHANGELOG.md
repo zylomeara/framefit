@@ -3,6 +3,54 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.18.0
+
+The first release since the package went public, and nothing in the tool surface moved. All 26 tools
+behave exactly as they did in 0.17.0: no schema change, no new field, no changed verdict. **You do not
+need to reconnect your client or re-request the extractor.**
+
+What changed is what you receive and what it depends on.
+
+### Changed
+
+**1. The published package now carries its own front page and its licence.**
+
+`npm pack` produced 265 files of `dist` and nothing else: no README, no LICENSE. npm adds both
+automatically, but only from the *package* root, and in this repository both live one level up. So the
+npm page rendered blank and MIT-licensed code shipped with no licence text inside it. Two tests
+covered the area and neither could fail for that reason - one pinned the file list and was titled
+"ships only dist", the other proved the licence exists "with the repo", which was never in question.
+The tarball is what ships.
+
+**2. Every runtime dependency advisory is patched.**
+
+Fourteen advisories across five packages, all transitive and all reached through
+`@modelcontextprotocol/sdk`: `hono` and `@hono/node-server` directly, `fast-uri` through `ajv`,
+`ip-address` through `express-rate-limit`, `body-parser` through the SDK's own express 5. Each was
+moved past its advisory's first patched version rather than merely made newer - `hono` to 4.13.1,
+`@hono/node-server` across a major to 2.1.0, `fast-uri` to 3.1.5, `ip-address` to 10.4.0,
+`body-parser` to 2.3.0.
+
+The declared floor for the SDK moved with them, `^1.0.0` to `^1.30.0`, because it is the parent of
+every one of those chains and the old range permitted the entire vulnerable history. No other declared
+range was tightened: those are what your resolver has to satisfy, and narrowing them to whatever this
+project happens to have installed would hand you a conflict and buy nothing.
+
+**3. `npx` is the quickstart.**
+
+`npx -y framefit status` needs no clone, no build and no token, and answers in about ten seconds from
+an empty npm cache. Registration is one line with no absolute path. The checkout is still documented,
+for reading or changing the code, and is now the only place `pnpm` is named as a prerequisite.
+
+### Repository
+
+Not shipped in the package, but visible to anyone who reads it: a machine gate that keeps real
+customer identifiers out of the tree, with each of its rules proven by a fixture taken from a file
+this repository actually writes; a security policy with a private reporting channel, naming two
+deliberate auth properties rather than leaving them to be rediscovered; a secret scan that reads every
+commit instead of the first thirty; and every third-party action pinned to a commit rather than a
+movable tag.
+
 ## 0.17.0
 
 Two places the tool was wrong about a page it had never seen. Both were found the same way - by
