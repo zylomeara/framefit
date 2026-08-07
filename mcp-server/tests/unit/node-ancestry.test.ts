@@ -573,33 +573,33 @@ describe('resolveAncestry', () => {
   });
 
   it('fallback prefers the session-related branch over a longer unrelated one (bbox-collision)', async () => {
-    // Target lives on the "30872" screen but is unreachable in the fetchable tree (buried past budget),
-    // forcing the fallback. Two tier-0 both contain its center: a SHORT related branch (30872:*) and a
-    // LONG unrelated one (26784:* — the "paper" collision). Length alone would return the long paper
+    // Target lives on the "12" screen but is unreachable in the fetchable tree (buried past budget),
+    // forcing the fallback. Two tier-0 both contain its center: a SHORT related branch (12:*) and a
+    // LONG unrelated one (34:* — the "paper" collision). Length alone would return the long paper
     // chain; session-affinity must return the related tail instead.
     const box = { x: 0, y: 0, w: 1000, h: 1000 };
-    const related = chain(['30872:s1', '30872:s2'], box); // affine, short, dead
-    const paper = chain(['26784:p1', '26784:p2', '26784:p3', '26784:p4', '26784:p5', '26784:p6'], box); // disaffine, long, dead
+    const related = chain(['12:s1', '12:s2'], box); // affine, short, dead
+    const paper = chain(['34:p1', '34:p2', '34:p3', '34:p4', '34:p5', '34:p6'], box); // disaffine, long, dead
     const page = n('0:1', 'CANVAS', null, [related, paper]);
     // Target resolvable at call-1 (has a bbox) but NOT part of either descent subtree → never confirmed.
     const extra = new Map<string, RawSceneNode>([
-      ['30872:target', n('30872:target', 'TEXT', { x: 499, y: 499, w: 2, h: 2 })],
+      ['12:target', n('12:target', 'TEXT', { x: 499, y: 499, w: 2, h: 2 })],
     ]);
     const api = buildApi(doc(page), extra);
 
-    const res = await resolveAncestry(api, 'FILE', '30872:target', { maxCalls: 16 });
+    const res = await resolveAncestry(api, 'FILE', '12:target', { maxCalls: 16 });
     expect(res.confirmed).toBe(false);
-    expect(res.path.some((p) => p.id.startsWith('26784:'))).toBe(false); // NOT the long paper chain
-    expect(res.path[res.path.length - 1].id.startsWith('30872:')).toBe(true); // the session-related tail
+    expect(res.path.some((p) => p.id.startsWith('34:'))).toBe(false); // NOT the long paper chain
+    expect(res.path[res.path.length - 1].id.startsWith('12:')).toBe(true); // the session-related tail
   });
 
   it('time-budget fallback also returns the session-related tail, not the longer unrelated one', async () => {
     const box = { x: 0, y: 0, w: 1000, h: 1000 };
-    const related = chain(['30872:s1', '30872:s2'], box); // affine, short (area tie → document order: first)
-    const paper = chain(['26784:p1', '26784:p2', '26784:p3', '26784:p4', '26784:p5'], box); // disaffine, long
+    const related = chain(['12:s1', '12:s2'], box); // affine, short (area tie → document order: first)
+    const paper = chain(['34:p1', '34:p2', '34:p3', '34:p4', '34:p5'], box); // disaffine, long
     const page = n('0:1', 'CANVAS', null, [related, paper]);
     const extra = new Map<string, RawSceneNode>([
-      ['30872:target', n('30872:target', 'TEXT', { x: 499, y: 499, w: 2, h: 2 })],
+      ['12:target', n('12:target', 'TEXT', { x: 499, y: 499, w: 2, h: 2 })],
     ]);
     // Deadline keyed to the count of REAL getNodesRaw fetches — robust, independent of stopReason
     // bookkeeping (a blind tick counter mis-fires because cached-recursion skips the stopReason check).
@@ -617,50 +617,50 @@ describe('resolveAncestry', () => {
     } as unknown as Api;
     const now = () => (fetches >= 5 ? 1000 : 0);
 
-    const res = await resolveAncestry(api, 'FILE', '30872:target', { maxCalls: 16, deadlineAt: 1000, now });
+    const res = await resolveAncestry(api, 'FILE', '12:target', { maxCalls: 16, deadlineAt: 1000, now });
     expect(res.confirmed).toBe(false);
     expect(res.note).toContain('time budget'); // NOTE_BUDGET_TIME ('time budget exhausted…') — the deadline genuinely fires
-    expect(res.path.some((p) => p.id.startsWith('26784:'))).toBe(false);
-    expect(res.path[res.path.length - 1].id.startsWith('30872:')).toBe(true);
+    expect(res.path.some((p) => p.id.startsWith('34:'))).toBe(false);
+    expect(res.path[res.path.length - 1].id.startsWith('12:')).toBe(true);
   });
 
-  it('compound ancestor id in the tail: session prefix strips the leading I (I30872:…;… clusters with the plain 30872 target)', async () => {
+  it('compound ancestor id in the tail: session prefix strips the leading I (I12:…;… clusters with the plain 12 target)', async () => {
     // Realistic shape: resolvedId is PLAIN (the real REST API returns document.id plain even for a
     // compound REQUEST id — mirrored by the existing "compound targetId" test). So sessionPrefixOf's
     // I-stripping is exercised where it actually matters in prod — on an ANCESTOR node inside an
     // instance-override tree, whose id is compound — not on the target's own resolved id.
     const box = { x: 0, y: 0, w: 1000, h: 1000 };
-    const relLeaf = n('I30872:96360;12798:99', 'FRAME', box); // compound-id ancestor tail — must strip 'I' → "30872"
-    const related = n('30872:inst', 'INSTANCE', box, [relLeaf]);
-    const paper = chain(['26784:p1', '26784:p2', '26784:p3', '26784:p4', '26784:p5', '26784:p6'], box); // longer, disaffine
+    const relLeaf = n('I12:362;56:7892', 'FRAME', box); // compound-id ancestor tail — must strip 'I' → "12"
+    const related = n('12:inst', 'INSTANCE', box, [relLeaf]);
+    const paper = chain(['34:p1', '34:p2', '34:p3', '34:p4', '34:p5', '34:p6'], box); // longer, disaffine
     const page = n('0:1', 'CANVAS', null, [related, paper]);
-    // Call-1 requests the compound id; the mock returns document.id = PLAIN '30872:96367' → resolvedId plain.
-    const compoundReqId = 'I30872:96367;12798:75246';
+    // Call-1 requests the compound id; the mock returns document.id = PLAIN '12:361' → resolvedId plain.
+    const compoundReqId = 'I12:361;56:7891';
     const extra = new Map<string, RawSceneNode>([
-      [compoundReqId, n('30872:96367', 'FRAME', { x: 499, y: 499, w: 2, h: 2 })],
+      [compoundReqId, n('12:361', 'FRAME', { x: 499, y: 499, w: 2, h: 2 })],
     ]);
     const api = buildApi(doc(page), extra);
 
     const res = await resolveAncestry(api, 'FILE', compoundReqId, { maxCalls: 16 });
     expect(res.confirmed).toBe(false);
-    // Fallback returns the compound-id ancestor branch (strip-I clusters it with the '30872' target),
-    // NOT the longer '26784' paper chain that raw length would have picked.
-    expect(res.path.some((p) => p.id.startsWith('26784:'))).toBe(false);
-    expect(res.path[res.path.length - 1].id).toBe('I30872:96360;12798:99');
+    // Fallback returns the compound-id ancestor branch (strip-I clusters it with the '12' target),
+    // NOT the longer '34' paper chain that raw length would have picked.
+    expect(res.path.some((p) => p.id.startsWith('34:'))).toBe(false);
+    expect(res.path[res.path.length - 1].id).toBe('I12:362;56:7892');
   });
 
   it('no session-related branch: fallback degrades to the old longest-path behavior (no regression)', async () => {
     // Nothing shares the target's prefix → affinity is inert → the longest recorded path wins, exactly
     // as before this change.
     const box = { x: 0, y: 0, w: 1000, h: 1000 };
-    const longBranch = chain(['99:1', '99:2', '99:3'], box); // disaffine (target is 30872:*); leaf 99:3
+    const longBranch = chain(['99:1', '99:2', '99:3'], box); // disaffine (target is 12:*); leaf 99:3
     const page = n('0:1', 'CANVAS', null, [longBranch]);
     const extra = new Map<string, RawSceneNode>([
-      ['30872:target', n('30872:target', 'TEXT', { x: 499, y: 499, w: 2, h: 2 })],
+      ['12:target', n('12:target', 'TEXT', { x: 499, y: 499, w: 2, h: 2 })],
     ]);
     const api = buildApi(doc(page), extra);
 
-    const res = await resolveAncestry(api, 'FILE', '30872:target', { maxCalls: 16 });
+    const res = await resolveAncestry(api, 'FILE', '12:target', { maxCalls: 16 });
     expect(res.confirmed).toBe(false);
     // deepest recorded wins (old length rule), unchanged — descend records up to the fetched leaf 99:3
     expect(res.path.map((p) => p.id)).toEqual(['0:1', '99:1', '99:2', '99:3']);
@@ -672,16 +672,16 @@ describe('resolveAncestry', () => {
     // The club tier-0 is NON-affine ("clubwrap:section") and LARGER in area than the paper tier-0, so
     // the OLD tier-0-area order descends paper first and a mid-descent deadline records the wide paper
     // branch. The club branch CONVERGES (its probed descendants are far tighter than paper's), so the
-    // new convergence order descends it first — the deadline then records a club (30872) tail instead.
-    const target = n('30872:target', 'TEXT', { x: 995, y: 995, w: 4, h: 4 }); // center (997,997)
-    const points = n('30872:points', 'FRAME', { x: 800, y: 800, w: 400, h: 400 }, [target]);
-    const dd = n('30872:d', 'FRAME', { x: 750, y: 750, w: 500, h: 500 }, [points]);
-    const cc = n('30872:c', 'FRAME', { x: 700, y: 700, w: 600, h: 600 }, [dd]);
-    const content = n('30872:content', 'FRAME', { x: 600, y: 600, w: 800, h: 800 }, [cc]);
+    // new convergence order descends it first — the deadline then records a club (12) tail instead.
+    const target = n('12:target', 'TEXT', { x: 995, y: 995, w: 4, h: 4 }); // center (997,997)
+    const points = n('12:points', 'FRAME', { x: 800, y: 800, w: 400, h: 400 }, [target]);
+    const dd = n('12:d', 'FRAME', { x: 750, y: 750, w: 500, h: 500 }, [points]);
+    const cc = n('12:c', 'FRAME', { x: 700, y: 700, w: 600, h: 600 }, [dd]);
+    const content = n('12:content', 'FRAME', { x: 600, y: 600, w: 800, h: 800 }, [cc]);
     const clubSection = n('clubwrap:section', 'SECTION', { x: 0, y: 0, w: 2200, h: 2200 }, [content]); // non-affine, larger area
-    const paperF2 = n('26784:f2', 'FRAME', { x: 0, y: 0, w: 1800, h: 1800 });
-    const paperF1 = n('26784:f1', 'FRAME', { x: 0, y: 0, w: 1900, h: 1900 }, [paperF2]);
-    const paperSection = n('26784:section', 'SECTION', { x: 0, y: 0, w: 2100, h: 2100 }, [paperF1]); // smaller area → OLD order descends it first
+    const paperF2 = n('34:f2', 'FRAME', { x: 0, y: 0, w: 1800, h: 1800 });
+    const paperF1 = n('34:f1', 'FRAME', { x: 0, y: 0, w: 1900, h: 1900 }, [paperF2]);
+    const paperSection = n('34:section', 'SECTION', { x: 0, y: 0, w: 2100, h: 2100 }, [paperF1]); // smaller area → OLD order descends it first
     const page = n('0:1', 'CANVAS', null, [clubSection, paperSection]);
     const base = buildApi(doc(page));
     let fetches = 0;
@@ -695,49 +695,49 @@ describe('resolveAncestry', () => {
     // Fetches: target(1), probe paper(2), probe club(3), descend one club node(4) → deadline before the
     // 5th fetch, after a club tail is recorded but before confirm.
     const now = () => (fetches >= 4 ? 1000 : 0);
-    const res = await resolveAncestry(api, 'FILE', '30872:target', { maxCalls: 16, deadlineAt: 1000, now });
+    const res = await resolveAncestry(api, 'FILE', '12:target', { maxCalls: 16, deadlineAt: 1000, now });
     expect(res.confirmed).toBe(false);
     expect(res.note).toContain('time budget'); // NOTE_BUDGET_TIME
-    expect(res.path.some((p) => p.id.startsWith('26784:'))).toBe(false); // never the wide paper branch
-    expect(res.path[res.path.length - 1].id.startsWith('30872:')).toBe(true); // a converging club tail
+    expect(res.path.some((p) => p.id.startsWith('34:'))).toBe(false); // never the wide paper branch
+    expect(res.path[res.path.length - 1].id.startsWith('12:')).toBe(true); // a converging club tail
   });
 
   it('convergence order descends the tight branch first even when its tier-0 is larger', async () => {
     // Club tier-0 (2000²) is LARGER than the decoy tier-0 (1500²), so the old area order descends the
     // decoy first and wastes calls. Club CONVERGES (points 400²) far tighter than any decoy node, so
     // convergence order dives club and confirms without ever descending the decoy.
-    const target = n('30872:target', 'TEXT', { x: 995, y: 995, w: 4, h: 4 });
-    const points = n('30872:points', 'FRAME', { x: 800, y: 800, w: 400, h: 400 }, [target]);
-    const content = n('30872:content', 'FRAME', { x: 600, y: 600, w: 800, h: 800 }, [points]);
-    const clubSection = n('30872:section', 'SECTION', { x: 0, y: 0, w: 2000, h: 2000 }, [content]);
-    const dF2 = n('26784:f2', 'FRAME', { x: 0, y: 0, w: 1300, h: 1300 });
-    const dF1 = n('26784:f1', 'FRAME', { x: 0, y: 0, w: 1400, h: 1400 }, [dF2]);
-    const decoySection = n('26784:section', 'SECTION', { x: 0, y: 0, w: 1500, h: 1500 }, [dF1]);
+    const target = n('12:target', 'TEXT', { x: 995, y: 995, w: 4, h: 4 });
+    const points = n('12:points', 'FRAME', { x: 800, y: 800, w: 400, h: 400 }, [target]);
+    const content = n('12:content', 'FRAME', { x: 600, y: 600, w: 800, h: 800 }, [points]);
+    const clubSection = n('12:section', 'SECTION', { x: 0, y: 0, w: 2000, h: 2000 }, [content]);
+    const dF2 = n('34:f2', 'FRAME', { x: 0, y: 0, w: 1300, h: 1300 });
+    const dF1 = n('34:f1', 'FRAME', { x: 0, y: 0, w: 1400, h: 1400 }, [dF2]);
+    const decoySection = n('34:section', 'SECTION', { x: 0, y: 0, w: 1500, h: 1500 }, [dF1]);
     const page = n('0:1', 'CANVAS', null, [clubSection, decoySection]);
     const api = buildApi(doc(page));
 
-    const res = await resolveAncestry(api, 'FILE', '30872:target', { maxCalls: 16 });
+    const res = await resolveAncestry(api, 'FILE', '12:target', { maxCalls: 16 });
     expect(res.confirmed).toBe(true);
-    expect(res.path.map((p) => p.id)).toEqual(['0:1', '30872:section', '30872:content', '30872:points']);
-    expect(res.path.some((p) => p.id.startsWith('26784:'))).toBe(false);
+    expect(res.path.map((p) => p.id)).toEqual(['0:1', '12:section', '12:content', '12:points']);
+    expect(res.path.some((p) => p.id.startsWith('34:'))).toBe(false);
     expect(res.callsUsed).toBe(5); // target+skeleton+probe(decoy)+probe(club)+fetch(points) — decoy never descended
   });
 
   it('a tight-but-false section is scheduled early, capped, and abandoned; the true branch still confirms', async () => {
     // A small false section (tightest convergence) sorts first, is descended, dead-ends, and the caps
     // move on to the true converging branch. Guard: correct on both old and new ordering.
-    const target = n('30872:target', 'TEXT', { x: 995, y: 995, w: 4, h: 4 });
-    const points = n('30872:points', 'FRAME', { x: 800, y: 800, w: 400, h: 400 }, [target]);
-    const content = n('30872:content', 'FRAME', { x: 600, y: 600, w: 800, h: 800 }, [points]);
-    const trueSection = n('30872:section', 'SECTION', { x: 0, y: 0, w: 2000, h: 2000 }, [content]);
-    const falseChild = n('26784:fchild', 'FRAME', { x: 900, y: 900, w: 200, h: 200 });
-    const falseSection = n('26784:section', 'SECTION', { x: 850, y: 850, w: 300, h: 300 }, [falseChild]);
+    const target = n('12:target', 'TEXT', { x: 995, y: 995, w: 4, h: 4 });
+    const points = n('12:points', 'FRAME', { x: 800, y: 800, w: 400, h: 400 }, [target]);
+    const content = n('12:content', 'FRAME', { x: 600, y: 600, w: 800, h: 800 }, [points]);
+    const trueSection = n('12:section', 'SECTION', { x: 0, y: 0, w: 2000, h: 2000 }, [content]);
+    const falseChild = n('34:fchild', 'FRAME', { x: 900, y: 900, w: 200, h: 200 });
+    const falseSection = n('34:section', 'SECTION', { x: 850, y: 850, w: 300, h: 300 }, [falseChild]);
     const page = n('0:1', 'CANVAS', null, [trueSection, falseSection]);
     const api = buildApi(doc(page));
 
-    const res = await resolveAncestry(api, 'FILE', '30872:target', { maxCalls: 16 });
+    const res = await resolveAncestry(api, 'FILE', '12:target', { maxCalls: 16 });
     expect(res.confirmed).toBe(true);
-    expect(res.path.map((p) => p.id)).toEqual(['0:1', '30872:section', '30872:content', '30872:points']);
-    expect(res.path.some((p) => p.id.startsWith('26784:'))).toBe(false);
+    expect(res.path.map((p) => p.id)).toEqual(['0:1', '12:section', '12:content', '12:points']);
+    expect(res.path.some((p) => p.id.startsWith('34:'))).toBe(false);
   });
 });

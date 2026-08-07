@@ -3,7 +3,7 @@ import { renderReport } from '../../src/domain/layout-spec/report.js';
 import type { PairResult, VerificationReceipt } from '../../src/domain/layout-spec/types.js';
 
 const pair: PairResult = {
-  node_id: '30872:96206', label: 'drawer-body', selector: '.drawer-body',
+  node_id: '12:360', label: 'drawer-body', selector: '.drawer-body',
   rows: [
     { prop: 'size.w', figma: 343, dom: 343, status: 'pass' },
     { prop: 'gap[0] title↔reasons', figma: 20, dom: 48, delta: 28, status: 'fail' },
@@ -14,9 +14,9 @@ const pair: PairResult = {
 
 describe('renderReport', () => {
   it('renders header, per-pair block with non-pass rows only, and totals', () => {
-    const md = renderReport({ file: 'RVVo', tolerancePx: 1, pairs: [pair], frame: { node_id: '30872:1000', width: 375 } });
+    const md = renderReport({ file: 'AbCdEf012345', tolerancePx: 1, pairs: [pair], frame: { node_id: '12:1000', width: 375 } });
     expect(md).toContain('Verified against Figma');
-    expect(md).toContain('**drawer-body** (node 30872:96206 ↔ .drawer-body)');
+    expect(md).toContain('**drawer-body** (node 12:360 ↔ .drawer-body)');
     expect(md).toContain('❌ gap[0] title↔reasons: Figma 20 / DOM 48 (Δ28)');
     expect(md).toContain('⚠️ component: Figma listItem/basic / DOM label.custom-radio — heuristic');
     expect(md).not.toContain('size.w'); // pass rows aren't listed
@@ -26,7 +26,7 @@ describe('renderReport', () => {
   // C-footer: the deep-TEXT hint must name the real remedy "raise max_depth (up to 8)", as the
   // per-row unchecked notes already do (diff.ts) — the footer used to advise only "add a pair".
   it('footer typography hint names the max_depth remedy (not just "add a pair")', () => {
-    const md = renderReport({ file: 'RVVo', tolerancePx: 1, pairs: [pair], depthLevels: 4 });
+    const md = renderReport({ file: 'AbCdEf012345', tolerancePx: 1, pairs: [pair], depthLevels: 4 });
     expect(md).toContain('typography checked to 4 nesting levels');
     expect(md).toContain('raise max_depth (up to 8)');
     expect(md).toContain('add a separate pair on the TEXT node');
@@ -34,7 +34,7 @@ describe('renderReport', () => {
 
   it('reports clean verdict and omitted pairs', () => {
     const clean: PairResult = { ...pair, rows: [pair.rows[0]], summary: { pass: 1, fail: 0, warn: 0, skip: 0, info: 0, demoted: 0, unchecked: 0, review: 0 } };
-    const md = renderReport({ file: 'RVVo', tolerancePx: 1, pairs: [clean], omittedPairs: 2 });
+    const md = renderReport({ file: 'AbCdEf012345', tolerancePx: 1, pairs: [clean], omittedPairs: 2 });
     expect(md).toMatch(/no discrepancies above tolerance/);
     expect(md).toContain('2 pairs');
   });
@@ -44,7 +44,7 @@ describe('renderReport', () => {
       ...pair,
       rows: [...pair.rows, { prop: 'unwrapped', figma: 'dom', dom: 'div', status: 'pass', note: 'cardinality fixed by auto-descent' }],
     };
-    const md = renderReport({ file: 'RVVo', tolerancePx: 1, pairs: [withUnwrapped] });
+    const md = renderReport({ file: 'AbCdEf012345', tolerancePx: 1, pairs: [withUnwrapped] });
     expect(md).toContain('unwrapped');
   });
 
@@ -55,7 +55,7 @@ describe('renderReport', () => {
       ],
       summary: { pass: 0, fail: 0, warn: 0, skip: 0, info: 1, demoted: 0, unchecked: 0, review: 0 },
     };
-    const md = renderReport({ file: 'RVVo', tolerancePx: 1, pairs: [withInfo] });
+    const md = renderReport({ file: 'AbCdEf012345', tolerancePx: 1, pairs: [withInfo] });
     expect(md).toContain('ℹ️ size.w');
     expect(md).toMatch(/\*\*drawer\*\*.*ℹ️1/);
     expect(md).toMatch(/Total:.*ℹ️1/);
@@ -71,7 +71,7 @@ describe('renderReport', () => {
 
   it('renders an optional preflight warning BEFORE the per-pair sections', () => {
     const md = renderReport({
-      file: 'RVVo', tolerancePx: 1, pairs: [pair],
+      file: 'AbCdEf012345', tolerancePx: 1, pairs: [pair],
       preflight: 'frame w464, overlay 420 — check the breakpoint variant (find_breakpoint_variant)',
     });
     const preflightIdx = md.indexOf('find_breakpoint_variant');

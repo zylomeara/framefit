@@ -10,7 +10,7 @@ const frame: RawSceneNode = {
   children: [
     {
       id: '1:1', name: 'Все жанры', type: 'TEXT', characters: 'Корзина',
-      style: { fontFamily: 'ALS Hauss', fontWeight: 700, fontSize: 24, lineHeightPx: 32, letterSpacing: 0, textAlignHorizontal: 'LEFT' },
+      style: { fontFamily: 'Inter', fontWeight: 700, fontSize: 24, lineHeightPx: 32, letterSpacing: 0, textAlignHorizontal: 'LEFT' },
     },
   ],
 };

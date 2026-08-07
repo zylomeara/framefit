@@ -494,10 +494,10 @@ describe('confirm_token aggregation (two-axis, cross-pair)', () => {
   const blockingOf = (pairs: any[]) => buildVerification(pairs, { depthLevels: 4 }).blocking.filter((b: any) => b.kind === 'unconfirmed_token');
 
   it('axis-1: 7 places of one token across TWO pairs → one record ×7, reasons, full places, detail cap-3', () => {
-    const p1 = mk('1:1', [rev('color[a]', 'text icon/primary', 'layered-undecidable'), rev('color[b]', 'text icon/primary', 'layered-undecidable'),
-      rev('color[c]', 'text icon/primary', 'layered-undecidable'), rev('fill', 'text icon/primary', 'inherited')]);
-    const p2 = mk('2:2', [rev('color[d]', 'text icon/primary', 'inherited'), rev('color[e]', 'text icon/primary', 'not-captured'),
-      rev('color[f]', 'text icon/primary', 'semantic-confirm')]);
+    const p1 = mk('1:1', [rev('color[a]', 'text color/primary', 'layered-undecidable'), rev('color[b]', 'text color/primary', 'layered-undecidable'),
+      rev('color[c]', 'text color/primary', 'layered-undecidable'), rev('fill', 'text color/primary', 'inherited')]);
+    const p2 = mk('2:2', [rev('color[d]', 'text color/primary', 'inherited'), rev('color[e]', 'text color/primary', 'not-captured'),
+      rev('color[f]', 'text color/primary', 'semantic-confirm')]);
     const b = blockingOf([p1, p2]);
     expect(b).toHaveLength(1);
     expect(b[0].places).toHaveLength(7);

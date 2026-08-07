@@ -23,8 +23,8 @@ afterEach(() => vi.useRealTimers());
 // #a73afd/mode_source:'default' → this test fails. That makes it a genuine regression guard.
 
 const collectionC = { 'C': { id: 'C', name: 'Theme', defaultModeId: 'm1',
-  modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'MonogramDark' }] } };
-const variableV1 = { 'V:1': { id: 'V:1', name: 'text icon/accent', resolvedType: 'COLOR', variableCollectionId: 'C',
+  modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'Dusk' }] } };
+const variableV1 = { 'V:1': { id: 'V:1', name: 'text color/accent', resolvedType: 'COLOR', variableCollectionId: 'C',
   valuesByMode: { m1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, m2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } } } };
 
 // What getNodesRaw returns for the REQUEST ROOT — note ROOT carries NO explicitVariableModes;
@@ -110,7 +110,7 @@ describe('get_design_context ancestor-mode glue (FR-2 / FR-3a)', () => {
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text icon/accent', value: '#8b6afb', mode: 'MonogramDark', mode_dependent: true, mode_source: 'node',
+      token: 'text color/accent', value: '#8b6afb', mode: 'Dusk', mode_dependent: true, mode_source: 'node',
     });
     // The ancestor chain WAS fetched at depth=1 (never depth=0).
     expect(h.depthsSeen).toContain(1);
@@ -122,8 +122,8 @@ describe('get_design_context ancestor-mode glue (FR-2 / FR-3a)', () => {
     const graph: ToolDeps['variableGraph'] = {
       // modesByName present → the cross-lib top collection is MULTI-mode, so needsAncestors()
       // triggers discovery (a single-mode top would render inline and skip the whole-file fetch).
-      resolve: () => ({ value: '#8b6afb', name: 'lib/accent', modesByName: { Default: '#a73afd', MonogramDark: '#8b6afb' } }),
-      resolveInMode: () => ({ token: 'lib/accent', value: '#8b6afb', mode: 'MonogramDark', mode_dependent: true, mode_source: 'node', pinned_axis_used: false, unconfirmed_default_used: false }),
+      resolve: () => ({ value: '#8b6afb', name: 'lib/accent', modesByName: { Default: '#a73afd', Dusk: '#8b6afb' } }),
+      resolveInMode: () => ({ token: 'lib/accent', value: '#8b6afb', mode: 'Dusk', mode_dependent: true, mode_source: 'node', pinned_axis_used: false, unconfirmed_default_used: false }),
     };
     // Local index does NOT know the external id → the cross-library path is taken.
     const h = harness({ leafBoundId: EXT,
@@ -170,7 +170,7 @@ describe('get_design_context: cross-lib discovery gated on multi-mode top (perf)
       variableGraph: {
         resolve: () => resolveResult,
         resolveInMode: () => (resolveResult?.modesByName
-          ? { token: resolveResult.name, value: resolveResult.value, mode: 'MonogramDark', mode_dependent: true as const, mode_source: 'node' as const, pinned_axis_used: false, unconfirmed_default_used: false }
+          ? { token: resolveResult.name, value: resolveResult.value, mode: 'Dusk', mode_dependent: true as const, mode_source: 'node' as const, pinned_axis_used: false, unconfirmed_default_used: false }
           : undefined),
         ...(isMultiMode !== undefined ? { isMultiMode: () => isMultiMode } : {}),
       },
@@ -186,7 +186,7 @@ describe('get_design_context: cross-lib discovery gated on multi-mode top (perf)
   });
 
   it('multi-mode cross-lib binding → discovery RUNS (getDocumentRaw fetched)', async () => {
-    const b = build({ value: '#123456', name: 'lib/token', modesByName: { Default: '#123456', MonogramDark: '#000000' } });
+    const b = build({ value: '#123456', name: 'lib/token', modesByName: { Default: '#123456', Dusk: '#000000' } });
     await b.handler({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
     expect(b.docFetches()).toBeGreaterThan(0);
   });
@@ -218,12 +218,12 @@ function prune(node: FakeNode, depth: number): FakeNode {
   return { ...rest, children: children.map((c) => prune(c, depth - 1)) };
 }
 
-const SUBBRAND = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/7856:948';
+const SUBBRAND = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/34:56';
 
 // DOC → PAGE(CANVAS, sets sub-brand→Solar) → L2 → L3 → L4 → L5 → ROOT(depth 6) → LEAF
 const deepTree: FakeNode = {
   id: 'DOC', name: 'Document', type: 'DOCUMENT', children: [
-    { id: 'PAGE', name: 'Page 1', type: 'CANVAS', explicitVariableModes: { [SUBBRAND]: '12398:0' }, children: [
+    { id: 'PAGE', name: 'Page 1', type: 'CANVAS', explicitVariableModes: { [SUBBRAND]: '34:0' }, children: [
       { id: 'L2', name: 'l2', type: 'FRAME', children: [
         { id: 'L3', name: 'l3', type: 'FRAME', children: [
           { id: 'L4', name: 'l4', type: 'FRAME', children: [
@@ -278,7 +278,7 @@ describe('discoverAncestorModes (deep-node reach + coverageComplete)', () => {
     const { logger } = recordingLogger();
     const disc = await discoverAncestorModes(api, 'file', 'ROOT', logger);
     // The page's sub-brand→Solar mode was discovered even though ROOT is deeper than depth 4.
-    expect(disc.stack.get(SUBBRAND)).toBe('12398:0');
+    expect(disc.stack.get(SUBBRAND)).toBe('34:0');
     expect(disc.coverageComplete).toBe(true);
     // It tried depth 4 first (ROOT absent), then deepened to 8 (ROOT present).
     expect(depthsSeen).toEqual([4, 8]);
@@ -333,7 +333,7 @@ describe('discoverAncestorModes (deep-node reach + coverageComplete)', () => {
     const { logger } = recordingLogger();
     const disc = await discoverAncestorModes(api, 'file', 'L2', logger);   // L2 is at depth 2
     expect(disc.coverageComplete).toBe(true);
-    expect(disc.stack.get(SUBBRAND)).toBe('12398:0');
+    expect(disc.stack.get(SUBBRAND)).toBe('34:0');
     expect(depthsSeen).toEqual([4]);          // located on the first fetch, no deepening
   });
 
@@ -557,7 +557,7 @@ describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest 
     const body = JSON.parse(textOf(res.content[0]));
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text icon/accent', value: '#a73afd', mode: 'Default', mode_dependent: true, mode_source: 'default',
+      token: 'text color/accent', value: '#a73afd', mode: 'Default', mode_dependent: true, mode_source: 'default',
     });
     // Discovery genuinely deepened to the cap (4 -> 8) and then stopped — it never located ROOT.
     expect(depthsSeen).toEqual([4, 8]);
@@ -573,8 +573,8 @@ describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest 
 //   (1) the ancestor↔subtree MERGE (ancestorStack spread before the subtree stack), and
 //   (2) WITHIN a subtree (collectSubtreeModes folds by EXACT id, so two suffixes of one lib key
 //       both survive).
-// Ground-truth cross-library chain: text icon/accent (Theme, multi-mode) --alias--> brand/600 (sub-brand
-// collection 511f94…, modes Lunar 15436:0 → #a73afd (default) / Solar 12398:0 → #8b6afb)
+// Ground-truth cross-library chain: text color/accent (Theme, multi-mode) --alias--> brand/600 (sub-brand
+// collection a1a1a1…, modes Lunar 12:0 → #a73afd (default) / Solar 34:0 → #8b6afb)
 // --alias--> purple/600. A NEARER node saying Solar must beat a FARTHER node saying Lunar.
 
 const K40 = (h: string) => h.padEnd(40, '0');
@@ -582,11 +582,11 @@ const ACCENT_KEY = 'd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4';
 const BRAND_KEY = K40('b6006000');
 const PURPLE_MARKET_KEY = K40('9600aa00');
 const PURPLE_ALT_KEY = K40('9600bb00');
-const THEME_COLL = 'VariableCollectionId:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3/12228:2318';
-const SUBBRAND_COLL = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/15515:117';
+const THEME_COLL = 'VariableCollectionId:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3/78:90';
+const SUBBRAND_COLL = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/34:57';
 const SUBBRAND_KEY = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
 // Two DIFFERENT subscribed-instance suffixes of the SAME sub-brand library collection.
-const SUBBRAND_FAR = `VariableCollectionId:${SUBBRAND_KEY}/7856:948`;   // set on the FARTHER node → Lunar
+const SUBBRAND_FAR = `VariableCollectionId:${SUBBRAND_KEY}/34:56`;   // set on the FARTHER node → Lunar
 const SUBBRAND_NEAR = `VariableCollectionId:${SUBBRAND_KEY}/8888:2`;    // set on the NEARER node → Solar
 const ACCENT_BINDING = 'VariableID:' + ACCENT_KEY + '/1:1';            // LEAF's cross-lib stroke binding
 
@@ -599,14 +599,14 @@ function crossLibGraph() {
         values_by_mode: {
           ThemeLight: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + BRAND_KEY + '/9:9' },
           ThemeDark: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + BRAND_KEY + '/9:9' },
-        }, name: 'text icon/accent', resolved_type: 'COLOR' }] },
+        }, name: 'text color/accent', resolved_type: 'COLOR' }] },
     { fileKey: 'FSubBrand',
-      colls: [{ collection_id: SUBBRAND_COLL, default_mode: '15436:0',
-        modes: [{ modeId: '15436:0', name: 'Lunar' }, { modeId: '12398:0', name: 'Solar' }] }],
+      colls: [{ collection_id: SUBBRAND_COLL, default_mode: '12:0',
+        modes: [{ modeId: '12:0', name: 'Lunar' }, { modeId: '34:0', name: 'Solar' }] }],
       vars: [{ library_key: BRAND_KEY, local_id: 'VariableID:9:9', collection_id: SUBBRAND_COLL,
         values_by_mode: {
-          '15436:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + PURPLE_MARKET_KEY + '/1:1' },
-          '12398:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + PURPLE_ALT_KEY + '/1:1' },
+          '12:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + PURPLE_MARKET_KEY + '/1:1' },
+          '34:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + PURPLE_ALT_KEY + '/1:1' },
         }, name: 'brand/600', resolved_type: 'COLOR' }] },
     { fileKey: 'FPurpleMarket',
       colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
@@ -678,7 +678,7 @@ function collisionHarness(fullDoc: CNode, rootSubtree: CNode, rootId: string):
 // The single mode-dependent cross-lib token in globalVars (dedup-flat across the whole tree).
 function resolvedAccent(body: any): { value: string } {
   const hit = Object.values(body.globalVars).find(
-    (v: any) => v && typeof v === 'object' && v.token === 'text icon/accent');
+    (v: any) => v && typeof v === 'object' && v.token === 'text color/accent');
   return hit as { value: string };
 }
 function subBrandModes(stack: Map<string, string>): string[] {
@@ -687,16 +687,16 @@ function subBrandModes(stack: Map<string, string>): string[] {
 
 describe('get_design_context nearest-wins BY LIBRARY KEY across the full chain', () => {
   it('ancestor↔subtree collision: request-root (nearer) Solar #8b6afb beats page (farther) Lunar #a73afd', async () => {
-    // PAGE (ancestor, FARTHER) pins the sub-brand collection to Lunar under suffix /7856:948;
+    // PAGE (ancestor, FARTHER) pins the sub-brand collection to Lunar under suffix /34:56;
     // ROOT (request root, NEARER) pins the SAME library collection to Solar under suffix /8888:2.
     const rootSubtree: CNode = {
-      id: 'ROOT', name: 'Header', type: 'FRAME', explicitVariableModes: { [SUBBRAND_NEAR]: '12398:0' },
+      id: 'ROOT', name: 'Header', type: 'FRAME', explicitVariableModes: { [SUBBRAND_NEAR]: '34:0' },
       absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 } as unknown as CNode['children'],
       children: [leafNode()],
     };
     const fullDoc: CNode = {
       id: 'DOC', name: 'Document', type: 'DOCUMENT', children: [
-        { id: 'PAGE', name: 'Page 1', type: 'CANVAS', explicitVariableModes: { [SUBBRAND_FAR]: '15436:0' }, children: [
+        { id: 'PAGE', name: 'Page 1', type: 'CANVAS', explicitVariableModes: { [SUBBRAND_FAR]: '12:0' }, children: [
           { id: 'ROOT', name: 'Header', type: 'FRAME', children: [
             { id: 'LEAF', name: '24/Stroke/menu', type: 'VECTOR' },
           ] },
@@ -709,17 +709,17 @@ describe('get_design_context nearest-wins BY LIBRARY KEY across the full chain',
     expect(resolvedAccent(body).value).toBe('#8b6afb');   // NEAREST (ROOT/Solar), NOT ancestor Lunar #a73afd
     // The graph saw exactly ONE sub-brand entry — the nearest node's — no farther collision survived.
     const merged = h.stacksSeen.find((s) => subBrandModes(s).length > 0)!;
-    expect(subBrandModes(merged)).toEqual(['12398:0']);
+    expect(subBrandModes(merged)).toEqual(['34:0']);
   });
 
   it('within-subtree collision: deeper inner frame Solar #8b6afb beats shallower request-root Lunar #a73afd', async () => {
     // ROOT (request root) pins Lunar; a DEEPER inner FRAME (nearer to LEAF) pins Solar —
     // same library collection, different subscribed-instance suffixes. The DEEPER node must win.
     const rootSubtree: CNode = {
-      id: 'ROOT', name: 'Header', type: 'FRAME', explicitVariableModes: { [SUBBRAND_FAR]: '15436:0' },
+      id: 'ROOT', name: 'Header', type: 'FRAME', explicitVariableModes: { [SUBBRAND_FAR]: '12:0' },
       absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 } as unknown as CNode['children'],
       children: [
-        { id: 'INNER', name: 'Sub', type: 'FRAME', explicitVariableModes: { [SUBBRAND_NEAR]: '12398:0' },
+        { id: 'INNER', name: 'Sub', type: 'FRAME', explicitVariableModes: { [SUBBRAND_NEAR]: '34:0' },
           children: [leafNode()] },
       ],
     };
@@ -739,7 +739,7 @@ describe('get_design_context nearest-wins BY LIBRARY KEY across the full chain',
     const body = JSON.parse(res.content[0].text);
     expect(resolvedAccent(body).value).toBe('#8b6afb');   // DEEPER (INNER/Solar), NOT shallower Lunar #a73afd
     const merged = h.stacksSeen.find((s) => subBrandModes(s).length > 0)!;
-    expect(subBrandModes(merged)).toEqual(['12398:0']);
+    expect(subBrandModes(merged)).toEqual(['34:0']);
   });
 });
 
@@ -771,7 +771,7 @@ describe('get_design_context: skipped discovery + downstream-alias multi-mode de
     };
     const variables = {
       // accent lives in CT and, in BOTH its modes, aliases DOWNSTREAM to brand (in CD).
-      'V:A': { id: 'V:A', name: 'text icon/accent', resolvedType: 'COLOR', variableCollectionId: 'CT',
+      'V:A': { id: 'V:A', name: 'text color/accent', resolvedType: 'COLOR', variableCollectionId: 'CT',
         valuesByMode: { ct1: { type: 'VARIABLE_ALIAS', id: 'V:B' }, ct2: { type: 'VARIABLE_ALIAS', id: 'V:B' } } },
       // brand lives in CD: default mode cd1 -> #a73afd, cd2 -> #8b6afb.
       'V:B': { id: 'V:B', name: 'brand/600', resolvedType: 'COLOR', variableCollectionId: 'CD',
@@ -813,7 +813,7 @@ describe('get_design_context: skipped discovery + downstream-alias multi-mode de
     // mode (#a73afd). Because discovery was SKIPPED, coverage is NOT complete → mode_source MUST stay
     // honest 'default', never a false 'node'.
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text icon/accent', value: '#a73afd', mode: 'Dark', mode_dependent: true, mode_source: 'default',
+      token: 'text color/accent', value: '#a73afd', mode: 'Dark', mode_dependent: true, mode_source: 'default',
     });
     // Prove this is the SKIPPED-discovery path (needsAncestors=false): getDocumentRaw never fired.
     expect(docFetches).toEqual([]);

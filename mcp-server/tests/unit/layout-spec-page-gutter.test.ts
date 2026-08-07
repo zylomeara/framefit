@@ -182,13 +182,13 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     // size.w demote note two lines down, so a `contains` on it was satisfied whether the viewport row
     // rendered or not: reverting the render gate to `r.prop === 'unwrapped'` passed the whole suite.
     const rows = diffPair(shelfSpec, shelfDom(), { tolerancePx: 1, frameWidth: 1920 });
-    const md = renderReport({ file: 'RVVo', tolerancePx: 1,
+    const md = renderReport({ file: 'AbCdEf012345', tolerancePx: 1,
       pairs: [{ node_id: '12:340', selector: 'main', rows, summary: summarize(rows) } as never] });
     expect(md.split('\n')).toContainEqual(expect.stringMatching(/^- ✅ viewport: Figma 1920 \/ DOM 1920 — CSS layout viewport 1909\b/));
     expect(md).toContain('🟰 size.w: Figma 1920 / DOM 1909');
 
     const clean = diffPair(shelfSpec, shelfDom({ layoutViewportWidth: 1920 }), { tolerancePx: 1, frameWidth: 1920 });
-    const cleanMd = renderReport({ file: 'RVVo', tolerancePx: 1,
+    const cleanMd = renderReport({ file: 'AbCdEf012345', tolerancePx: 1,
       pairs: [{ node_id: '12:340', selector: 'main', rows: clean, summary: summarize(clean) } as never] });
     expect(cleanMd).not.toContain('viewport:');
   });
@@ -349,7 +349,7 @@ describe('a page scrollbar gutter is explained, never silently passed', () => {
     expect(edit.kind).toBe('layout');
     expect(edit.caveat).toBe('the pair root lost 11px to a page scrollbar gutter (see size.w): confirm this delta is not that before editing');
 
-    const md = renderReport({ file: 'RVVo', tolerancePx: 1,
+    const md = renderReport({ file: 'AbCdEf012345', tolerancePx: 1,
       pairs: [{ node_id: '12:340', selector: 'main', rows, summary: summarize(rows), fix_plan: plan.fix_plan } as never] });
     const editLine = md.split('\n').find((l) => l.includes('layout: padding-right'))!;
     expect(editLine).toContain('edit the layout rule, not px');

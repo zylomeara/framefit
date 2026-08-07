@@ -44,9 +44,9 @@ describe('buildComponentDocs', () => {
     const out = buildComponentDocs(
       { 'C:1': { key: 'KEY1', componentSetId: 'CS:1' } },
       new Map([['KEY1', meta({ description: 'Primary CTA', documentationLinks: [{ uri: 'http://x' }] })]]),
-      new Map([['CS:1', { name: 'Button', description: 'navbar, topbar, навигация' }]]),
+      new Map([['CS:1', { name: 'Button', description: 'navbar, topbar' }]]),
     );
-    expect(out['C:1']).toMatchObject({ name: 'Button', description: 'Primary CTA', componentSet: { name: 'Button', description: 'navbar, topbar, навигация' }, docs: ['http://x'] });
+    expect(out['C:1']).toMatchObject({ name: 'Button', description: 'Primary CTA', componentSet: { name: 'Button', description: 'navbar, topbar' }, docs: ['http://x'] });
   });
 
   it('keeps a variant with empty own-description when its component SET has a description', () => {

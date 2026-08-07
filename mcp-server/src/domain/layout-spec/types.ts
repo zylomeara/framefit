@@ -30,7 +30,7 @@ export interface SpecTypography {
 // ONLY via ProjectorContext.resolveColorToken (the calling tool injects the real resolver, reusing
 // resolveBoundVariableInMode). hex is the value UNDER the node's active mode (not the library default).
 export interface ResolvedColorToken {
-  token: string;                 // variable name, e.g. 'text icon/accent'
+  token: string;                 // variable name, e.g. 'text color/accent'
   hex: string;                   // value UNDER the node's mode, '#rrggbb'
   mode?: string;                 // the node's active mode (multi-mode only)
   mode_dependent?: boolean;

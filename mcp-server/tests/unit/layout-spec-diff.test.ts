@@ -192,7 +192,7 @@ describe('diffPair — guards & structure & gaps', () => {
 });
 
 describe('diffPair — E: hug-vs-fill container (Figma hug / DOM fill)', () => {
-  // Live acceptance repro (btns 2338:23063): Figma hugs the content by width (395 = 197+gap8+190),
+  // Live acceptance repro (btns 12:371): Figma hugs the content by width (395 = 197+gap8+190),
   // DOM stretches to the parent (956), the buttons are pinned left, the DOM buttons carry an internal padding 28
   // (Figma's lies deeper → 0 at the measured level). This gave 4 false ❌: size.w/gap/padding-l/padding-r.
   const btnsSpec = (over: Partial<LayoutSpec> = {}): LayoutSpec => ({
@@ -647,7 +647,7 @@ describe('diffPair — cardinality-repair unwrap (5.3)', () => {
 });
 
 describe('diffPair — unwrapBase scoped to main axis only (cross stays content-edge)', () => {
-  // Acceptance-2 replica (BOOKS-282): fig-root autoLayout.padding.left=16 (a legitimate
+  // Acceptance-2 replica: fig-root autoLayout.padding.left=16 (a legitimate
   // inline-padding), dom-root paddings.left=0. Each side is self-consistent
   // (the child sits exactly on its side's content-edge) — offset-cross does NOT validate
   // "whether the root padding matches between fig and dom", only the child's position within
@@ -1334,10 +1334,11 @@ describe('diffPair — typography auto-descent: content-first matching of TEXT d
     expect(fs?.note).not.toContain('by content');
   });
 
-  // ── Wrong-node gate on the order path (B, live bug BOOKS/Settings) ──
+  // ── Wrong-node gate on the order path (B, live bug on a settings screen) ──
   it('order-zip with DISJOINT content (input value vs label) → warn, NOT confident font-size/color from the wrong node', () => {
-    // Exact values from a live repro: Figma «Setting description» «Временное» 13px/#808093 vs
-    // DOM input value «Мелкая Фейхоа» 16px/#242429. Bijection misses (content differs), 1v1 order.
+    // Metrics from a live repro, strings synthetic — the sanitisation wave replaced the product copy,
+    // so «Синяя Груша» is invented and only the numbers are the repro's: Figma «Setting description»
+    // «Временное» 13px/#808093 vs DOM input value 16px/#242429. Bijection misses (content differs), 1v1 order.
     // Cyrillic is disjoint → the gate fires (Latin-only tokens() would give [] and stay silent — this
     // test locks the unicode tokenizer contentTokens).
     const s = mkSpec([
@@ -1345,7 +1346,7 @@ describe('diffPair — typography auto-descent: content-first matching of TEXT d
         textSnippet: 'Временное', text: { fontSize: 13, colorHex: '#808093' } },
     ]);
     const d = mkDom([
-      { kind: 'text', rect: { x: 0, y: 0, w: 200, h: 20 }, text: 'Мелкая Фейхоа',
+      { kind: 'text', rect: { x: 0, y: 0, w: 200, h: 20 }, text: 'Синяя Груша',
         styles: { fontSize: 16, color: '#242429' } },
     ]);
     const rows = diffPair(s, d, { tolerancePx: 1 });
@@ -1355,7 +1356,7 @@ describe('diffPair — typography auto-descent: content-first matching of TEXT d
     const warn = rows.find((r) => r.prop === 'typography_descent[card→"Временное"]');
     expect(warn?.status).toBe('warn');
     expect(String(warn?.figma)).toContain('Временное');
-    expect(String(warn?.dom)).toContain('Мелкая');
+    expect(String(warn?.dom)).toContain('Синяя');
     expect(warn?.note).toContain('wrong node');
     expect(warn?.note).not.toContain('by content');
     expect(warn?.note).not.toContain('by order');
@@ -1369,7 +1370,7 @@ describe('diffPair — typography auto-descent: content-first matching of TEXT d
         textSnippet: 'Временное', text: { fontSize: 13, colorHex: '#808093' } },
     ]);
     const d = mkDom([
-      { kind: 'text', rect: { x: 0, y: 0, w: 200, h: 17 }, text: 'Мелкая Фейхоа',
+      { kind: 'text', rect: { x: 0, y: 0, w: 200, h: 17 }, text: 'Синяя Груша',
         styles: { fontSize: 13, color: '#808093' } },
     ]);
     const rows = diffPair(s, d, { tolerancePx: 1 });
@@ -1675,7 +1676,7 @@ describe('depth-4 capture: 4th-level typography bug measured, not silently lost'
     ],
   });
 
-  it('font-size bug on the 4th nesting level (mo-typography inside mo-list-item inside a card) is measured — NOT silently lost', () => {
+  it('font-size bug on the 4th nesting level (ds-typography inside ds-list-item inside a card) is measured — NOT silently lost', () => {
     const spec4 = buildLayoutSpec(cardRaw);
     const rows = diffPair(spec4, domL4(20), { tolerancePx: 1 });
     expect(rows.find((r) => r.prop === 'font-size[wrap→"99 ₽"]')).toMatchObject({ figma: 12, dom: 20, status: 'fail' });
@@ -2623,7 +2624,7 @@ describe('component identity: identity tokens + honest floors (p.0–p.3b)', () 
     expect(r.note).toContain('expected_component');
   });
   it('scope p.0: setName PRESENT → match by set identity (derived pair list+item), NOT by the prop token basic', () => {
-    const r = compRow(specC({ id: 'c1', setName: 'listItem', name: 'Type=Basic' }), domC(hints(['mo-list-item_basic'])));
+    const r = compRow(specC({ id: 'c1', setName: 'listItem', name: 'Type=Basic' }), domC(hints(['ds-list-item_basic'])));
     expect(r.status).toBe('pass');
     expect(r.note).not.toContain('"basic"'); // anti-regression: props did not return to the match
   });
@@ -2743,8 +2744,8 @@ describe('component identity: identity tokens + honest floors (p.0–p.3b)', () 
     expect(r.status).toBe('pass');
     expect(r.note).toContain('"tag"');
   });
-  it('camelCase↔kebab: listItem × mo-list-item → pass by the derived pair list+item', () => {
-    const r = compRow(specC({ id: 'c1', setName: 'listItem' }), domC(hints(['mo-list-item'])));
+  it('camelCase↔kebab: listItem × ds-list-item → pass by the derived pair list+item', () => {
+    const r = compRow(specC({ id: 'c1', setName: 'listItem' }), domC(hints(['ds-list-item'])));
     expect(r.status).toBe('pass');
     expect(r.note).toContain('"list"');
     expect(r.note).toContain('"item"');

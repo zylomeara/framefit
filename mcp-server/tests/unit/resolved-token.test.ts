@@ -5,8 +5,8 @@ import type { RawVariablesResponse } from '../../src/domain/figma-raw.js';
 
 const resp: RawVariablesResponse = { meta: {
   variableCollections: { 'C': { id: 'C', name: 'Theme', defaultModeId: 'm1',
-    modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'MonogramDark' }] } },
-  variables: { 'V:1': { id: 'V:1', name: 'text icon/accent', resolvedType: 'COLOR', variableCollectionId: 'C',
+    modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'Dusk' }] } },
+  variables: { 'V:1': { id: 'V:1', name: 'text color/accent', resolvedType: 'COLOR', variableCollectionId: 'C',
     valuesByMode: { m1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, m2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } } } },
 } };
 
@@ -15,7 +15,7 @@ describe('resolveBoundVariableInMode (local)', () => {
     const idx = buildVariableIndex(resp);
     const stack = new Map([['C', 'm2']]);
     const r = resolveBoundVariableInMode({ strokes: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'strokes', idx, stack)!;
-    expect(r).toEqual({ token: 'text icon/accent', value: '#8b6afb', mode: 'MonogramDark', mode_dependent: true, mode_source: 'node' });
+    expect(r).toEqual({ token: 'text color/accent', value: '#8b6afb', mode: 'Dusk', mode_dependent: true, mode_source: 'node' });
   });
 
   it('falls back to default mode with mode_source=default when the stack is empty', () => {

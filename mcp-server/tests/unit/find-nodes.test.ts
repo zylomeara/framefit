@@ -66,7 +66,7 @@ describe('findNodes', () => {
   it('short/numeric query does not match a number embedded in longer text', () => {
     const root: N = {
       id: '0:0', name: 'root', type: 'FRAME', children: [
-        { id: 'noise', name: 'Subtitle', type: 'TEXT', characters: 'Пока читать книги не начали — 29 штук' } as unknown as N,
+        { id: 'noise', name: 'Subtitle', type: 'TEXT', characters: 'Всего найдено 29 элементов в списке' } as unknown as N,
         { id: 'hit', name: '29', type: 'TEXT' } as N,
       ],
     };

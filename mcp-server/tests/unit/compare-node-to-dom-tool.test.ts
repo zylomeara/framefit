@@ -235,18 +235,18 @@ describe('compare_node_to_dom tool', () => {
     };
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': {
       document: variant,
-      components: { '5:1': { key: 'k1', name: 'type=active, size=Big', remote: true, componentSetId: '29780:9322' } },
-      componentSets: { '29780:9322': { key: 'sk1', name: 'subscrip banner', remote: true } },
+      components: { '5:1': { key: 'k1', name: 'type=active, size=Big', remote: true, componentSetId: '12:380' } },
+      componentSets: { '12:380': { key: 'sk1', name: 'promo banner', remote: true } },
     } } } as RawNodesResponse));
     const getComponent = vi.fn();
     const getVariablesLocal = vi.fn(async () => emptyVars); // file fixture, modeled on the neighbor :189
     const run = harness({ getNodesRaw, getComponent, getVariablesLocal });
     const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: {
-      ...domFor(variant), componentHints: { tag: 'div', classList: ['subscrip-banner'], data: {} },
+      ...domFor(variant), componentHints: { tag: 'div', classList: ['promo-banner'], data: {} },
     } }] });
     const rows = JSON.parse(res.content[0].text).pairs[0].rows;
     const row = rows.find((r: any) => r.prop === 'component');
-    expect(row.figma).toBe('subscrip banner/type=active, size=Big');
+    expect(row.figma).toBe('promo banner/type=active, size=Big');
     expect(getComponent).not.toHaveBeenCalled(); // meta-resolve: zero /v1/components fetches
   });
 

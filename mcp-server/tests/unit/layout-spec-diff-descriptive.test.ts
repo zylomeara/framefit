@@ -12,7 +12,7 @@ const baseSpec = (): LayoutSpec => ({
   children: [
     { id: '1:2', name: 'radio', type: 'INSTANCE', rect: { x: 16, y: 18, w: 20, h: 20 } },
     { id: '1:3', name: 'label', type: 'TEXT', rect: { x: 52, y: 16, w: 200, h: 24 },
-      text: { fontFamily: 'ABC Favorit', fontWeight: 650, fontSize: 19, lineHeightPx: 24, lineHeightUnit: 'PIXELS', letterSpacing: 0, colorHex: '#141414' } },
+      text: { fontFamily: 'Inter', fontWeight: 650, fontSize: 19, lineHeightPx: 24, lineHeightUnit: 'PIXELS', letterSpacing: 0, colorHex: '#141414' } },
   ],
 });
 
@@ -22,12 +22,12 @@ const baseSnap = (): DomSnapshotOk => ({
   borders: { top: 2, right: 2, bottom: 2, left: 2 }, scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,
   paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 339, clientHeight: 52, scrollHeight: 52,
   styles: { display: 'flex', backgroundColor: '#ffffff', borderRadius: 16, opacity: 1 },
-  componentHints: { tag: 'label', classList: ['mo-list-item', 'mo-list-item_basic'], data: {} },
+  componentHints: { tag: 'label', classList: ['ds-list-item', 'ds-list-item_basic'], data: {} },
   children: [
     { kind: 'element', tag: 'input', rect: { x: 18, y: 20, w: 20, h: 20 } },
     // w:196 — a historical end-edge tuning; padding-right for a trailing text child is now suppressed (intrinsic width)
     { kind: 'text', rect: { x: 54, y: 18, w: 196, h: 24 }, text: 'Причина',
-      styles: { fontFamily: '"ABC Favorit", sans-serif', fontWeight: 700, fontSize: 18, lineHeight: 24, letterSpacing: 'normal', color: '#141414' } },
+      styles: { fontFamily: '"Inter", sans-serif', fontWeight: 700, fontSize: 18, lineHeight: 24, letterSpacing: 'normal', color: '#141414' } },
   ],
 });
 
@@ -50,7 +50,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
     const rows = diffPair(baseSpec(), baseSnap(), { tolerancePx: 1 });
     expect(row(rows, 'font-size[label]')).toMatchObject({ figma: 19, dom: 18, status: 'fail' });
     expect(row(rows, 'font-weight[label]')).toMatchObject({ figma: 650, dom: 700, status: 'fail' });
-    expect(row(rows, 'font-family[label]')?.status).toBe('pass'); // "ABC Favorit", sans-serif → abc favorit
+    expect(row(rows, 'font-family[label]')?.status).toBe('pass'); // "Inter", sans-serif → inter
     expect(row(rows, 'color[label]')?.status).toBe('pass');
     expect(row(rows, 'line-height[label]')?.status).toBe('pass');
   });
@@ -81,7 +81,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
 
   it('component row: DS classList token overlap → pass; alien classes → warn (never fail)', () => {
     const rows = diffPair(baseSpec(), baseSnap(), { tolerancePx: 1 });
-    // setName 'listItem' → base 'listitem' + derived ['list','item']; class 'mo-list-item(_basic)' → ['list','item',…]
+    // setName 'listItem' → base 'listitem' + derived ['list','item']; class 'ds-list-item(_basic)' → ['list','item',…]
     // → intersection on the derived pair list+item; the prop token basic is excluded from the match
     expect(row(rows, 'component')?.status).toBe('pass');
     expect(row(rows, 'component')?.note).not.toContain('"basic"');
@@ -107,26 +107,26 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
     expect(row(rows, 'font-size[label]')?.note).toMatch(/fonts not loaded/);
   });
 
-  it("component: 2-char token no longer matches ('mo' acceptance case); expected_component is a substring match", () => {
+  it("component: 2-char token no longer matches ('ds' acceptance case); expected_component is a substring match", () => {
     const d = baseSnap();
-    d.componentHints = { tag: 'label', classList: ['mo-radio'], data: {} };
-    // Before: tokens('mo-list-item')∩tokens('label.mo-radio') = {'mo'} → a false pass
-    const rows = diffPair(baseSpec(), d, { tolerancePx: 1, expectedComponent: 'mo-list-item' });
+    d.componentHints = { tag: 'label', classList: ['ds-radio'], data: {} };
+    // Before: tokens('ds-list-item')∩tokens('label.ds-radio') = {'ds'} → a false pass
+    const rows = diffPair(baseSpec(), d, { tolerancePx: 1, expectedComponent: 'ds-list-item' });
     expect(row(rows, 'component')?.status).toBe('warn');
     // Substring match → pass with a transparent note
     const d2 = baseSnap();
-    d2.componentHints = { tag: 'label', classList: ['mo-list-item', 'mo-list-item_basic'], data: {} };
-    const ok = row(diffPair(baseSpec(), d2, { tolerancePx: 1, expectedComponent: 'mo-list-item' }), 'component');
+    d2.componentHints = { tag: 'label', classList: ['ds-list-item', 'ds-list-item_basic'], data: {} };
+    const ok = row(diffPair(baseSpec(), d2, { tolerancePx: 1, expectedComponent: 'ds-list-item' }), 'component');
     expect(ok?.status).toBe('pass');
     expect(ok?.note).toContain('matched by');
   });
 
   it('component-note transparency: warn note names what was attempted (substring vs token) — 5.2', () => {
     const dExpected = baseSnap();
-    dExpected.componentHints = { tag: 'label', classList: ['mo-radio'], data: {} };
-    const withExpected = row(diffPair(baseSpec(), dExpected, { tolerancePx: 1, expectedComponent: 'mo-list-item' }), 'component');
+    dExpected.componentHints = { tag: 'label', classList: ['ds-radio'], data: {} };
+    const withExpected = row(diffPair(baseSpec(), dExpected, { tolerancePx: 1, expectedComponent: 'ds-list-item' }), 'component');
     expect(withExpected?.status).toBe('warn');
-    expect(withExpected?.note).toContain('substring "mo-list-item" not found');
+    expect(withExpected?.note).toContain('substring "ds-list-item" not found');
 
     const dNoExpected = baseSnap();
     dNoExpected.componentHints = { tag: 'div', classList: ['custom-radio'], data: {} };
@@ -208,11 +208,11 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('color[child]: mode-unconfirmed token + mismatch → review; equal (no token) → pass; unbound mismatch → fail', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#a73afd',
-      colorToken: { token: 'text icon/accent', hex: '#a73afd', mode: 'Lunar', mode_dependent: true, mode_source: 'default', all_modes: { Solar: '#141414', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', hex: '#a73afd', mode: 'Lunar', mode_dependent: true, mode_source: 'default', all_modes: { Solar: '#141414', Lunar: '#a73afd' } } };
     const c = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'color[label]'); // DOM color #141414 (Solar)
     expect(c?.status).toBe('review');
     expect(c?.note).toMatch(/mode is not confirmed/);
-    expect(c?.note).toContain('text icon/accent');
+    expect(c?.note).toContain('text color/accent');
 
     const sEq = baseSpec(); // colorHex #141414 matches the DOM color, no token → pass (not review)
     const cEq = row(diffPair(sEq, baseSnap(), { tolerancePx: 1 }), 'color[label]');
@@ -245,7 +245,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('WS-D: mode-unconfirmed bound token → review (not-verified), never fail/green', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb',
-      colorToken: { token: 'text icon/accent', hex: '#a73afd', mode: 'Lunar', mode_dependent: true, mode_source: 'default', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', hex: '#a73afd', mode: 'Lunar', mode_dependent: true, mode_source: 'default', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
     // DOM shows Solar #8b6afb; figma resolved to default #a73afd because mode unconfirmed
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb';
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
@@ -256,7 +256,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('WS-D: mode confirmed + hex diverges + matches ANOTHER mode → fail (wrong subbrand)', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb',
-      colorToken: { token: 'text icon/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#a73afd'; // Lunar applied
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('fail');
@@ -266,7 +266,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('WS-D: unparseable DOM color (undefined) → info, never fail', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb',
-      colorToken: { token: 'text icon/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = undefined; // oklch → toHex undefined
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('info');
@@ -275,7 +275,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('WS-D: mode confirmed + hex matches + bound token, DOM token not captured → review (interim)', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb',
-      colorToken: { token: 'text icon/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb';
     expect(row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]')?.status).toBe('review');
   });
@@ -288,15 +288,15 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   // ── group D: the REAL DOM token from the snapshot (the 4th arg instead of interim undefined) ──
   it('WS-D: literal-catch — bound Figma token, DOM literal, hex matches → fail', () => {
     const s = baseSpec();
-    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'text icon/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb'; (snap.children[1] as any).styles.colorToken = { literal: true };
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('fail'); expect(c?.note).toMatch(/literal|tokenize/i);
   });
   it('WS-D: both tokens, hex matches → review', () => {
     const s = baseSpec();
-    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'text icon/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
-    const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb'; (snap.children[1] as any).styles.colorToken = { token: '--mo-text-icon-accent' };
+    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+    const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb'; (snap.children[1] as any).styles.colorToken = { token: '--ds-text-icon-accent' };
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('review');
     // note strengthening (T7 Minor C): a status-only lock is weak — we pin "both from a token" so that a rollback of the 4th
@@ -352,7 +352,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('text resolved-match: color[label] confirmed token, raw≠resolved, DOM=resolved → NOT fail', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#a73afd',
-      colorToken: { token: 'text icon/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
     const d = baseSnap(); (d.children[1] as any).styles.color = '#8b6afb';
     const c = row(diffPair(s, d, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).not.toBe('fail');
@@ -409,7 +409,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('display resolved (text): a mode-mismatch fail shows the resolved figma-hex (#8b6afb), not the raw (#a73afd)', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#a73afd', // the raw default-mode (Lunar)
-      colorToken: { token: 'text icon/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
     const d = baseSnap(); (d.children[1] as any).styles.color = '#a73afd'; // on screen Lunar (the wrong mode)
     const c = row(diffPair(s, d, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('fail');       // mode-mismatch (group C)
@@ -519,7 +519,7 @@ describe('colorVerdict A2 — bound-but-unresolved color → review (never false
   it('A2 control: text colorToken resolved (even with colorBoundVar set) → group-D review, NOT A2-intercepted', () => {
     const s = baseSpec(); // text colorHex #141414 == DOM color #141414
     s.children[1].text = { ...s.children[1].text!, colorBoundVar: 'VariableID:5:6',
-      colorToken: { token: 'text icon/accent', hex: '#141414', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+      colorToken: { token: 'text color/accent', hex: '#141414', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
     const c = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('review');
     expect(c?.note).toContain('the DOM token was not read');

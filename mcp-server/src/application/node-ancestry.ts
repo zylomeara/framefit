@@ -78,7 +78,7 @@ function byAreaAscending<T>(items: T[], areaFn: (t: T) => number): T[] {
 }
 
 // The '<session>' of a Figma '<session>:<local>' node id, compound-normalized: an instance-internal
-// id ("I30872:96367;12798:75246") clusters with the plain "30872:*" nodes of the same screen. Nodes
+// id ("I12:361;56:7891") clusters with the plain "12:*" nodes of the same screen. Nodes
 // authored in one editing session share this prefix, so a fallback path whose TAIL shares the
 // target's session prefix sits on the target's actual screen — the robust separator geometry cannot
 // provide when an overlay's coordinates collide with an unrelated page's similarly-sized node.

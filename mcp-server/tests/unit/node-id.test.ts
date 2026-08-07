@@ -5,7 +5,7 @@ describe('node-id', () => {
   it('NODE_ID_RE matches colon and dash forms', () => {
     expect(NODE_ID_RE.test('1:42')).toBe(true);
     expect(NODE_ID_RE.test('1-42')).toBe(true);
-    expect(NODE_ID_RE.test('1234:567')).toBe(true);
+    expect(NODE_ID_RE.test('12:340')).toBe(true);
   });
 
   it('NODE_ID_RE rejects malformed', () => {
