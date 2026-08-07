@@ -3,6 +3,64 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.19.0
+
+Three fixes, each born the same way - by running the documented cycle against a real page and
+reading what came back - and each one moves what your reports say. No schema change, no new tool,
+no extractor change: **you do not need to reconnect your client or re-request the extractor.** But
+two verdict behaviours changed, so reread items 1 and 2 before trusting an old mental model of a
+report.
+
+### Changed
+
+**1. A review row whose two values already matched byte-for-byte no longer blocks.**
+
+A live run held a badge at `complete: false` after 11 passes and 0 fails - the only blocker was
+`confirm_token` on a color where both sides read the same hex. "The node's mode is not confirmed"
+is a property of the design file, not of the code under review, and a perpetually red gate teaches
+the reader to explain red away - the erosion the gate exists to prevent. Such a row is now
+advisory: it stays visible (the pencil counter and the row itself), but it neither enters
+`blocking` nor holds `verification.complete` at `false`, and the report verdict follows the same
+rule, so the verdict line stays equivalent to `verification.complete`. Diverged and one-sided reviews block exactly as before.
+If your agent gates on `complete`, expect `true` on token-heavy pages where it previously never
+arrived.
+
+The adversarial pass over this change caught its own hole before it shipped. The gradient
+provenance rows (`gradient-token`, `gradient-stop-N-token`) used to carry the literal placeholders
+`whole`/`stop` in `figma`/`dom` - values the new rule would have read as "matched" on every
+gradient, silently disabling that gate over gradients wired to different tokens. Those rows now
+carry the compared token names themselves, null for a side that has none. This is the one output
+VALUE the release changes: if you parsed the literals `whole`/`stop` out of those two rows, parse
+the token names instead - every other consumer gains a more readable row.
+
+**2. Absolutely positioned children are counted, not vanished.**
+
+`get_layout_spec` on a frame whose direct children include overlays, modals or pins
+(`layoutPositioning: ABSOLUTE`) used to drop them without a trace, while the truncation note said
+"cut by DEPTH" - a knob that cannot reveal them. Measured twice on live pages: a frame lost its
+overlay and three modals, and a week later another frame lost the sticky widget it was opened for.
+Every projected level, the depth-terminal one included, now carries `outOfFlow: N` - the mirror of
+the DOM snapshot's field of the same name - and the structure-mismatch note names the Figma side
+symmetrically. The action that works is stated in both places: raising `max_depth` will NOT reveal
+such a child; request its node id directly, or give it its own pair.
+
+**3. Turbopack hashes with underscores parse, and the no-address note carries its own fix.**
+
+The base64url alphabet includes the underscore; the CSS-modules parser's hash group did not - so on
+builds emitting 6-char hashes like `pQ_r7S` the source-hint bridge answered "none was recognized as
+a CSS module" precisely on the code under review, and `source`/`fix_plan` stayed empty where they
+were needed most. Those classes parse now. When no class parses at all, the note points at the new
+page that fixes it: [docs/named-classes.md](docs/named-classes.md) - the per-bundler setting
+(webpack `localIdentName`, Vite `generateScopedName`, the Turbopack long form that needs nothing)
+plus a tier table of what each class shape buys.
+
+### Repository
+
+`pnpm dev` no longer dies with ENOENT on Node 22 when `.env` does not exist yet: the
+`--env-file-if-exists` + `--watch` pair puts the missing path into the watch set on that Node major
+alone (measured per-runtime), and an ensure-guard now creates an empty `.env` first. The guard is
+tested as shipped - extracted from `package.json`, not copied.
+
 ## 0.18.0
 
 The first release since the package went public, and nothing in the tool surface moved. All 26 tools
