@@ -19,7 +19,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "node --env-file-if-exists=.env --import tsx --watch src/index.ts",
+    "dev": "node -e \"const fs=require('fs');fs.existsSync('.env')||fs.writeFileSync('.env','')\" && node --env-file-if-exists=.env --import tsx --watch src/index.ts",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "test": "vitest run --exclude tests/e2e",
     "test:watch": "vitest --exclude tests/e2e",
