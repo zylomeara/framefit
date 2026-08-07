@@ -34,7 +34,7 @@ is *how you gate access*. Two safe answers:
 Run the server on the VPS exactly like the local path:
 
 ```bash
-# not-executed: requires-public-repo,contains-placeholder
+# not-executed: clones-published-main,contains-placeholder
 git clone https://github.com/zylomeara/framefit.git && cd framefit/docker
 FIGMA_TOKEN=figd_your_token docker compose --profile local up -d --build --wait
 curl -fsS http://127.0.0.1:${MCP_PORT:-3846}/health   # -> {"status":"ok","bind":{"address":"0.0.0.0","loopback":false}}
