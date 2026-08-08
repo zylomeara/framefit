@@ -310,8 +310,20 @@ function renderVerification(v?: VerificationReceipt): string[] {
   // check came back green).
   const prov = cov ? ` · enumeration: ${cov.enumeration_source}@${cov.enumeration_depth}${cov.enumeration_note ? ` ⚠ ${cov.enumeration_note}` : ''}` : '';
   const auditBlock = renderSpacingAudit(v.spacing_audit);
+  // exclude_regions honesty lines — rendered in BOTH branches: a green that hides what the caller
+  // excluded would be the machine gate laundering its own scope. not_found names all three causes
+  // (they are indistinguishable server-side), and under a truncated enumeration says so.
+  const exLines: string[] = [];
+  if (cov?.excluded?.length) {
+    exLines.push(`⚠ excluded by the caller: ${cov.excluded.length} region(s): ${cov.excluded.join(', ')} — coverage not demanded there; measurements inside them (if any) still count`);
+  }
+  if (cov?.excluded_not_found?.length) {
+    exLines.push(`⚠ exclude_regions not found among coverage regions (beyond the enumeration slice / a decorative leaf carrying no demand / a typo): ${cov.excluded_not_found.join(', ')}`
+      + (cov.enumeration_truncated ? ' — enumeration is truncated, an id may lie beyond the slice' : ''));
+  }
+  for (const n of v.notes ?? []) exLines.push(`⚠ ${n}`);
   if (v.complete) {
-    return [`Check: COMPLETE ✅ — everything verified (${scopeNote}, pairs ${v.pairs.clean}/${v.pairs.checked} clean).${prov}`, ...auditBlock];
+    return [`Check: COMPLETE ✅ — everything verified (${scopeNote}, pairs ${v.pairs.clean}/${v.pairs.checked} clean).${prov}`, ...exLines, ...auditBlock];
   }
   // Final hardening: same total-vs-capped and fully_clean-exclusion
   // treatment as renderReport's notVerified above — this is the SECOND prose point reading the same
@@ -327,7 +339,7 @@ function renderVerification(v?: VerificationReceipt): string[] {
     if (fullyCleanCount) bits.push(`insets of ${fullyCleanCount} container(s) not verified (between-children gaps clean per audit)`);
     if (cov.enumeration_truncated) bits.push('enumeration truncated');
   }
-  const out = [`Check: INCOMPLETE (${scopeNote}): ${bits.join('; ')} — do NOT say "done" until this is closed.${prov}`, ...auditBlock];
+  const out = [`Check: INCOMPLETE (${scopeNote}): ${bits.join('; ')} — do NOT say "done" until this is closed.${prov}`, ...exLines, ...auditBlock];
   if (v.blocking.length === 0) {
     // Final hardening: the generic caveat used to say only "demoted/out of
     // reach", mis-labeling an audit-clean container's insets-only remainder as one of those two — a

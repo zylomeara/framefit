@@ -978,3 +978,132 @@ describe('a blocking item never names an action the caller cannot carry out', ()
     expect(buildVerification([truncatedPair], { depthLevels: 8 }).complete).toBe(false);
   });
 });
+
+// ── exclude_regions — a coverage DEMAND is removable, a MEASUREMENT never is (spec p.4 + panel) ──
+describe('exclude_regions', () => {
+  const rectX = (x: number, y: number, w = 10, h = 10): SpecRect => ({ x, y, w, h });
+  const scR2 = (id: string, r: SpecRect, opts: ScOpts = {}): SpecChild => ({ ...sc(id, undefined, opts), rect: r }) as SpecChild;
+  const cap2 = (ref: string, r: SpecRect): CaptureInfo => ({ ref, rect: r, geometryUnchecked: false });
+  const base = { depthLevels: 4, enumeration: meta('pair_fetch', 4) } as const;
+
+  it('repro: 2 of 4 regions paired, the other 2 excluded → complete true, excluded listed by id', () => {
+    const v = buildVerification([pair('A', [pass('size.w')]), pair('B', [pass('size.w')])],
+      { ...base, frame: frame([sc('A'), sc('B'), sc('C'), sc('D')]), excludeRegions: ['C', 'D'] });
+    expect(v.frame_coverage).toMatchObject({ worthy: 2, covered: 2, uncovered: [], excluded: ['C', 'D'] });
+    expect(v.complete).toBe(true);
+    expect(v.blocking).toEqual([]);
+  });
+  it('control: the same call without exclusions stays red and names both regions', () => {
+    const v = buildVerification([pair('A', [pass('size.w')]), pair('B', [pass('size.w')])],
+      { ...base, frame: frame([sc('A'), sc('B'), sc('C'), sc('D')]) });
+    expect(v.complete).toBe(false);
+    expect(v.frame_coverage?.uncovered.sort()).toEqual(['C', 'D']);
+  });
+
+  // Panel CRITICAL: the partial gates count PAIRED children; a naive exclusion dropped the count
+  // below 2, the audit never ran, and a measured-in-principle gap fail went red→green with both
+  // rects in captures. Resolution: touched-ness is UNCHANGED by exclusion — only demands go.
+  it('CRITICAL lock: excluding a PAIRED sibling does not disarm the frame partial gate — the audit fail survives', () => {
+    const A = scR2('A', rectX(0, 0));
+    const B = scR2('B', rectX(0, 24)); // Figma gap 14
+    const fr = frame([A, B], { axis: 'col' });
+    const captures = new Map<string, CaptureInfo>([
+      ['A', cap2('b1', rectX(0, 0))],
+      ['B', cap2('b1', rectX(0, 40))], // DOM gap 30 — a real defect between the siblings
+    ]);
+    const v = buildVerification([pair('A', [pass('size.w')]), pair('B', [pass('size.w')])],
+      { ...base, frame: fr, captures, excludeRegions: ['B'] });
+    expect(v.frame_coverage?.partial).toContain('F:0'); // the frame-as-container gate fired
+    expect(v.blocking.some((b) => b.kind === 'spacing_mismatch')).toBe(true);
+    const md = renderReport({ file: 'f', tolerancePx: 1,
+      pairs: [pair('A', [pass('size.w')]), pair('B', [pass('size.w')])], verification: v });
+    expect(md).toContain('discrepancies found');
+  });
+
+  it('nested: an excluded unpaired child raises no demand; a non-excluded unpaired sibling still does', () => {
+    const R = sc('R', [sc('C1'), sc('C2'), sc('C3')]);
+    const v = buildVerification([pair('C2', [pass('size.w')])],
+      { ...base, frame: frame([R]), excludeRegions: ['C1'] });
+    expect(v.frame_coverage?.uncovered).toEqual(['C3']);
+    expect(v.frame_coverage?.excluded).toEqual(['C1']);
+    expect(v.blocking.some((b) => b.node_id === 'C1')).toBe(false);
+  });
+
+  it('a pair inside an excluded region still covers its parent — measurement facts survive exclusion', () => {
+    // P carries TWO children so it stays its own worthy region (a single-child P would unwrap into
+    // one chain with A2 and the exclusion would cut the whole region — a different, valid case).
+    const P = sc('P', [sc('A2'), sc('B2')]);
+    const v = buildVerification([pair('A2', [pass('size.w')])],
+      { ...base, frame: frame([P, sc('D2')]), excludeRegions: ['A2'] });
+    // P is covered THROUGH the excluded-but-paired child; B2 and D2 keep their demands.
+    expect(v.frame_coverage?.uncovered.sort()).toEqual(['B2', 'D2']);
+    expect(v.frame_coverage?.covered).toBe(1);
+  });
+
+  it('wrapper chain: excluding the wrapper id excludes the region, excluded[] carries the terminal id', () => {
+    const wrapped = sc('W', [sc('T')]); // W unwraps to T (single-child chain)
+    const v = buildVerification([pair('A', [pass('size.w')])],
+      { ...base, frame: frame([sc('A'), wrapped]), excludeRegions: ['W'] });
+    expect(v.frame_coverage?.excluded).toEqual(['T']);
+    expect(v.frame_coverage?.uncovered).toEqual([]);
+    expect(v.complete).toBe(true);
+  });
+
+  it('an unknown id is loud and non-blocking: excluded_not_found + a note naming the three causes', () => {
+    const v = buildVerification([pair('A', [pass('size.w')])],
+      { ...base, frame: frame([sc('A')]), excludeRegions: ['99:999'] });
+    expect(v.frame_coverage?.excluded_not_found).toEqual(['99:999']);
+    expect(v.complete).toBe(true); // a missed exclusion hid nothing
+    const md = renderReport({ file: 'f', tolerancePx: 1, pairs: [pair('A', [pass('size.w')])], verification: v });
+    expect(md).toMatch(/not found among coverage regions/);
+  });
+
+  it('the frame root is not a legal exclusion: not_found + its own note, the frame partial gate survives', () => {
+    const A = scR2('A3', rectX(0, 0));
+    const B = scR2('B3', rectX(0, 24));
+    const fr = frame([A, B], { axis: 'col' });
+    const v = buildVerification([pair('A3', [pass('size.w')]), pair('B3', [pass('size.w')])],
+      { ...base, frame: fr, excludeRegions: ['F:0'] });
+    expect(v.frame_coverage?.excluded_not_found).toEqual(['F:0']);
+    expect(v.frame_coverage?.partial).toContain('F:0'); // thread-A gate not suppressed
+    expect((v.notes ?? []).some((n) => n.includes('frame root cannot be excluded'))).toBe(true);
+  });
+
+  it('vacuum: excluding every worthy region leaves complete to the pairs and says so', () => {
+    const v = buildVerification([pair('A4', [pass('size.w')])],
+      { ...base, frame: frame([sc('B4'), sc('C4')]), excludeRegions: ['B4', 'C4'] });
+    expect(v.frame_coverage?.worthy).toBe(0);
+    expect(v.complete).toBe(true);
+    expect((v.notes ?? []).some((n) => n.includes('whole frame'))).toBe(true); // mutation lock on the warn
+    const md = renderReport({ file: 'f', tolerancePx: 1, pairs: [pair('A4', [pass('size.w')])], verification: v });
+    expect(md).toContain('excluded by the caller');
+  });
+
+  it('frame_missing: exclusions are neither applied nor reported', () => {
+    const v = buildVerification([pair('A', [pass('size.w')])],
+      { ...base, frameRequested: true, excludeRegions: ['C'] });
+    expect(v.blocking.some((b) => b.kind === 'frame_missing')).toBe(true);
+    expect(v.frame_coverage).toBeUndefined();
+    expect(v.notes ?? []).toEqual([]);
+  });
+
+  it('exclusions without a frame are loudly noted, never silently ignored', () => {
+    const v = buildVerification([pair('A', [pass('size.w')])], { ...base, excludeRegions: ['C'] });
+    expect((v.notes ?? []).some((n) => n.includes('no frame was given'))).toBe(true);
+  });
+
+  it('the dash form normalizes: 12-340 excludes 12:340', () => {
+    const v = buildVerification([pair('A', [pass('size.w')])],
+      { ...base, frame: frame([sc('A'), sc('12:340')]), excludeRegions: ['12-340'] });
+    expect(v.frame_coverage?.excluded).toEqual(['12:340']);
+    expect(v.complete).toBe(true);
+  });
+
+  it('the report shows exclusions even on the COMPLETE branch — green never hides them', () => {
+    const v = buildVerification([pair('A', [pass('size.w')])],
+      { ...base, frame: frame([sc('A'), sc('X')]), excludeRegions: ['X'] });
+    expect(v.complete).toBe(true);
+    const md = renderReport({ file: 'f', tolerancePx: 1, pairs: [pair('A', [pass('size.w')])], verification: v });
+    expect(md).toContain('excluded by the caller: 1');
+  });
+});

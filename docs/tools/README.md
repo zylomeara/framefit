@@ -60,10 +60,11 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
 ## Conventions
 
 - `file` accepts a full Figma URL (`https://www.figma.com/design/<key>/...`) or the raw file key.
-- Node ids use Figma's `12:345` form. Seven parameters also accept the compound nested-instance
+- Node ids use Figma's `12:345` form. Eight parameters also accept the compound nested-instance
   form `I12:345;67:890`: `get_layout_spec.node_ids[]`, `get_view.node_id`,
   `suggest_pairs.frame_node_id`, `compare_node_to_dom.pairs[].node_id`,
-  `compare_node_to_dom.frame_node_id`, `get_node_ancestry.node_id` and
+  `compare_node_to_dom.frame_node_id`, `compare_node_to_dom.exclude_regions[]`,
+  `get_node_ancestry.node_id` and
   `get_code_connect_map.node_ids[]`. Every other node-id parameter is pinned to `^\d+[:\-]\d+$`
   and rejects the compound form with MCP error `-32602`.
 - One node-id parameter is exempt from both rules: `export_assets.node_ids[]` declares no pattern

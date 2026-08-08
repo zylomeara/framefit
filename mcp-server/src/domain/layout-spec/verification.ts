@@ -106,6 +106,17 @@ interface Acc {
 }
 interface WalkResult { touched: boolean; truncated: boolean }
 
+// exclude_regions context (spec p.4 + panel). GOVERNING RULE: an exclusion removes a coverage
+// DEMAND, never a MEASUREMENT — so touched-ness is computed for excluded branches exactly as for
+// live ones (a pair inside an excluded subtree keeps covering its parent and keeps arming the
+// partial gates; the panel's CRITICAL was a naive exclusion dropping touchedTop below 2 and
+// disarming the spacing audit with both rects on the table). Only the demand accumulators (Acc)
+// are discarded for excluded branches. collect=false inside an already-excluded subtree: nested
+// matches register as "found" but do not add redundant excluded[] entries under their ancestor.
+interface ExCtx { ids: Set<string>; matched: Set<string>; excluded: string[]; collect: boolean }
+const throwawayAcc = (): Acc => ({ uncovered: [], partial: [], truncated: false,
+  causes: new Set(), uncoveredMeta: [], partialContainers: [] });
+
 // Recursive walk of a region's worthy subtree. touched = some pair landed inside the subtree.
 // Side effects: partial (≥2 worthy children verified, but the container is NOT paired → the gaps BETWEEN
 // them aren't verified, at ANY depth — #1) + uncovered (a sibling without a single pair, under full
@@ -114,7 +125,7 @@ interface WalkResult { touched: boolean; truncated: boolean }
 // a SPECIFIC node) and in frameCoverageDetailed on the frame root. NOT at the propagation points below
 // (x.r.truncated) — there the node itself may not be truncated, and `?? 'depth'` would inject a false depth
 // → a false raise_max_depth in the advice matrix (locked by a mutation test).
-function walk(region: Region, pairIds: Set<string>, acc: Acc): WalkResult {
+function walk(region: Region, pairIds: Set<string>, acc: Acc, ex?: ExCtx): WalkResult {
   if (region.chainIds.some((id) => pairIds.has(id))) return { touched: true, truncated: false }; // region/wrapper paired — fully covered
   const selfTrunc = region.node.childrenTruncated === true;
   // the node is NOT paired itself (judged by the enumeration of its children), and enumeration is truncated →
@@ -123,7 +134,18 @@ function walk(region: Region, pairIds: Set<string>, acc: Acc): WalkResult {
   if (selfTrunc) { acc.truncated = true; acc.causes.add(region.node.truncationCause ?? 'depth'); }
   const kids = worthyRegions(region.node.children);
   if (kids.length === 0) return { touched: false, truncated: selfTrunc }; // unpaired leaf (possibly more children beyond the slice)
-  const kidRes = kids.map((k) => ({ k, r: walk(k, pairIds, acc) }));
+  const kidRes = kids.map((k) => {
+    const hit = ex ? k.chainIds.some((id) => ex.ids.has(id)) : false;
+    if (!hit) return { k, r: walk(k, pairIds, acc, ex), excluded: false };
+    // excluded branch: demands discarded (throwaway Acc), touched-ness kept — see ExCtx. The
+    // `excluded` flag guards the parent's uncovered push below: an untouched excluded child is
+    // NOT a demand, while a touched one still counts toward the partial gate and parent coverage.
+    for (const id of k.chainIds) if (ex!.ids.has(id)) ex!.matched.add(id);
+    if (ex!.collect) ex!.excluded.push(norm(k.node.id));
+    const thr = walk(k, pairIds, throwawayAcc(), { ...ex!, collect: false });
+    // excluded truncation is not a coverage concern: the caller removed this scope from the demand.
+    return { k, r: { touched: thr.touched, truncated: false }, excluded: true };
+  });
   const subtreeTrunc = selfTrunc || kidRes.some((x) => x.r.truncated);
   const touchedKids = kidRes.filter((x) => x.r.touched);
   if (touchedKids.length === 0) return { touched: false, truncated: subtreeTrunc };
@@ -140,7 +162,7 @@ function walk(region: Region, pairIds: Set<string>, acc: Acc): WalkResult {
     const allKids = (region.node.children ?? []).map(unwrapChain);
     acc.partialContainers.push({ containerId: cid, axis: region.node.axis, kids: allKids });
   }
-  for (const x of kidRes) if (!x.r.touched) {
+  for (const x of kidRes) if (!x.r.touched && !x.excluded) {
     if (x.r.truncated) acc.truncated = true; // a pair could be beyond the slice → not a false uncovered
     else {
       const id = norm(x.k.node.id);
@@ -159,7 +181,7 @@ const capList = (xs: string[], cap = 60): { list: string[]; capped?: number } =>
 // (anti-flood dedup of uncovered, the partial-container audit). FrameCoverage BY ITSELF
 // cannot carry uncoveredMeta/partialDetails (not JSON-flat, not needed by the receipt consumer).
 // Only .coverage goes into the receipt (buildVerification).
-export function frameCoverageDetailed(frame: LayoutSpec, pairIds: Set<string>, enumMeta: { depth: number; source: 'deep' | 'pair_fetch' }): {
+export function frameCoverageDetailed(frame: LayoutSpec, pairIds: Set<string>, enumMeta: { depth: number; source: 'deep' | 'pair_fetch' }, ex?: ExCtx): {
   coverage: FrameCoverage;
   uncoveredMeta: Array<{ id: string; parentId: string; sig: string }>;
   partialDetails: Array<{ containerId: string; axis: 'row' | 'col'; kids: Array<{ child: SpecChild; pairedId?: string; pairedNode?: SpecChild }> }>;
@@ -171,9 +193,22 @@ export function frameCoverageDetailed(frame: LayoutSpec, pairIds: Set<string>, e
   const acc: Acc = { uncovered: [], partial: [], truncated: frame.childrenTruncated === true, causes, uncoveredMeta: [], partialContainers: [] };
   let covered = 0;
   let touchedTop = 0;
+  let excludedTop = 0;
   const frameId = norm(frame.node.id);
   for (const r of regions) {
-    const res = walk(r, pairIds, acc);
+    const hit = ex ? r.chainIds.some((id) => ex.ids.has(id)) : false;
+    if (hit) {
+      // Excluded top region: out of the worthy/covered ledger, no demands — but its touched-ness
+      // still feeds the frame partial gate below (a pair inside it is a measurement fact; the
+      // panel's CRITICAL was exactly this gate silently disarming).
+      for (const id of r.chainIds) if (ex!.ids.has(id)) ex!.matched.add(id);
+      ex!.excluded.push(norm(r.node.id));
+      excludedTop += 1;
+      const thr = walk(r, pairIds, throwawayAcc(), { ...ex!, collect: false });
+      if (thr.touched) touchedTop += 1;
+      continue;
+    }
+    const res = walk(r, pairIds, acc, ex);
     if (res.touched) { covered += 1; touchedTop += 1; }
     else if (res.truncated) acc.truncated = true; // the region is wholly unpaired, but a pair could be beyond the slice
     else {
@@ -196,7 +231,11 @@ export function frameCoverageDetailed(frame: LayoutSpec, pairIds: Set<string>, e
   const uncoveredCap = capList(acc.uncovered);
   const partialCap = capList(acc.partial);
   const coverage: FrameCoverage = {
-    worthy: regions.length, covered, uncovered: uncoveredCap.list, partial: partialCap.list,
+    // worthy counts DEMANDED regions only — an excluded one leaves the denominator honestly,
+    // instead of standing in it forever-uncovered. No cap on excluded[]: the input's 50-per-call
+    // limit bounds it (a server cap here would be a threshold the population cannot reach).
+    worthy: regions.length - excludedTop, covered, uncovered: uncoveredCap.list, partial: partialCap.list,
+    ...(ex && ex.excluded.length ? { excluded: ex.excluded } : {}),
     enumeration_truncated: acc.truncated,
     ...(uncoveredCap.capped !== undefined ? { uncovered_capped: uncoveredCap.capped } : {}),
     ...(partialCap.capped !== undefined ? { partial_capped: partialCap.capped } : {}),
@@ -283,8 +322,12 @@ export function buildVerification(pairs: PairResult[], opts: {
   // scope_incomplete in blocking + complete=false BY CONSTRUCTION (the machine honesty gate).
   // Presence → receipt.match_profile (all three modes); legacy calls without it — the prior behavior.
   matchProfile?: MatchProfile;
+  // exclude_regions (normalized by the tool; normalized again here for direct callers): frame regions
+  // whose COVERAGE DEMAND the caller removes. See ExCtx for the governing rule.
+  excludeRegions?: string[];
 }): VerificationReceipt {
   const scope: 'pairs' | 'frame' = opts.frame || opts.frameRequested ? 'frame' : 'pairs';
+  const notes: string[] = [];
   let clean = 0;
   let anyFail = false, anyDemoted = false, anyUnchecked = false, anyHole = false, anyReview = false;
   const blocking: BlockingItem[] = [];
@@ -349,8 +392,26 @@ export function buildVerification(pairs: PairResult[], opts: {
     const enumMeta = opts.enumeration ?? { depth: opts.depthLevels, source: 'pair_fetch' as const };
     // only effective pairs cover (#8) — whole failures already produced their blocking above
     const set = new Set(pairs.filter(pairIsEffective).map((p) => norm(p.node_id)));
-    const detailed = frameCoverageDetailed(opts.frame, set, enumMeta);
+    // exclude_regions plumbing. The frame root is not a legal exclusion: honoring it would kill the
+    // frame-as-container partial gate (the thread-A live false green) — route it to not_found with
+    // its own note instead, and keep the gate armed.
+    const rawEx = [...new Set((opts.excludeRegions ?? []).map(norm))];
+    const frameRootId = norm(opts.frame.node.id);
+    const rootHit = rawEx.includes(frameRootId);
+    const exIds = new Set(rawEx.filter((id) => id !== frameRootId));
+    const ex: ExCtx | undefined = rawEx.length
+      ? { ids: exIds, matched: new Set<string>(), excluded: [], collect: true }
+      : undefined;
+    const detailed = frameCoverageDetailed(opts.frame, set, enumMeta, ex);
     frame_coverage = detailed.coverage;
+    if (ex) {
+      if (rootHit) notes.push('the frame root cannot be excluded; exclude its regions instead');
+      const notFound = rawEx.filter((id) => (id === frameRootId ? true : !ex.matched.has(id)));
+      if (notFound.length) frame_coverage.excluded_not_found = notFound;
+      if (ex.excluded.length && frame_coverage.worthy === 0) {
+        notes.push("the whole frame's coverage was excluded — complete now speaks for the submitted pairs only");
+      }
+    }
 
     // Anti-flood: N uncovered siblings of ONE parent with the same type|name signature (e.g. 19 list cards
     // without pairs) collapse into ONE blocking item — else the same advice ("add a pair") floods blocking
@@ -450,6 +511,11 @@ export function buildVerification(pairs: PairResult[], opts: {
     // frame_node_id is given, but the frame wasn't found in the file (#10): do NOT silently downgrade to pairs + green
     blocking.push({ kind: 'frame_missing', action: 'fix_frame_id', detail: 'frame_node_id given, but the frame node was not found in the file — frame coverage not checked; check the id' });
     frameComplete = false;
+    // exclusions are neither applied nor reported here — frame_missing is the only signal
+    // (50 spurious not_found warns on top of a missing frame would bury it).
+  } else if (opts.excludeRegions?.length) {
+    // exclusions given without a frame at all: loud, never a silent ignore.
+    notes.push('exclude_regions apply to frame coverage; no frame was given — exclusions were not applied');
   }
 
   // the MACHINE honesty gate: under layout, complete is
@@ -489,5 +555,6 @@ export function buildVerification(pairs: PairResult[], opts: {
     blocking: capped > 0 ? blocking.slice(0, BLOCKING_CAP) : blocking,
     ...(capped > 0 ? { blocking_capped: capped } : {}),
     ...(dominant_blocker ? { dominant_blocker } : {}),
+    ...(notes.length ? { notes } : {}),
   };
 }
