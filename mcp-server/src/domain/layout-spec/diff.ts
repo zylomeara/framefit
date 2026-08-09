@@ -7,6 +7,7 @@ import type {
   PairCoverage, PairResult, Edges, DiffStatus, ResolvedColorToken, PairAttribution, MatchProfile,
 } from './types.js';
 import { SNIPPET_CAP } from './types.js';
+import type { CssTokenEvidence } from '../variables.js';
 import { matchChildrenOneLevel, detectChildrenReorder } from './pair-matcher.js';
 import { gradientVerdict } from './gradient-verdict.js';
 import { widthNoiseTolerance } from './tolerance.js';
@@ -60,6 +61,9 @@ export interface DiffOptions {
   // diffPair (measured non-meta non-allowlist axis rows collapse per-dim into profileScoped skips).
   // undefined / 'strict' / 'token-aware' → rows stay byte-for-byte the same (the filter is not called).
   profile?: MatchProfile;
+  // codeSyntax evidence for the D-branch (semantic-confirm v3): positive-collision gating only.
+  // Absent → every both-token row lands on the legacy value-based rule, byte-for-byte.
+  cssEvidence?: CssTokenEvidence;
 }
 
 const round1 = (n: number): number => Math.round(n * 10) / 10;
@@ -268,6 +272,16 @@ export function rowValuesMatched(r: Pick<DiffRow, 'figma' | 'dom'>): boolean {
   if (r.figma === undefined || r.figma === null || r.dom === undefined || r.dom === null) return false;
   if (typeof r.figma === 'string' && typeof r.dom === 'string') return r.figma.toLowerCase() === r.dom.toLowerCase();
   return r.figma === r.dom;
+}
+
+// The ONE review-gating predicate, shared by verification (complete/blocking/clean) and report
+// (Verdict/notVerified) — Verdict ⟺ complete holds by construction, not by three synchronized
+// call sites. A matched-value review row is advisory (0.19.0) with ONE exemption:
+// `semantic-diverged` is a POSITIVE codeSyntax collision — the token axis was measured and
+// diverged, and equal hexes are exactly its false-green window (they separate under another
+// mode/theme) — so it gates regardless of the row values.
+export function gatingReviewRow(r: Pick<DiffRow, 'status' | 'figma' | 'dom' | 'tokenReason'>): boolean {
+  return r.status === 'review' && (r.tokenReason === 'semantic-diverged' || !rowValuesMatched(r));
 }
 
 export function countCoverageHoles(rows: DiffRow[]): number {
@@ -1393,7 +1407,7 @@ function crossAndPaddingRows(
       const carrier = resolveDomTypoCarrier(domKids[i], maxDescent);
       if (carrier.kind === 'self') {
         rows.push(...typographyRows(c.text, domKids[i], `[${childLabel(c)}]`, d.fontsLoaded, c.textFromNested, c.textUncertain,
-          { kind: 'child', i, editKind: 'property' })); // fix-plan: a per-child text pair without a descent-label → child(i)
+          { kind: 'child', i, editKind: 'property' }, undefined, opts.cssEvidence)); // fix-plan: a per-child text pair without a descent-label → child(i)
       } else if (carrier.kind === 'nested') {
         // fix-plan: the edit belongs to the CARRIER's class, not the wrapper's — the child(i)
         // channel resolved the address to the wrapper (adversarial-pass major). Same shape as the
@@ -1401,7 +1415,7 @@ function crossAndPaddingRows(
         const tLabel = `[${childLabel(c)}]`;
         rows.push(...typographyRows(c.text, carrier.node, tLabel, d.fontsLoaded, c.textFromNested,
           c.textUncertain || carrier.uncertain,
-          { kind: 'text', label: tLabel, editKind: 'property' }, true));
+          { kind: 'text', label: tLabel, editKind: 'property' }, true, opts.cssEvidence));
         if (opts.attributionOut) {
           (opts.attributionOut.text ??= []).push({ label: tLabel, classListChain: carrier.chain });
         }
@@ -1448,7 +1462,7 @@ function crossAndPaddingRows(
           // cannot diverge byte-for-byte by construction (the label-space co-lock in the fix-plan suite).
           const tLabel = `[${childLabel(c)}→"${link.fig.label}"]`;
           rows.push(...typographyRows(link.fig.typo, link.dom.node, tLabel, d.fontsLoaded, undefined, undefined,
-            { kind: 'text', label: tLabel, editKind: 'property' })
+            { kind: 'text', label: tLabel, editKind: 'property' }, undefined, opts.cssEvidence)
             .map((r) => ({ ...r, note: [r.note, link.by === 'content' ? 'auto-descent: by content' : 'auto-descent: by order'].filter(Boolean).join('; ') })));
           // source-hint: the text channel — ONLY when typography rows are actually emitted
           // (a matched descent-link), label = the suffix of those rows. The ancestor chain (not the immediate parent)
@@ -1497,6 +1511,7 @@ function typographyRows(
   src?: DiffRow['srcChannel'],
   // p.7: the styles came from the unique nested DOM text carrier, not from the paired element itself.
   domNested?: boolean,
+  evidence?: CssTokenEvidence,
 ): DiffRow[] {
   const st = domChild?.styles;
   if (!st) return [{ prop: `typography${suffix}`, status: 'unchecked', note: 'DOM side without computed styles' }];
@@ -1549,9 +1564,9 @@ function typographyRows(
     // Verdict machine (colorVerdict): the hex axis is orthogonal to the token/mode axis. domToken is the REAL
     // DOM classification from the snapshot: literal → fail "tokenize it", token → review "both from a
     // token", unknown → review (a hex match of a bound token is not a silent pass); a hex discrepancy is not masked.
-    const v = colorVerdict(fig.colorToken?.hex ?? fig.colorHex, fig.colorToken, st.color, st.colorToken, fig.colorBoundVar !== undefined && fig.colorToken === undefined);
+    const v = colorVerdict(fig.colorToken?.hex ?? fig.colorHex, fig.colorToken, st.color, st.colorToken, fig.colorBoundVar !== undefined && fig.colorToken === undefined, fig.colorBoundVar, evidence);
     rows.push(withNote({ prop: `color${suffix}`, figma: fig.colorToken?.hex ?? fig.colorHex ?? null, dom: st.color ?? null,
-      status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}),
+      status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
       ...(v.status === 'fail' && src ? { srcChannel: src } : {}) }));
   }
   return rows;
@@ -1566,7 +1581,10 @@ function colorVerdict(
   figHex: string | undefined, figToken: ResolvedColorToken | undefined,
   domHex: string | undefined, domToken: DomTokenState | undefined,
   figBoundUnresolved = false,
-): { status: DiffStatus; note?: string; token?: string; tokenReason?: string } {
+  // semantic-confirm v3: the bound variable's id + the codeSyntax evidence lookups. Both present
+  // AND the D-branch reached → the positive-collision check runs; anything else is legacy.
+  boundVarId?: string, evidence?: CssTokenEvidence,
+): { status: DiffStatus; note?: string; token?: string; tokenReason?: string; domToken?: string } {
   // A1: DOM color unparseable (oklch/color()/transparent) — never fail (evaluated FIRST, do not change the order of the branches).
   if (domHex === undefined) return { status: 'info', note: 'DOM color not recognized (oklch/color()/transparent) — verify visually' };
   if (figHex === undefined) return { status: 'review', note: 'Figma color not resolved — the token cannot be checked', tokenReason: 'fig-unresolved' };
@@ -1600,7 +1618,31 @@ function colorVerdict(
   const dt: DomTokenState = domToken ?? { unknown: 'not-captured' };
   if (figToken && 'literal' in dt) return { status: 'fail', note: `Figma pulls from token ${figToken.token}; DOM hardcoded the literal ${domHex} — tokenize it` };
   if ('unknown' in dt) return figToken ? { status: 'review', note: `hex matched under the mode; the DOM token was not read (${dt.unknown}) — confirm token ${figToken.token}`, token: figToken.token, tokenReason: dt.unknown } : { status: 'pass' };
-  if (figToken && 'token' in dt) return { status: 'review', note: `both from a token (Figma ${figToken.token} ↔ DOM ${dt.token}) — confirm the semantics`, token: figToken.token, tokenReason: 'semantic-confirm' };
+  if (figToken && 'token' in dt) {
+    // v3 evidence check, D-branch ONLY (deliberately after A1/A2/B0/B — authored evidence must
+    // never outrank an unresolved binding or an unconfirmed mode; branch order is fixture-locked).
+    // Gate on POSITIVE collision, never on inequality: the DOM reports the element's OUTERMOST
+    // declaration var while codeSyntax names the DS tier, so inequality is the normal state of
+    // correct alias-tier code (two panels, confirmed). Uniqueness required for PASS: a css name
+    // minted by two variables identifies neither.
+    if (evidence && boundVarId) {
+      const authored = evidence.nameOf(boundVarId);
+      const minters = evidence.idsByName(dt.token);
+      if (authored !== undefined && authored === dt.token && minters.length === 1) {
+        return { status: 'pass', note: `token wiring matches the authored codeSyntax mapping (${dt.token})` };
+      }
+      // `authored !== undefined` is load-bearing (wave, CONFIRMED): without it a bound variable
+      // that has NO authored mapping (or is cross-library, absent from the index) gates on a
+      // coincidental collision with an UNRELATED variable's name — evidence about the bound side
+      // is required on BOTH branches, not just PASS. Absence of evidence never gates.
+      if (authored !== undefined && minters.length === 1 && minters[0] !== boundVarId && !evidence.aliasRelated(minters[0], boundVarId)) {
+        return { status: 'review',
+          note: `token wiring DIVERGES from the authored codeSyntax: Figma ${figToken.token}${authored ? ` (authored ${authored})` : ''} vs DOM ${dt.token}, which is the authored name of a different variable — same hex today, different wiring; it separates under another mode/theme`,
+          token: figToken.token, tokenReason: 'semantic-diverged', domToken: dt.token };
+      }
+    }
+    return { status: 'review', note: `both from a token (Figma ${figToken.token} ↔ DOM ${dt.token}) — confirm the semantics`, token: figToken.token, tokenReason: 'semantic-confirm' };
+  }
   if (!figToken && 'token' in dt) return { status: 'pass', note: 'Figma is a raw literal; DOM tokenizes the same hex — not a defect' };
   return { status: 'pass' };
 }
@@ -1706,13 +1748,15 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     const carrier = resolveDomTypoCarrier(rootAsDom, descentFor(opts.maxDepth ?? 4));
     if (carrier.kind === 'self') {
       rows.push(...typographyRows(spec.text, { styles: d.styles, rect: d.rect }, '', d.fontsLoaded, undefined, undefined,
-        { kind: 'root', editKind: 'property' }));
+        { kind: 'root', editKind: 'property' }, undefined, opts.cssEvidence));
     } else if (carrier.kind === 'nested') {
       // No srcChannel here on purpose: the root channel would resolve the edit to the WRAPPER's
       // class (the wrong file), and a root-level text label has no honest key in the text channel.
       // An unresolved address collects under fix_plan's null target — honest beats wrong.
+      // (Both root sites carry cssEvidence — the wave caught them shipped without it: 3 of 5
+      // typographyRows producers had the gate, and root-is-TEXT pairs silently fell to legacy.)
       rows.push(...typographyRows(spec.text, carrier.node, '', d.fontsLoaded, undefined,
-        carrier.uncertain, undefined, true));
+        carrier.uncertain, undefined, true, opts.cssEvidence));
     } else {
       rows.push(carrierNoteRow('typography', carrier.kind));
     }
@@ -1726,8 +1770,8 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     if (bg === undefined) {
       rows.push({ prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
     } else {
-      const v = colorVerdict(spec.fillToken?.hex ?? spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined);
-      rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}),
+      const v = colorVerdict(spec.fillToken?.hex ?? spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined, spec.fillBoundVar, opts.cssEvidence);
+      rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
         ...(v.status === 'fail' ? { srcChannel: SRC_ANCHOR_PROP } : {}) });
     }
   }
@@ -1779,8 +1823,8 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
         // The terminal color-equality logic (the only replacement: the verdict machine).
         // All non-color branches above (presence-mismatch/partial-sides/someUndefined/non-uniform) — as-is.
         const domColor = activeColors[0]!;
-        const v = colorVerdict(spec.strokeToken?.hex ?? spec.strokeHex, spec.strokeToken, domColor, sBorderTok?.[activeSides[0]], spec.strokeBoundVar !== undefined && spec.strokeToken === undefined);
-        rows.push({ prop: 'border-color', figma: spec.strokeToken?.hex ?? spec.strokeHex!, dom: domColor, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}),
+        const v = colorVerdict(spec.strokeToken?.hex ?? spec.strokeHex, spec.strokeToken, domColor, sBorderTok?.[activeSides[0]], spec.strokeBoundVar !== undefined && spec.strokeToken === undefined, spec.strokeBoundVar, opts.cssEvidence);
+        rows.push({ prop: 'border-color', figma: spec.strokeToken?.hex ?? spec.strokeHex!, dom: domColor, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
           ...(v.status === 'fail' ? { srcChannel: SRC_ANCHOR_PROP } : {}) });
       }
       // width — only for a full perimeter (with a partial border presence is already in question,
@@ -1818,8 +1862,8 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
         // Verdict machine. fs.colorToken is DEFERRED (shadows bind via an effect, not a paint key) → always
         // undefined. If the shadow is bound (colorBoundVar present) → A2 gates it into review (bound-but-unresolved,
         // do not conflate with a literal). Without a binding — a literal: matched → pass, diverged → fail.
-        const v = colorVerdict(fs.colorToken?.hex ?? fs.colorHex, fs.colorToken, ds.colorHex, ds.colorToken, fs.colorBoundVar !== undefined && fs.colorToken === undefined);
-        rows.push({ prop: 'shadow-color', figma: fs.colorToken?.hex ?? fs.colorHex, dom: ds.colorHex, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}),
+        const v = colorVerdict(fs.colorToken?.hex ?? fs.colorHex, fs.colorToken, ds.colorHex, ds.colorToken, fs.colorBoundVar !== undefined && fs.colorToken === undefined, fs.colorBoundVar, opts.cssEvidence);
+        rows.push({ prop: 'shadow-color', figma: fs.colorToken?.hex ?? fs.colorHex, dom: ds.colorHex, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
           ...(v.status === 'fail' ? { srcChannel: SRC_ANCHOR_PROP } : {}) });
       } else if (fs.colorHex || ds.colorHex) {
         // never-false-green: exactly one side produced a color (DOM oklch()/color()/transparent → toHex undefined,

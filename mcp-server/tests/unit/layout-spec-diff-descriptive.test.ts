@@ -642,3 +642,128 @@ describe('colorVerdict C — fail rows carry token + tokenReason color-diverged'
     expect(f?.tokenReason).toBeUndefined();
   });
 });
+
+// ── semantic-confirm v3: gate on POSITIVE authored evidence (codeSyntax), never on inequality.
+// Two panels' verdict: no lexical rule and no bare authored-mismatch separates true mis-wiring
+// from alias-tier convention — the ONLY sound gate is a collision (the DOM var name is the
+// authored codeSyntax name of a DIFFERENT, non-alias-related variable). Everything else lands
+// byte-for-byte on the legacy value-based rule.
+describe('colorVerdict D — codeSyntax evidence (positive collision only)', () => {
+  const EV = (over: Partial<{ nameOf: any; idsByName: any; aliasRelated: any }> = {}) => ({
+    nameOf: (id: string) => (id === 'V:1' ? '--ds-x' : undefined),
+    idsByName: (n: string) => (n === '--ds-x' ? ['V:1'] : n === '--ds-other' ? ['V:9'] : []),
+    aliasRelated: () => false,
+    ...over,
+  });
+  const evSpec = () => {
+    const s = baseSpec();
+    s.fillBoundVar = 'V:1';
+    s.fillToken = { token: 'bg/x', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    return s;
+  };
+  const evSnap = (domVar: string) => {
+    const d = baseSnap();
+    (d.styles as Record<string, unknown>).backgroundColorToken = { token: domVar };
+    return d;
+  };
+
+  it('authored MATCH (dom var === bound variable codeSyntax name, unique) → PASS, review noise gone', () => {
+    const f = row(diffPair(evSpec(), evSnap('--ds-x'), { tolerancePx: 1, cssEvidence: EV() }), 'fill');
+    expect(f?.status).toBe('pass');
+    expect(f?.note).toMatch(/codeSyntax/);
+  });
+
+  it('COLLISION (dom var is the authored name of a DIFFERENT variable) → review semantic-diverged with domToken', () => {
+    const f = row(diffPair(evSpec(), evSnap('--ds-other'), { tolerancePx: 1, cssEvidence: EV() }), 'fill');
+    expect(f?.status).toBe('review');
+    expect(f?.tokenReason).toBe('semantic-diverged');
+    expect(f?.token).toBe('bg/x');
+    expect(f?.domToken).toBe('--ds-other');
+    expect(f?.note).toMatch(/--ds-other/);
+  });
+
+  it('dom var ABSENT from the authored map → legacy semantic-confirm (absence of evidence never gates)', () => {
+    const f = row(diffPair(evSpec(), evSnap('--unknown'), { tolerancePx: 1, cssEvidence: EV() }), 'fill');
+    expect(f?.status).toBe('review');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+
+  it('ALIAS-RELATED collision → legacy (a component tier aliasing the bound token is correct wiring)', () => {
+    const f = row(diffPair(evSpec(), evSnap('--ds-other'), { tolerancePx: 1, cssEvidence: EV({ aliasRelated: () => true }) }), 'fill');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+
+  it('AMBIGUOUS authored name (two variables mint it) → no PASS, legacy', () => {
+    const f = row(diffPair(evSpec(), evSnap('--ds-x'), { tolerancePx: 1,
+      cssEvidence: EV({ idsByName: (n: string) => (n === '--ds-x' ? ['V:1', 'V:2'] : []) }) }), 'fill');
+    expect(f?.status).toBe('review');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+
+  it('BRANCH ORDER LOCK: mode-unconfirmed outranks a matching codeSyntax — evidence must not skip gate B', () => {
+    const s = evSpec();
+    s.fillToken = { token: 'bg/x', hex: '#ffffff', mode_dependent: true, mode_source: 'default' };
+    const f = row(diffPair(s, evSnap('--ds-x'), { tolerancePx: 1, cssEvidence: EV() }), 'fill');
+    expect(f?.status).toBe('review');
+    expect(f?.tokenReason).toBe('mode-unconfirmed');
+  });
+
+  it('no evidence wired (opts.cssEvidence absent) → byte-for-byte legacy', () => {
+    const f = row(diffPair(evSpec(), evSnap('--ds-x'), { tolerancePx: 1 }), 'fill');
+    expect(f?.status).toBe('review');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+});
+
+// ── wave catches (both CONFIRMED with live repro): the producer census and the evidence symmetry ──
+describe('colorVerdict D evidence — wave locks', () => {
+  const EV2 = {
+    nameOf: (id: string) => (id === 'V:1' ? '--ds-x' : undefined),
+    idsByName: (n: string) => (n === '--ds-x' ? ['V:1'] : n === '--ds-other' ? ['V:9'] : []),
+    aliasRelated: () => false,
+  };
+
+  it('ROOT-is-TEXT pair: evidence reaches the root text color row (5th producer — the census miss)', () => {
+    // The pair root is itself a Figma TEXT; its color row is produced by descriptiveRows' own
+    // typographyRows call, which shipped WITHOUT the evidence argument — the collision silently
+    // fell to legacy for the most common text pairing shape.
+    const s: LayoutSpec = {
+      node: { id: '2:1', name: 'label', type: 'TEXT' },
+      rect: { x: 0, y: 0, w: 200, h: 24 },
+      text: { fontFamily: 'Inter', fontWeight: 400, fontSize: 16, colorHex: '#141414',
+        colorBoundVar: 'V:1', colorToken: { token: 'text/x', hex: '#141414', mode: 'Solar', mode_dependent: true, mode_source: 'node' } },
+      children: [],
+    };
+    const d = baseSnap();
+    d.rect = { x: 0, y: 0, w: 200, h: 24 };
+    d.children = [{ kind: 'text', rect: { x: 0, y: 0, w: 200, h: 24 }, text: 'Причина',
+      styles: { fontFamily: '"Inter", sans-serif', fontWeight: 400, fontSize: 16, lineHeight: 24, letterSpacing: 'normal', color: '#141414' } }];
+    (d.styles as Record<string, unknown>).colorToken = { token: '--ds-other' };
+    (d.styles as Record<string, unknown>).color = '#141414';
+    const rows = diffPair(s, d, { tolerancePx: 1, cssEvidence: EV2 });
+    const c = rows.find((r) => r.prop.startsWith('color'));
+    expect(c?.tokenReason).toBe('semantic-diverged');
+    expect(c?.domToken).toBe('--ds-other');
+  });
+
+  it('bound variable WITHOUT authored codeSyntax + DOM var minted by an unrelated variable → LEGACY (absence of evidence about the BOUND side never gates)', () => {
+    const s = baseSpec();
+    s.fillBoundVar = 'V:77'; // nameOf(V:77) === undefined — no authored mapping on the bound side
+    s.fillToken = { token: 'bg/x', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    const d = baseSnap();
+    (d.styles as Record<string, unknown>).backgroundColorToken = { token: '--ds-other' }; // authored by V:9
+    const f = row(diffPair(s, d, { tolerancePx: 1, cssEvidence: EV2 }), 'fill');
+    expect(f?.status).toBe('review');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+
+  it('case typo lands LEGACY, not diverged (a case-variant name is absent from the exact-match map)', () => {
+    const s = baseSpec();
+    s.fillBoundVar = 'V:1'; // authored '--ds-x'
+    s.fillToken = { token: 'bg/x', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    const d = baseSnap();
+    (d.styles as Record<string, unknown>).backgroundColorToken = { token: '--DS-X' };
+    const f = row(diffPair(s, d, { tolerancePx: 1, cssEvidence: EV2 }), 'fill');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+});

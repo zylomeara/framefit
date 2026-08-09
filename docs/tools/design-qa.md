@@ -298,18 +298,28 @@ token** (-> resolved) only if the names denote the same concept; **wrong token**
 when they denote clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be
 bridged either way (a possible rename), answer **unsure** and escalate - never call it wrong.
 `review` rows keep the verdict non-green until resolved; a name that merely differs textually is
-not a defect.
+not a defect. Exception: a `semantic-diverged` row was measured against the file's own authored
+codeSyntax mapping - the DOM var is the authored name of a DIFFERENT variable - and blocks even
+when the hexes match; align the code with the authored var (or fix the mapping in Figma).
 
 The response also carries a `verification` receipt - a machine gate with `complete: true|false`
 and an actionable `blocking` list - plus per-pair `source` hints (CSS-module file candidates) and
 a `fix_plan` (grouped edits derived from fail rows). See the
 [Design QA tutorial](../design-qa-tutorial.md) for how to read them.
 
+Token wiring is checked against the file's own authored `codeSyntax.WEB` mappings when they exist:
+a DOM custom property that exactly matches the bound variable's authored name (and no other
+variable mints that name) passes outright, and one that is the authored name of a DIFFERENT,
+non-alias-related variable becomes `semantic-diverged` - the one review row that blocks even when
+the two hexes match, because the wiring itself was measured against the DS's own mapping and
+diverged. Everything without such evidence keeps the value-based rule below. This evidence lives
+in the variables payload, so it is only as available as the fetch that carries it.
+
 Colors are enriched from the file's variables, and that fetch is the slowest thing this tool does on
 a large file. When it fails or times out, the run degrades honestly - token rows read as unresolved
 and a `confirm_token` blocker appears for every row whose two values did not already match
-byte-for-byte (a matched pair stays a visible `review` row without blocking) - and says so in two
-places a caller sees: a
+byte-for-byte (a matched pair stays a visible `review` row without blocking) - and the codeSyntax
+evidence above dies with the same fetch - and says so in two places a caller sees: a
 `degraded_stages: [{ stage, reason, ms, detail }]` key, and one `ℹ️` line in `report_markdown`. `ms`
 is the point. Measured on this transport, that one endpoint took 90 seconds of a 93-second call, and
 without it the caller has a two-minute silence and no way to tell a slow call from a hung one.

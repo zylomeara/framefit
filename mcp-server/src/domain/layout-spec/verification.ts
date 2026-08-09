@@ -3,7 +3,7 @@
 // the AI swallows. A separate module (not diff.ts) — the frame-coverage frontier reuses figWorthy from
 // pair-matcher, and we keep diff.ts focused.
 import type { PairResult, LayoutSpec, SpecChild, DiffRow, BlockingItem, FrameCoverage, VerificationReceipt, CaptureInfo, SpacingAuditEntry, MatchProfile } from './types.js';
-import { coverageHoleRows, dimensionOf, rowValuesMatched } from './diff.js';
+import { coverageHoleRows, dimensionOf, gatingReviewRow } from './diff.js';
 import { figWorthy } from './pair-matcher.js';
 import { auditContainer } from './spacing-audit.js';
 import { normalizeCompoundNodeId } from '../node-id.js';
@@ -342,14 +342,14 @@ export function buildVerification(pairs: PairResult[], opts: {
   // (the "(paint)" sentinel and the empty name are NOT names: merging by them would glue DIFFERENT paints
   // together), axis-2 by reason for token-less rows (the vars-unavailable flood is the main live offender).
   // Rows with neither label — the prior direct push (legacy branches lose nothing).
-  const tokenGroups = new Map<string, { places: { node_id: string; selector?: string; prop: string }[]; reasons: Map<string, number>; firstNote: string }>();
+  const tokenGroups = new Map<string, { places: { node_id: string; selector?: string; prop: string }[]; reasons: Map<string, number>; firstNote: string; domTokens: Set<string> }>();
   for (const p of pairs) {
     const holes = coverageHoleRows(p.rows);
-    // Matched-value review rows are advisory (rowValuesMatched): they neither hold complete=false
-    // nor enter blocking below, and they do not cost a pair its `clean` — a receipt saying
-    // complete:true over checked:1/clean:0 would contradict itself. The summary.review count and
-    // the 📝 rows themselves stay visible.
-    const gatingReview = p.rows.some((r) => r.status === 'review' && !rowValuesMatched(r));
+    // Matched-value review rows are advisory (gatingReviewRow = rowValuesMatched + the ONE
+    // exemption, semantic-diverged): they neither hold complete=false nor enter blocking below,
+    // and they do not cost a pair its `clean` — a receipt saying complete:true over
+    // checked:1/clean:0 would contradict itself. The summary.review count and the 📝 rows stay visible.
+    const gatingReview = p.rows.some(gatingReviewRow);
     if (p.summary.fail === 0 && p.summary.demoted === 0 && p.summary.unchecked === 0 && !gatingReview && holes.length === 0) clean += 1;
     if (p.summary.fail > 0) anyFail = true;
     if (p.summary.demoted > 0) anyDemoted = true;
@@ -359,13 +359,14 @@ export function buildVerification(pairs: PairResult[], opts: {
     for (const h of holes) blocking.push(holeToBlocking(h, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'unchecked') blocking.push(uncheckedToBlocking(r, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'review') {
-      if (rowValuesMatched(r)) continue; // advisory — see anyReview above
+      if (!gatingReviewRow(r)) continue; // advisory — see anyReview above
       const key = (r.token && r.token !== '(paint)') ? `tok:${r.token}` : r.tokenReason ? `rsn:${r.tokenReason}` : undefined;
       if (!key) { blocking.push({ kind: 'unconfirmed_token', node_id: p.node_id, ...(p.selector ? { selector: p.selector } : {}), action: 'confirm_token', detail: r.note ?? r.prop }); continue; }
-      const g = tokenGroups.get(key) ?? { places: [], reasons: new Map<string, number>(), firstNote: r.note ?? r.prop };
+      const g = tokenGroups.get(key) ?? { places: [], reasons: new Map<string, number>(), firstNote: r.note ?? r.prop, domTokens: new Set<string>() };
       g.places.push({ node_id: p.node_id, ...(p.selector ? { selector: p.selector } : {}), prop: r.prop });
       const reason = r.tokenReason ?? 'unspecified';
       g.reasons.set(reason, (g.reasons.get(reason) ?? 0) + 1);
+      if (r.domToken) g.domTokens.add(r.domToken); // structural (types.ts contract: notes are never parsed)
       tokenGroups.set(key, g);
     }
   }
@@ -383,10 +384,15 @@ export function buildVerification(pairs: PairResult[], opts: {
     const shown = g.places.slice(0, 3).map((pl) => `${pl.node_id}/${pl.prop}`).join(', ');
     const more = g.places.length > 3 ? ` and ${g.places.length - 3} more` : '';
     const head = key.startsWith('tok:') ? `confirm token "${key.slice(4)}"` : `confirm colors (token not named): ${key.slice(4)}`;
+    // semantic-diverged rows carry the DOM var structurally; an aggregate that dropped them would
+    // fail the criterion "detail names BOTH" for every N>=2 case (panel-measured). Cap mirrors
+    // the places cap-3; distinct names only.
+    const domVars = [...g.domTokens].slice(0, 3);
+    const domClause = domVars.length ? `; DOM vars: ${domVars.join(', ')}${g.domTokens.size > 3 ? ` and ${g.domTokens.size - 3} more` : ''}` : '';
     blocking.push({ kind: 'unconfirmed_token', node_id: first.node_id, ...(first.selector ? { selector: first.selector } : {}), action: 'confirm_token',
       places: g.places.slice(0, PLACES_CAP).map(({ node_id, prop }) => ({ node_id, prop })),
       ...(g.places.length > PLACES_CAP ? { places_capped: g.places.length - PLACES_CAP } : {}),
-      detail: `${head} — ×${g.places.length} places (${reasons}); places: ${shown}${more}` });
+      detail: `${head} — ×${g.places.length} places (${reasons}); places: ${shown}${more}${domClause}` });
   }
 
   let frame_coverage: FrameCoverage | undefined;

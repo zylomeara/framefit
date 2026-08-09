@@ -1129,3 +1129,33 @@ describe('typography carrier notes gate the machine verdict', () => {
     expect(v.blocking).toMatchObject([{ kind: 'truncated_text', action: 'raise_max_depth' }]);
   });
 });
+
+// ── semantic-diverged: a POSITIVE codeSyntax collision gates even when the row values (hexes)
+// are byte-equal — the one review reason exempt from the rowValuesMatched advisory demotion.
+describe('semantic-diverged gates through the matched-value demotion', () => {
+  it('matched-value semantic-diverged row → blocking non-empty, complete false', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'fill', figma: '#111111', dom: '#111111',
+      status: 'review', note: 'wiring diverges', token: 'bg/x', tokenReason: 'semantic-diverged', domToken: '--ds-other' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking.some((b) => b.kind === 'unconfirmed_token')).toBe(true);
+  });
+  it('multi-place aggregation detail names the DISTINCT dom vars', () => {
+    const p1 = pairFromRows([{ prop: 'fill', figma: '#111111', dom: '#111111',
+      status: 'review', note: 'wiring diverges A', token: 'bg/x', tokenReason: 'semantic-diverged', domToken: '--a' }]);
+    const p2 = pairFromRows([{ prop: 'fill', figma: '#222222', dom: '#222222',
+      status: 'review', note: 'wiring diverges B', token: 'bg/x', tokenReason: 'semantic-diverged', domToken: '--b' }]);
+    const v = buildVerification([p1, p2], { depthLevels: 4 });
+    const toks = v.blocking.filter((b) => b.kind === 'unconfirmed_token');
+    expect(toks).toHaveLength(1);
+    const detail = (toks[0] as { detail?: string }).detail ?? '';
+    expect(detail).toContain('--a');
+    expect(detail).toContain('--b');
+  });
+  it('report mirror: the same matched-value semantic-diverged row lowers the Verdict (awaiting confirmation)', () => {
+    const p = pairFromRows([{ prop: 'fill', figma: '#111111', dom: '#111111',
+      status: 'review', note: 'wiring diverges', token: 'bg/x', tokenReason: 'semantic-diverged', domToken: '--ds-other' }]);
+    const v = buildVerification([p], { depthLevels: 4 });
+    const md = renderReport({ file: 'F', tolerancePx: 1, pairs: [p], depthLevels: 4, verification: v });
+    expect(md).toContain('awaiting token confirmation');
+  });
+});

@@ -16,7 +16,7 @@ import { buildVerification } from '../../../domain/layout-spec/verification.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
 import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, LayoutSpec, VerificationReceipt, CaptureInfo, PairAttribution, PairSource, DiffRow, FixPlanGroup, FixPlanEdit, MatchProfile } from '../../../domain/layout-spec/types.js';
 import { hintForNode, type SourceHint } from '../../../domain/layout-spec/class-source.js';
-import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
+import { buildVariableIndex, buildCssEvidence, type VariableIndex } from '../../../domain/variables.js';
 import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, ancestorChainFromSubtree, buildModeByCollection, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
 import { discoverAncestorModes } from './get-design-context-tool.js';
 import { makeColorTokenResolver, prefetchSnapshotHits, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
@@ -272,7 +272,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
       '(-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote ' +
       'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
       'rename), answer **unsure** and escalate - never call it wrong. `review` rows keep the verdict non-green until ' +
-      'resolved; a name that merely differs textually is not a defect.',
+      'resolved; a name that merely differs textually is not a defect. Exception: a `semantic-diverged` row was measured against the file\'s own authored codeSyntax mapping - the DOM var is the authored name of a DIFFERENT variable - and blocks even when the hexes match; align the code with the authored var (or fix the mapping in Figma).',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -365,6 +365,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // await dominates ALL graph read sites, not just the first. Idempotent/fail-soft; a no-op for
         // the MT wrappers and when no env graph is configured.
         await deps.variableGraph?.ensureReady?.();
+
+        // codeSyntax evidence for the D-branch (semantic-confirm v3): built ONCE per call from
+        // the local index. Absent index -> undefined -> every both-token row stays legacy.
+        const cssEvidence = variableIndex ? buildCssEvidence(variableIndex) : undefined;
 
         const frameWidth = frameId ? res.nodes[frameId]?.document?.absoluteBoundingBox?.width : undefined;
 
@@ -676,6 +680,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           // is impossible (one object across all pairs would give pair-N's source from pair-1's classes).
           const attributionOut: PairAttribution = {};
           const rows = diffPair(spec, domSnap as DomSnapshot, {
+            ...(cssEvidence ? { cssEvidence } : {}),
             // The producer of DiffOptions.profile — the layout scope is applied IN THE DIFFER
             // (profileScoped skips); the tool filters nothing itself.
             tolerancePx, frameWidth, maxDepth: effDepth, attributionOut, profile,
