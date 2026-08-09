@@ -361,6 +361,12 @@ export interface FrameCoverage {
   // wide one at the same depth is cut by budget/breadth. depth by itself proves nothing.
   enumeration_depth: number;      // the depth at which enumeration was performed (opts.enumeration.depth)
   enumeration_source: 'deep' | 'pair_fetch'; // deep — a separate whole-frame fetch (cap 8); pair_fetch — enumeration by pair depth (may be <8)
+  excluded?: string[];            // regions removed from the coverage DEMAND by the caller (exclude_regions) —
+                                  // canonical terminal ids; a MEASUREMENT inside them is never removed. No cap:
+                                  // the input's own limit (50 per call) bounds this list — a server-side cap
+                                  // here would be a threshold the population cannot reach
+  excluded_not_found?: string[];  // exclude ids that matched no coverage-region chain: beyond the enumeration
+                                  // slice, a decorative leaf carrying no demand, or a typo — loud, never silent
   enumeration_causes?: Array<'depth' | 'breadth' | 'budget'>; // the union of cut causes across ALL truncated regions (walk selfTrunc + the frame root) — the source of the advice matrix
   enumeration_note?: string;      // human-readable cause + advice (raise_max_depth is not always valid — see buildVerification)
 }
@@ -385,6 +391,10 @@ export interface VerificationReceipt {
   // the after-the-fact audit "the final was non-layout" is checked against this field, not against prose. Omitted only
   // in legacy buildVerification calls without matchProfile (unit tests).
   match_profile?: MatchProfile;
+  // Honest side-notes of the exclusion machinery (exclusions without a frame; the frame root in
+  // exclude_regions; a vacuum exclusion of the whole frame). The report prints each as a ⚠ line;
+  // never blocking, never a substitute for frame_coverage.excluded/excluded_not_found.
+  notes?: string[];
 }
 
 // ── Audit of the spacing between already-paired children of a partial container ──

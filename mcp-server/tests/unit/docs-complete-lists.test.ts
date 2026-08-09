@@ -410,10 +410,11 @@ describe('Gate 5 reads a capture that is pinned against drift', () => {
       }
     }
     expect(census).toEqual({
-      minLength: 74, maxLength: 2, pattern: 23, enum: 15,
-      minimum: 68, maximum: 34, minItems: 5, maxItems: 9, // 60 -> 64: outOfFlow is nonnegative, and the DOM schema sits in two tools x two places
+      minLength: 74, maxLength: 2, pattern: 24, enum: 15, // 23 -> 24: exclude_regions[] items carry the compound-id pattern
+      minimum: 68, maximum: 34, minItems: 5, maxItems: 10, // 60 -> 64: outOfFlow is nonnegative, and the DOM schema sits in two tools x two places
       // 64 -> 68: reservedGutter + reservedGutterLeft are min(0) and sit at the ROOT of the DOM
       // schema only, so each lands once per tool
+      // maxItems 9 -> 10: exclude_regions caps at 50 ids per call
     });
   });
 });
@@ -445,7 +446,7 @@ describe('Gate 5A1: every array cap a caller can hit is stated in its parameter 
       label: 'array caps stated in a `**Parameters**` Description cell (top-level parameters only)',
       codeSide: new Set(documented.map((n) => n.key)),
       proseSide,
-      expectedCodeSize: 5,
+      expectedCodeSize: 6, // 5 -> 6: exclude_regions (max 50)
     });
   });
 
@@ -488,7 +489,7 @@ describe('Gate 5A1: every array cap a caller can hit is stated in its parameter 
       }
     }
     expect(wrong).toEqual([]);
-    expect(checked, 'no cell was value-checked, so this row asserted nothing').toBe(5);
+    expect(checked, 'no cell was value-checked, so this row asserted nothing').toBe(6); // 5 -> 6: exclude_regions
   });
 
   it('accounts for every array cap in the payload, so none hides in the excluded bucket', async () => {
@@ -512,7 +513,7 @@ describe('Gate 5A1: every array cap a caller can hit is stated in its parameter 
       documented.length + ARRAY_BOUNDS_NOT_IN_PARAMETER_TABLES.length,
       'documented + declared-excluded no longer covers every array-bounded node in the payload',
     ).toBe(deep.length);
-    expect(deep.length, 'the full walk found no array-bounded node at all').toBe(9);
+    expect(deep.length, 'the full walk found no array-bounded node at all').toBe(10); // 9 -> 10: exclude_regions
   });
 });
 
@@ -544,12 +545,12 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
       label: "docs/tools/README.md's compound node-id convention bullet (full walk)",
       codeSide,
       proseSide,
-      expectedCodeSize: 7,
+      expectedCodeSize: 8, // 7 -> 8: compare_node_to_dom.exclude_regions[] accepts the compound form
     });
   });
 
   it('the payload carries only the two node-id forms, and no third', async () => {
-    // Measured at HEAD: 23 `pattern` sites, 7 compound and 16 strict. A third form appearing would
+    // Measured at HEAD: 24 `pattern` sites, 8 compound and 16 strict. A third form appearing would
     // make "every other node-id parameter is pinned to <one regex>" false without changing a single
     // name in the bullet.
     const nodes = await everySchemaNode();
@@ -563,7 +564,7 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
       'a parameter uses a THIRD pattern, so the bullet\'s "every other" is false',
     ).toEqual([]);
     expect(strict.length + compound.length, 'the pattern partition lost a site').toBe(patterned.length);
-    expect(patterned.length, 'the walk found no patterned parameter at all').toBe(23);
+    expect(patterned.length, 'the walk found no patterned parameter at all').toBe(24); // 23 -> 24: exclude_regions[] items (compound)
   });
 
   it('spells a count that matches the set, so rewriting the number is not free', async () => {
@@ -1370,8 +1371,8 @@ const MARKED_QUOTES: Record<string, number> = {
  * more; there is no reason for this one to be looser than the marked count beside it.
  */
 const CANDIDATE_COUNT: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 49, // 48 -> 49: the staleness clause on dom_selector quotes status: "ok"
-  'docs/coverage.md': 6,
+  'docs/agents/design-qa-skill.md': 50, // 49 -> 50: the exclude_regions step quotes "excluded by the caller"
+  'docs/coverage.md': 7, // 6 -> 7: the exclude_regions row quotes the excluded-by-the-caller line
 };
 
 /**

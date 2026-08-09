@@ -29,7 +29,7 @@ See the [Design QA tutorial](design-qa-tutorial.md) for the workflow and
 | Component identity | DS component detection from class/data tokens vs Figma component-set name; explicit `expected_component` | **warn-only** — it is a heuristic, never a ❌ fail |
 | Overlay width | fixed-width overlays via `expected_overlay_width` | ℹ️ info row (app vs overlay width), viewport guard decoupled |
 | Between-children spacing audit | gaps inside containers that have no pair of their own | works only when the adjacent pairs came through `dom_ref` of ONE batch (one extractor POST = one layout state). Inline `dom` or mixed refs → the gap is honestly `unchecked`, so **on stdio this channel never verifies a gap at all** — add a container pair there instead of waiting for it |
-| Verification receipt | `verification.complete` machine gate, frame coverage enumeration, blocking actions | `complete:true` is the only "verified" — everything else enumerates exactly what remains |
+| Verification receipt | `verification.complete` machine gate, frame coverage enumeration, blocking actions | `complete:true` is the only "verified" — everything else enumerates exactly what remains. Regions the caller names in `exclude_regions` leave the coverage demand honestly: listed in `frame_coverage.excluded` and printed as "⚠ excluded by the caller" (green never hides them); a measured fail inside an excluded region still counts |
 
 ## Verify visually (the tool flags these, it does not measure them)
 

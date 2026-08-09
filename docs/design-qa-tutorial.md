@@ -408,6 +408,12 @@ paired while the container is not, so the spacing *between* those children is un
 `enumeration_truncated` is the honesty flag on the fraction itself: while it is `true` the
 denominator is a lower bound and `complete` cannot become `true`.
 
+When an uncovered region is genuinely outside your task — the page footer, global navigation, chrome
+owned by another team — pass its id in `exclude_regions` instead of pairing it: the region leaves
+the `worthy` denominator, the receipt records it under `frame_coverage.excluded`, and the report prints "⚠ excluded by the caller", so `complete: true` becomes reachable without the verdict hiding
+anything. Measurements inside an excluded region (a pair you submitted anyway) still count,
+including fails.
+
 - `complete: true` is the **only** green signal: nothing failed, nothing was left unmeasured, and
   (when `scope:"frame"`) every worthy frame region was covered by an effective pair. Do not report
   a page as verified while `complete` is `false`.

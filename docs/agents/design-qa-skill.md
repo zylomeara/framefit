@@ -205,6 +205,11 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
     frame's width disagree, so geometry was demoted to `unchecked` rather than reported as red.
     Resize to the frame's width (or pass `expected_overlay_width` for a fixed overlay) and re-capture
     — do NOT read the demoted rows as passes.
+  - `add_pair` on an `uncovered_region` that is OUTSIDE the task (page footer, global tabs, chrome
+    the ticket does not touch): re-run with its id in `exclude_regions` instead of pairing it. The
+    receipt lists every exclusion (`frame_coverage.excluded`) and the report prints "⚠ excluded by the caller" — the trace is the contract. Exclude ONLY what is outside YOUR task: excluding a region
+    you were asked to verify makes the verdict lie for you, not for the tool. A measured fail inside
+    an excluded region still counts — exclusion cannot bury it.
   - `fix_frame_id` — `kind: 'frame_missing'`: `frame_node_id` was given, but no such node exists in
     this file. `scope` still reads `"frame"` and there is NO `frame_coverage` key at all, while
     `complete` is forced `false` — the tool refuses to downgrade a missing frame into a green

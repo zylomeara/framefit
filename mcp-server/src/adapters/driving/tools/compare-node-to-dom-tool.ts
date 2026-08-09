@@ -226,6 +226,12 @@ const InputSchema = {
   pairs: z.array(PairSchema).min(1).max(20).describe('node_id <-> DOM snapshot pairs - up to 20 per call, all fetched in ONE REST call'),
   frame_node_id: z.string().regex(COMPOUND_NODE_ID_RE).optional()
     .describe('The breakpoint frame you resized the viewport to - enables the viewport guard'),
+  exclude_regions: z.array(z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"')).max(50).optional()
+    .describe('Frame regions to EXCLUDE from the coverage demand (chrome outside your task: page footer, global tabs). '
+      + 'An excluded region stops being demanded as uncovered, the receipt/report name every exclusion, and any '
+      + 'measurement inside it still counts - exclusion can never hide a measured fail. Meaningful only together '
+      + 'with frame_node_id. Exclude ONLY what is outside YOUR task: excluding a region you were asked to verify '
+      + 'makes the verdict lie for you, not for the tool.'),
   expected_overlay_width: z.number().positive().optional()
     .describe(
       'The actual rendered width of a fixed-width overlay (drawer/modal) whose DOM box does not scale with the ' +
@@ -761,6 +767,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           // The profile from the parsed arg as the SINGLE source (the same `profile` that went
           // into diffPair) → receipt.match_profile in all three modes + a sentinel gate under layout.
           captures, tolerancePx, matchProfile: profile,
+          ...(args.exclude_regions?.length ? { excludeRegions: args.exclude_regions.map(normalizeCompoundNodeId) } : {}),
         });
 
         // (c) dominant_blocker REPLACES the generic preflight (the slot :34-36 in report.ts

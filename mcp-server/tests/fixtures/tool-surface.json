@@ -18,6 +18,7 @@
   "compare_node_to_dom": {
     "description": "Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, inter-child gaps (derived from geometry - insensitive to margin/padding/gap implementation), effective paddings, cross-axis offsets, typography, colors, component identity (warn-only). Returns machine-readable rows {prop, figma, dom, delta, status} per pair + a ready \"Verified against Figma\" markdown block. Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). The variables index is fetched only when a pair binds a colour to a variable - a call with no bound colour never waits on it. When it IS needed and does not arrive, degraded_stages says so with the ms it cost: the token rows then read unresolved rather than verified, the verdict stays incomplete, and a failure is remembered per file for a few minutes - so a later call does not re-pay the wait and does not retry it either. get_variables with a larger timeout_ms is what gets past that. Token rows with status `review` carry `figma`/`dom` token names - judge them: return **same token** (-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible rename), answer **unsure** and escalate - never call it wrong. `review` rows keep the verdict non-green until resolved; a name that merely differs textually is not a defect.",
     "inputSchemaKeys": [
+      "exclude_regions",
       "expected_overlay_width",
       "figma_token",
       "file",
@@ -27,7 +28,7 @@
       "pairs",
       "tolerance_px"
     ],
-    "digest": "b7e94fe3ee31ec6f10fd3ac2af0d3d0c3739bf71a7c22ca2c03366276bcf952f",
+    "digest": "820a1dbdce793c092fdde9eb2e374d74184a106c99431ce54fe05699472c529f",
     "annotations": {
       "readOnlyHint": true
     }
