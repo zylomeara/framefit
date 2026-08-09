@@ -226,6 +226,10 @@ export interface DiffRow {
   // blocking; we do NOT parse notes) + an open reason code (dt.unknown / branch-id). review only.
   token?: string;
   tokenReason?: string;
+  // The DOM-side custom-property name, structural (same no-note-parsing contract as `token`).
+  // Set ONLY on semantic-diverged rows (positive codeSyntax collision) — the aggregation detail
+  // names both sides from it.
+  domToken?: string;
   // fix-plan: source channel + edit class; set at the CREATION of a fail row for an
   // editable axis (structural axes — children_reorder/layout_axis_mismatch — do not carry it).
   // UNCONDITIONAL (independent of attributionOut); set right in the row literal — zero index coupling
