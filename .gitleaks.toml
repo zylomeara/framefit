@@ -3,26 +3,40 @@ title = "framefit"
 [extend]
 useDefault = true
 
-# Trade-off: test-fixture files are exempted from scanning entirely (not just
-# specific findings). They contain fake 40-hex API/library keys used to exercise
-# secret-detection/redaction logic in tests — legitimate fixture-only fakes, never
-# real credentials. A fingerprint-based .gitleaksignore was rejected: on push/PR
-# triggers the action only scans diff commits, so historical SHAs are never
-# re-touched and a green CI would prove nothing; and any edit to a fixture changes
-# its SHA/line, silently invalidating the fingerprint and going red for no reason.
-[[allowlists]]
-description = "Test fixtures use fake 40-hex API/library keys"
-paths = ['''mcp-server/tests/.*\.test\.ts$''']
-
-# The documented uptime-monitor command used the placeholder `you:your-password`, which the default
-# curl-auth-user rule reads as a real credential pair. The live tree no longer contains it - the
-# page now uses the `you:<password>` form Caddyfile.example already used - but the action scans the
-# COMMITS in a push or PR, not the tree, so the commit that introduced the placeholder would still
-# fail the scan and block publication with a string that was never a credential.
+# Allowlists pin the exact synthetic VALUES, not the files that hold them. The previous form
+# exempted mcp-server/tests/*.test.ts by path, which also silences a real credential pasted into
+# a test - and a test file is where a captured token is most likely to land while debugging.
+# Value pinning has no such hole: a secret not on this list reports wherever it appears.
 #
-# Scoped to that exact literal by REGEX rather than by path: an allowlist on docs/ would also
-# silence a real credential pasted into the deployment guide, which is the single most likely place
-# for one to land.
+# A fingerprint-based .gitleaksignore was rejected for the same reason as before: push/PR scans
+# only walk the diff commits, so historical fingerprints are never re-touched and go stale
+# silently; any edit to a fixture changes its SHA/line and flips the scan red for no reason.
+#
+# NOTE: [[allowlists]] is 8.25+ syntax. An older binary reads this file, silently ignores every
+# entry, and floods a clean history with false leaks - run scripts/secrets-scan.sh, which pins
+# and asserts the binary version, instead of calling gitleaks directly.
+
+[[allowlists]]
+description = "Synthetic 40-hex library/file keys in redaction and env-wiring test fixtures"
+regexes = [
+  '''^0123456789abcdef0123456789abcdef01234567''',
+  '''^1234567890abcdef1234567890abcdef12345678''',
+  '''^abcdef0123456789abcdef0123456789abcdef01''',
+  '''^fedcba9876543210fedcba9876543210fedcba98''',
+]
+
+[[allowlists]]
+description = "Self-describing fake Figma token used by test fixtures"
+regexes = ['''^figd_this_is_not_a_real_token_0000''']
+
+[[allowlists]]
+description = "Fixture strings the generic rules read as keys: a casing-tokenizer sample and a shadow token path"
+regexes = ['''^AbCdEf012345''', '''^shadow/ambient''']
+
+# The documented uptime-monitor command used the placeholder `you:your-password`, which the
+# curl-auth-user rule reads as a real credential pair. The live tree no longer contains it, but
+# push/PR scans walk the COMMITS, so the commit that introduced the placeholder would still fail
+# the scan and block publication with a string that was never a credential.
 [[allowlists]]
 description = "Documented placeholder credential, never a real one"
-regexes = ['''^you:your-password$''']
+regexes = ['''^you:your-password''']
