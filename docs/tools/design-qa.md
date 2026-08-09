@@ -332,7 +332,7 @@ something more pairs can fix.
         "scroll": { "top": 0, "left": 0 },
         "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 16 },
         "componentHints": { "tag": "h3", "classList": ["ProductCard_title__a1b2c3"], "data": {} },
-        "children": []
+        "children": [ { "kind": "text", "rect": { "x": 16, "y": 16, "w": 288, "h": 24 }, "text": "Product card" } ]
       },
       "label": "title"
     }

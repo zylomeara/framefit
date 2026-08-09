@@ -1062,11 +1062,11 @@ describe('Gate 5B: both pages that enumerate the blocking actions name all thirt
     // capture depth "raise max_depth" is not an action anyone can carry out, so the blocker could
     // never clear and the done-gate could never close; at 8 it routes to the existing
     // add_pairs_on_children instead. Another REUSE, so the vocabulary below is unchanged again.
-    expect(sites.length, 'the number of `action` keys under src/ changed').toBe(26);
-    expect(vocabularySites.length, `the number of \`action\` value sites in ${VERIFICATION_FILE} changed`).toBe(21);
+    expect(sites.length, 'the number of `action` keys under src/ changed').toBe(28) // 26 -> 28: the two p.7 carrier note-guards in uncheckedToBlocking;
+    expect(vocabularySites.length, `the number of \`action\` value sites in ${VERIFICATION_FILE} changed`).toBe(23); // 21 -> 23: the two p.7 carrier note-guards
     expect(ACTION_TYPE_MEMBER_SITES).toHaveLength(5);
     // 20 sites yielding 21 literals: one site is a conditional and contributes both of its branches.
-    expect(literals, 'the resolved literal count changed -- a conditional branch gained or lost').toBe(22);
+    expect(literals, 'the resolved literal count changed -- a conditional branch gained or lost').toBe(24); // 22 -> 24: the two p.7 carrier note-guards
     expect(values.size, 'the extractor no longer finds thirteen distinct actions').toBe(13);
     // By name, both directions of the recipe's failure. `add_text_pair` is reachable ONLY through the
     // conditional, and `fix_frame_id` is the value both pages were missing.

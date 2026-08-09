@@ -428,7 +428,9 @@ describe('diffPair — content-edge calibration', () => {
       ] };
     const d = snap({ rect: { x: 0, y: 0, w: 343, h: 48 }, clientWidth: 343, clientHeight: 48, scrollHeight: 48,
       children: [{ kind: 'element', tag: 'div', rect: { x: 0, y: 0, w: 343, h: 24 },
-        styles: { fontSize: 18, fontWeight: 650 } }] });
+        styles: { fontSize: 18, fontWeight: 650 },
+        // p.7 migration: the carrier routing compares wrappers no more - the node owns its text here
+        children: [{ kind: 'text', rect: { x: 0, y: 0, w: 343, h: 24 }, text: 'wrap text' }] }] });
     const fs = diffPair(s, d, { tolerancePx: 1 }).find((r) => r.prop === 'font-size[wrap]');
     expect(fs?.status).toBe('fail');
     expect(fs?.note).toContain('nested TEXT');
@@ -472,7 +474,8 @@ describe('diffPair — content-edge calibration', () => {
       ] };
     const d = snap({ rect: { x: 0, y: 0, w: 343, h: 48 }, clientWidth: 343, clientHeight: 48, scrollHeight: 48,
       children: [{ kind: 'element', tag: 'div', rect: { x: 0, y: 0, w: 343, h: 24 },
-        styles: { fontSize: 19, fontWeight: 650 } }] });
+        styles: { fontSize: 19, fontWeight: 650 },
+        children: [{ kind: 'text', rect: { x: 0, y: 0, w: 343, h: 24 }, text: 'wrap4 text' }] }] });
     const rows = diffPair(s, d, { tolerancePx: 1 });
     const fs = rows.find((r) => r.prop === 'font-size[wrap4]');
     expect(fs?.note).toContain('uniqueness');
@@ -1085,7 +1088,8 @@ describe('diffPair — typography auto-descent: content-first matching of TEXT d
       ] };
     const d = snap({ rect: { x: 0, y: 0, w: 343, h: 24 }, clientWidth: 343, clientHeight: 24, scrollHeight: 24,
       children: [{ kind: 'element', tag: 'h2', rect: { x: 0, y: 0, w: 343, h: 24 },
-        styles: { fontSize: 19, fontWeight: 650 } }] });
+        styles: { fontSize: 19, fontWeight: 650 },
+        children: [{ kind: 'text', rect: { x: 0, y: 0, w: 343, h: 24 }, text: 'title' }] }] });
     const rows = diffPair(s, d, { tolerancePx: 1 });
     expect(rows.find((r) => r.prop === 'font-size[title]')).toMatchObject({ figma: 19, dom: 19, status: 'pass' });
     expect(rows.some((r) => r.prop.startsWith('typography_descent'))).toBe(false);
@@ -2554,7 +2558,8 @@ describe('paint-style tokenization reaches colorVerdict', () => {
       text: { fontSize: 14, colorHex: '#000000', colorToken: { token: '(paint)', hex: '#000000' } }, children: [] } as any;
     const dom = { schema: 1, status: 'ok', innerWidth: 400, rect: { x: 0, y: 0, w: 100, h: 50 },
       borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
-      styles: { color: '#000000', colorToken: { literal: true } }, children: [] } as any;
+      styles: { color: '#000000', colorToken: { literal: true } },
+      children: [{ kind: 'text', rect: { x: 0, y: 0, w: 100, h: 50 }, text: 'x' }] } as any;
     const col = diffPair(s, dom, { tolerancePx: 1 }).find((r) => r.prop === 'color');
     expect(col?.status).toBe('fail');
     expect(col?.note).toContain('tokenize');
@@ -2585,6 +2590,8 @@ describe('review rows carry structural token/tokenReason (confirm_token aggregat
     // PANEL HIGH: via fill the branch is unreachable (gate if (spec.fillHex)); NO if (r) — a vacuum is forbidden.
     const spec = { ...base, text: { fontSize: 16, fontFamily: 'Inter', colorHex: undefined } };
     const d = dom({ color: '#111111', fontSize: 16, fontFamily: 'Inter' });
+    // p.7 migration: the root carrier routing needs the node to own its text
+    (d as any).children = [{ kind: 'text', rect: { x: 0, y: 0, w: 10, h: 10 }, text: 'x' }];
     const r = diffPair(spec as any, d as any, { tolerancePx: 1 }).find((x) => x.prop === 'color')!;
     expect(r.status).toBe('review');
     expect(r.tokenReason).toBe('fig-unresolved');
@@ -3123,5 +3130,133 @@ describe('D7: a DOM radius that is not one comparable px number never passes aga
     expect(r, `the corner-radius row was ${JSON.stringify(r)}`).toBeDefined();
     expect(r.status).toBe('unchecked');
     expect(r.dom).toBeNull();
+  });
+});
+
+// ── п.7 live-run: typography is compared with the text CARRIER, never with a wrapper ──
+// Measured: a Button pair read font-size 17/13.3 and weight 550/400 - both fake. 13.33px is the
+// browser default of <button> itself; the real text sits deeper in a typography span computing
+// exactly 17/550. Wrapper styles are the confidently-wrong class: inheritance does not guarantee
+// the carrier's rendering, so no branch below ever falls back to comparing the wrapper.
+describe('typography carrier descent (p.7)', () => {
+  const typo = { fontFamily: 'Inter', fontWeight: 550, fontSize: 17, lineHeightPx: 24, lineHeightUnit: 'PIXELS' as const, letterSpacing: 0 };
+  const btnChild = (over: Partial<import('../../src/domain/layout-spec/types.js').DomChild> = {}) => ({
+    kind: 'element' as const, tag: 'button', classList: ['ds-button'],
+    rect: { x: 0, y: 0, w: 200, h: 52 },
+    styles: { fontSize: 13.333, fontWeight: 400, fontFamily: 'Inter', lineHeight: 'normal' as const },
+    ...over,
+  });
+  const figBtn = (over = {}): import('../../src/domain/layout-spec/types.js').SpecChild => ({
+    id: '12:341', name: 'Button', type: 'INSTANCE', rect: { x: 0, y: 0, w: 200, h: 52 },
+    text: typo, textFromNested: true, ...over,
+  } as never);
+  const base = (kids: unknown[], figKids: unknown[] = [figBtn()]) => diffPair(
+    spec({ children: figKids as never, axis: 'col' }),
+    snap({ children: kids as never, rect: { x: 0, y: 0, w: 343, h: 52 }, clientHeight: 52, scrollHeight: 52 }),
+    { tolerancePx: 1 });
+
+  it('LIVE FORM: nested fig text vs a wrapper with ONE nested carrier → compared with the CARRIER, passes, note names the descent', () => {
+    const rows = base([btnChild({ children: [
+      { kind: 'element', tag: 'span', classList: ['ds-typography'], rect: { x: 20, y: 14, w: 160, h: 24 },
+        styles: { fontSize: 17, fontWeight: 550, fontFamily: 'Inter', lineHeight: 24 },
+        children: [{ kind: 'text', rect: { x: 20, y: 14, w: 160, h: 24 }, text: 'Save changes',
+          styles: { fontSize: 17, fontWeight: 550, fontFamily: 'Inter', lineHeight: 24 } }] },
+    ] })]);
+    const fs = row(rows, 'font-size');
+    const fw = row(rows, 'font-weight');
+    expect(fs).toMatchObject({ figma: 17, dom: 17, status: 'pass' });
+    expect(fw).toMatchObject({ figma: 550, dom: 550, status: 'pass' });
+    expect(fs?.note ?? '').toContain('nested text carrier');
+  });
+
+  it('a REAL defect on the carrier still fails (the descent is not a softener)', () => {
+    const rows = base([btnChild({ children: [
+      { kind: 'element', tag: 'span', rect: { x: 20, y: 14, w: 160, h: 24 },
+        children: [{ kind: 'text', rect: { x: 20, y: 14, w: 160, h: 24 }, text: 'Save',
+          styles: { fontSize: 15, fontWeight: 400 } }] },
+    ] })]);
+    expect(row(rows, 'font-size')).toMatchObject({ figma: 17, dom: 15, status: 'fail' });
+  });
+
+  it('several carriers with no fig-side multi-text → honest warn, no wrapper compare, no fake fail', () => {
+    const rows = base([btnChild({ children: [
+      { kind: 'element', tag: 'span', rect: { x: 0, y: 0, w: 80, h: 24 },
+        children: [{ kind: 'text', rect: { x: 0, y: 0, w: 80, h: 24 }, text: 'A', styles: { fontSize: 17 } }] },
+      { kind: 'element', tag: 'span', rect: { x: 90, y: 0, w: 80, h: 24 },
+        children: [{ kind: 'text', rect: { x: 90, y: 0, w: 80, h: 24 }, text: 'B', styles: { fontSize: 11 } }] },
+    ] })]);
+    expect(rows.some((r) => r.prop.startsWith('font-size') && r.status === 'fail')).toBe(false);
+    // unchecked, not warn: a warn fed neither holes nor blocking and left a terminal green over an
+    // unmeasured text (adversarial-pass blocker) - unchecked flows into blocking via the note-guard.
+    const w = rows.find((r) => r.prop.startsWith('typography') && r.status === 'unchecked');
+    expect(w?.note ?? '').toContain('several nested text carriers');
+  });
+
+  it('no carrier captured + truncation → unchecked (text may be beyond the slice), no wrapper compare', () => {
+    const rows = base([btnChild({ children: [], childrenTruncated: true })]);
+    expect(rows.some((r) => r.prop.startsWith('font-size'))).toBe(false);
+    const u = rows.find((r) => r.prop.startsWith('typography') && r.status === 'unchecked');
+    expect(u?.note ?? '').toMatch(/beyond|deeper|slice/);
+  });
+
+  it('no carrier in a FULLY captured subtree → warn "text missing", no wrapper compare', () => {
+    const rows = base([btnChild({ children: [] })]);
+    expect(rows.some((r) => r.prop.startsWith('font-size'))).toBe(false);
+    const w = rows.find((r) => r.prop.startsWith('typography') && r.status === 'unchecked');
+    expect(w?.note ?? '').toContain('carries none');
+  });
+
+  it('control: the DOM node OWNS its text → todays direct compare, byte-identical rows, no carrier note', () => {
+    const rows = base([btnChild({
+      styles: { fontSize: 17, fontWeight: 550, fontFamily: 'Inter', lineHeight: 24 },
+      children: [{ kind: 'text', rect: { x: 20, y: 14, w: 160, h: 24 }, text: 'Save',
+        styles: { fontSize: 17, fontWeight: 550, fontFamily: 'Inter', lineHeight: 24 } }],
+    })]);
+    const fs = row(rows, 'font-size');
+    expect(fs).toMatchObject({ figma: 17, dom: 17, status: 'pass' });
+    expect(fs?.note ?? '').not.toContain('carrier');
+  });
+
+  it('ROOT form: a fig TEXT root paired onto a wrapper with one nested carrier → carrier styles win', () => {
+    const rows = diffPair(
+      spec({ text: typo, textNode: true, children: [] }),
+      snap({ children: [
+        { kind: 'element', tag: 'span', rect: { x: 0, y: 0, w: 160, h: 24 },
+          children: [{ kind: 'text', rect: { x: 0, y: 0, w: 160, h: 24 }, text: 'Save',
+            styles: { fontSize: 17, fontWeight: 550, fontFamily: 'Inter', lineHeight: 24 } }] },
+      ], styles: { fontSize: 13.333, fontWeight: 400 } }),
+      { tolerancePx: 1 });
+    expect(row(rows, 'font-size')).toMatchObject({ figma: 17, dom: 17, status: 'pass' });
+  });
+
+  it('a unique carrier under a TRUNCATED subtree is uncertain, not confident (textUncertain mirror)', () => {
+    // Adversarial-pass blocker: one captured carrier + a truncated sibling used to read as a
+    // confident pass with no caveat, while a second, differently-styled text could hide beyond the cut.
+    const rows = base([btnChild({ children: [
+      { kind: 'element', tag: 'span', rect: { x: 20, y: 14, w: 160, h: 24 },
+        children: [{ kind: 'text', rect: { x: 20, y: 14, w: 160, h: 24 }, text: 'Save',
+          styles: { fontSize: 17, fontWeight: 550 } }] },
+      { kind: 'element', tag: 'div', rect: { x: 0, y: 40, w: 200, h: 10 }, childrenTruncated: true },
+    ] })]);
+    const fs = row(rows, 'font-size');
+    expect(fs).toMatchObject({ figma: 17, dom: 17, status: 'pass' });
+    expect(fs?.note ?? '').toContain('uniqueness only within the slice');
+  });
+
+  it('fix-plan: nested-carrier rows carry the text channel and the CARRIER chain, not the wrapper', () => {
+    const attr: import('../../src/domain/layout-spec/types.js').PairAttribution = {};
+    const rows = diffPair(
+      spec({ children: [figBtn()] as never, axis: 'col' }),
+      snap({ children: [btnChild({ children: [
+        { kind: 'element', tag: 'span', classList: ['ds-typography'], rect: { x: 20, y: 14, w: 160, h: 24 },
+          children: [{ kind: 'text', rect: { x: 20, y: 14, w: 160, h: 24 }, text: 'Save',
+            styles: { fontSize: 15, fontWeight: 550 } }] },
+      ] })] as never, rect: { x: 0, y: 0, w: 343, h: 52 }, clientHeight: 52, scrollHeight: 52 }),
+      { tolerancePx: 1, attributionOut: attr });
+    const fs = row(rows, 'font-size');
+    expect(fs?.status).toBe('fail'); // 17 vs 15 - a real defect through the carrier
+    expect(fs?.srcChannel).toEqual({ kind: 'text', label: '[Button]', editKind: 'property' });
+    expect(attr.text?.[0]).toMatchObject({ label: '[Button]' });
+    expect(attr.text?.[0].classListChain.flat()).toContain('ds-typography');
   });
 });

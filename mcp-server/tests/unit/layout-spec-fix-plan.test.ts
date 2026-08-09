@@ -135,7 +135,9 @@ describe('fix-plan — DiffRow.srcChannel on fail rows of editable axes', () => 
       node: { id: '1:1', name: 'title', type: 'TEXT' }, rect: { x: 0, y: 0, w: 343, h: 200 },
       text: { fontSize: 14, fontWeight: 700, lineHeightPx: 20, lineHeightUnit: 'INTRINSIC_%' }, children: [],
     };
-    const dom = baseDom({ styles: { fontSize: 14, fontWeight: 400, lineHeight: 40 } });
+    const dom = baseDom({ styles: { fontSize: 14, fontWeight: 400, lineHeight: 40 },
+      // p.7 migration: the root carrier routing needs the node to own its text
+      children: [{ kind: 'text', rect: { x: 0, y: 0, w: 343, h: 200 }, text: 't' }] });
     const rows = run(spec, dom);
     const fw = rows.find((r) => r.prop === 'font-weight')!;
     expect(fw.status).toBe('fail');
@@ -434,6 +436,8 @@ describe('fix-plan — buildFixPlan grouping/resolution/caps/budget', () => {
       text: { fontSize: 14, fontWeight: 700 }, children: [],
     };
     const dom = baseDom({ styles: { fontSize: 14, fontWeight: 400 },
+      // p.7 migration: the root carrier routing needs the node to own its text
+      children: [{ kind: 'text', rect: { x: 0, y: 0, w: 343, h: 200 }, text: 't' }],
       componentHints: { tag: 'h1', classList: [ROOT_CLASS], data: {} } });
     const attr: PairAttribution = {};
     const rows = diffPair(spec, dom, { tolerancePx: 1, attributionOut: attr });
