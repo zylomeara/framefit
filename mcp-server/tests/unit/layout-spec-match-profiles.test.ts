@@ -278,7 +278,9 @@ const t2Dom = (over: Partial<DomSnapshotOk> = {}): DomSnapshotOk => snap({
   componentHints: { tag: 'div', classList: ['promo-card'], data: {} },
   children: [
     { kind: 'element', tag: 'h2', rect: { x: 16, y: 12, w: 200, h: 24 },
-      styles: { fontSize: 16, fontWeight: 400, fontFamily: 'Inter', color: '#00ff00' } },
+      styles: { fontSize: 16, fontWeight: 400, fontFamily: 'Inter', color: '#00ff00' },
+      // p.7 migration: the carrier routing compares wrappers no more - the title owns its text
+      children: [{ kind: 'text', rect: { x: 16, y: 12, w: 200, h: 24 }, text: 'Title' }] },
     { kind: 'element', tag: 'div', rect: { x: 16, y: 56, w: 311, h: 40 } },
   ],
   ...over,
@@ -360,7 +362,9 @@ describe('match-profiles layout — (a) profile-skip: collapsing non-layout axes
 describe('match-profiles layout — STATUS gate: skip/unchecked never collapse', () => {
   it('layout: typography[title]-unchecked (DOM without computed styles) is ALIVE, the neighboring fill is collapsed', () => {
     const dom = t2Dom({ children: [
-      { kind: 'element', tag: 'h2', rect: { x: 16, y: 12, w: 200, h: 24 } }, // WITHOUT styles → unchecked
+      // p.7 migration: the node owns its (styles-less) text, so the row stays the same unchecked
+      { kind: 'element', tag: 'h2', rect: { x: 16, y: 12, w: 200, h: 24 },
+        children: [{ kind: 'text', rect: { x: 16, y: 12, w: 200, h: 24 }, text: 'Title' }] }, // WITHOUT styles → unchecked
       { kind: 'element', tag: 'div', rect: { x: 16, y: 56, w: 311, h: 40 } },
     ] });
     const rows = diffPair(t2Spec(), dom, { tolerancePx: 1, profile: 'layout' });

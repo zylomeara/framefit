@@ -54,7 +54,9 @@ const domDrawerBody: DomSnapshotOk = {
   scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,
   children: [
     { kind: 'element', tag: 'h2', classList: ['title'], rect: { x: 16, y: 0, w: 300, h: 24 },
-      styles: { fontFamily: 'Inter', fontWeight: 700, fontSize: 18, lineHeight: 24, letterSpacing: 0, color: '#141414' } }, // Δ4: 18/700
+      styles: { fontFamily: 'Inter', fontWeight: 700, fontSize: 18, lineHeight: 24, letterSpacing: 0, color: '#141414' },
+      // p.7 migration: the carrier routing compares wrappers no more - the title owns its text
+      children: [{ kind: 'text', rect: { x: 16, y: 0, w: 300, h: 24 }, text: 'Title' }] }, // Δ4: 18/700
     { kind: 'element', tag: 'div', classList: ['reasons'], rect: { x: 16, y: 72, w: 311, h: 172 } }, // Δ1: gap 48; h=172 → end 244 = figma (44+200)
   ],
 };

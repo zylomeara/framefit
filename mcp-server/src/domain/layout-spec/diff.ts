@@ -1116,6 +1116,42 @@ function collectDomTexts(c: DomChild, maxDescent: number): Collected<DomText> {
   return { items, truncated };
 }
 
+// p.7 live-run: the DOM typography CARRIER. Wrapper styles are the confidently-wrong class -
+// measured, a <button> answered 13.33/400 while its typography span computed exactly the design's
+// 17/550, and 4 of 8 fails in that run were artifacts of reading the wrapper. When the node does
+// not OWN its text, the styles are read from the unique nested carrier via the same captured-DFS
+// the multi-text channel uses; every no-carrier outcome is an honest note, NEVER a wrapper compare
+// (inheritance does not guarantee the carrier's rendering - in either direction).
+const domOwnText = (n: { children?: DomChild[] }): boolean =>
+  (n.children ?? []).some((k) => k.kind === 'text' && (k.text ?? '').trim() !== '');
+type CarrierResult =
+  | { kind: 'self' }
+  | { kind: 'nested'; node: DomChild }
+  | { kind: 'ambiguous' }
+  | { kind: 'beyond_cut' }
+  | { kind: 'none' };
+function resolveDomTypoCarrier(n: DomChild, maxDescent: number): CarrierResult {
+  // A text NODE is its own carrier (its styles are the parent element's computed typo), and a node
+  // that OWNS a non-empty text child is the carrier the old direct compare was correct about.
+  if (n.kind === 'text' || domOwnText(n)) return { kind: 'self' };
+  const found = collectDomTexts(n, maxDescent);
+  if (found.items.length === 1) return { kind: 'nested', node: found.items[0].node };
+  if (found.items.length > 1) return { kind: 'ambiguous' };
+  return found.truncated || n.childrenTruncated === true ? { kind: 'beyond_cut' } : { kind: 'none' };
+}
+function carrierNoteRow(prop: string, kind: 'ambiguous' | 'beyond_cut' | 'none'): DiffRow {
+  if (kind === 'ambiguous') {
+    return { prop, status: 'warn',
+      note: 'the DOM side has several nested text carriers - metrics not attributed; add a pair on the text node' };
+  }
+  if (kind === 'beyond_cut') {
+    return { prop, status: 'unchecked',
+      note: 'the Figma node carries text, but no DOM text was captured and the subtree was truncated - the carrier may be beyond the slice: re-extract deeper or add a pair on the text node' };
+  }
+  return { prop, status: 'warn',
+    note: 'the Figma node carries text, the captured DOM subtree carries none - the text is missing or lives outside this element; add a text pair' };
+}
+
 // Hug-evidence (confirmed by live probing): proof of hug ON the DOM SIDE for
 // fig columns without hugWidth (FILL — width from the parent, not from the content). The right edge
 // of the dom container coincides (within tolerance tol) with the outermost text descendant ⇒ the trailing is produced
@@ -1338,9 +1374,20 @@ function crossAndPaddingRows(
 
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the typography is mis-attributed
-    if (c.text) rows.push(...typographyRows(c.text, domKids[i], `[${childLabel(c)}]`, d.fontsLoaded, c.textFromNested, c.textUncertain,
-      { kind: 'child', i, editKind: 'property' })); // fix-plan: a per-child text pair without a descent-label → child(i)
-    else {
+    if (c.text) {
+      // p.7 routing: direct compare ONLY when the DOM child owns its text; a unique nested carrier
+      // supplies the styles otherwise, and a missing carrier is a note, never a wrapper compare.
+      const carrier = resolveDomTypoCarrier(domKids[i], maxDescent);
+      if (carrier.kind === 'self') {
+        rows.push(...typographyRows(c.text, domKids[i], `[${childLabel(c)}]`, d.fontsLoaded, c.textFromNested, c.textUncertain,
+          { kind: 'child', i, editKind: 'property' })); // fix-plan: a per-child text pair without a descent-label → child(i)
+      } else if (carrier.kind === 'nested') {
+        rows.push(...typographyRows(c.text, carrier.node, `[${childLabel(c)}]`, d.fontsLoaded, c.textFromNested, c.textUncertain,
+          { kind: 'child', i, editKind: 'property' }, true));
+      } else {
+        rows.push(carrierNoteRow(`typography[${childLabel(c)}]`, carrier.kind));
+      }
+    } else {
       const figs = collectFigTexts(c, maxDescent);
       const doms = collectDomTexts(domKids[i], maxDescent);
       // Depth 4: textBeyondCut used to block the descent BEFORE collectFigTexts —
@@ -1427,12 +1474,15 @@ function typographyRows(
   uncertain?: boolean,
   // fix-plan: the channel of the calling site — descent text(label), per-child child(i), root pair root.
   src?: DiffRow['srcChannel'],
+  // p.7: the styles came from the unique nested DOM text carrier, not from the paired element itself.
+  domNested?: boolean,
 ): DiffRow[] {
   const st = domChild?.styles;
   if (!st) return [{ prop: `typography${suffix}`, status: 'unchecked', note: 'DOM side without computed styles' }];
   const rows: DiffRow[] = [];
   const extraNotes = [
     ...(nested ? ['typography from a nested TEXT'] : []),
+    ...(domNested ? ['DOM styles read from the nested text carrier'] : []),
     ...(uncertain ? ['exactly one TEXT found, but the path was truncated by a cap — uniqueness only within the slice'] : []),
     ...(fontsLoaded === false ? ['fonts not loaded — computed may not match the render'] : []),
   ];
@@ -1623,8 +1673,22 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
 
   // fix-plan: a DIRECT text pair (suffix='') — there is no label, attributionOut.text is empty → the channel is
   // ROOT/property, NOT text('') (the edit lives in the pair's root class).
-  if (spec.text) rows.push(...typographyRows(spec.text, { styles: d.styles, rect: d.rect }, '', d.fontsLoaded, undefined, undefined,
-    { kind: 'root', editKind: 'property' }));
+  // p.7 routing at the root: a fig TEXT paired onto a DOM wrapper (fig TEXT ↔ <button> with a nested
+  // span) is the same wrapper-styles trap as the child site - same resolver, same notes.
+  if (spec.text) {
+    const rootAsDom: DomChild = { kind: 'element', rect: d.rect, styles: d.styles,
+      children: d.children, ...(d.childrenTruncated ? { childrenTruncated: true } : {}) };
+    const carrier = resolveDomTypoCarrier(rootAsDom, descentFor(opts.maxDepth ?? 4));
+    if (carrier.kind === 'self') {
+      rows.push(...typographyRows(spec.text, { styles: d.styles, rect: d.rect }, '', d.fontsLoaded, undefined, undefined,
+        { kind: 'root', editKind: 'property' }));
+    } else if (carrier.kind === 'nested') {
+      rows.push(...typographyRows(spec.text, carrier.node, '', d.fontsLoaded, undefined, undefined,
+        { kind: 'root', editKind: 'property' }, true));
+    } else {
+      rows.push(carrierNoteRow('typography', carrier.kind));
+    }
+  }
 
   if (spec.fillHex) {
     const bg = sBg;

@@ -219,10 +219,12 @@ verification receipt as uncovered regions if you leave them unpaired.
                "children": [
                  { "kind": "element", "tag": "h3", "classList": ["card__title", "ProductCard_title__a1b2c3"],
                    "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
-                   "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 16 } },
+                   "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 16 },
+                   "children": [ { "kind": "text", "rect": { "x": 16, "y": 16, "w": 288, "h": 24 }, "text": "Product card" } ] },
                  { "kind": "element", "tag": "p", "classList": ["card__price", "ProductCard_price__b7c8d9"],
                    "rect": { "x": 16, "y": 52, "w": 288, "h": 20 },
-                   "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 14 } },
+                   "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 14 },
+                   "children": [ { "kind": "text", "rect": { "x": 16, "y": 52, "w": 288, "h": 20 }, "text": "12 340" } ] },
                  { "kind": "element", "tag": "ul", "classList": ["card__list", "ProductCard_list__c1d2e3"],
                    "rect": { "x": 16, "y": 84, "w": 288, "h": 304 },
                    "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 14 } }
@@ -235,7 +237,8 @@ verification receipt as uncovered regions if you leave them unpaired.
                "scroll": { "top": 0, "left": 0 },
                "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 16 },
                "componentHints": { "tag": "h3", "classList": ["card__title", "ProductCard_title__a1b2c3"], "data": {} },
-               "children": [] } },
+               "children": [ { "kind": "text", "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
+                              "text": "Product card" } ] } },
     { "node_id": "12:344", "label": "price",
       "dom": { "schema": 6, "status": "ok", "selector": ".card__price", "innerWidth": 320,
                "rect": { "x": 16, "y": 52, "w": 288, "h": 20 },
@@ -244,7 +247,8 @@ verification receipt as uncovered regions if you leave them unpaired.
                "scroll": { "top": 0, "left": 0 },
                "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 14 },
                "componentHints": { "tag": "p", "classList": ["card__price", "ProductCard_price__b7c8d9"], "data": {} },
-               "children": [] } }
+               "children": [ { "kind": "text", "rect": { "x": 16, "y": 52, "w": 288, "h": 20 },
+                              "text": "12 340" } ] } }
   ],
   "max_depth": 4
 }

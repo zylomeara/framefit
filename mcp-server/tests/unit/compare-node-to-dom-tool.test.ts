@@ -56,7 +56,9 @@ const okDomWithText = {
   rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false,
   children: [
-    { kind: 'element', tag: 'h2', rect: { x: 16, y: 12, w: 200, h: 24 }, styles: { fontFamily: 'Inter', fontWeight: 400, fontSize: 14 } },
+    { kind: 'element', tag: 'h2', rect: { x: 16, y: 12, w: 200, h: 24 }, styles: { fontFamily: 'Inter', fontWeight: 400, fontSize: 14 },
+      // p.7 migration: the carrier routing compares wrappers no more - the title owns its text
+      children: [{ kind: 'text', rect: { x: 16, y: 12, w: 200, h: 24 }, text: 'Title' }] },
     { kind: 'element', tag: 'div', rect: { x: 16, y: 84, w: 311, h: 40 } },
   ],
 };
