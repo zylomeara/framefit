@@ -73,7 +73,11 @@ export function registerGetViewTool(server: McpServer, deps: ToolDeps): void {
         if (!entry?.document) throw new Error(`node ${id} not found`);
         const effDepth = frameRes.effectiveMaxDepth;
         const setNames = await buildSetNames(api, entry, deps.logger);
-        const ctx: ProjectorContext = { components: entry.components, setNames };
+        // styleNames keeps the "compare-compatible" claim of the branch view honest at the
+        // style-name level: without it a shared-style fill projects a nameless '(paint)' token
+        // where get_layout_spec names the style. (The variable RESOLVER stays out of get_view —
+        // navigation-only tool, no verdict runs on its output.)
+        const ctx: ProjectorContext = { components: entry.components, setNames, styleNames: (sid: string) => entry.styles?.[sid]?.name };
 
         // Receipt is always built from the branch-caps spec of the SAME raw (honest truncation of the
         // deepest compare-shaped projection; view payload uses its own caps).

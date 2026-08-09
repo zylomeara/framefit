@@ -597,7 +597,7 @@ describe('the populations this freeze is written against', () => {
     // only its union declaration is blanked - so a kind constant parked beside the type is an
     // unclassified site and fails here.
     expect(SITES.unclassified, 'unrecognised kind-literal sites - classify them or the map lies').toEqual([]);
-    expect(SITES.files, 'files mentioning FigmaApiError').toBe(16);
+    expect(SITES.files, 'files mentioning FigmaApiError').toBe(17);
   });
 
   it('the producer population is frozen: a NEW producer has to be added to the table above', () => {
@@ -660,6 +660,9 @@ describe('the populations this freeze is written against', () => {
       'adapters/driving/tools/compare-node-to-dom-tool.ts':
         ['rate_limited', 'rate_limited', 'rate_limited', 'rate_limited', 'rate_limited'],
       'adapters/driving/tools/find-nodes-tool.ts': ['auth', 'forbidden', 'rate_limited'],
+      // token-parity line: the variables fetch + snapshot prefetch mirror compare's contract —
+      // rate_limited rethrows (agent backs off), anything else degrades to degraded_stages.
+      'adapters/driving/tools/get-layout-spec-tool.ts': ['rate_limited', 'rate_limited'],
       'adapters/driving/tools/get-code-connect-map-tool.ts': ['rate_limited'],
       'adapters/driving/tools/get-design-context-tool.ts': [
         'network', 'rate_limited', 'network', 'rate_limited', 'rate_limited', 'rate_limited',
@@ -679,7 +682,7 @@ describe('the populations this freeze is written against', () => {
       'application/node-ancestry.ts': ['auth', 'forbidden'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '41 branch sites across 13 files').toBe(41);
+    expect(SITES.branches.length, '43 branch sites across 14 files').toBe(43);
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "
