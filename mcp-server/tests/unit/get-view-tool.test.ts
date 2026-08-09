@@ -272,3 +272,29 @@ describe('get_view', () => {
     expect(body.hydration.cause_breakdown.breadth).toBeGreaterThan(0);
   });
 });
+
+// 0.22.0: the branch ctx carries styleNames — a shared-style fill names the style instead of
+// projecting the nameless '(paint)' sentinel (the compare-compatible claim at style-name level).
+import { describe as describe22, it as it22, expect as expect22 } from 'vitest';
+describe22('branch view names shared styles', () => {
+  it22('a fill-style id resolves to (style: Name), not (paint)', async () => {
+    const doc = {
+      id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 },
+      fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+      styles: { fill: 'S:1' },
+    };
+    const api = {
+      getFrameRaw: async () => ({ raw: { nodes: { '1:1': { document: doc, styles: { 'S:1': { name: 'Surface/Card' } } } } },
+        heldDepth: 5, hydrated: false, effectiveMaxDepth: 4 }),
+    };
+    const { makeFakeMcpServer } = await import('../helpers/fake-mcp-server.js');
+    const { registerGetViewTool } = await import('../../src/adapters/driving/tools/get-view-tool.js');
+    const { createLogger } = await import('../../src/infrastructure/logger.js');
+    const { server, call } = makeFakeMcpServer();
+    registerGetViewTool(server, { buildApi: () => api, defaultToken: 'figd_x', logger: createLogger({ level: 'silent' }), maxResultChars: 40000 } as any);
+    const res = await call('get_view', { file: 'abc', node_id: '1:1', view: 'branch' });
+    const text = res.content[0].text as string;
+    expect22(text).toContain('(style: Surface/Card)');
+    expect22(text).not.toContain('(paint)');
+  });
+});
