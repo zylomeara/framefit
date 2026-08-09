@@ -77,7 +77,10 @@ export function makeColorTokenResolver(env: ColorResolverEnv) {
     if (g && typeof g.value === 'string') {
       const all = !env.omitAllModes ? env.variableGraph?.resolve(libKey)?.modesByName : undefined; // all_modes symmetry with the local-index path
       return {
-        token: g.token ?? libKey, hex: g.value,
+        // `||`, not `??`: the graph/snapshot name columns are NOT NULL DEFAULT '' — an empty
+        // string is the real "unnamed" shape, and an empty-named token degrades confirm_token
+        // grouping (verification keys on truthy r.token).
+        token: g.token || libKey, hex: g.value,
         ...(g.mode ? { mode: g.mode } : {}),
         ...(g.mode_dependent ? { mode_dependent: true } : {}),
         mode_source: g.mode_source,
@@ -89,7 +92,7 @@ export function makeColorTokenResolver(env: ColorResolverEnv) {
       // snapshot_default: mode-BLIND (the plugin upload has no ancestor-mode context) — gate
       // B in diff.ts must attribute this to "resolved from a snapshot", never mis-attribute
       // it to "an unconfirmed ancestor pin".
-      return { token: s.name ?? libKey, hex: s.value, mode_dependent: true, mode_source: 'default', snapshot_default: true };
+      return { token: s.name || libKey, hex: s.value, mode_dependent: true, mode_source: 'default', snapshot_default: true }; // `||`: name is '' when unnamed, never null
     }
     return undefined; // honest unknown — neither index, graph, nor snapshot could resolve this alias
   };
