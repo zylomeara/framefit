@@ -14,12 +14,12 @@ import { clampToBudget } from '../../../application/get-comments.js';
 import { DomRefSchema, resolveDomRef } from './dom-ref.js';
 import { buildVerification } from '../../../domain/layout-spec/verification.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
-import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, LayoutSpec, VerificationReceipt, ResolvedColorToken, CaptureInfo, PairAttribution, PairSource, DiffRow, FixPlanGroup, FixPlanEdit, MatchProfile } from '../../../domain/layout-spec/types.js';
+import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, LayoutSpec, VerificationReceipt, CaptureInfo, PairAttribution, PairSource, DiffRow, FixPlanGroup, FixPlanEdit, MatchProfile } from '../../../domain/layout-spec/types.js';
 import { hintForNode, type SourceHint } from '../../../domain/layout-spec/class-source.js';
-import { buildVariableIndex, resolveBoundVariableInMode, resolveAllModes, type VariableIndex } from '../../../domain/variables.js';
-import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, collectExternalPaintKeys, ancestorChainFromSubtree, buildModeByCollection, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
-import { extractLibraryKey } from '../../../domain/variable-snapshot.js';
+import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
+import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, ancestorChainFromSubtree, buildModeByCollection, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
 import { discoverAncestorModes } from './get-design-context-tool.js';
+import { makeColorTokenResolver, prefetchSnapshotHits, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
 import { FigmaApiError } from '../../../ports/errors.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 
@@ -28,11 +28,10 @@ import type { RawSceneNode } from '../../../domain/figma-raw.js';
 const DESCENT_MAX_ROUNDS = 3;
 const DESCENT_MAX_CANDIDATES = 64;
 
-// Latency: /variables/local on a giant file can HANG (measured ~90s on a very large file) — a short cap
-// bounds the wait; the graph/snapshot fallback compensates published-token rows.
-// MT-only (see graphOrSnapshotAvailable gate below) — single-tenant has no fallback, so a
-// false-cut there would lose ALL token rows with nothing to recover them.
-const VARIABLES_FETCH_CAP_MS = 20_000;
+// Latency: the /variables/local cap lives with the shared resolver factory (one constant → the
+// negative-cache entries both tools write are keyed by the same capMs and serve each other).
+// Here it is MT-only (see graphOrSnapshotAvailable gate below) — single-tenant compare has no
+// fallback, so a false-cut there would lose ALL token rows with nothing to recover them.
 
 /**
  * An enrichment stage that did not arrive, and what it cost. `stage`/`reason` keep
@@ -516,19 +515,13 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // tool isError, agent backs off); anything else degrades to no snapHits (rows → honest
         // unknown), never a thrown error.
         let snapHits: Map<string, { value: unknown; name?: string }> | undefined;
-        if (variableIndex === undefined && graphOrSnapshotAvailable) {
-          try {
-            const keys = [...new Set(pairIds.flatMap((pid) => {
-              const doc = res.nodes[pid]?.document;
-              return doc ? [...collectExternalPaintKeys(doc)] : [];
-            }))];
-            // INVARIANT: snapHits ⊆ graph-misses — the graph-before-snapshot order in the tail of resolveColorToken is neutral ONLY while the filter stands; loosen the filter (prefetch all keys) and the mode-blind snapshot would shadow the mode-aware graph.
-            const missed = keys.filter((k) => deps.variableGraph?.resolve(k) === undefined);
-            if (missed.length && deps.variableSnapshot) snapHits = await deps.variableSnapshot.lookup(missed);
-          } catch (err) {
-            if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
-            deps.logger.info({ err: (err as Error).message }, 'compare.snapshot_prefetch_unavailable');
-          }
+        try {
+          // The gate (index-less only) and the snapHits ⊆ graph-misses invariant live INSIDE
+          // prefetchSnapshotHits — shared with get_layout_spec by construction.
+          snapHits = await prefetchSnapshotHits(deps, variableIndex, pairIds.map((pid) => res.nodes[pid]?.document));
+        } catch (err) {
+          if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
+          deps.logger.info({ err: (err as Error).message }, 'compare.snapshot_prefetch_unavailable');
         }
 
         const results: PairResult[] = await Promise.all(args.pairs.map(async (p, i): Promise<PairResult> => {
@@ -665,59 +658,13 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           const graphStackFor = (n: RawSceneNode): Map<string, string> =>
             buildModeByCollection([...ancestorNodes, ...(subtreeChains.get(n.id) ?? [n])]);
 
-          const resolveColorToken = (n: RawSceneNode, key: 'fills' | 'strokes'): ResolvedColorToken | undefined => {
-            const aliasId = (n[key])?.find?.((p) => p.visible !== false && p.type === 'SOLID')?.boundVariables?.color?.id;
-            if (!aliasId) return undefined;
-            if (variableIndex) {
-              const bv = { [key]: { type: 'VARIABLE_ALIAS' as const, id: aliasId } };
-              const r = resolveBoundVariableInMode(bv, key, variableIndex, stackFor(n), coverageComplete);
-              // Honest degradation: need a resolved hex string AND a token name to compare against —
-              // a nameless cross-lib snapshot value (ResolvedToken.token undefined) can't anchor a
-              // token row, so surface no token (row → unknown) rather than an empty-named one.
-              if (r && typeof r.value === 'string' && r.token !== undefined) {
-                const v = variableIndex.byId.get(aliasId);
-                const all = v ? resolveAllModes(v, variableIndex) : null;
-                const all_modes = all
-                  ? Object.fromEntries(Object.entries(all.modes).filter(([, x]) => typeof x === 'string')) as Record<string, string>
-                  : undefined;
-                return {
-                  token: r.token, hex: r.value,
-                  ...(r.mode ? { mode: r.mode } : {}),
-                  ...(r.mode_dependent ? { mode_dependent: true } : {}),
-                  ...(r.mode_source ? { mode_source: r.mode_source } : {}),
-                  ...(all_modes ? { all_modes } : {}),
-                };
-              }
-              // local miss (byId miss / unresolved value / nameless token) — fall through to the
-              // shared graph/snapshot tail below rather than returning here (an
-              // index-present file can STILL hold a cross-library binding the local index can't name).
-            }
-            // Shared fallback tail (no index at all, OR a local byId miss above): graph (sync) →
-            // snapshot (prefetched above) → honest unknown. A local (non-published) id has no
-            // library key at all — extractLibraryKey rejects it — so it can never rescue a byId miss
-            // (A2: stays an honest unknown, never silently retried against the wrong resolver).
-            const libKey = extractLibraryKey(aliasId);
-            if (libKey === null) return undefined;
-            const g = deps.variableGraph?.resolveInMode?.(libKey, graphStackFor(n), coverageComplete);
-            if (g && typeof g.value === 'string') {
-              const all = deps.variableGraph?.resolve(libKey)?.modesByName; // all_modes symmetry with the local-index path
-              return {
-                token: g.token ?? libKey, hex: g.value,
-                ...(g.mode ? { mode: g.mode } : {}),
-                ...(g.mode_dependent ? { mode_dependent: true } : {}),
-                mode_source: g.mode_source,
-                ...(all ? { all_modes: all } : {}),
-              };
-            }
-            const s = snapHits?.get(libKey);
-            if (s && typeof s.value === 'string') {
-              // snapshot_default: mode-BLIND (the plugin upload has no ancestor-mode context) — gate
-              // B in diff.ts must attribute this to "resolved from a snapshot", never mis-attribute
-              // it to "an unconfirmed ancestor pin".
-              return { token: s.name ?? libKey, hex: s.value, mode_dependent: true, mode_source: 'default', snapshot_default: true };
-            }
-            return undefined; // honest unknown — neither index, graph, nor snapshot could resolve this alias
-          };
+          // The shared factory (color-token-resolver.ts): index → graph → snapshot → honest
+          // unknown, both binding forms via colorAliasId. compare feeds it ancestor-discovered
+          // stacks; get_layout_spec feeds subtree-only ones — same resolver by construction.
+          const resolveColorToken = makeColorTokenResolver({
+            variableIndex, snapHits, variableGraph: deps.variableGraph,
+            stackFor, graphStackFor, coverageComplete,
+          });
 
           // Symmetric depth fix: maxDepth MUST reach the Figma-side projection too, not just the
           // fetch peek above — otherwise buildLayoutSpec silently stays at its default depth 4 even

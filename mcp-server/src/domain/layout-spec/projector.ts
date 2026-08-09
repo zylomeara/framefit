@@ -3,6 +3,7 @@
 // Not recursive (children — one level), does not intern globalVars, does not pull
 // token/mode-precedence from simplify (that lives in design-context and changes separately).
 import type { RawSceneNode, RawPaint, RawEffect, ComponentRefMeta } from '../figma-raw.js';
+import { colorAliasId } from '../figma-raw.js';
 import { paintValue } from '../design-context/simplify.js';
 import { rgbaToHex } from '../design-context/color.js';
 import type { DomColorToken, Edges, GradientModel, LayoutSpec, ResolvedColorToken, SpecChild, SpecRect, SpecShadow, SpecTypography, TextLeaf } from './types.js';
@@ -121,13 +122,36 @@ function hasImageFill(paints: RawPaint[] | undefined): boolean {
   return (paints ?? []).some((p) => (p.type === 'IMAGE' || p.type === 'VIDEO') && p.visible !== false);
 }
 
-// The same paint paintValue takes the hex from (the first VISIBLE solid): if its color is
-// bound to a variable (paint-level RawPaint.boundVariables.color — figma-raw.ts:22,
-// NOT RawColorStop:13), the hex is a snapshot of the library default-mode and may legitimately
-// differ in the app (a different mode). The diff downgrades such a divergence ❌→⚠️.
-function boundColor(paints: RawPaint[] | undefined): string | undefined {
+// The binding of the same paint paintValue takes the hex from — via the SHARED colorAliasId
+// (figma-raw.ts): paint-level RawPaint.boundVariables.color first, node-level
+// RawSceneNode.boundVariables[key] as the fallback (REST emits either form). If the color is
+// bound, the hex is a snapshot of the library default-mode and may legitimately differ in the
+// app (a different mode). The diff downgrades such a divergence ❌→⚠️.
+
+// Paint opacity × resolved token hex. The RAW hex path multiplies paint opacity into the alpha
+// (paintValue: a=(color.a??1)*(opacity??1)); a resolver-returned hex is the VARIABLE's value and
+// has no idea a paint multiplier exists — comparing it unmultiplied against the DOM computed
+// rgba is a false fail over correct code. Mirrors the gradient-stop fix (figmaGradient
+// paintOpacity); applied to all_modes too, or the C-branch mode-mismatch lookup misses the DOM
+// rgba for the same reason. Non-#hex token values pass through untouched.
+function hexTimesAlpha(hex: string, opacity: number): string {
+  const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex);
+  if (!m) return hex;
+  const ch = (i: number): number => parseInt(m[1].slice(i, i + 2), 16) / 255;
+  const a = (m[2] !== undefined ? parseInt(m[2], 16) / 255 : 1) * opacity;
+  return rgbaToHex({ r: ch(0), g: ch(2), b: ch(4), a });
+}
+function withPaintAlpha(rt: ResolvedColorToken, paints: RawPaint[] | undefined): ResolvedColorToken {
   const solid = paints?.find((x) => x.visible !== false && x.type === 'SOLID' && x.color);
-  return solid?.boundVariables?.color?.id;
+  const opacity = solid?.opacity ?? 1;
+  if (opacity >= 1) return rt;
+  return {
+    ...rt,
+    hex: hexTimesAlpha(rt.hex, opacity),
+    ...(rt.all_modes
+      ? { all_modes: Object.fromEntries(Object.entries(rt.all_modes).map(([k, v]) => [k, hexTimesAlpha(v, opacity)])) }
+      : {}),
+  };
 }
 
 function projectShadow(effects: RawEffect[] | undefined): SpecShadow | undefined {
@@ -234,10 +258,10 @@ function typographyOf(n: RawSceneNode, ctx: ProjectorContext = {}): SpecTypograp
   const hex = solidHex(n.fills);
   if (hex) {
     t.colorHex = hex;
-    const bound = boundColor(n.fills);
+    const bound = colorAliasId(n, 'fills');
     if (bound) t.colorBoundVar = bound;
     const tt = ctx.resolveColorToken?.(n, 'fills');
-    if (tt) t.colorToken = tt;
+    if (tt) t.colorToken = withPaintAlpha(tt, n.fills);
     // Text COLOR lives on the FILL slot (solidHex(n.fills)) → a shared fill-STYLE tokenizes the color.
     // fillStyleId reads ONLY fill/fills: the text-slot style is TYPOGRAPHY (font) and MUST NOT tokenize
     // color (guard G1). Unified STATE/NAME: name best-effort, else '(paint)' sentinel → colorToken always set →
@@ -465,10 +489,10 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
   const fill = solidHex(raw.fills);
   if (fill && !spec.gradient) {
     spec.fillHex = fill;
-    const bound = boundColor(raw.fills);
+    const bound = colorAliasId(raw, 'fills');
     if (bound) spec.fillBoundVar = bound;
     const rt = ctx.resolveColorToken?.(raw, 'fills');
-    if (rt) spec.fillToken = rt;
+    if (rt) spec.fillToken = withPaintAlpha(rt, raw.fills);
     // paint-STYLE (no bound var): a shared fill-style tokenizes the fill; name best-effort, else the '(paint)'
     // sentinel (mirrors the gradient whole). A paint-style hex is mode-independent & reliable, so STATE and NAME
     // are UNIFIED — both set fillToken and route through colorVerdict branches C (hex diverge → fail) / D (hex
@@ -484,10 +508,10 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
   const stroke = solidHex(raw.strokes);
   if (stroke) {
     spec.strokeHex = stroke;
-    const strokeBound = boundColor(raw.strokes);
+    const strokeBound = colorAliasId(raw, 'strokes');
     if (strokeBound) spec.strokeBoundVar = strokeBound;
     const st = ctx.resolveColorToken?.(raw, 'strokes');
-    if (st) spec.strokeToken = st;
+    if (st) spec.strokeToken = withPaintAlpha(st, raw.strokes);
     // Symmetric to fill (unified STATE/NAME): a shared stroke-STYLE tokenizes the stroke when no bound var /
     // token is present; name best-effort, else '(paint)' sentinel → colorVerdict branches C/D, no A2 softening.
     if (!strokeBound && !spec.strokeToken) {

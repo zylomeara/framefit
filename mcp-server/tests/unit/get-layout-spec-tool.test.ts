@@ -6,6 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerGetLayoutSpecTool } from '../../src/adapters/driving/tools/get-layout-spec-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
+import { FigmaApiError } from '../../src/ports/errors.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
 import { FETCH_DEPTH } from '../../src/domain/layout-spec/projector.js';
@@ -501,5 +502,97 @@ describe('get_layout_spec hydration receipt (Phase 1)', () => {
     expect(rec.cause_breakdown.depth).toBeGreaterThan(0);
     expect(rec.hydrated).toBe(false); // withFrameRaw passthrough → not held
     expect(rec.note).not.toMatch(/already held|уже держ/i);
+  });
+});
+
+// ── token-parity line (feedback 15/15.1): get_layout_spec resolves bound colors through the
+// SAME resolver compare_node_to_dom uses. Before this line the tool returned fillBoundVar (a raw
+// VariableID no human can act on) and NO name, while fillHex stayed a stale library-default
+// snapshot — the caller ported wrong-mode hexes into code. The name is the portable artifact.
+describe('get_layout_spec — bound colors resolve to token names (shared resolver)', () => {
+  const VARS = {
+    meta: {
+      variableCollections: { 'VC:1': { id: 'VC:1', name: 'Brand', defaultModeId: 'm1',
+        modes: [{ modeId: 'm1', name: 'Light' }, { modeId: 'm2', name: 'Dark' }] } },
+      variables: { 'V:1': { id: 'V:1', name: 'color/brand/primary', resolvedType: 'COLOR', variableCollectionId: 'VC:1',
+        valuesByMode: { m1: { r: 0.482, g: 0.380, b: 0.965 }, m2: { r: 0.6, g: 0.5, b: 1 } } } },
+    },
+  };
+  const boundDoc = (extra: Partial<RawSceneNode> = {}): RawSceneNode => ({
+    id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 },
+    fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'V:1' } } }],
+    ...extra,
+  } as RawSceneNode);
+
+  const tokenHarness = (doc: RawSceneNode, over: Partial<FigmaApi> = {}) => {
+    const getVariablesLocal = vi.fn(async () => VARS);
+    const caps: (number | undefined)[] = [];
+    const { server, call } = makeFakeMcpServer();
+    const api = withFrameRaw({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: doc } } })), getVariablesLocal, ...over } as Partial<FigmaApi>);
+    const deps = { buildApi: (_t: string, capMs?: number) => { caps.push(capMs); return api as FigmaApi; },
+      defaultToken: 'figd_x', logger, maxResultChars: 40000 } as ToolDeps;
+    registerGetLayoutSpecTool(server, deps);
+    return { run: (a: any): Promise<any> => call('get_layout_spec', a), getVariablesLocal, caps };
+  };
+
+  it('paint-level bound fill → fillToken {token, hex, mode_source:default}; raw fillHex unchanged; all_modes omitted; fetch capped', async () => {
+    const { run, getVariablesLocal, caps } = tokenHarness(boundDoc());
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    const spec = out.specs[0].spec;
+    expect(spec.fillHex).toBe('#ffffff');                       // RAW snapshot, documented as raw
+    expect(spec.fillBoundVar).toBe('V:1');
+    expect(spec.fillToken).toMatchObject({ token: 'color/brand/primary', hex: '#7b61f6', mode_source: 'default' });
+    expect(spec.fillToken.all_modes).toBeUndefined();           // compare's confirm payload, not navigation data
+    expect(out.degraded_stages).toBeUndefined();
+    expect(getVariablesLocal).toHaveBeenCalledTimes(1);
+    // The variables fetch goes through a CAPPED api build — always, unlike compare's MT-only cap:
+    // a bounded miss with a receipt beats a measured ~90s stall on the navigation hot path.
+    expect(caps).toContain(20_000);
+  });
+
+  it('NODE-level binding (the July 15.1 shape) resolves the same name', async () => {
+    const doc = boundDoc({
+      fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+      boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } },
+    } as Partial<RawSceneNode>);
+    const { run } = tokenHarness(doc);
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    expect(out.specs[0].spec.fillToken?.token).toBe('color/brand/primary');
+    expect(out.specs[0].spec.fillBoundVar).toBe('V:1');
+  });
+
+  it('a subtree explicitVariableModes pin → mode-resolved value + mode_source:node', async () => {
+    const { run } = tokenHarness(boundDoc({ explicitVariableModes: { 'VC:1': 'm2' } } as Partial<RawSceneNode>));
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    expect(out.specs[0].spec.fillToken).toMatchObject({ token: 'color/brand/primary', hex: '#9980ff', mode: 'Dark', mode_source: 'node' });
+  });
+
+  it('demand gate: a batch that binds no colour never fetches variables', async () => {
+    const plain: RawSceneNode = { id: '1:1', name: 'card', type: 'FRAME',
+      absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 },
+      fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }] } as RawSceneNode;
+    const { run, getVariablesLocal } = tokenHarness(plain);
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    expect(getVariablesLocal).not.toHaveBeenCalled();
+    expect(out.specs[0].spec.fillToken).toBeUndefined();
+  });
+
+  it('variables fetch failure → degraded_stages receipt; fillBoundVar survives, no fillToken, no throw', async () => {
+    const { run } = tokenHarness(boundDoc(), { getVariablesLocal: vi.fn(async () => { throw new FigmaApiError('upstream', 500, 'boom'); }) });
+    const res = await run({ file: 'abc', node_ids: ['1:1'] });
+    expect(res.isError).toBeFalsy();
+    const out = JSON.parse(res.content[0].text);
+    expect(out.specs[0].spec.fillToken).toBeUndefined();
+    expect(out.specs[0].spec.fillBoundVar).toBe('V:1');
+    // Without this receipt an absent fillToken is ambiguous between "no resolver can name it"
+    // and "the fetch degraded" — the exact invisible-degradation defect compare already fixed.
+    expect(out.degraded_stages).toMatchObject([{ stage: 'variables', reason: 'error' }]);
+    expect(out.degraded_stages[0].ms).toBeTypeOf('number');
+  });
+
+  it('rate_limited rethrows (agent must back off) — never swallowed into degradation', async () => {
+    const { run } = tokenHarness(boundDoc(), { getVariablesLocal: vi.fn(async () => { throw new FigmaApiError('rate_limited', 429, 'slow down', 30); }) });
+    const res = await run({ file: 'abc', node_ids: ['1:1'] });
+    expect(res.isError).toBe(true);
   });
 });

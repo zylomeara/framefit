@@ -1586,11 +1586,15 @@ function colorVerdict(
   if (figToken?.mode_dependent && figToken.mode_source !== 'node') {
     return { status: 'review', note: `the node's mode is not confirmed (the pin is probably on an unloaded ancestor) — check under the mode; token ${figToken.token}`, token: figToken.token, tokenReason: 'mode-unconfirmed' };
   }
-  // C: hex diverges — mode-mismatch (matched a DIFFERENT mode) otherwise diverged.
+  // C: hex diverges — mode-mismatch (matched a DIFFERENT mode) otherwise diverged. A tokenized
+  // fail carries token/tokenReason like every other branch: verification groups blocking items by
+  // r.token, and the FAIL branch is exactly where a developer must act by name — a nameless fail
+  // was the one row the machine-readable field skipped (feedback 15.1's literal ask).
   if (!eq) {
+    const named = figToken ? { token: figToken.token, tokenReason: 'color-diverged' } : {};
     const other = figToken?.all_modes && Object.entries(figToken.all_modes).find(([, h]) => h.toLowerCase() === domHex.toLowerCase());
-    if (other) return { status: 'fail', note: `looks like mode ${other[0]} was applied, not ${figToken!.mode ?? 'the expected one'} — token ${figToken!.token}` };
-    return { status: 'fail', note: figToken ? `color diverged — Figma token ${figToken.token}` : undefined };
+    if (other) return { status: 'fail', note: `looks like mode ${other[0]} was applied, not ${figToken!.mode ?? 'the expected one'} — token ${figToken!.token}`, ...named };
+    return { status: 'fail', note: figToken ? `color diverged — Figma token ${figToken.token}` : undefined, ...named };
   }
   // D: hex matches — token provenance (domToken state). domToken undefined → unknown.
   const dt: DomTokenState = domToken ?? { unknown: 'not-captured' };

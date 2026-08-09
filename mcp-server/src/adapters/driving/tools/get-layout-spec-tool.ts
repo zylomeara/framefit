@@ -6,6 +6,11 @@ import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { buildLayoutSpec, budgetFor, collectLeafTexts } from '../../../domain/layout-spec/projector.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
+import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
+import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, buildModeByCollection } from '../../../domain/mode-resolve.js';
+import { makeColorTokenResolver, prefetchSnapshotHits, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
+import { FigmaApiError } from '../../../ports/errors.js';
+import type { RawSceneNode } from '../../../domain/figma-raw.js';
 import { DOM_SNAPSHOT_SCHEMA_VERSION } from './dom-snapshot-schema.js';
 import { EXTRACTOR_JS, buildExtractorLoader } from './dom-extractor.js';
 import { buildSetNames } from './component-set-names.js';
@@ -72,11 +77,57 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         const res = frameRes.raw;
         const effDepth = frameRes.effectiveMaxDepth;
         const hydration: HydrationReceipt[] = [];
+
+        // Mode-aware token names for bound colors — the SAME resolver compare_node_to_dom uses
+        // (color-token-resolver.ts), with three deliberate differences on this hot navigation path:
+        // (1) demand gate first — a batch that binds no colour pays nothing at all;
+        // (2) the variables fetch is ALWAYS capped (compare caps MT-only): a bounded miss with a
+        //     degraded_stages receipt beats a measured ~90s stall, and the caller still has
+        //     fillBoundVar + this receipt to tell "not bound" from "bound, fetch degraded";
+        // (3) subtree-only mode stacks, NO whole-file ancestor discovery — so mode_source is
+        //     honestly 'default' whenever the pin sits above the fetched subtree. The token NAME
+        //     is the portable artifact; for a mode-confirmed VALUE run compare_node_to_dom or
+        //     get_design_context, which do pay for ancestor discovery.
+        const degradedStages: { stage: 'variables'; reason: 'error'; ms: number; detail: string }[] = [];
+        let variableIndex: VariableIndex | undefined;
+        let snapHits: Map<string, { value: unknown; name?: string }> | undefined;
+        const anyBindsColor = ids.some((id) => {
+          const doc = res.nodes[id]?.document;
+          return doc !== undefined && hasBoundPaintColor(doc);
+        });
+        if (anyBindsColor) {
+          await deps.variableGraph?.ensureReady?.();
+          const variablesStartedAt = Date.now();
+          try {
+            variableIndex = buildVariableIndex(await deps.buildApi(token, VARIABLES_FETCH_CAP_MS).getVariablesLocal(parsed.value));
+          } catch (err) {
+            if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
+            deps.logger.info({ err: (err as Error).message }, 'layout_spec.variables_unavailable');
+            degradedStages.push({ stage: 'variables', reason: 'error', ms: Date.now() - variablesStartedAt,
+              detail: (err as Error).message });
+          }
+          try {
+            snapHits = await prefetchSnapshotHits(deps, variableIndex, ids.map((id) => res.nodes[id]?.document));
+          } catch (err) {
+            if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
+            deps.logger.info({ err: (err as Error).message }, 'layout_spec.snapshot_prefetch_unavailable');
+          }
+        }
+
         const specs = await Promise.all(ids.map(async (id) => {
           const entry = res.nodes[id];
           if (!entry?.document) return { node_id: id, error: 'not found' };
           const setNames = await buildSetNames(api, entry, deps.logger);
-          const built = buildLayoutSpec(entry.document, { components: entry.components, setNames, styleNames: (sid: string) => entry.styles?.[sid]?.name }, { maxDepth: effDepth });
+          const subtreeModes = collectSubtreeModes(entry.document);
+          const subtreeChains = collectSubtreeChains(entry.document);
+          const resolveColorToken = makeColorTokenResolver({
+            variableIndex, snapHits, variableGraph: deps.variableGraph,
+            stackFor: (n: RawSceneNode) => subtreeModes.get(n.id) ?? new Map<string, string>(),
+            graphStackFor: (n: RawSceneNode) => buildModeByCollection(subtreeChains.get(n.id) ?? [n]),
+            coverageComplete: false,   // ancestors above the fetched subtree are never observed here
+            omitAllModes: true,        // all_modes is compare's confirm payload, not navigation data
+          });
+          const built = buildLayoutSpec(entry.document, { components: entry.components, setNames, resolveColorToken, styleNames: (sid: string) => entry.styles?.[sid]?.name }, { maxDepth: effDepth });
           if (args.text_leaves) {
             const { leaves, truncated } = collectLeafTexts(built);
             return { node_id: id, text_leaves: leaves, ...(truncated ? { text_leaves_truncated: true } : {}) };
@@ -138,6 +189,10 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
           file: parsed.value,
           snapshot_schema: DOM_SNAPSHOT_SCHEMA_VERSION,
           specs: kept,
+          // Same shape as compare/get_design_context: without this an absent fillToken is
+          // ambiguous between "bound but the variables fetch degraded" and "bound but no
+          // resolver can name it" — fillBoundVar alone cannot tell those apart.
+          ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
           ...(omitted.length ? { result_truncated: true, omitted_node_ids: omitted,
             result_truncated_note: 'result exceeded the budget — re-request the omitted node_ids in a separate get_layout_spec call (fewer node_ids at a time) or lower max_depth' } : {}),
           ...(hydration.length ? { hydration: hydration.filter((h) => kept.some((k: { node_id: string }) => k.node_id === h.node_id)) } : {}),
