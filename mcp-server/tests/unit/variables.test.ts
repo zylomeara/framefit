@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildVariableIndex, resolveBoundVariable, listTokens, listTokensForIds, collectNodeVariableIds } from '../../src/domain/variables.js';
+import { buildVariableIndex, resolveBoundVariable, listTokens, listTokensForIds, collectNodeVariableIds, extractCssName, buildCssEvidence } from '../../src/domain/variables.js';
 import type { RawVariablesResponse } from '../../src/domain/figma-raw.js';
 
 const resp: RawVariablesResponse = {
@@ -87,5 +87,59 @@ describe('collectNodeVariableIds', () => {
       children: [{ id: '1:2', name: 'C', type: 'TEXT', boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: 'V:child' } } }],
     } as any;
     expect([...collectNodeVariableIds(node)].sort()).toEqual(['V:child', 'V:cr', 'V:fill', 'V:is', 'V:stop']);
+  });
+});
+
+// ── codeSyntax evidence (semantic-confirm v3) ──
+describe('extractCssName — anchored, phantom-proof', () => {
+  it('accepts bare --x and single var(--x) / var(--x, fallback)', () => {
+    expect(extractCssName('--ds-x')).toBe('--ds-x');
+    expect(extractCssName('  var(--ds-x)  ')).toBe('--ds-x');
+    expect(extractCssName('var(--ds-x, #fff)')).toBe('--ds-x');
+    // one level of balanced parens in the fallback is an ordinary authored value (wave catch)
+    expect(extractCssName('var(--ds-x, rgb(0,0,0))')).toBe('--ds-x');
+    expect(extractCssName('var(--ds-x, rgba(0,0,0,.5))')).toBe('--ds-x');
+  });
+  it('phantom corpus: BEM/SCSS/JS-path/multi-var strings yield NO evidence (panel-measured trap)', () => {
+    for (const s of ['$btn--primary', '.card--elevated', "tokens['bg--primary']",
+      'border: var(--w) solid var(--line)', 'var(--bg-light) / var(--bg-dark)',
+      'background: var(--bg); color: var(--fg)', 'theme.colors.x', '', '--ds-color-{theme}-bg']) {
+      expect(extractCssName(s), s).toBeUndefined();
+    }
+  });
+});
+
+describe('buildCssEvidence — authored map + alias relatedness', () => {
+  const evResp = {
+    meta: {
+      variableCollections: { 'VC': { id: 'VC', name: 'C', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'M' }] } },
+      variables: {
+        'V:1': { id: 'V:1', name: 'bg/x', resolvedType: 'COLOR', variableCollectionId: 'VC',
+          valuesByMode: { m: { r: 1, g: 1, b: 1 } }, codeSyntax: { WEB: 'var(--ds-x)' } },
+        'V:2': { id: 'V:2', name: 'bg/y', resolvedType: 'COLOR', variableCollectionId: 'VC',
+          valuesByMode: { m: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, codeSyntax: { WEB: '--ds-y' } },
+        'V:3': { id: 'V:3', name: 'bg/z', resolvedType: 'COLOR', variableCollectionId: 'VC',
+          valuesByMode: { m: { r: 0, g: 0, b: 0 } }, codeSyntax: { WEB: '--ds-z' } },
+        'V:4': { id: 'V:4', name: 'bg/dup', resolvedType: 'COLOR', variableCollectionId: 'VC',
+          valuesByMode: { m: { r: 0, g: 0, b: 0 } }, codeSyntax: { WEB: '--ds-x' } },
+        'V:5': { id: 'V:5', name: 'bg/plain', resolvedType: 'COLOR', variableCollectionId: 'VC',
+          valuesByMode: { m: { r: 0, g: 0, b: 0 } }, codeSyntax: {} },
+      },
+    },
+  } as unknown as Parameters<typeof buildVariableIndex>[0];
+
+  it('nameOf / idsByName from authored codeSyntax; duplicates listed; codeSyntax:{} = no evidence', () => {
+    const ev = buildCssEvidence(buildVariableIndex(evResp));
+    expect(ev.nameOf('V:1')).toBe('--ds-x');
+    expect(ev.idsByName('--ds-x').sort()).toEqual(['V:1', 'V:4']);
+    expect(ev.idsByName('--absent')).toEqual([]);
+    expect(ev.nameOf('V:5')).toBeUndefined(); // codeSyntax:{} — the REAL no-evidence payload shape
+  });
+  it('aliasRelated: V:2 aliases V:1 (both directions true); V:3 unrelated', () => {
+    const ev = buildCssEvidence(buildVariableIndex(evResp));
+    expect(ev.aliasRelated('V:2', 'V:1')).toBe(true);
+    expect(ev.aliasRelated('V:1', 'V:2')).toBe(true);
+    expect(ev.aliasRelated('V:3', 'V:1')).toBe(false);
+    expect(ev.aliasRelated('V:1', 'V:1')).toBe(true);
   });
 });

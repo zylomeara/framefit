@@ -337,3 +337,73 @@ export function collectNodeVariableIds(root: RawSceneNode): Set<string> {
   walk(root);
   return ids;
 }
+
+// ── codeSyntax evidence (semantic-confirm v3) ────────────────────────────────────────────────
+// The authored Figma-name -> CSS-custom-property mapping, per variable. codeSyntax.WEB is free
+// text with no validation; extraction is ANCHORED to the whole string (bare `--x` or a single
+// `var(--x)` / `var(--x, fallback)`) — an unanchored substring scan minted phantom evidence out
+// of BEM/SCSS/JS-path strings (`$btn--primary` -> `--primary`), and every phantom fed an
+// always-gating branch. Anything else, including multi-var strings, is NO evidence.
+const CSS_NAME_BARE = /^\s*(--[A-Za-z0-9_-]+)\s*$/;
+// Fallback allows ONE level of balanced parens (`var(--x, rgb(0,0,0))` is an ordinary authored
+// value) but still rejects a second var()/any deeper nesting — multi-var strings stay no-evidence.
+const CSS_NAME_VAR = /^\s*var\(\s*(--[A-Za-z0-9_-]+)\s*(?:,(?:[^()]|\((?:[^()]*)\))*)?\)\s*$/;
+export function extractCssName(web: string | undefined): string | undefined {
+  if (!web) return undefined;
+  const m = CSS_NAME_BARE.exec(web) ?? CSS_NAME_VAR.exec(web);
+  return m?.[1];
+}
+
+/**
+ * Evidence lookups for the diff's D-branch (positive-collision gating). All three answers come
+ * from the local variable index:
+ * - nameOf: the BOUND variable's own authored css name (undefined = no evidence);
+ * - idsByName: every variable minting that css name (length!==1 = ambiguous = no evidence);
+ * - aliasRelated: is either variable reachable from the other through valuesByMode alias chains
+ *   (any mode, both directions, depth-capped)? A component tier aliasing the bound token is
+ *   CORRECT wiring — a collision only gates when the two variables are genuinely unrelated.
+ */
+export interface CssTokenEvidence {
+  nameOf(variableId: string): string | undefined;
+  idsByName(cssName: string): string[];
+  aliasRelated(a: string, b: string): boolean;
+}
+
+const ALIAS_WALK_CAP = 8;
+export function buildCssEvidence(idx: VariableIndex): CssTokenEvidence {
+  const nameOf = new Map<string, string>();
+  const byName = new Map<string, string[]>();
+  for (const v of idx.byId.values()) {
+    const n = extractCssName(v.codeSyntax?.WEB);
+    if (n === undefined) continue;
+    nameOf.set(v.id, n);
+    byName.set(n, [...(byName.get(n) ?? []), v.id]);
+  }
+  const reaches = (from: string, to: string): boolean => {
+    const seen = new Set<string>();
+    let frontier = [from];
+    for (let depth = 0; depth < ALIAS_WALK_CAP && frontier.length; depth++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const v = idx.byId.get(id);
+        if (!v) continue;
+        for (const val of Object.values(v.valuesByMode)) {
+          const alias = (val as { type?: string; id?: string });
+          if (alias?.type === 'VARIABLE_ALIAS' && typeof alias.id === 'string') {
+            if (alias.id === to) return true;
+            next.push(alias.id);
+          }
+        }
+      }
+      frontier = next;
+    }
+    return false;
+  };
+  return {
+    nameOf: (id) => nameOf.get(id),
+    idsByName: (n) => byName.get(n) ?? [],
+    aliasRelated: (a, b) => a === b || reaches(a, b) || reaches(b, a),
+  };
+}

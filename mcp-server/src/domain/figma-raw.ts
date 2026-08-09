@@ -154,6 +154,10 @@ export interface RawVariable {
   resolvedType: 'COLOR' | 'FLOAT' | 'STRING' | 'BOOLEAN';
   valuesByMode: Record<string, RawVariableValue>;
   variableCollectionId: string;
+  // The DS team's own authored name->code mapping (REQUIRED in the REST payload — the real
+  // "no evidence" shape is codeSyntax:{} — but optional here: older fixtures/caches omit it).
+  // Free text with no validation; extractCssName (variables.ts) is the only reader.
+  codeSyntax?: { WEB?: string; ANDROID?: string; iOS?: string };
 }
 
 export interface RawVariableCollection {
