@@ -3,6 +3,50 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.21.0
+
+One change, and it moves what your typography rows say. No schema bump, no extractor change, no new
+parameter: **no reconnect is needed, and the extractor you have keeps working.** But reread any
+report whose text pairs sit on wrapper elements - those rows are the point of this release.
+
+### Changed
+
+**Typography is compared with the text CARRIER, never with a wrapper.**
+
+Measured live: a Button pair read font-size 17/13.3 and weight 550/400, and both were fake -
+13.33px is the browser default of the button element itself, while the real text sits deeper in a
+typography span computing exactly the design's 17/550. Four of eight fails in that run were
+artifacts of reading the wrapper - worse than a missed defect, because the reader goes off to fix
+working code and stops trusting the reds that are real.
+
+When the paired element owns its text (or is the text node itself), nothing changes - the compare
+is byte-for-byte the old one. When it does not, the styles come from the unique nested carrier and
+the row says so ("DOM styles read from the nested text carrier"); a carrier found under a truncated
+subtree carries the uniqueness caveat instead of false confidence. When no carrier can be named -
+several of them, none in a truncated subtree, or none at all - the row is unchecked with the action
+that actually works (a pair on the text node; a deeper capture only where deeper exists; fix the
+pair or verify by eye), and `verification.complete` stays false. Never a wrapper compare, in any
+branch: inheritance does not guarantee the carrier's rendering in either direction, and the live
+run proved both directions.
+
+`fix_plan` edits for carrier rows route to the carrier's own class instead of the wrapper's; a
+root-level carrier row carries no edit address at all - an unresolved edit is honest, a wrong file
+is not.
+
+An adversarial pass over this change caught two of its own holes before they shipped: the
+no-carrier notes originally could not hold the verdict red, and the unique-under-truncation case
+read confident. Both are why the paragraph above reads the way it does.
+
+The tutorial's printed snapshots gained the text children the real extractor always captures - the
+hand-trimmed examples had dropped exactly the nodes this change reads.
+
+### Repository
+
+The identifier gate's header stops spelling the markers it cannot machine-check, and its stale
+sibling claims are corrected; the literal list lives at a private enforcement point now. A denylist
+rule inside the public gate was drafted and withdrawn the same day: a gate that carries what it
+guards is the leak it warns about.
+
 ## 0.20.0
 
 One addition, and it exists because the gate was right in a way nobody could act on. On a page that
