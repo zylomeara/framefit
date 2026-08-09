@@ -3186,7 +3186,9 @@ describe('typography carrier descent (p.7)', () => {
         children: [{ kind: 'text', rect: { x: 90, y: 0, w: 80, h: 24 }, text: 'B', styles: { fontSize: 11 } }] },
     ] })]);
     expect(rows.some((r) => r.prop.startsWith('font-size') && r.status === 'fail')).toBe(false);
-    const w = rows.find((r) => r.prop.startsWith('typography') && r.status === 'warn');
+    // unchecked, not warn: a warn fed neither holes nor blocking and left a terminal green over an
+    // unmeasured text (adversarial-pass blocker) - unchecked flows into blocking via the note-guard.
+    const w = rows.find((r) => r.prop.startsWith('typography') && r.status === 'unchecked');
     expect(w?.note ?? '').toContain('several nested text carriers');
   });
 
@@ -3200,7 +3202,7 @@ describe('typography carrier descent (p.7)', () => {
   it('no carrier in a FULLY captured subtree → warn "text missing", no wrapper compare', () => {
     const rows = base([btnChild({ children: [] })]);
     expect(rows.some((r) => r.prop.startsWith('font-size'))).toBe(false);
-    const w = rows.find((r) => r.prop.startsWith('typography') && r.status === 'warn');
+    const w = rows.find((r) => r.prop.startsWith('typography') && r.status === 'unchecked');
     expect(w?.note ?? '').toContain('carries none');
   });
 
@@ -3225,5 +3227,36 @@ describe('typography carrier descent (p.7)', () => {
       ], styles: { fontSize: 13.333, fontWeight: 400 } }),
       { tolerancePx: 1 });
     expect(row(rows, 'font-size')).toMatchObject({ figma: 17, dom: 17, status: 'pass' });
+  });
+
+  it('a unique carrier under a TRUNCATED subtree is uncertain, not confident (textUncertain mirror)', () => {
+    // Adversarial-pass blocker: one captured carrier + a truncated sibling used to read as a
+    // confident pass with no caveat, while a second, differently-styled text could hide beyond the cut.
+    const rows = base([btnChild({ children: [
+      { kind: 'element', tag: 'span', rect: { x: 20, y: 14, w: 160, h: 24 },
+        children: [{ kind: 'text', rect: { x: 20, y: 14, w: 160, h: 24 }, text: 'Save',
+          styles: { fontSize: 17, fontWeight: 550 } }] },
+      { kind: 'element', tag: 'div', rect: { x: 0, y: 40, w: 200, h: 10 }, childrenTruncated: true },
+    ] })]);
+    const fs = row(rows, 'font-size');
+    expect(fs).toMatchObject({ figma: 17, dom: 17, status: 'pass' });
+    expect(fs?.note ?? '').toContain('uniqueness only within the slice');
+  });
+
+  it('fix-plan: nested-carrier rows carry the text channel and the CARRIER chain, not the wrapper', () => {
+    const attr: import('../../src/domain/layout-spec/types.js').PairAttribution = {};
+    const rows = diffPair(
+      spec({ children: [figBtn()] as never, axis: 'col' }),
+      snap({ children: [btnChild({ children: [
+        { kind: 'element', tag: 'span', classList: ['ds-typography'], rect: { x: 20, y: 14, w: 160, h: 24 },
+          children: [{ kind: 'text', rect: { x: 20, y: 14, w: 160, h: 24 }, text: 'Save',
+            styles: { fontSize: 15, fontWeight: 550 } }] },
+      ] })] as never, rect: { x: 0, y: 0, w: 343, h: 52 }, clientHeight: 52, scrollHeight: 52 }),
+      { tolerancePx: 1, attributionOut: attr });
+    const fs = row(rows, 'font-size');
+    expect(fs?.status).toBe('fail'); // 17 vs 15 - a real defect through the carrier
+    expect(fs?.srcChannel).toEqual({ kind: 'text', label: '[Button]', editKind: 'property' });
+    expect(attr.text?.[0]).toMatchObject({ label: '[Button]' });
+    expect(attr.text?.[0].classListChain.flat()).toContain('ds-typography');
   });
 });

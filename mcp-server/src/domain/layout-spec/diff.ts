@@ -1126,7 +1126,12 @@ const domOwnText = (n: { children?: DomChild[] }): boolean =>
   (n.children ?? []).some((k) => k.kind === 'text' && (k.text ?? '').trim() !== '');
 type CarrierResult =
   | { kind: 'self' }
-  | { kind: 'nested'; node: DomChild }
+  // uncertain: the scan was truncated (a cap or childrenTruncated on a visited level) — a second,
+  // differently-styled carrier may hide beyond the slice. The Figma-side mirror (projector.ts
+  // collectTexts) carries the same flag on ITS unique path; claiming uniqueness confidently here
+  // while the subtree is cut is the confidently-wrong class this whole mechanism exists to kill —
+  // confirmed by an adversarial pass running the real diffPair before this line shipped.
+  | { kind: 'nested'; node: DomChild; chain: string[][]; uncertain: boolean }
   | { kind: 'ambiguous' }
   | { kind: 'beyond_cut' }
   | { kind: 'none' };
@@ -1135,21 +1140,29 @@ function resolveDomTypoCarrier(n: DomChild, maxDescent: number): CarrierResult {
   // that OWNS a non-empty text child is the carrier the old direct compare was correct about.
   if (n.kind === 'text' || domOwnText(n)) return { kind: 'self' };
   const found = collectDomTexts(n, maxDescent);
-  if (found.items.length === 1) return { kind: 'nested', node: found.items[0].node };
+  if (found.items.length === 1) {
+    return { kind: 'nested', node: found.items[0].node, chain: found.items[0].classListChain,
+      uncertain: found.truncated || n.childrenTruncated === true };
+  }
   if (found.items.length > 1) return { kind: 'ambiguous' };
   return found.truncated || n.childrenTruncated === true ? { kind: 'beyond_cut' } : { kind: 'none' };
 }
+// Both no-carrier outcomes are UNCHECKED, not warn: a warn here fed neither holes nor blocking
+// (typography is not a COVERAGE_HOLING_WARN dimension), so a Figma text that was never measured
+// left complete:true and a terminal-green prose verdict — reproduced end-to-end by the adversarial
+// pass, and a regression against the pre-carrier behavior, which at least failed red. Unchecked
+// rows flow through uncheckedToBlocking, where each note routes to its executable action.
 function carrierNoteRow(prop: string, kind: 'ambiguous' | 'beyond_cut' | 'none'): DiffRow {
   if (kind === 'ambiguous') {
-    return { prop, status: 'warn',
+    return { prop, status: 'unchecked',
       note: 'the DOM side has several nested text carriers - metrics not attributed; add a pair on the text node' };
   }
   if (kind === 'beyond_cut') {
     return { prop, status: 'unchecked',
       note: 'the Figma node carries text, but no DOM text was captured and the subtree was truncated - the carrier may be beyond the slice: re-extract deeper or add a pair on the text node' };
   }
-  return { prop, status: 'warn',
-    note: 'the Figma node carries text, the captured DOM subtree carries none - the text is missing or lives outside this element; add a text pair' };
+  return { prop, status: 'unchecked',
+    note: 'the Figma node carries text, the captured DOM subtree carries none - the text is missing or lives outside this element; fix the pair or verify by eye' };
 }
 
 // Hug-evidence (confirmed by live probing): proof of hug ON the DOM SIDE for
@@ -1382,8 +1395,16 @@ function crossAndPaddingRows(
         rows.push(...typographyRows(c.text, domKids[i], `[${childLabel(c)}]`, d.fontsLoaded, c.textFromNested, c.textUncertain,
           { kind: 'child', i, editKind: 'property' })); // fix-plan: a per-child text pair without a descent-label → child(i)
       } else if (carrier.kind === 'nested') {
-        rows.push(...typographyRows(c.text, carrier.node, `[${childLabel(c)}]`, d.fontsLoaded, c.textFromNested, c.textUncertain,
-          { kind: 'child', i, editKind: 'property' }, true));
+        // fix-plan: the edit belongs to the CARRIER's class, not the wrapper's — the child(i)
+        // channel resolved the address to the wrapper (adversarial-pass major). Same shape as the
+        // descent channel: text(label) + the carrier's ancestor chain in attributionOut.text.
+        const tLabel = `[${childLabel(c)}]`;
+        rows.push(...typographyRows(c.text, carrier.node, tLabel, d.fontsLoaded, c.textFromNested,
+          c.textUncertain || carrier.uncertain,
+          { kind: 'text', label: tLabel, editKind: 'property' }, true));
+        if (opts.attributionOut) {
+          (opts.attributionOut.text ??= []).push({ label: tLabel, classListChain: carrier.chain });
+        }
       } else {
         rows.push(carrierNoteRow(`typography[${childLabel(c)}]`, carrier.kind));
       }
@@ -1683,8 +1704,11 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
       rows.push(...typographyRows(spec.text, { styles: d.styles, rect: d.rect }, '', d.fontsLoaded, undefined, undefined,
         { kind: 'root', editKind: 'property' }));
     } else if (carrier.kind === 'nested') {
-      rows.push(...typographyRows(spec.text, carrier.node, '', d.fontsLoaded, undefined, undefined,
-        { kind: 'root', editKind: 'property' }, true));
+      // No srcChannel here on purpose: the root channel would resolve the edit to the WRAPPER's
+      // class (the wrong file), and a root-level text label has no honest key in the text channel.
+      // An unresolved address collects under fix_plan's null target — honest beats wrong.
+      rows.push(...typographyRows(spec.text, carrier.node, '', d.fontsLoaded, undefined,
+        carrier.uncertain, undefined, true));
     } else {
       rows.push(carrierNoteRow('typography', carrier.kind));
     }

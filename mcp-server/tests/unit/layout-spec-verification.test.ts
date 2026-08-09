@@ -1107,3 +1107,25 @@ describe('exclude_regions', () => {
     expect(md).toContain('excluded by the caller: 1');
   });
 });
+
+// ── p.7 carrier notes gate complete (adversarial-pass blocker: a warn here was a terminal green hole) ──
+describe('typography carrier notes gate the machine verdict', () => {
+  it('"carries none" → complete false, resolve_skip (nothing deeper exists, no text to pair)', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'typography[Button]', status: 'unchecked',
+      note: 'the Figma node carries text, the captured DOM subtree carries none - the text is missing or lives outside this element; fix the pair or verify by eye' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking).toMatchObject([{ kind: 'skip', action: 'resolve_skip' }]);
+  });
+  it('"several nested text carriers" → add_text_pair at ANY depth (both are already captured — depth resolves nothing)', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'typography[Button]', status: 'unchecked',
+      note: 'the DOM side has several nested text carriers - metrics not attributed; add a pair on the text node' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking).toMatchObject([{ kind: 'skip', action: 'add_text_pair' }]);
+  });
+  it('the beyond-cut carrier note keeps the depth-aware default (raise below 8)', () => {
+    const v = buildVerification([pairFromRows([{ prop: 'typography[Button]', status: 'unchecked',
+      note: 'the Figma node carries text, but no DOM text was captured and the subtree was truncated - the carrier may be beyond the slice: re-extract deeper or add a pair on the text node' }])], { depthLevels: 4 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking).toMatchObject([{ kind: 'truncated_text', action: 'raise_max_depth' }]);
+  });
+});

@@ -303,6 +303,13 @@ function uncheckedToBlocking(r: DiffRow, p: PairResult, depthLevels: number): Bl
   // border radius — the same false navigation the note above says was removed for the viewport case.
   // resolve_skip is the existing "a human must look" bucket; no fourteenth action is invented for this.
   if (r.prop === 'corner-radius') return { ...base, kind: 'skip', action: 'resolve_skip' };
+  // p.7 carrier notes (note-guards, viewport precedent). AMBIGUOUS carriers: both texts are ALREADY
+  // captured — a deeper capture resolves nothing, the only executable action is a pair on the text
+  // node, at any depth. NO text in a fully captured subtree: neither depth nor a text pair exists to
+  // add — a human fixes the pair or looks; resolve_skip is that bucket. The default below keeps
+  // serving the beyond-cut carrier note, where raise_max_depth is genuinely the fix.
+  if ((r.note ?? '').includes('several nested text carriers')) return { ...base, kind: 'skip', action: 'add_text_pair' };
+  if ((r.note ?? '').includes('carries none')) return { ...base, kind: 'skip', action: 'resolve_skip' };
   return { ...base, kind: 'truncated_text', action: depthLevels < 8 ? 'raise_max_depth' : 'add_text_pair' };
 }
 
