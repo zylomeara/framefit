@@ -160,16 +160,15 @@
 //   loud: OUTSIDE_GIT runs at module scope, so the whole file fails collection with `0 test`.
 //
 //   PROSE PROVENANCE IS NOT MACHINE-CHECKED, AND ITS FAILURE MODE IS THE SURVIVING SIBLING. Tracker
-//   keys (BOOKS-282, and the shape-less BOOKS/Settings), verbatim product copy, real font names,
-//   branded mode names, design-system token paths and component names were handled AD HOC. Wave 1
-//   replaced ONE instance of each class and left its sibling standing -- `ALS Hauss`
-//   (compare-breakpoints-text-match.test.ts:13), `MonogramLight` (variables-summary.test.ts:96),
-//   `--mo-` (layout-spec-diff-descriptive.test.ts:299) and `subscrip-banner`
-//   (compare-node-to-dom-tool.test.ts:245), each still at that line in HEAD -- and this header claimed
-//   the class had been handled. (The two line DISTANCES this row used to give were both off by one --
-//   `MonogramLight` sits two lines under its renamed twin, not three; `subscrip-banner` six under the
-//   component set, not seven -- so they are gone. An adjacency rots on the next edit; a file and a
-//   line can be opened.)
+//   keys (one numbered, one shape-less), verbatim product copy, real font names, branded mode
+//   names, design-system token paths and component names were handled AD HOC. Wave 1 replaced ONE
+//   instance of each class and left its sibling standing -- two font names, the token prefix and a
+//   component string, each later found at its own file and line -- and this header claimed the
+//   class had been handled. Wave 2 removed them; this header then went on NAMING the literals it
+//   documented, which is the same defect one storey up: a gate that spells the markers it cannot
+//   check IS the leak it warns about (a denylist rule for the token prefix was drafted and
+//   withdrawn for exactly that). The literal list lives outside this repository, at a private
+//   enforcement point; here only the CLASSES are named.
 //   Wave 2 finished those four (-> Inter, Dawn, --ds-, promo-banner) and, re-deriving
 //   the occurrence list instead of trusting the audit, found three siblings nobody had named: the same
 //   brand's CLASS prefix `mo-` (23 occurrences in HEAD -> ds-list-item / ds-list / ds-typography /
