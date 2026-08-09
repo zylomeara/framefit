@@ -295,6 +295,10 @@ const RULES = {
     + 'documentation -- it names a real deployment; use 203.0.113.10, or 192.0.2.10 for a second host',
   'R11-node-id-env': 'a Figma node id in dash form as the value of a SCREAMING_CASE *NODE / *NODE_ID '
     + 'environment variable -- replace it with a neutral id (12-340)',
+  'R12-brand-class-prefix': 'the mo- prefix of the customer design system -- the July sanitise '
+    + 'replaced every --mo- token with --ds- and renamed the one test that carried the brand in its '
+    + 'NAME, and a classList like mo-button re-imports the brand through a fixture (it nearly '
+    + 'shipped once, caught only by a hand sweep). Use ds-*',
 } as const;
 
 /**
@@ -718,6 +722,12 @@ function scanText(relPath: string, text: string, usedExceptions?: Map<string, nu
       if (idVerdict(page, local)) add(m.index, 'R11-node-id-env', m[1]);
     }
   }
+  // R12: \b before `m` holds after `-` (so --mo-token is caught) and fails inside a word (so
+  // demo-app is not) -- the boundary negatives sit in the green-vocabulary row. Population today is
+  // zero outside this file (measured at introduction); future false positives go through EXCEPTIONS.
+  for (const m of text.matchAll(/\bmo-[a-z][A-Za-z0-9_-]*/g)) {
+    add(m.index, 'R12-brand-class-prefix', m[0]);
+  }
   return out;
 }
 
@@ -850,7 +860,8 @@ describe('no real Figma, customer or deployment identifier is in the tracked tre
       corpus().flatMap((f) => scanText(f, read(f))),
       'a real-looking identifier is in the tree. Each line names the file, the line, the value and the '
       + 'rule: R1/R2/R11 a Figma node or mode id, R3 a team id, R4/R5 a file key, R6/R7 a customer or '
-      + 'employer host, R8 a foreign loopback port, R9 a bundler class hash, R10 a deployment IP. '
+      + 'employer host, R8 a foreign loopback port, R9 a bundler class hash, R10 a deployment IP, '
+      + 'R12 the customer DS brand prefix. '
       + 'Replace it with the '
       + 'sanctioned placeholder named in the message, or -- only if the value cannot be changed -- '
       + 'register the exact (path, value) pair in EXCEPTIONS with a reason from the closed set.',
@@ -977,6 +988,14 @@ describe('no real Figma, customer or deployment identifier is in the tracked tre
       // AND stays red if isNeutralIPv4's prefix test is ever loosened to `203.0.11`.
       { from: 'docs/deployment.md:47 -- the ssh tunnel line, `you@your-vps` replaced by the box itself',
         path: 'docs/deployment.md', text: 'ssh -N -L 3846:127.0.0.1:3846 you@203.0.114.10', rule: 'R10-public-ipv4', value: '203.0.114.10' },
+      // R12, both spellings the brand actually took in this tree. The classList form is the exact
+      // fixture shape that nearly shipped in a public PR and was rewritten out pre-merge -- caught
+      // by a hand sweep, which is what this rule replaces; the custom-property form is what the
+      // July sanitise scrubbed to --ds- across the tree.
+      { from: 'the classList fixture form of the near-leak (rewritten out of the typography-carrier branch pre-merge); the spelling ds-button at tests/unit/layout-spec-diff.test.ts is its sanctioned neighbour',
+        path: 'mcp-server/tests/unit/foo.test.ts', text: "classList: ['mo-button'],", rule: 'R12-brand-class-prefix', value: 'mo-button' },
+      { from: 'the --mo- custom-property spelling the July sanitise replaced with --ds- (variables-mo-prefix.test.ts was renamed for carrying it in the NAME)',
+        path: 'mcp-server/src/foo.ts', text: "getPropertyValue('--mo-controls-bg')", rule: 'R12-brand-class-prefix', value: 'mo-controls-bg' },
     ];
     // The expected LINE is derived from the fixture rather than assumed to be 1, so a multi-line
     // fixture (the JSON capture) still locks the reported line instead of opting out of that half of
@@ -994,7 +1013,7 @@ describe('no real Figma, customer or deployment identifier is in the tracked tre
     const neutral = "ids 12:340 12:341 34:0 56:7890 1:42 '12-340' 'I12-340;56-7890' 20:100 3:200 400:1 "
       + "9000:1 8888:2 2338:1 123:4 999:1 12:1000 key file: 'AbCdEf012345' board XyZaBc678901 "
       + 'https://www.figma.com/design/AbCdEf012345/Demo?node-id=12-340 team 1234567890123456789 and '
-      + '9876543210987654321 https://api.figma.com https://figma.mcp.example.com localhost:3846 '
+      + '9876543210987654321 https://api.figma.com https://figma.mcp.example.com localhost:3846 demo-app promo-banner '
       + '127.0.0.1:3846 [::1]:3846 0.0.0.0 quads 203.0.113.10 192.0.2.10 198.51.100.7 10.0.0.7 '
       + '172.28.0.5 192.168.1.20 hash aB12cd stamp 11:42 range 116-153 ms cite report.ts:177-183';
     expect(scanText('docs/x.md', neutral),
