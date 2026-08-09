@@ -143,30 +143,34 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      # 8.25 introduced [[allowlists]]; the version must stay in step with .gitleaks.toml
-      # and with whatever the maintainer runs locally, or the config is read and its
-      # entries silently ignored (that cost a red CI once already).
-      GITLEAKS_VERSION: "8.30.1"
+    # The scan lives in scripts/secrets-scan.sh so CI and a maintainer's shell run the SAME
+    # check by construction rather than by memo - a bare local gitleaks call once reported 12
+    # leaks on a clean history because the binary predated the [[allowlists]] syntax and
+    # silently ignored the config. Every gate (version assert, shallow-clone refusal,
+    # commit-count assert, merge-commit walk) is in the script, with its rationale.
+    #
     # The workflow-level default is `mcp-server`, and this job's steps belong at the repo
     # root, where .gitleaks.toml and the history live. Same override publish-image needs,
-    # for the same reason. The action this job replaced never needed it: `defaults.run`
-    # does not govern a JS action's working directory, so the move to a `run:` step is
-    # what exposed the dependency.
+    # for the same reason.
     defaults:
       run:
         working-directory: .
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
-          # The scan below walks every commit reachable from HEAD. A shallow clone reduces
-          # that to ONE commit and still prints "no leaks found" - measured, and the reason
-          # the count assertion exists.
+          # The scan walks every commit reachable from HEAD. A shallow clone reduces that
+          # to ONE commit and still prints "no leaks found" - measured, and the reason the
+          # script refuses shallow checkouts outright.
           fetch-depth: 0
 
-      - name: install gitleaks
+      - name: install the pinned gitleaks
         run: |
-          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+          # The version pin lives in scripts/secrets-scan.sh, which asserts it at run time;
+          # grep it from there so a bump happens in exactly one place and CI cannot drift
+          # from what the maintainer runs locally.
+          v=$(grep -oE '^GITLEAKS_VERSION=[0-9.]+' scripts/secrets-scan.sh | cut -d= -f2)
+          test -n "$v"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_linux_x64.tar.gz" \
             | sudo tar -xz -C /usr/local/bin gitleaks
           gitleaks version
 
@@ -174,67 +178,14 @@ jobs:
       # own commit range from the GitHub API and never paginated, so it scanned the FIRST 30
       # commits of the branch and stopped: PR #3 carried 40, the action reported "30 commits
       # scanned", and the ten it dropped were the NEWEST - exactly where a hastily added
-      # token lands. It reported that number in a green job, so nothing about the run looked
-      # wrong. There is no input that widens the range, so the range is gone instead: at
-      # ~1.3s for this history there is nothing to gain by scanning less than all of it.
-      #
-      # --diff-merges=first-parent is load-bearing, not tidiness. gitleaks skips merge
-      # commits by default, so a secret introduced while RESOLVING A CONFLICT lives only in
-      # the merge and is invisible: measured on a purpose-built repo with a positive control
-      # - the same token is found in a plain commit and reported "no leaks found" when it
-      # sits in the merge alone. `-m` also finds it but reports once per parent.
-      #
-      # Passing --log-opts REPLACES the default walk (all refs, no merges), which is why the
-      # expected count below is derived per-event rather than written down.
+      # token lands. The script scans the full range and proves the range was full.
       - name: scan every commit, and prove the scan saw every commit
         run: |
-          set -euo pipefail
-
-          # This runs BEFORE the count check and is not redundant with it. The count check
-          # derives `expected` from the same clone gitleaks walks, so on a shallow checkout
-          # both sides collapse together and it reports a satisfied "1 of 1" - measured, and
-          # it is the same shape of vacuous agreement this whole job exists to refuse. Only
-          # a fact the truncation cannot restate catches truncation.
-          if [ "$(git rev-parse --is-shallow-repository)" != false ]; then
-            echo "::error::the checkout is shallow, so most of the history is not present to be scanned. The count check below cannot see this - it would compare a truncated scan against a truncated range and agree. Restore fetch-depth: 0."
-            exit 1
-          fi
-
           if [ "${GITHUB_EVENT_NAME}" = schedule ]; then
-            # The weekly sweep is the only run that reaches branches nobody opened a PR for -
-            # public repo, public branches. A PR run must NOT use --all: the expected count
-            # would then depend on how many stale branches the remote carries, and the gate
-            # would go red for branch hygiene instead of for a secret.
-            opts='--all --diff-merges=first-parent'
-            expected=$(git rev-list --count --all)
+            scripts/secrets-scan.sh all
           else
-            opts='--diff-merges=first-parent'
-            expected=$(git rev-list --count HEAD)
+            scripts/secrets-scan.sh
           fi
-
-          # --config is explicit and absolute on purpose. gitleaks looks for .gitleaks.toml in
-          # the CURRENT directory and, not finding one, scans with its built-in rules and says
-          # nothing about it - so every allowlisted fixture in this repository reports as a leak
-          # and the job fails for a reason that has nothing to do with a secret. Measured: run
-          # from mcp-server/ it reports 15 findings, from the root none, over the same 137
-          # commits. A wrong path exits 1 rather than falling back, which is why the path is
-          # passed rather than inherited. Same family as the version pin above: a config that is
-          # read but not applied looks exactly like a config that is applied.
-          gitleaks detect --redact --exit-code=2 --log-level=info \
-            --config "${GITHUB_WORKSPACE}/.gitleaks.toml" --log-opts="$opts" 2>&1 | tee scan.log
-
-          scanned=$(sed -E 's/\x1b\[[0-9;]*m//g' scan.log \
-            | grep -oE '[0-9]+ commits scanned' | grep -oE '^[0-9]+' | tail -1 || true)
-
-          if [ -z "${scanned}" ]; then
-            echo "::error::gitleaks printed no commit count. A scan that will not say what it covered proves nothing, and this job is green only when it says so."
-            exit 1
-          fi
-          if [ "${scanned}" -ne "${expected}" ]; then
-            echo "::error::gitleaks scanned ${scanned} commits; the range holds ${expected}. The difference is unscanned history, and a green scan over part of a range is worse than no scan - it carries a signature. Check fetch-depth and --log-opts."
-            exit 1
-          fi
-          echo "gitleaks scanned ${scanned} of ${expected} commits."
 
   publish-image:
     name: publish image to GHCR
