@@ -3,6 +3,47 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.20.0
+
+One addition, and it exists because the gate was right in a way nobody could act on. On a page that
+carries someone else's chrome - a global footer, navigation tabs owned by another team - the
+uncovered regions were real, the coverage arithmetic was honest, and `verification.complete` was
+unreachable in principle: the regions were not this task's to fix. A forever-red gate teaches its
+reader to explain red away, which is the erosion it exists to prevent. This release makes the red
+that belongs to someone else nameable - out loud, on the record - instead of explainable-away.
+
+**Reconnect your client**: the input schema of `compare_node_to_dom` gained a parameter, and a
+cached session does not see it. Nothing else moved - no snapshot-schema bump, no extractor change,
+so do not re-request the extractor.
+
+### Added
+
+**`exclude_regions` on `compare_node_to_dom`** - up to 50 frame-region ids (compound ids accepted),
+meaningful only together with `frame_node_id`. The governing rule, which survived an adversarial
+panel and a post-implementation review: **an exclusion removes a coverage DEMAND, never a
+MEASUREMENT.**
+
+- An excluded region leaves the `worthy` denominator honestly and produces no uncovered or blocking
+  items. The trace is the contract: the receipt lists every exclusion under
+  `frame_coverage.excluded`, and the report prints "excluded by the caller" on the green branch
+  too - a green that hid what the caller excluded would be the machine gate laundering its own
+  scope.
+- The partial gates and the spacing audit cannot be disarmed by an exclusion, by construction:
+  paired-ness inside excluded branches still counts, so a measured gap fail between siblings
+  survives any exclusion, and a pair submitted inside an excluded region keeps its rows, its fails,
+  and keeps covering its parent. What an exclusion does renounce is the excluded container's own
+  derived between-children audit - its internal spacing question leaves with the rest of its scope.
+- The edges answer instead of surprising: an unknown id comes back loud in
+  `frame_coverage.excluded_not_found`, whose note names the three possible causes (beyond the
+  enumeration slice, a decorative leaf carrying no demand, a typo); the frame root is not a legal
+  exclusion, because honoring it would kill the frame-as-container spacing gate; excluding every
+  worthy region leaves `complete` to the submitted pairs and says so in the receipt's `notes`;
+  exclusions passed without a frame are noted there too, never silently ignored.
+
+The agent protocol gained the matching step: an `uncovered_region` that is outside YOUR task is a
+candidate for `exclude_regions`, and excluding a region you were asked to verify makes the verdict
+lie for you, not for the tool.
+
 ## 0.19.0
 
 Three fixes, each born the same way - by running the documented cycle against a real page and
