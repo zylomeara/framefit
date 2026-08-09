@@ -3,6 +3,82 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.22.0
+
+Two verification lines with one subject - what a color row can honestly claim about tokens - plus
+a repository-hardening line. No input schema moved and no snapshot schema bumped: **no reconnect
+is needed, and the extractor you have keeps working.** But reread any report's color rows - both
+verification lines change what they say, and one adds a red that was not there before.
+
+### Changed
+
+**get_layout_spec names the variable a bound color is wired to.** Until now the tool returned
+`fillHex` - the RAW paint value, which for a variable-bound fill is a stale snapshot in the
+library's default mode - plus a `fillBoundVar` alias id nobody can write into code. Measured live:
+wrong-mode hexes were ported into production CSS from exactly this output. The tool now runs the
+SAME resolver `compare_node_to_dom` uses and returns `fillToken` / `strokeToken` / a text
+`colorToken` beside the raw values: the variable NAME, its mode-resolved hex, and an honest
+`mode_source` ("default" whenever the pin sits above the fetched subtree - this tool deliberately
+does not pay for whole-file ancestor discovery; the name is the portable artifact). The variables
+fetch is demand-gated (a batch binding no colour pays nothing), always capped, and a failed fetch
+is a `degraded_stages` receipt - an absent token is never ambiguous between "not bound" and "the
+fetch broke". `fillHex` stays raw and is documented as raw.
+
+**Two false-fail classes are gone from the color verdict.** A fill bound at the NODE level
+(`boundVariables.fills`) was invisible to the whole diff side, reached the verdict as a raw
+literal, and FAILED over correct code; one shared lookup now reads both binding forms everywhere
+(projector, resolver, demand gates, snapshot prefetch). And paint opacity was multiplied into the
+raw hex but not into the resolved token hex, so a bound fill at opacity 0.5 diverged from the DOM
+computed rgba - also a fail over correct code; the multiplication now happens at every meet point,
+`all_modes` included. Both were found by an adversarial panel with red-first fixtures.
+
+**A color FAIL whose hex diverged under a resolved token now carries the token name**
+(tokenReason "color-diverged") - the diverged-hex branch is where a developer acts by name, and it
+dropped it. (The tokenize-it fail - token on the Figma side, hardcoded literal in the DOM - still
+names the token in its note only.)
+
+**A measured token divergence stops hiding behind a hex match.** The "both from a token - confirm
+the semantics" row is reachable only after the hexes matched, so the advisory rule demoted it even
+when both token names were known and DIFFERENT. Now, when the file's variables carry the DS team's
+own authored `codeSyntax.WEB` mapping, the wiring is checked against it: a DOM custom property
+that exactly matches the bound variable's authored name (uniquely minted) passes outright, and one
+that is the authored name of a DIFFERENT, non-alias-related variable - provided the bound side
+carries its own authored mapping too - becomes "semantic-diverged": the one review row that blocks
+even on matched hexes. Both names ride the row and the blocking detail (a new structural
+`domToken` field on the row carries the DOM var), and the tool description tells the agent what
+clears it: align the code with the authored var, or fix the mapping in Figma. Everything without
+such evidence - no codeSyntax, ambiguous names, alias tiers, cross-library bindings, case typos -
+keeps the old value-based rule byte-for-byte. Absence of evidence never gates. Three adversarial
+rounds shaped this rule: a lexical name-matcher and a bare authored-mismatch gate were both built
+and both killed before shipping (each one false-reds on mainstream conventions); what survived is
+the positive collision only.
+
+**get_view's branch view names shared styles** - it projected a nameless "(paint)" sentinel where
+`get_layout_spec` names the style; the compare-compatible claim now holds at the style-name level.
+
+Reach, stated plainly: the codeSyntax evidence lives in the same variables payload the token
+enrichment does and dies with the same fetch; cross-library bindings resolved through the synced
+graph or the snapshot store carry no evidence yet. And two deliberate asymmetries between the
+tools' token objects: `get_layout_spec` omits `all_modes` (that is compare's confirm payload),
+and a `rate_limited` from the variables fetch now makes `get_layout_spec` return an error instead
+of silently dropping enrichment - the agent must back off either way.
+
+### Fixed
+
+Both empty-name resolver tails (graph and snapshot) fall back to the library key: their name
+columns default to an empty string, the null-coalescing fallback never fired, and an empty-named
+token degraded confirm_token grouping.
+
+### Repository
+
+The secret scan became one entry point - a single script under `scripts/` that CI and a
+maintainer's shell both run: it pins and asserts the gitleaks version (an older binary silently ignores every
+allowlist and floods a clean history with false leaks - measured), refuses shallow checkouts,
+asserts the scanned commit count against the range, and adds a staged mode wired as a pre-commit
+hook. The fixture allowlists pin exact synthetic VALUES instead of exempting test files by path -
+a real credential pasted into a test now reports. Proven red on purpose: a planted canary in a
+throwaway PR failed CI before this merged.
+
 ## 0.21.0
 
 One change, and it moves what your typography rows say. No schema bump, no extractor change, no new

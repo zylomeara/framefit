@@ -155,7 +155,7 @@ own pair in `compare_node_to_dom`.
 variable that raw hex is a snapshot in the library's default mode and may legitimately differ in
 the app under another mode. When the binding can be resolved, the spec carries a sibling
 `fillToken`/`strokeToken`/`text.colorToken` object: `{ token, hex, mode?, mode_dependent?,
-mode_source }` - `token` is the variable name (the thing to write into code), `hex` its
+mode_source? }` (single-mode tokens omit `mode_source`) - `token` is the variable name (the thing to write into code), `hex` its
 mode-resolved value. `mode_source: "node"` means the mode was confirmed by an explicit pin inside
 the FETCHED subtree; `"default"` means no pin was visible here and the value shown is the
 collection default - this tool deliberately does not pay for whole-file ancestor discovery, so a
