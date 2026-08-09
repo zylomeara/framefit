@@ -2,6 +2,7 @@
 // (collectionId -> modeId) per node; the effective mode of a node for a collection is
 // the nearest ancestor (incl. self) that sets it, else the collection's default mode.
 import type { RawSceneNode } from './figma-raw.js';
+import { colorAliasId } from './figma-raw.js';
 import { collectionLibKey } from './variable-graph.js';
 import { extractLibraryKey } from './variable-snapshot.js';   // no cycle (variable-snapshot is a leaf module) — direct import
 
@@ -29,14 +30,14 @@ export function collectSubtreeModes(root: RawSceneNode): Map<string, ModeStack> 
 
 // ── Gate-on-demand for ancestor-mode discovery ────────────────────────────
 // "Does the subtree hold at least one visible-SOLID fill/stroke with a bound color variable?" —
-// a BYTE-EXACT mirror of the resolveColorToken predicate (compare-tool :189): SOLID only,
-// p.visible !== false only, boundVariables.color only. NO gradientStops/other keys (wider —
-// over-triggers on cost; narrower — false-negative skip → lost mode). Walk WITHOUT the node-visible
-// filter (the collectSubtreeModes pattern): the projector resolves fills/strokes even on an invisible node
-// (a self-gate on n.visible would give a false-negative gate at a pair's root).
+// a BYTE-EXACT mirror of the resolveColorToken predicate, via the SHARED colorAliasId lookup
+// (figma-raw.ts): first visible SOLID-with-color paint, paint-level binding else node-level
+// boundVariables[key]. NO gradientStops/other keys (wider — over-triggers on cost; narrower —
+// false-negative skip → lost mode). Walk WITHOUT the node-visible filter (the collectSubtreeModes
+// pattern): the projector resolves fills/strokes even on an invisible node (a self-gate on
+// n.visible would give a false-negative gate at a pair's root).
 const nodeHasBoundSolid = (n: RawSceneNode): boolean =>
-  (['fills', 'strokes'] as const).some((key) =>
-    (n[key] ?? []).some((p) => p.visible !== false && p.type === 'SOLID' && p.boundVariables?.color?.id !== undefined));
+  (['fills', 'strokes'] as const).some((key) => colorAliasId(n, key) !== undefined);
 export function hasBoundPaintColor(root: RawSceneNode): boolean {
   if (nodeHasBoundSolid(root)) return true;
   return (root.children ?? []).some((c) => hasBoundPaintColor(c));
@@ -48,27 +49,27 @@ export function hasBoundPaintColor(root: RawSceneNode): boolean {
 // subtrees do not trigger discovery (otherwise the whole file burns for nothing
 // and eats the shared deadline of neighbouring pairs). Same walk, without the node-visible filter.
 const nodeHasExternalBoundSolid = (n: RawSceneNode): boolean =>
-  (['fills', 'strokes'] as const).some((key) =>
-    (n[key] ?? []).some((p) => p.visible !== false && p.type === 'SOLID'
-      && p.boundVariables?.color?.id !== undefined && extractLibraryKey(p.boundVariables.color.id) !== null));
+  (['fills', 'strokes'] as const).some((key) => {
+    const id = colorAliasId(n, key);
+    return id !== undefined && extractLibraryKey(id) !== null;
+  });
 export function hasExternalBoundPaintColor(root: RawSceneNode): boolean {
   if (nodeHasExternalBoundSolid(root)) return true;
   return (root.children ?? []).some((c) => hasExternalBoundPaintColor(c));
 }
 
-// unique published keys of the subtree's PAINT-level bound-SOLID paints — input to the snapshot prefetch.
-// NOT the node-level collectExternalAliasIds (design-context): compare resolves at paint level, a node-level
-// collector would return [] and kill the snapshot half.
+// unique published keys of the subtree's bound-SOLID color aliases — input to the snapshot
+// prefetch. Collected via the SAME colorAliasId lookup the resolver uses (one measured paint per
+// key per node, both binding forms): the prefetch set stays exactly what resolution can consume —
+// wider (all paints) prefetches keys no verdict reads; narrower (paint-level only) starved the
+// snapshot half for node-level-bound fills.
 export function collectExternalPaintKeys(root: RawSceneNode): Set<string> {
   const keys = new Set<string>();
   const walk = (n: RawSceneNode): void => {
     for (const key of ['fills', 'strokes'] as const) {
-      for (const p of n[key] ?? []) {
-        if (p.visible === false || p.type !== 'SOLID') continue;
-        const id = p.boundVariables?.color?.id;
-        const k = id !== undefined ? extractLibraryKey(id) : null;
-        if (k !== null) keys.add(k);
-      }
+      const id = colorAliasId(n, key);
+      const k = id !== undefined ? extractLibraryKey(id) : null;
+      if (k !== null) keys.add(k);
     }
     for (const c of n.children ?? []) walk(c);
   };

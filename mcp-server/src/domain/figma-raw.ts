@@ -231,3 +231,23 @@ export interface PagedCursor {
   before?: number;
   after?: number;
 }
+
+// First bound-color alias for a paint key, BOTH binding forms. The paint-level binding of the
+// first visible SOLID paint carrying a color wins - that is byte-for-byte the paint the hex is
+// measured from (simplify.ts paintValue) - else the node-level boundVariables[key] (REST emits
+// an alias or an array of aliases there; the first counts). No visible solid paint -> undefined:
+// nothing was measured, so nothing is bound.
+// The ONE lookup every diff-side consumer shares (projector *BoundVar, resolveColorToken, the
+// variables demand gates, the snapshot-prefetch collector). It exists because a partial mirror -
+// paint-level in the diff path, node-level-first in get_design_context - let a node-level-bound
+// fill reach the verdict as a raw literal and FAIL over correct code (feedback 15.1). Lives in
+// this leaf module because variables.ts imports mode-resolve.ts: any shared home higher up cycles.
+export function colorAliasId(n: RawSceneNode, key: 'fills' | 'strokes'): string | undefined {
+  const solid = n[key]?.find((p) => p.visible !== false && p.type === 'SOLID' && p.color);
+  if (!solid) return undefined;
+  const paintLevel = solid.boundVariables?.color?.id;
+  if (paintLevel !== undefined) return paintLevel;
+  const nodeLevel = n.boundVariables?.[key];
+  const alias = Array.isArray(nodeLevel) ? nodeLevel[0] : nodeLevel;
+  return alias?.id;
+}

@@ -605,3 +605,40 @@ describe('e2e never-false-green locks', () => {
     expect(c?.note).toMatch(/literal|tokenize/);
   });
 });
+
+// ── C-branch fail rows carry the token NAME (feedback 15.1's literal ask: the name is what a
+// developer writes into code, and the FAIL branch is exactly where they must act). Every other
+// colorVerdict branch already sets token/tokenReason; verification groups blocking items by
+// r.token — a nameless fail cannot be grouped or addressed.
+describe('colorVerdict C — fail rows carry token + tokenReason color-diverged', () => {
+  it('hex diverges, token resolved with a confirmed mode → fail carries token and tokenReason', () => {
+    const s = baseSpec();
+    s.fillHex = '#8f8fa3';
+    s.fillBoundVar = 'VariableID:1:2';
+    s.fillToken = { token: 'bg/level 2', hex: '#8f8fa3', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    const f = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'fill');
+    expect(f?.status).toBe('fail');
+    expect(f?.token).toBe('bg/level 2');
+    expect(f?.tokenReason).toBe('color-diverged');
+  });
+  it('mode-mismatch sub-branch (a DIFFERENT mode matches the DOM) → fail still carries the token', () => {
+    const s = baseSpec();
+    s.fillHex = '#8f8fa3';
+    s.fillBoundVar = 'VariableID:1:2';
+    s.fillToken = { token: 'bg/level 2', hex: '#8f8fa3', mode: 'Solar', mode_dependent: true, mode_source: 'node',
+      all_modes: { Solar: '#8f8fa3', Lunar: '#ffffff' } };
+    const f = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'fill'); // DOM bg #ffffff == Lunar
+    expect(f?.status).toBe('fail');
+    expect(f?.note).toMatch(/mode Lunar/);
+    expect(f?.token).toBe('bg/level 2');
+    expect(f?.tokenReason).toBe('color-diverged');
+  });
+  it('CONTROL: tokenless fail (raw literal diverges) stays nameless — no token field invented', () => {
+    const s = baseSpec();
+    s.fillHex = '#8f8fa3';
+    const f = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'fill');
+    expect(f?.status).toBe('fail');
+    expect(f?.token).toBeUndefined();
+    expect(f?.tokenReason).toBeUndefined();
+  });
+});

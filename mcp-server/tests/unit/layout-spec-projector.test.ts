@@ -1052,3 +1052,80 @@ describe('salvage-nested: leaf-TEXT invariant', () => {
     expect(snippets).toContain('299 ₽');
   });
 });
+
+// ── NODE-level boundVariables (feedback 15/15.1): a fill bound at the NODE level (not on the
+// paint) previously projected NO fillBoundVar → colorVerdict saw a raw literal → false FAIL over
+// correct code. Both binding forms must yield the same spec.
+describe('node-level boundVariables → *BoundVar projected', () => {
+  it('fill bound at the node level (no paint-level binding) → fillBoundVar set', () => {
+    const spec = buildLayoutSpec({
+      id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
+      fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+      boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:2' } },
+    } as RawSceneNode);
+    expect(spec.fillHex).toBe('#ffffff');
+    expect(spec.fillBoundVar).toBe('VariableID:1:2');
+  });
+  it('paint-level binding wins over node-level when both present (nearest to the paint)', () => {
+    const spec = buildLayoutSpec({
+      id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
+      fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:5:5' } } }],
+      boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:2' } },
+    } as RawSceneNode);
+    expect(spec.fillBoundVar).toBe('VariableID:5:5');
+  });
+  it('stroke bound at the node level → strokeBoundVar set; TEXT color bound at the node level → colorBoundVar set', () => {
+    const spec = buildLayoutSpec({
+      id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
+      strokes: [{ type: 'SOLID', color: { r: 0, g: 1, b: 0 } }],
+      boundVariables: { strokes: { type: 'VARIABLE_ALIAS', id: 'VariableID:7:8' } },
+    } as RawSceneNode);
+    expect(spec.strokeBoundVar).toBe('VariableID:7:8');
+    const text = buildLayoutSpec({
+      id: '2:1', name: 't', type: 'TEXT', absoluteBoundingBox: box(0, 0, 100, 20),
+      characters: 'x', style: { fontSize: 14 },
+      fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }],
+      boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:7:9' }] },
+    } as unknown as RawSceneNode);
+    expect(text.text?.colorBoundVar).toBe('VariableID:7:9');
+  });
+});
+
+// ── Paint opacity × resolved token hex (feedback 15.1 class): the RAW path multiplies paint
+// opacity into the hex alpha (simplify.ts paintValue), the token path did not — a bound fill at
+// paint opacity 0.5 made fillToken.hex opaque, hex comparison against the DOM rgba diverged, and
+// colorVerdict emitted FAIL over correct code. Same defect was fixed for gradient stops
+// (figmaGradient paintOpacity) and never carried to the solid meet points.
+describe('paint opacity is multiplied into the resolved token hex', () => {
+  const resolver = () => ({ token: 'brand/red', hex: '#ff0000', all_modes: { Solar: '#ff0000', Lunar: '#00ff00' } });
+  it('fill: opacity 0.5 → fillToken.hex carries the alpha octet; all_modes multiplied too; fillHex (raw) already has it', () => {
+    const spec = buildLayoutSpec({
+      id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
+      fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: 0.5, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:2' } } }],
+    } as RawSceneNode, { resolveColorToken: resolver });
+    expect(spec.fillHex).toBe('#ff000080');
+    expect(spec.fillToken?.hex).toBe('#ff000080');
+    expect(spec.fillToken?.all_modes).toEqual({ Solar: '#ff000080', Lunar: '#00ff0080' });
+  });
+  it('CONTROL fill: opacity 1 (or absent) → resolved hex unchanged, no alpha octet appended', () => {
+    const spec = buildLayoutSpec({
+      id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
+      fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:2' } } }],
+    } as RawSceneNode, { resolveColorToken: resolver });
+    expect(spec.fillToken?.hex).toBe('#ff0000');
+    expect(spec.fillToken?.all_modes).toEqual({ Solar: '#ff0000', Lunar: '#00ff00' });
+  });
+  it('stroke and TEXT color: same multiplication at their meet points', () => {
+    const spec = buildLayoutSpec({
+      id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
+      strokes: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: 0.25, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:3:4' } } }],
+    } as RawSceneNode, { resolveColorToken: () => ({ token: 'stroke/x', hex: '#ff0000' }) });
+    expect(spec.strokeToken?.hex).toBe('#ff000040');
+    const text = buildLayoutSpec({
+      id: '2:1', name: 't', type: 'TEXT', absoluteBoundingBox: box(0, 0, 100, 20),
+      characters: 'x', style: { fontSize: 14 },
+      fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 0.5, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:5:6' } } }],
+    } as RawSceneNode, { resolveColorToken: () => ({ token: 'text/x', hex: '#000000' }) });
+    expect(text.text?.colorToken?.hex).toBe('#00000080');
+  });
+});

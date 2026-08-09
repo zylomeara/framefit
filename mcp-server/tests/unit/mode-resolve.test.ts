@@ -140,7 +140,7 @@ const plain = (id: string, children?: RawSceneNode[]): RawSceneNode => ({ id, na
 describe('hasBoundPaintColor — gate-on-demand discovery', () => {
   it('bound-SOLID fill at the root → true', () => { expect(hasBoundPaintColor(bound('1:1'))).toBe(true); });
   it('bound-SOLID stroke deep in the subtree → true', () => {
-    const deep = plain('1:1', [plain('1:2', [{ ...plain('1:3'), strokes: [{ type: 'SOLID', boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:1' } } }] } as RawSceneNode])]);
+    const deep = plain('1:1', [plain('1:2', [{ ...plain('1:3'), strokes: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:1' } } }] } as RawSceneNode])]);
     expect(hasBoundPaintColor(deep)).toBe(true);
   });
   it('MUTATION LOCK L2-imp: an invisible ROOT with a bound-fill → true (the projector resolves fills of an invisible node; a self-gate on node.visible is forbidden)', () => {
@@ -186,7 +186,7 @@ describe('ancestorChainFromSubtree — the document chain', () => {
 });
 
 describe('hasExternalBoundPaintColor — graph/snapshot-fallback gate (external = id with a published key)', () => {
-  const ext = (id: string) => ({ ...plain(id), fills: [{ type: 'SOLID', boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1:2' } } }] } as RawSceneNode);
+  const ext = (id: string) => ({ ...plain(id), fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1:2' } } }] } as RawSceneNode);
   it('external bound-SOLID (40-hex key in the id) → true', () => { expect(hasExternalBoundPaintColor(ext('1:1'))).toBe(true); });
   it('a LOCAL bound-SOLID (id without a key) → false — MUTATION LOCK (the gate does not burn discovery on locals)', () => {
     expect(hasExternalBoundPaintColor(bound('1:1'))).toBe(false);   // bound() binds VariableID:9:9
@@ -200,13 +200,13 @@ describe('hasExternalBoundPaintColor — graph/snapshot-fallback gate (external 
     expect(hasExternalBoundPaintColor(n)).toBe(false);
   });
   it('MUTATION LOCK on the strokes branch: an external bound-SOLID STROKE deep in the subtree → true (all ext() fixtures bind fills — without this the "fills only" mutation stayed green)', () => {
-    const deep = plain('1:1', [plain('1:2', [{ ...plain('1:3'), strokes: [{ type: 'SOLID', boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1:2' } } }] } as RawSceneNode])]);
+    const deep = plain('1:1', [plain('1:2', [{ ...plain('1:3'), strokes: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1:2' } } }] } as RawSceneNode])]);
     expect(hasExternalBoundPaintColor(deep)).toBe(true);
   });
 });
 
 describe('collectExternalPaintKeys — paint-level published-key collector (snapshot-prefetch input)', () => {
-  const ext = (id: string, key = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') => ({ ...plain(id), fills: [{ type: 'SOLID', boundVariables: { color: { type: 'VARIABLE_ALIAS', id: `VariableID:${key}/1:2` } } }] } as RawSceneNode);
+  const ext = (id: string, key = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') => ({ ...plain(id), fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: `VariableID:${key}/1:2` } } }] } as RawSceneNode);
   it('paint-level external → a Set with one key', () => {
     const keys = collectExternalPaintKeys(ext('1:1'));
     expect([...keys]).toEqual(['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
@@ -232,7 +232,7 @@ describe('collectExternalPaintKeys — paint-level published-key collector (snap
     expect(collectExternalPaintKeys(n).size).toBe(0);
   });
   it('MUTATION LOCK on the strokes branch: the key from a stroke bind lands in the Set (without this the "fills only" mutation stayed green)', () => {
-    const n = { ...plain('1:1'), strokes: [{ type: 'SOLID', boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:cccccccccccccccccccccccccccccccccccccccc/1:2' } } }] } as RawSceneNode;
+    const n = { ...plain('1:1'), strokes: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:cccccccccccccccccccccccccccccccccccccccc/1:2' } } }] } as RawSceneNode;
     expect([...collectExternalPaintKeys(n)]).toEqual(['cccccccccccccccccccccccccccccccccccccccc']);
   });
 });
@@ -271,5 +271,50 @@ describe('pickDescentCandidates (probe prefilter)', () => {
   it('sceneIdEquals normalizes the leading I', () => {
     expect(sceneIdEquals('I123:4;5:6', '123:4;5:6')).toBe(true);
     expect(sceneIdEquals('123:4', '123:5')).toBe(false);
+  });
+});
+
+// ── NODE-level boundVariables (feedback 15/15.1): design_context reads bindings node-level FIRST
+// (get-design-context-tool aliasIdFor), the diff side read only paint-level — a node-level-bound
+// fill therefore reached colorVerdict as a raw literal and FAILED over correct code. The three
+// collectors below must see both binding forms, or the demand gate skips the variables fetch
+// (and the snapshot prefetch collects nothing) for exactly the July shape.
+describe('node-level boundVariables are seen by all three collectors', () => {
+  const nodeBound = (id: string, key: 'fills' | 'strokes', aliasId: string): RawSceneNode => ({
+    ...plain(id),
+    [key]: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }],
+    boundVariables: { [key]: { type: 'VARIABLE_ALIAS', id: aliasId } },
+  } as RawSceneNode);
+
+  it('hasBoundPaintColor: node-level fills binding (no paint-level) → true', () => {
+    expect(hasBoundPaintColor(nodeBound('1:1', 'fills', 'VariableID:9:9'))).toBe(true);
+  });
+  it('hasBoundPaintColor: node-level strokes binding deep in the subtree → true', () => {
+    expect(hasBoundPaintColor(plain('1:1', [nodeBound('1:2', 'strokes', 'VariableID:9:9')]))).toBe(true);
+  });
+  it('hasExternalBoundPaintColor: node-level binding with a published key → true; local-only → false', () => {
+    expect(hasExternalBoundPaintColor(nodeBound('1:1', 'fills', 'VariableID:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1:2'))).toBe(true);
+    expect(hasExternalBoundPaintColor(nodeBound('1:1', 'fills', 'VariableID:9:9'))).toBe(false);
+  });
+  it('collectExternalPaintKeys: node-level binding contributes its published key', () => {
+    const keys = collectExternalPaintKeys(nodeBound('1:1', 'fills', 'VariableID:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/3:4'));
+    expect([...keys]).toEqual(['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb']);
+  });
+  it('node-level binding as an ARRAY (REST emits one alias per paint) → first alias id counts', () => {
+    const n = {
+      ...plain('1:1'),
+      fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } }],
+      boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:cccccccccccccccccccccccccccccccccccccccc/5:6' }] },
+    } as unknown as RawSceneNode;
+    expect(hasBoundPaintColor(n)).toBe(true);
+    expect([...collectExternalPaintKeys(n)]).toEqual(['cccccccccccccccccccccccccccccccccccccccc']);
+  });
+  it('CONTROL: node-level binding under an INVISIBLE sole paint does not count (no visible solid to bind)', () => {
+    const n = {
+      ...plain('1:1'),
+      fills: [{ type: 'SOLID', visible: false, color: { r: 0, g: 0, b: 0, a: 1 } }],
+      boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: 'VariableID:9:9' } },
+    } as RawSceneNode;
+    expect(hasBoundPaintColor(n)).toBe(false);
   });
 });
