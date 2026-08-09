@@ -233,3 +233,4 @@ describe('get_design_context: ensureReady await dominates the late mode-context 
     expect(JSON.parse(res.content[0].text).mode_context).toBeUndefined();
   });
 });
+const API_KEY = 'c4f1e29ab73d5860f1e2d3c4b5a6978012345fab';
