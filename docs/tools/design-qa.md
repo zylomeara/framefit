@@ -461,7 +461,9 @@ INFERRED from the reference children's geometry. When the children do not progre
 clear direction (grids, overlays), the gap/offset rows are honestly skipped with a visible
 `children` note - sizes and styles are still compared, and the receipt stays `complete: false`
 with a `resolve_skip` item: inter-child geometry the tool cannot measure must be verified
-visually, deliberately (the gate does not pretend it was). Each index-paired child also gets its own
+visually, deliberately (the gate does not pretend it was) - and the per-child `child-size` rows
+are skipped along with it, so a grid whose cards all shrank in place is held by that gate, not
+by numbers. When the axis IS inferred, each index-paired child gets its own
 `child-size.w/h` rows: gaps and cross-offsets are blind to a child whose extent changed in place,
 and skeleton placeholders are exactly boxes with the right position and the wrong extent. A count
 mismatch between the two states salvages by text anchors when they exist; textless skeletons fall

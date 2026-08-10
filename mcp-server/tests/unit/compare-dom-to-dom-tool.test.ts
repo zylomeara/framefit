@@ -50,6 +50,10 @@ describe('compare_dom_to_dom tool', () => {
     expect(out.report_markdown).toMatch(/^Verified reference vs candidate/);
     expect(out.report_markdown).toMatch(/reference .* \/ candidate /);
     expect(out.report_markdown).not.toMatch(/Figma/);
+    // The footer's not-covered line prints THIS tool's list, not the Figma comparator's - a
+    // report/JSON disagreement on a coverage claim is a false-green surface (0.24.0 changelog
+    // verification, A26).
+    expect(out.report_markdown).toMatch(/NOT covered by this tool.*content correctness/);
     expect(out.file).toBeUndefined();
   });
 

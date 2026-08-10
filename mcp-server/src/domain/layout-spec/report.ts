@@ -134,6 +134,11 @@ export function renderReport(input: {
   // row sides (the DiffRow FIELD names stay figma/dom - a serialized contract; only the prose
   // forks). file is required exactly when headerLine is absent - the default header prints it.
   file?: string; headerLine?: string; sideLabels?: [string, string];
+  // dom-dom (#9 continued): the footer's not-covered line must print THE CALLER'S list - the
+  // hardcoded Figma list said 'icons' while compare_dom_to_dom's JSON names three items, and a
+  // report/JSON disagreement on a coverage claim is a false-green surface. Default = the Figma
+  // comparator's list, byte-for-byte.
+  notCovered?: readonly string[];
   tolerancePx: number; pairs: PairResult[];
   frame?: { node_id: string; width?: number }; omittedPairs?: number;
   preflight?: string;
@@ -280,7 +285,7 @@ export function renderReport(input: {
       ? `ℹ️ ${d.stage}: not resolved (${d.reason}: ${d.detail}) — remembered from an earlier attempt, so this call did not wait for it and the next one will not retry it either; the rows it feeds read as unresolved rather than verified`
       : `ℹ️ ${d.stage}: not resolved after ${Math.round(d.ms / 1000)}s (${d.reason}: ${d.detail}) — that wait is inside this call's duration, and the rows it feeds read as unresolved rather than verified`);
   }
-  lines.push('', `⚠️ NOT covered by this tool (verify visually): ${NOT_COVERED_BY_TOOL.join(', ')}`);
+  lines.push('', `⚠️ NOT covered by this tool (verify visually): ${(input.notCovered ?? NOT_COVERED_BY_TOOL).join(', ')}`);
   lines.push('ℹ️ icons: size/position are measured geometrically, the diff does not check glyph/shape — verify visually or get_screenshot focus-crop');
   lines.push(`ℹ️ typography checked to ${input.depthLevels ?? 4} nesting levels — TEXT deeper: raise max_depth (up to 8) and rerun, or add a separate pair on the TEXT node`);
   return lines.join('\n');
