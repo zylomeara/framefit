@@ -33,7 +33,9 @@ describe('diffDomPair - the two panel locks', () => {
   it('LOCK 1: byte-identical padded+bordered states -> zero fails, zero warns on geometry', () => {
     const a = state(366), b = state(366);
     const rows = diffDomPair(a, b, { tolerancePx: 1 });
-    const bad = rows.filter((r) => r.status === 'fail' || (r.status === 'warn' && !/border/.test(r.note ?? '')));
+    // No filter (the wave called the old /border/ exclusion a mask): byte-identical states may
+    // produce NOTHING red or yellow - fails, warns and reviews are all zero.
+    const bad = rows.filter((r) => r.status === 'fail' || r.status === 'warn' || r.status === 'review');
     expect(bad).toEqual([]);
   });
   it('LOCK 2 (vault acceptance): skeleton 306 vs loaded 366 -> padding-top row, delta 60, FAIL', () => {

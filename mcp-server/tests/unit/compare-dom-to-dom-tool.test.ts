@@ -15,7 +15,7 @@ function harness(extra: Partial<ToolDeps> = {}) {
   // deliberately NO defaultToken: the tool makes zero Figma calls and must not demand one
   const deps: ToolDeps = { buildApi: () => ({} as FigmaApi), defaultToken: undefined, logger, maxResultChars: 40000, ...extra };
   registerCompareDomToDomTool(server, deps);
-  return (a: unknown): Promise<{ isError?: boolean; content: { text: string }[] }> => call('compare_dom_to_dom', a);
+  return (a: unknown): Promise<any> => call('compare_dom_to_dom', a as Record<string, unknown>);
 }
 const parse = (r: { content: { text: string }[] }): any => JSON.parse(r.content[0].text);
 

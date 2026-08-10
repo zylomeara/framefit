@@ -21,7 +21,7 @@ import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, DiffRow, Veri
 // What this comparison structurally does not see: content correctness (two captures of the SAME
 // wrong text agree), anything below the capture depth on BOTH sides, and icons (same as the
 // Figma comparator). Named so a green verdict is not read as covering them.
-const DOM_DOM_NOT_COVERED = ['content correctness (both captures can agree on a wrong value)', 'icons'] as const;
+const DOM_DOM_NOT_COVERED = ['content correctness (both captures can agree on a wrong value)', 'per-child paint (child background/radius/shadow - compare the child as its own pair)', 'icons'] as const;
 
 const SideSchema = z.object({
   dom: DomSnapshotSchema.optional().describe('DomSnapshot from the canonical extractor (get_layout_spec include_extractor:true). Pass exactly one of dom | dom_ref.'),
@@ -47,7 +47,7 @@ const InputSchema = {
   tolerance_px: z.number().min(0).max(10).optional()
     .describe('A delta below this is a pass (px metrics); omitted -> 1'),
   max_depth: z.number().int().min(1).max(8).optional()
-    .describe('Capture depth used for BOTH captures; default 4. Pass the SAME max_depth the extractor ran with, or one side stays shallow while the other is deep.'),
+    .describe('The max_depth BOTH captures were made with (default 4). This tool captures nothing itself - the value bounds the nested-text descent and the drill advice in the receipt, so pass the SAME max_depth the extractor ran with for both states.'),
 };
 
 type Side = z.infer<typeof SideSchema>;

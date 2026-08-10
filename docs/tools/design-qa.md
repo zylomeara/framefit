@@ -459,9 +459,21 @@ unequal capture widths become one loud viewport row instead of thirty confident 
 Both snapshots are DOM captures, so neither declares a flex direction: the layout axis is
 INFERRED from the reference children's geometry. When the children do not progress in a single
 clear direction (grids, overlays), the gap/offset rows are honestly skipped with a visible
-`children` note - sizes and styles are still compared. A count mismatch between the two states
-salvages by text anchors when they exist; textless skeletons fall back to a geometry-rank zip
-that says `LOW confidence` out loud in the `structure_mismatch` note.
+`children` note - sizes and styles are still compared. Each index-paired child also gets its own
+`child-size.w/h` rows: gaps and cross-offsets are blind to a child whose extent changed in place,
+and skeleton placeholders are exactly boxes with the right position and the wrong extent. A count
+mismatch between the two states salvages by text anchors when they exist; textless skeletons fall
+back to a geometry-rank zip that says `LOW confidence` out loud in the `structure_mismatch` note.
+
+Presence asymmetries gate the verdict: a background, border or text that the CANDIDATE declares
+and the REFERENCE does not is a `review` row (the receipt stays incomplete until confirmed). The
+notes carry one deliberate caveat: the extractor emits nothing for a color it cannot reduce to
+hex (oklch()/color()), so "declares none" and "paints in an unreadable color space" arrive
+identically - the row says so instead of claiming the stronger reading. The reverse text
+direction - the reference has text where the candidate has none - is an `info` row, because for
+the primary skeleton use case that is the expected shape; a content-state check must read it
+deliberately. Per-child PAINT (a child's own background/radius/shadow) is not compared in either
+mode - `not_covered_by_tool` names it; compare such a child as its own pair.
 
 There are no Figma node ids anywhere: the pair's REQUIRED `label` is the identity every row,
 blocking item and report line uses. The receipt aggregates ALL pairs - three defects in three
@@ -469,8 +481,10 @@ pairs are ONE `complete: false`, and `verification.complete` is the done-gate ex
 Figma comparator: never claim the states match while it is false or `blocking[]` is non-empty.
 
 A stale capture on EITHER side trips its own named gate (`snapshot_schema` naming REFERENCE or
-CANDIDATE), and a reference captured under a CSS transform, scrolled, or with unloaded fonts is
-refused as a baseline by its own preflight rows before any number is compared against it.
+CANDIDATE). A reference captured under a CSS transform, scrolled, or with a degenerate rect is
+REFUSED as a baseline: no numeric rows are produced and the pair blocks the receipt with a
+re-capture action (numbers over a broken baseline are worse than no numbers). Unloaded reference
+fonts are an advisory `info` row - geometry still compares.
 
 **Parameters**
 
@@ -478,7 +492,7 @@ refused as a baseline by its own preflight rows before any number is compared ag
 | --- | --- | --- |
 | `pairs` | array, **required** | reference/candidate snapshot pairs - up to 10 per call. Each item: `{ label, reference: { dom? \| dom_ref? }, candidate: { dom? \| dom_ref? } }` - `label` is required (it IS the pair's identity), each side passes exactly one of `dom` (extractor snapshot object) or `dom_ref` (uploaded-snapshot reference, same store and TTLs as `compare_node_to_dom`; on stdio pass `dom` inline). |
 | `tolerance_px` | number 0-10 | A delta below this is a pass (px metrics); omitted -> 1 |
-| `max_depth` | integer 1-8 (default 4) | Capture depth used for BOTH captures. Pass the SAME `max_depth` the extractor ran with, or one side stays shallow while the other is deep. |
+| `max_depth` | integer 1-8 (default 4) | The `max_depth` BOTH captures were made with. This tool captures nothing itself - the value bounds the nested-text descent and the drill advice in the receipt, so pass the SAME `max_depth` the extractor ran with for both states. |
 
 **Example**
 

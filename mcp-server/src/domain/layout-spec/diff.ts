@@ -627,8 +627,11 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
   // (overlay_width below takes over this role). Without expectedOverlayWidth the reason stays,
   // the text is augmented with a hint — P2 without a duplicate row.
   if (viewportOff && opts.expectedOverlayWidth === undefined) {
-    reasons.push(`viewport ${d.innerWidth} vs frame ${opts.frameWidth} — adjust the window width OR pass ` +
-      'expected_overlay_width (fixed overlay) / check the breakpoint variant (find_breakpoint_variant)');
+    reasons.push(opts.sides === 'dom-dom'
+      // 'viewport' is load-bearing (verification.ts routes on the word) — keep it in both forks.
+      ? `viewport ${d.innerWidth} vs the reference capture ${opts.frameWidth} — the two states were captured at different widths; re-capture the candidate at the reference's width`
+      : `viewport ${d.innerWidth} vs frame ${opts.frameWidth} — adjust the window width OR pass ` +
+        'expected_overlay_width (fixed overlay) / check the breakpoint variant (find_breakpoint_variant)');
   }
 
   if (reasons.length) {
@@ -720,10 +723,11 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
 
   // (2) size rows
   if (unwrapBase) {
+    const ddBorderW = opts.sides === 'dom-dom' ? d.borders.left + d.borders.right : 0;
     const scrollbarW = (d.clientWidth !== undefined)
       ? Math.max(0, d.rect.w - d.borders.left - d.borders.right - d.clientWidth) : 0;
     rows.push(applyOverlayWidthOverride(
-      applyContainerHugFillDemote(applyTextWidthOverride(applyPageGutterDemote(numRow('size.w', rect.w, d.rect.w - scrollbarW, tol, undefined, SRC_ROOT_LAYOUT), pageGutter), textWidthDemote), containerHugFill),
+      applyContainerHugFillDemote(applyTextWidthOverride(applyPageGutterDemote(numRow('size.w', rect.w, d.rect.w - scrollbarW - ddBorderW, tol, undefined, SRC_ROOT_LAYOUT), pageGutter), textWidthDemote), containerHugFill),
       opts.expectedOverlayWidth,
     ));
   } else if (d.paddings !== undefined && d.clientWidth !== undefined) {
@@ -754,7 +758,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   } else if (unwrapBase) {
     const scrollbarH = (d.clientHeight !== undefined)
       ? Math.max(0, d.rect.h - d.borders.top - d.borders.bottom - d.clientHeight) : 0;
-    rows.push(numRow('size.h', rect.h, d.rect.h - scrollbarH, tol, undefined, SRC_ROOT_LAYOUT));
+    rows.push(numRow('size.h', rect.h, d.rect.h - scrollbarH - (opts.sides === 'dom-dom' ? d.borders.top + d.borders.bottom : 0), tol, undefined, SRC_ROOT_LAYOUT));
   } else if (d.paddings !== undefined && d.clientHeight !== undefined) {
     const scrollbarH = Math.max(0, d.rect.h - d.borders.top - d.borders.bottom - d.clientHeight);
     const domH = d.rect.h - scrollbarH - d.paddings.top - d.paddings.bottom - (opts.sides === 'dom-dom' ? d.borders.top + d.borders.bottom : 0);
@@ -1199,14 +1203,27 @@ function resolveDomTypoCarrier(n: DomChild, maxDescent: number): CarrierResult {
 // left complete:true and a terminal-green prose verdict — reproduced end-to-end by the adversarial
 // pass, and a regression against the pre-carrier behavior, which at least failed red. Unchecked
 // rows flow through uncheckedToBlocking, where each note routes to its executable action.
-function carrierNoteRow(prop: string, kind: 'ambiguous' | 'beyond_cut' | 'none'): DiffRow {
+function carrierNoteRow(prop: string, kind: 'ambiguous' | 'beyond_cut' | 'none', dd = false): DiffRow {
   if (kind === 'ambiguous') {
     return { prop, status: 'unchecked',
-      note: 'the DOM side has several nested text carriers - metrics not attributed; add a pair on the text node' };
+      note: dd
+        ? 'the CANDIDATE side has several nested text carriers - metrics not attributed; add a pair on the text node'
+        : 'the DOM side has several nested text carriers - metrics not attributed; add a pair on the text node' };
   }
   if (kind === 'beyond_cut') {
     return { prop, status: 'unchecked',
-      note: 'the Figma node carries text, but no DOM text was captured and the subtree was truncated - the carrier may be beyond the slice: re-extract deeper or add a pair on the text node' };
+      note: dd
+        ? 'the REFERENCE carries text, but no CANDIDATE text was captured and the subtree was truncated - the carrier may be beyond the slice: re-capture deeper or add a pair on the text node'
+        : 'the Figma node carries text, but no DOM text was captured and the subtree was truncated - the carrier may be beyond the slice: re-extract deeper or add a pair on the text node' };
+  }
+  // dom-dom 'none' is INFO, not unchecked (wave finding 12): in the PRIMARY use case - skeleton
+  // vs loaded - the candidate having no text where the reference does is the expected shape, and
+  // an unchecked coverage hole made the done-gate permanently uncloseable with a blocker the
+  // caller cannot clear by any action. The asymmetry stays visible; a content-state check must
+  // read this row deliberately.
+  if (dd) {
+    return { prop, status: 'info',
+      note: 'the CANDIDATE carries no text where the REFERENCE does - expected for a skeleton state; when comparing two CONTENT states, treat this as missing text' };
   }
   return { prop, status: 'unchecked',
     note: 'the Figma node carries text, the captured DOM subtree carries none - the text is missing or lives outside this element; fix the pair or verify by eye' };
@@ -1436,6 +1453,13 @@ function crossAndPaddingRows(
 
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the typography is mis-attributed
+    // dom-dom per-child EXTENT (wave finding 3): gaps and cross-start are blind to a child whose
+    // size changed in place - and skeleton placeholders are exactly boxes with the right position
+    // and the wrong extent. Both sides carry raw rects; a plain numeric pair per axis.
+    if (opts.sides === 'dom-dom' && domKids[i]) {
+      rows.push(numRow(`child-size.w[${childLabel(c)}]`, c.rect.w, domKids[i].rect.w, tol));
+      rows.push(numRow(`child-size.h[${childLabel(c)}]`, c.rect.h, domKids[i].rect.h, tol));
+    }
     if (c.text) {
       // p.7 routing: direct compare ONLY when the DOM child owns its text; a unique nested carrier
       // supplies the styles otherwise, and a missing carrier is a note, never a wrapper compare.
@@ -1455,7 +1479,7 @@ function crossAndPaddingRows(
           (opts.attributionOut.text ??= []).push({ label: tLabel, classListChain: carrier.chain });
         }
       } else {
-        rows.push(carrierNoteRow(`typography[${childLabel(c)}]`, carrier.kind));
+        rows.push(carrierNoteRow(`typography[${childLabel(c)}]`, carrier.kind, opts.sides === 'dom-dom'));
       }
     } else {
       const figs = collectFigTexts(c, maxDescent);
@@ -1478,10 +1502,17 @@ function crossAndPaddingRows(
           note: c.textAmbiguous
             ? 'several nested TEXT, the descent did not find them in the projection slice — raise max_depth (up to 8) and re-run, or add a separate pair on the TEXT node'
             : 'no TEXT found within the depth slice — it may be deeper: raise max_depth (up to 8) and re-run, or add a pair on the nested TEXT node' });
+      } else if (opts.sides === 'dom-dom' && figs.items.length > 0 && doms.items.length === 0) {
+        // The skeleton direction (wave finding 12): unmatched descent texts were SILENT in both
+        // modes; in dom-dom the reference-has/candidate-hasn't case is the primary use case's
+        // normal shape - visible info, not an uncloseable coverage hole.
+        rows.push({ prop: `typography[${childLabel(c)}]`, status: 'info',
+          note: 'the CANDIDATE carries no text where the REFERENCE does - expected for a skeleton state; when comparing two CONTENT states, treat this as missing text' });
       } else if (opts.sides === 'dom-dom' && figs.items.length === 0 && doms.items.length > 0) {
         // Presence symmetry (dom-dom): the descent zip below runs only when the REFERENCE side
         // found texts - a text-bearing candidate slot vs a bare reference slot was silence.
-        rows.push({ prop: `typography[${childLabel(c)}]`, status: 'warn',
+        // Review (gating): candidate-EXTRA content is suspicious in every dom-dom use case.
+        rows.push({ prop: `typography[${childLabel(c)}]`, status: 'review', figma: null, dom: '(text present)',
           note: 'the CANDIDATE child carries text the REFERENCE does not - if the reference capture is the intended state, this text is unexpected' });
       } else if (figs.items.length > 0) {
         const anyTruncated = figs.truncated || doms.truncated;
@@ -1795,7 +1826,8 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   // span) is the same wrapper-styles trap as the child site - same resolver, same notes.
   if (!spec.text && opts.sides === 'dom-dom' && domOwnText({ children: d.children })) {
     // Presence symmetry (dom-dom): a text-bearing candidate root vs a bare reference root.
-    rows.push({ prop: 'typography', status: 'warn',
+    // Review (gating) - candidate-EXTRA content is suspicious in every dom-dom use case.
+    rows.push({ prop: 'typography', status: 'review', figma: null, dom: '(text present)',
       note: 'the CANDIDATE root carries text the REFERENCE does not - if the reference capture is the intended state, this text is unexpected' });
   }
   if (spec.text) {
@@ -1814,7 +1846,7 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
       rows.push(...typographyRows(spec.text, carrier.node, '', d.fontsLoaded, undefined,
         carrier.uncertain, undefined, true, opts.cssEvidence));
     } else {
-      rows.push(carrierNoteRow('typography', carrier.kind));
+      rows.push(carrierNoteRow('typography', carrier.kind, opts.sides === 'dom-dom'));
     }
   }
 
@@ -1824,10 +1856,10 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     // Separate from colorVerdict: an undefined bg here means "the background may be on a different element"
     // (a structural signal), NOT "DOM color not recognized" (A1) — a different cause, a different note.
     if (bg === undefined) {
-      rows.push({ prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn',
-        note: opts.sides === 'dom-dom'
-          ? 'the CANDIDATE has no background while the REFERENCE paints one — the background may be on a different element'
-          : 'the DOM element has no background — the background may be on a different element' });
+      rows.push(opts.sides === 'dom-dom'
+        ? { prop: 'fill', figma: spec.fillHex, dom: null, status: 'review',
+            note: 'the CANDIDATE declares no background while the REFERENCE paints one — the CANDIDATE either paints none or paints in a color space the extractor cannot read (oklch()/color()); confirm which before treating this as a defect' }
+        : { prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
     } else {
       const v = colorVerdict(spec.fillToken?.hex ?? spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined, spec.fillBoundVar, opts.cssEvidence);
       rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
@@ -1841,9 +1873,13 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   } else if (opts.sides === 'dom-dom' && sBg !== undefined) {
     // Presence symmetry (dom-dom): the spec-side gate above is correct for Figma (a frame always
     // declares its fills) and false-green here - a transparent reference vs a painted candidate
-    // was total silence.
-    rows.push({ prop: 'fill', figma: null, dom: sBg, status: 'warn',
-      note: 'the CANDIDATE paints a background the REFERENCE does not - if the reference capture is the intended state, this background is unexpected' });
+    // was total silence. REVIEW, not warn (wave finding 5): a warn is advisory and the done-gate
+    // stayed green over the asymmetry. The oklch caveat (wave finding 16): the canonical
+    // extractor emits NOTHING for a color it cannot reduce to hex, so 'reference has no
+    // background' and 'reference paints in oklch' arrive identically - the row must not claim
+    // the stronger of the two.
+    rows.push({ prop: 'fill', figma: null, dom: sBg, status: 'review',
+      note: 'the CANDIDATE declares a background the REFERENCE does not - the REFERENCE either paints none or paints in a color space the extractor cannot read (oklch()/color()); confirm which before treating this as a defect' });
   }
 
   if (spec.gradient || sGradient) {
@@ -1867,9 +1903,18 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   const domHasBorder = activeSides.length > 0;
   const figHasStroke = spec.strokeHex !== undefined;
   if (domHasBorder || figHasStroke) {
-    if (domHasBorder !== figHasStroke) {
-      rows.push({ prop: 'border-color', figma: spec.strokeHex ?? null, dom: domHasBorder ? 'present' : null,
-        status: 'warn', note: figHasStroke ? 'border only in the layout — not in the DOM' : 'border only in the DOM — not in the layout' });
+    if (opts.sides === 'dom-dom' && spec.strokeUnprojectable && domHasBorder) {
+      // The reference DOES have a border - it just cannot be expressed as one stroke (partial /
+      // non-uniform / unparsed colors). The projection's own info row says so; claiming
+      // 'the CANDIDATE has a border the REFERENCE does not' here would be a false asymmetry.
+    } else if (domHasBorder !== figHasStroke) {
+      rows.push(opts.sides === 'dom-dom'
+        ? { prop: 'border-color', figma: spec.strokeHex ?? null, dom: domHasBorder ? 'present' : null,
+            status: 'review', note: figHasStroke
+              ? 'the REFERENCE has a border the CANDIDATE does not - confirm the change is intended'
+              : 'the CANDIDATE has a border the REFERENCE does not - confirm the change is intended' }
+        : { prop: 'border-color', figma: spec.strokeHex ?? null, dom: domHasBorder ? 'present' : null,
+            status: 'warn', note: figHasStroke ? 'border only in the layout — not in the DOM' : 'border only in the DOM — not in the layout' });
     } else {
       const bc = sBorderCol ?? {};
       const activeColors = activeSides.map((s) => bc[s]);

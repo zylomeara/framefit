@@ -19,12 +19,12 @@ const snap = (over: Partial<DomSnapshotOk> = {}, children: DomChild[] = []): Dom
 });
 
 describe('dom-dom presence symmetry', () => {
-  it('candidate has a background the reference lacks -> visible warn naming the sides', () => {
+  it('candidate has a background the reference lacks -> gating REVIEW naming the sides', () => {
     const reference = snap();                                             // transparent container
     const candidate = snap({ styles: { display: 'flex', backgroundColor: '#808080', borderRadius: 0, opacity: 1 } });
     const rows = diffDomPair(reference, candidate, { tolerancePx: 1 });
     const fill = rows.find((r) => r.prop === 'fill');
-    expect(fill?.status).toBe('warn');
+    expect(fill?.status).toBe('review');   // wave finding 5: a warn is advisory - the done-gate stayed green
     expect(fill?.note).toMatch(/REFERENCE/);
   });
   it('unparseable reference background (oklch) -> symmetric info, not silence, not presence-warn, no token action', () => {
@@ -42,7 +42,7 @@ describe('dom-dom presence symmetry', () => {
       styles: { fontSize: 14, fontWeight: 400 } } as DomChild]);
     const rows = diffDomPair(reference, candidate, { tolerancePx: 1 });
     const t = rows.find((r) => r.prop.startsWith('typography'));
-    expect(t?.status).toBe('warn');
+    expect(t?.status).toBe('review');   // wave finding 5
     expect(t?.note).toMatch(/REFERENCE/);
   });
   it('candidate CHILD slot carries text the reference slot does not -> visible warn', () => {
@@ -53,7 +53,7 @@ describe('dom-dom presence symmetry', () => {
     const kidCand2: DomChild = { kind: 'element', tag: 'div', rect: { x: 0, y: 60, w: 400, h: 40 } };
     const rows = diffDomPair(snap({}, [kidRef, kidRef2]), snap({}, [kidCand, kidCand2]), { tolerancePx: 1 });
     const t = rows.find((r) => r.prop.startsWith('typography['));
-    expect(t?.status).toBe('warn');
+    expect(t?.status).toBe('review');   // wave finding 5
     expect(t?.note).toMatch(/REFERENCE/);
   });
 });

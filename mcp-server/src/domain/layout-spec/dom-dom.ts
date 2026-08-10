@@ -71,10 +71,18 @@ function childToSpec(c: DomChild, i: number): SpecChild {
 export function domToSpecShape(reference: DomSnapshotOk): LayoutSpec {
   const b = reference.borders ?? ZERO;
   const p = reference.paddings ?? ZERO;
-  // PADDING-BOX rect (panel lock 1).
+  // The reference's OWN scrollbar (wave finding 8): the candidate side subtracts a scrollbar
+  // computed from the candidate, so a reference that scrolls must shed its own - two identical
+  // scrolling states otherwise fail size.w by the scrollbar width, and the reverse case (only
+  // the reference scrolls) is a false green on a real usable-width difference.
+  const sbW = reference.clientWidth !== undefined
+    ? Math.max(0, reference.rect.w - b.left - b.right - reference.clientWidth) : 0;
+  const sbH = reference.clientHeight !== undefined
+    ? Math.max(0, reference.rect.h - b.top - b.bottom - reference.clientHeight) : 0;
+  // PADDING-BOX rect (panel lock 1), minus the reference scrollbar.
   const rect: SpecRect = {
     x: reference.rect.x + b.left, y: reference.rect.y + b.top,
-    w: reference.rect.w - b.left - b.right, h: reference.rect.h - b.top - b.bottom,
+    w: reference.rect.w - b.left - b.right - sbW, h: reference.rect.h - b.top - b.bottom - sbH,
   };
   const children = (reference.children ?? []).filter((c) => c.kind === 'element' || carriesText(c));
   const axis = inferAxis(children.map((c) => ({ rect: c.rect })));
@@ -83,11 +91,28 @@ export function domToSpecShape(reference: DomSnapshotOk): LayoutSpec {
     rect,
     children: children.map((c, i) => childToSpec(c, i)),
   } as LayoutSpec;
-  if (axis) {
-    spec.axis = axis;
-    spec.autoLayout = { padding: { ...p } };   // the deliberate exception (see header)
-  }
+  // The padding slot is NOT gated on the axis (wave findings 6/7): the engine's size rows read
+  // spec.autoLayout independently of spec.axis, so a grid root (axis not inferable) that lost its
+  // paddings failed every size row on byte-identical states - and compared the reference's
+  // padding box against the candidate's content box on real differences.
+  spec.autoLayout = { padding: { ...p } };   // the deliberate exception (see header)
+  if (axis) spec.axis = axis;
+  // Root text (wave finding 10): without this, the dom-dom presence warn fired on EVERY root
+  // that owns text - !spec.text was a tautology. Same conditional rule as children: only when
+  // the reference root genuinely owns a direct text child.
+  const rootText = (reference.children ?? []).find((k) => k.kind === 'text' && typeof k.text === 'string' && k.text.trim() !== '');
   const st = (reference.styles ?? {}) as Record<string, unknown>;
+  if (rootText) {
+    spec.text = {
+      ...(st.fontFamily !== undefined ? { fontFamily: st.fontFamily as string } : {}),
+      ...(st.fontWeight !== undefined ? { fontWeight: st.fontWeight as number } : {}),
+      ...(st.fontSize !== undefined ? { fontSize: st.fontSize as number } : {}),
+      ...(typeof st.lineHeight === 'number' ? { lineHeightPx: st.lineHeight as number, lineHeightUnit: 'PIXELS' as const } : {}),
+      ...(typeof st.letterSpacing === 'number' ? { letterSpacing: st.letterSpacing as number } : {}),
+      ...(typeof st.color === 'string' && (st.color as string).startsWith('#') ? { colorHex: st.color as string } : {}),
+    };
+    (spec as { textSnippet?: string }).textSnippet = rootText.text as string;
+  }
   // UNPARSEABLE reference colors (oklch/color()) stay OUT of the axis entirely (panel lock 5):
   // a non-#hex backgroundColor projects nothing, and the presence row logic handles the rest.
   if (typeof st.backgroundColor === 'string' && (st.backgroundColor as string).startsWith('#')) {
@@ -99,7 +124,30 @@ export function domToSpecShape(reference: DomSnapshotOk): LayoutSpec {
   if (typeof st.borderRadius === 'number' && !(st as { borderRadiusUncomparable?: boolean }).borderRadiusUncomparable) {
     spec.cornerRadius = st.borderRadius as number;
   }
-  if (typeof st.opacity === 'number' && (st.opacity as number) < 1) spec.opacity = st.opacity as number;
+  // Unconditional (wave finding 0): the engine's opacity gate needs BOTH sides, so a reference
+  // at the normal 1 that projected nothing made ANY candidate opacity - 0.3, 0 - total silence.
+  if (typeof st.opacity === 'number') spec.opacity = st.opacity as number;
+  // Border axis (wave findings 1/11/17): the engine's border gate is two-sided but reads
+  // spec.strokeHex - never projected, it was vacuously one-sided: border changes invisible and
+  // every bordered candidate carried a permanent bogus warn. A uniform reference border projects
+  // as the stroke; non-uniform/unparsed references are handled with an honest info row in
+  // diffDomPair (the Figma stroke model cannot express them).
+  {
+    const act = (['top', 'right', 'bottom', 'left'] as const).filter((s) => b[s] > 0);
+    if (act.length === 4) {
+      const cols = act.map((s) => reference.borderColors?.[s]);
+      const uniformC = cols.every((c) => c !== undefined) && cols.every((c) => c!.toLowerCase() === cols[0]!.toLowerCase());
+      const uniformW = act.every((s) => b[s] === b.top);
+      if (uniformC && uniformW) {
+        spec.strokeHex = cols[0] as string;
+        spec.strokeWeight = b.top;
+      } else {
+        spec.strokeUnprojectable = true;
+      }
+    } else if (act.length > 0) {
+      spec.strokeUnprojectable = true;
+    }
+  }
   if (reference.shadow) {
     spec.shadow = { inner: !!reference.shadow.inset, x: reference.shadow.x, y: reference.shadow.y,
       blur: reference.shadow.blur, spread: reference.shadow.spread, count: reference.shadow.count ?? 1,
@@ -115,16 +163,19 @@ export function domToSpecShape(reference: DomSnapshotOk): LayoutSpec {
 /** Environment gates for the REFERENCE side - the engine gates the candidate only. */
 export function referencePreflight(reference: DomSnapshotOk): DiffRow[] {
   const rows: DiffRow[] = [];
-  if (reference.transformed) rows.push({ prop: 'reference_transformed', status: 'warn',
-    note: 'the reference was captured under a CSS transform - its geometry is not a trustworthy baseline; re-capture without animation/transform' });
-  if (reference.scroll && (reference.scroll.top !== 0 || reference.scroll.left !== 0)) rows.push({ prop: 'reference_scrolled', status: 'warn',
-    note: `the reference was captured scrolled (top ${reference.scroll.top}, left ${reference.scroll.left}) - offsets are shifted; re-capture at scroll 0`, });
-  if (reference.rect.w < 1 || reference.rect.h < 1) rows.push({ prop: 'reference_rect', status: 'warn',
-    note: 'the reference element has a degenerate rect - nothing to compare against' });
+  // Every refusing gate uses prop 'snapshot' - buildVerification maps it to a re_extract_dom
+  // blocking item (wave finding 14: custom reference_* props were ADVISORY warns, so a corrupt
+  // baseline was refused numbers but still verified complete:true).
+  if (reference.transformed) rows.push({ prop: 'snapshot', status: 'warn',
+    note: 'reference: captured under a CSS transform - its geometry is not a trustworthy baseline; re-capture without animation/transform' });
+  if (reference.scroll && (reference.scroll.top !== 0 || reference.scroll.left !== 0)) rows.push({ prop: 'snapshot', status: 'warn',
+    note: `reference: captured scrolled (top ${reference.scroll.top}, left ${reference.scroll.left}) - offsets are shifted; re-capture at scroll 0` });
+  if (reference.rect.w < 1 || reference.rect.h < 1) rows.push({ prop: 'snapshot', status: 'warn',
+    note: 'reference: degenerate rect - nothing to compare against' });
   if (reference.fontsLoaded === false) rows.push({ prop: 'reference_fonts', status: 'info',
     note: 'reference fonts were not loaded at capture - typography numbers may not match the settled render' });
-  if (reference.paddings === undefined) rows.push({ prop: 'reference_extractor_outdated', status: 'warn',
-    note: 'the REFERENCE snapshot has no paddings - it was captured by an outdated extractor and every content-edge number would be silently wrong; re-capture the reference with the current extractor' });
+  if (reference.paddings === undefined) rows.push({ prop: 'snapshot', status: 'warn',
+    note: 'reference: no paddings in the snapshot - captured by an outdated extractor, every content-edge number would be silently wrong; re-capture with the current extractor' });
   return rows;
 }
 
@@ -148,7 +199,7 @@ function fillTokenDrift(ref: DomColorToken | undefined, cand: DomColorToken | un
 /** The dom-dom differ: preflight + the existing engine in explicit dom-dom mode. */
 export function diffDomPair(reference: DomSnapshotOk, candidate: DomSnapshotOk, opts: { tolerancePx: number; maxDepth?: number }): DiffRow[] {
   const preflight = referencePreflight(reference);
-  if (preflight.some((r) => r.prop === 'reference_extractor_outdated' || r.prop === 'reference_rect')) {
+  if (preflight.some((r) => r.prop === 'snapshot')) {
     return preflight;   // numbers over a broken baseline are worse than no numbers
   }
   const projected = domToSpecShape(reference);
@@ -158,8 +209,22 @@ export function diffDomPair(reference: DomSnapshotOk, candidate: DomSnapshotOk, 
     sides: 'dom-dom',
     ...(reference.innerWidth !== undefined ? { frameWidth: reference.innerWidth } : {}),
   };
+  const extraRows: DiffRow[] = [];
+  // Reference-side radius honesty (wave finding 4): the candidate direction emits 'unchecked'
+  // via the engine; the reference direction dropped the axis silently.
+  if ((reference.styles as { borderRadiusUncomparable?: boolean } | undefined)?.borderRadiusUncomparable) {
+    extraRows.push({ prop: 'corner-radius', status: 'unchecked',
+      note: 'the REFERENCE radius is not comparable (non-uniform corners) - verify visually' });
+  }
+  // Non-uniform / partially-unparsed reference border: the Figma stroke model (one hex, one
+  // weight) cannot express it, so the projection left strokeHex empty - say so instead of
+  // letting the border axis fall back to the presence branch.
+  if (projected.strokeUnprojectable) {
+    extraRows.push({ prop: 'border-color', status: 'info',
+      note: 'the REFERENCE border is partial, non-uniform, or in a color space the extractor cannot read - the border axis was not compared; verify visually' });
+  }
   const drift = fillTokenDrift(
     (reference.styles as { backgroundColorToken?: DomColorToken } | undefined)?.backgroundColorToken,
     (candidate.styles as { backgroundColorToken?: DomColorToken } | undefined)?.backgroundColorToken);
-  return [...preflight, ...diffPair(projected, candidate, engineOpts), ...(drift ? [drift] : [])];
+  return [...preflight, ...diffPair(projected, candidate, engineOpts), ...extraRows, ...(drift ? [drift] : [])];
 }

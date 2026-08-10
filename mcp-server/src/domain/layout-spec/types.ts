@@ -97,6 +97,10 @@ export interface LayoutSpec {
   // (oklch()/color()) - distinguishes "skipped, verify visually" from "reference is transparent"
   // (the latter is a presence asymmetry when the candidate does paint one).
   fillUnparseable?: true;
+  // dom-dom projection only: the reference HAS an active border but the Figma stroke model
+  // cannot express it (partial sides / non-uniform / colors the extractor could not parse) -
+  // the presence branch must not read the missing strokeHex as "reference has no border".
+  strokeUnprojectable?: true;
   fillBoundVar?: string;       // alias variable id, if fillHex was taken from a bound solid-paint (library default-mode footgun)
   fillToken?: ResolvedColorToken;   // mode-resolved fill token; injected via resolveColorToken (bound var) OR a shared fill STYLE (NAME→'(style: …)', STATE→'(paint)' sentinel — unified)
   strokeHex?: string;
