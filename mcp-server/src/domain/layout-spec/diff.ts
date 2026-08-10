@@ -64,6 +64,11 @@ export interface DiffOptions {
   // codeSyntax evidence for the D-branch (semantic-confirm v3): positive-collision gating only.
   // Absent → every both-token row lands on the legacy value-based rule, byte-for-byte.
   cssEvidence?: CssTokenEvidence;
+  // compare_dom_to_dom engine mode. The one geometry consumer today: size rows subtract the
+  // candidate's borders too (symmetric content-box) — the projected reference is a padding box
+  // with no border term, and without this two byte-identical bordered states differ by the
+  // border width on size.w/size.h (panel-confirmed worked example).
+  sides?: 'dom-dom';
 }
 
 const round1 = (n: number): number => Math.round(n * 10) / 10;
@@ -721,7 +726,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     ));
   } else if (d.paddings !== undefined && d.clientWidth !== undefined) {
     const scrollbarW = Math.max(0, d.rect.w - d.borders.left - d.borders.right - d.clientWidth);
-    const domW = d.rect.w - scrollbarW - d.paddings.left - d.paddings.right;
+    const domW = d.rect.w - scrollbarW - d.paddings.left - d.paddings.right - (opts.sides === 'dom-dom' ? d.borders.left + d.borders.right : 0);
     rows.push(applyOverlayWidthOverride(
       applyContainerHugFillDemote(
         applyTextWidthOverride(
@@ -750,7 +755,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     rows.push(numRow('size.h', rect.h, d.rect.h - scrollbarH, tol, undefined, SRC_ROOT_LAYOUT));
   } else if (d.paddings !== undefined && d.clientHeight !== undefined) {
     const scrollbarH = Math.max(0, d.rect.h - d.borders.top - d.borders.bottom - d.clientHeight);
-    const domH = d.rect.h - scrollbarH - d.paddings.top - d.paddings.bottom;
+    const domH = d.rect.h - scrollbarH - d.paddings.top - d.paddings.bottom - (opts.sides === 'dom-dom' ? d.borders.top + d.borders.bottom : 0);
     rows.push(numRow('size.h', rect.h - (spec.autoLayout ? spec.autoLayout.padding.top + spec.autoLayout.padding.bottom : 0), domH, tol, undefined, SRC_ROOT_LAYOUT));
   } else {
     rows.push(numRow('size.h', rect.h, d.rect.h, tol, undefined, SRC_ROOT_LAYOUT));
