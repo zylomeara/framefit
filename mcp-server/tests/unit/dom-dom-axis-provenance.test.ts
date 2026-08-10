@@ -48,10 +48,10 @@ describe('provenance silence (row-prop census)', () => {
     const candidate = snap(kids('cand'), { shadow: { inset: false, x: 0, y: 2, blur: 8, spread: 0, colorHex: '#00000033', count: 1 },
       styles: { display: 'flex', backgroundColor: '#ffffff', backgroundColorToken: { literal: true }, borderRadius: 8, opacity: 1 } });
     const rows = diffDomPair(reference, candidate, { tolerancePx: 1 });
-    const ALLOW = /^(viewport|size\.[wh]|child-size\.[wh].*|fill|fill-token-drift|corner-radius|opacity|box-shadow|shadow-.*|border.*|gap.*|offset-cross.*|padding-(top|right|bottom|left|start|end).*|typography.*|font-.*|line-height.*|letter-spacing.*|text-color.*|children.*|structure_mismatch|reference_.*|snapshot.*|extractor_outdated|justify.*)$/;
+    const ALLOW = /^(viewport|size\.[wh]|child-size\.[wh].*|fill|fill-token-drift|corner-radius|opacity|box-shadow|shadow-.*|border.*|gap.*|offset-cross.*|padding-(top|right|bottom|left|start|end).*|typography.*|font-.*|line-height.*|letter-spacing.*|text-color.*|children.*|structure_mismatch|unwrapped|reference_.*|snapshot.*|extractor_outdated|justify.*)$/;
     const outside = rows.map((r) => r.prop).filter((p) => !ALLOW.test(p));
     expect(outside).toEqual([]);
-    const FORBIDDEN = /^(component|style_anchor|unwrapped|hug|token|mode_)/;
+    const FORBIDDEN = /^(component|style_anchor|hug|token|mode_)/; // unwrapped moved to ALLOW: the overlap unwrap is reachable through the projection and its side field speaks reference/candidate
     expect(rows.map((r) => r.prop).filter((p) => FORBIDDEN.test(p))).toEqual([]);
   });
 });

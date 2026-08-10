@@ -590,7 +590,12 @@ describe('diffPair — cardinality-repair unwrap (5.3)', () => {
     expect(sm?.note).toContain('rejected: wrapper is empty');
   });
 
-  it('rejected: substitutes overlap along the axis (dom wrapper, both children equal start)', () => {
+  it('ACCEPTED with overlap: substitutes overlapping the axis unwrap anyway, gaps over them skip (feedback item 12)', () => {
+    // This lock used to assert the REJECTION - measured live, that rejection was the single
+    // cause of the DS-wrapper total skip (a cross-axis stack inside the wrapper lost EVERY
+    // child metric, and the 1-vs-N salvage could not anchor). The unwrap now proceeds: gaps
+    // over overlapping neighbors are skipped with the wrap/reflow note, cross offsets and the
+    // per-child machinery run with all their existing guards.
     const rows = diffPair(spec(), snap({ children: [
       { kind: 'element', tag: 'section', rect: { x: 0, y: 0, w: 343, h: 120 },
         children: [
@@ -598,9 +603,12 @@ describe('diffPair — cardinality-repair unwrap (5.3)', () => {
           { kind: 'element', tag: 'div', rect: { x: 16, y: 12, w: 311, h: 40 } }, // equal start along the col axis (y)
         ] },
     ] }), { tolerancePx: 1 });
-    const sm = row(rows, 'structure_mismatch');
-    expect(sm?.status).toBe('warn');
-    expect(sm?.note).toContain('rejected: substitutes overlap');
+    expect(row(rows, 'structure_mismatch')).toBeUndefined();
+    const unw = row(rows, 'unwrapped');
+    expect(unw?.status).toBe('pass');
+    expect(unw?.note).toContain('do not form a single file');
+    const gaps = rows.filter((r) => r.prop.startsWith('gap['));
+    expect(gaps.some((r) => r.status === 'skip' && /overlap/.test(r.note ?? ''))).toBe(true);
   });
 
   it('rejected: result > 10 children (unwrap yields 11 substitutes)', () => {
