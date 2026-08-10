@@ -176,7 +176,7 @@ describe('package.json publication metadata', () => {
   });
 
   it('prepublishOnly builds', () => {
-    expect(pkg.scripts.prepublishOnly).toBe('pnpm build');
+    expect(pkg.scripts.prepublishOnly).toBe('rm -rf dist && pnpm build');
   });
 });
 

@@ -31,6 +31,8 @@ function makeEl(tag: string, r: ReturnType<typeof rect>, kids: FakeEl[] = [], cs
   const el: FakeEl = {
     nodeType: 1, tagName: tag.toUpperCase(), classList: ['x'], dataset: {},
     childNodes: kids, children: kids,
+    matches: (sel: string) => sel.split(',').some((one) => one.trim().toLowerCase() === tag.toLowerCase()),
+    style: { getPropertyValue: () => '' },
     getBoundingClientRect: () => r,
     scrollTop: 0, scrollLeft: 0, clientWidth: r.width, clientHeight: r.height, scrollHeight: r.height,
     __cs: { ...BASE_CS, ...cs },
@@ -52,12 +54,13 @@ function makeEl(tag: string, r: ReturnType<typeof rect>, kids: FakeEl[] = [], cs
   return el;
 }
 
-async function extract(root: FakeEl): Promise<any> {
+async function extract(root: FakeEl, styleSheets: unknown[] = []): Promise<any> {
   const fakeDoc = {
     querySelectorAll: () => [root],
     createRange: () => ({ selectNodeContents: () => {}, getBoundingClientRect: () => rect(0, 0, 1, 1) }),
     fonts: { status: 'loaded' },
     documentElement: { clientWidth: 420 },
+    styleSheets,
   };
   const fn = new Function('document', 'window', 'Node', 'getComputedStyle', `return (${EXTRACTOR_JS})`)(
     fakeDoc, { innerWidth: 420 }, { TEXT_NODE: 3, ELEMENT_NODE: 1 },
@@ -177,6 +180,20 @@ describe('icon color capture (phase 1)', () => {
     const svg = svgOf([path('rgb(255, 255, 255)', {}, { fill: '#fff' })]);
     const snap = await extract(rootWith([svg]));
     expect(snap.children[0].styles.iconColorToken).toEqual({ literal: true });
+  });
+  it('CSS-authored fill: currentColor is a deferral to the color property, never a literal', async () => {
+    const svg = svgOf([path('rgb(36, 36, 41)')]);
+    const sheet = [{ cssRules: [{ selectorText: 'path', style: { getPropertyValue: (p: string) => (p === 'fill' ? 'currentColor' : '') }, cssRules: [] }] }];
+    const snap = await extract(rootWith([svg]), sheet);
+    expect(snap.children[0].styles.iconColor).toBe('#242429');
+    expect(snap.children[0].styles.iconColorToken).toEqual({ unknown: 'inherited' });
+  });
+  it('an anchored attribute claims the literal ONLY in the vacuum: an unreadable sheet blocks it', async () => {
+    const throwing: Record<string, unknown> = {};
+    Object.defineProperty(throwing, 'cssRules', { get() { throw new Error('cross-origin'); } });
+    const svg = svgOf([path('rgb(36, 36, 41)', {}, { fill: '#242429' })]);
+    const snap = await extract(rootWith([svg]), [throwing]);
+    expect(snap.children[0].styles.iconColorToken).toEqual({ unknown: 'cross-origin' });
   });
   it('the WRAPPER\'s own opacity folds into the hex (the projector folds the candidate\'s)', async () => {
     const svg = svgOf([path('rgb(17, 17, 17)')]);
