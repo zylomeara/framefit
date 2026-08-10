@@ -148,3 +148,78 @@ describe('nothing else moved - the false-green classes of the killed switch stay
     expect(h?.note ?? '').not.toMatch(/encoding/);
   });
 });
+
+describe('verify-round locks', () => {
+  it('BLOCKER lock: a genuinely FLUSH design vs a dom-only padding stays RED - the size row is the only witness', () => {
+    const flushFig: LayoutSpec = {
+      node: { id: '7:1', name: 'Row', type: 'FRAME' },
+      rect: { x: 0, y: 0, w: 400, h: 200 },
+      axis: 'col',
+      autoLayout: { gap: 20, padding: { top: 0, right: 0, bottom: 0, left: 0 } },
+      children: [
+        { id: '7:2', name: 'a', type: 'FRAME', rect: { x: 0, y: 0, w: 400, h: 80 } } as never,
+        { id: '7:3', name: 'b', type: 'FRAME', rect: { x: 0, y: 100, w: 400, h: 100 } } as never,
+      ],
+    } as LayoutSpec;
+    const paddedDom: DomSnapshotOk = {
+      schema: 6, status: 'ok', selector: '.row', innerWidth: 1280,
+      rect: { x: 0, y: 0, w: 400, h: 200 },
+      borders: { top: 0, right: 0, bottom: 0, left: 0 },
+      paddings: { top: 0, right: 0, bottom: 0, left: 40 },
+      clientWidth: 400, clientHeight: 200, scrollHeight: 200,
+      scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,
+      styles: { display: 'flex' },
+      children: [
+        { kind: 'element', tag: 'div', rect: { x: 40, y: 0, w: 360, h: 80 } },
+        { kind: 'element', tag: 'div', rect: { x: 40, y: 100, w: 360, h: 100 } },
+      ],
+    };
+    const rows = diffPair(flushFig, paddedDom, { tolerancePx: 1 });
+    expect(row(rows, 'size.w')?.status).toBe('fail');   // no structural inset in the design -> not an encoding artifact
+  });
+  it('per-axis truth: a cross-only dom padding does not stamp the encoding note on a row that subtracted nothing', () => {
+    const fig: LayoutSpec = { ...shelf(), rect: { x: 0, y: 0, w: 400, h: 140 } } as LayoutSpec;
+    const dom = card(0, 380);          // a REAL 20px width defect
+    (dom.paddings as { top: number; bottom: number }).top = 10;
+    (dom.paddings as { top: number; bottom: number }).bottom = 10;
+    dom.clientWidth = 380; dom.clientHeight = 140;
+    const rows = diffPair(fig, dom, { tolerancePx: 1 });
+    const w = row(rows, 'size.w');
+    expect(w?.status).toBe('fail');
+    expect(w?.note ?? '').not.toMatch(/overstates|encoding/);
+  });
+  it('the July item-3 pair is now FULLY quiet of fabricated reds: padding and offset rows dual-demote too', () => {
+    const rows = diffPair(shelf(), card(16, 413), { tolerancePx: 1 });
+    expect(rows.filter((r) => r.status === 'fail')).toEqual([]);
+    const demoted = rows.filter((r) => r.status === 'demoted');
+    expect(demoted.length).toBeGreaterThan(2);   // size + padding + offset rows all read as encoding artifacts
+    expect(demoted.some((r) => /border edge both sides agree/.test(r.note ?? ''))).toBe(true);
+    const pair = { node_id: 'p', rows, summary: summarize(rows), coverage: deriveCoverage(rows) };
+    const v = buildVerification([pair], { depthLevels: 4, tolerancePx: 1 });
+    expect(v.complete).toBe(false);   // demoted gates - never a silent green
+  });
+  it('a REAL inset regression is NOT dual-demoted: fig 16 vs dom-beyond-padding at 24 stays red', () => {
+    const dom = card(24, 413);
+    dom.children = [
+      { kind: 'element', tag: 'h3', rect: { x: 24, y: 24, w: 365, h: 24 } },
+      { kind: 'element', tag: 'div', rect: { x: 24, y: 60, w: 365, h: 72 } },
+    ];
+    const rows = diffPair(shelf(), dom, { tolerancePx: 1 });
+    // fig structural 16 vs dom border-edge 24: both conventions disagree -> real red survives
+    expect(rows.some((r) => r.status === 'fail')).toBe(true);
+  });
+  it('MUTATION lock (discriminating): absence of autoLayout keeps a real fail red even when raw boxes match', () => {
+    const noAutoFig: LayoutSpec = {
+      node: { id: '8:1', name: 'plain', type: 'FRAME' },
+      rect: { x: 0, y: 0, w: 216, h: 60 },
+      children: [],
+    } as never;
+    const dom: DomSnapshotOk = { ...card(16, 216), children: [], selector: '.plain',
+      clientWidth: 216, clientHeight: 60, scrollHeight: 60, rect: { x: 0, y: 0, w: 216, h: 60 } };
+    const rows = diffPair(noAutoFig, dom, { tolerancePx: 1 });
+    const w = row(rows, 'size.w');
+    // content-box 216 vs 184 fails; raw boxes match (216/216) - but ABSENT autoLayout must not
+    // demote (a mutant dropping the presence clause turns this row demoted and fails here)
+    expect(w?.status).toBe('fail');
+  });
+});

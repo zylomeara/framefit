@@ -786,8 +786,24 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     && spec.autoLayout.padding.bottom === 0 && spec.autoLayout.padding.left === 0
     && d.paddings !== undefined
     && (d.paddings.top > 0 || d.paddings.right > 0 || d.paddings.bottom > 0 || d.paddings.left > 0);
-  const applyEncodingDemote = (row: DiffRow, figBorder: number, domBorder: number): DiffRow => {
+  // Per-axis truth (verify round): size.w subtracts only left+right and size.h only top+bottom,
+  // so the wrapper needs the AXIS's own dom padding - a cross-only padding must not stamp a
+  // false 'overstates' note on a row that subtracted nothing. And the demote needs EVIDENCE of
+  // structural encoding (the original vault clause): the fig children must actually sit inset
+  // from the edge on that axis - a genuinely FLUSH design vs a dom-only padding is a REAL
+  // defect whose only witness is this very row, and it must stay red.
+  const figInsetOn = (horizontal: boolean): number => {
+    if (spec.children.length === 0) return 0;
+    const lead = Math.min(...spec.children.map((c) => horizontal ? c.rect.x - rect.x : c.rect.y - rect.y));
+    const trail = horizontal
+      ? (rect.x + rect.w) - Math.max(...spec.children.map((c) => c.rect.x + c.rect.w))
+      : (rect.y + rect.h) - Math.max(...spec.children.map((c) => c.rect.y + c.rect.h));
+    return Math.max(lead, trail);
+  };
+  const applyEncodingDemote = (row: DiffRow, figBorder: number, domBorder: number, domPadAxis: number, horizontal: boolean): DiffRow => {
     if (!encodingMismatch || row.status !== 'fail') return row;
+    if (domPadAxis <= 0) return row;                       // this axis subtracted nothing
+    if (figInsetOn(horizontal) <= structTol) return row;   // no structural encoding - a real dom-only padding stays red
     const delta = round1(Math.abs(figBorder - domBorder));
     if (delta <= tol) {
       return { ...stripSrc(row), status: 'demoted',
@@ -820,7 +836,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
               numRow('size.w', rect.w - (spec.autoLayout ? spec.autoLayout.padding.left + spec.autoLayout.padding.right : 0), domW, tol, undefined, SRC_ROOT_LAYOUT),
               // clientWidth is an integer: a fractional rect manufactures a sub-1px phantom
               // scrollbar - a real bar is never <1px; the raw-box numbers must not carry it.
-              rect.w, d.rect.w - (scrollbarW < 1 ? 0 : scrollbarW)),
+              rect.w, d.rect.w - (scrollbarW < 1 ? 0 : scrollbarW), d.paddings.left + d.paddings.right, true),
             pageGutter,
           ),
           textWidthDemote,
@@ -847,7 +863,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     const domH = d.rect.h - scrollbarH - d.paddings.top - d.paddings.bottom - (opts.sides === 'dom-dom' ? d.borders.top + d.borders.bottom : 0);
     rows.push(applyEncodingDemote(
       numRow('size.h', rect.h - (spec.autoLayout ? spec.autoLayout.padding.top + spec.autoLayout.padding.bottom : 0), domH, tol, undefined, SRC_ROOT_LAYOUT),
-      rect.h, d.rect.h - (scrollbarH < 1 ? 0 : scrollbarH)));
+      rect.h, d.rect.h - (scrollbarH < 1 ? 0 : scrollbarH), d.paddings.top + d.paddings.bottom, false));
   } else {
     rows.push(numRow('size.h', rect.h, d.rect.h, tol, undefined, SRC_ROOT_LAYOUT));
   }
@@ -1130,7 +1146,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       axis === 'row' ? pageGutter : undefined));
   }
 
-  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous, unwrapInfo?.overlap === true));
+  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous, unwrapInfo?.overlap === true, encodingMismatch));
   return rows;
 }
 
@@ -1464,7 +1480,7 @@ function matchTexts(figs: FigText[], doms: DomText[], anyTruncated: boolean):
 function crossAndPaddingRows(
   spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions, figKids: SpecChild[], domKids: DomChild[], unwrapBase: boolean,
   hugFillMainAxis: boolean, figWrapper?: SpecChild, domWrapper?: DomChild, salvaged = false, movedIdx?: Set<number>,
-  overlapAmbiguous?: Set<number>, overlapUnwrap = false,
+  overlapAmbiguous?: Set<number>, overlapUnwrap = false, encodingMismatch = false,
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   const axis = spec.axis!;
@@ -1538,14 +1554,31 @@ function crossAndPaddingRows(
   const figPadStart = padStart(eff(figFirst.paddings), axis);
   const domPadStart = padStart(eff(domExt.first.paddings), axis);
   const startNote = paddingProvenanceNote(figPadStart, domPadStart, childLabel(figFirst));
+  // Dual-convention check (items 3+18, verify round): under the encoding-mismatch predicate the
+  // fig side's declared content edge IS the border edge, while the dom anchors add the declared
+  // dom padding - so a row can fail under the content-edge convention while the two sides AGREE
+  // once the dom value is read from the border edge (dom + the root padding it subtracted). That
+  // disagreement-between-conventions is an encoding artifact, not a defect: demoted with both
+  // readings, receipt held by anyDemoted, no fix_plan edit. A row that fails under BOTH
+  // conventions is a real defect and stays red.
+  const dualDemote = (row: DiffRow, rootPadForEdge: number): DiffRow => {
+    if (!encodingMismatch || row.status !== 'fail') return row;
+    if (rootPadForEdge <= 0) return row;
+    if (typeof row.figma !== 'number' || typeof row.dom !== 'number') return row;
+    const borderEdgeDom = row.dom + rootPadForEdge;
+    if (Math.abs(row.figma - borderEdgeDom) > tol) return row;
+    return { ...stripSrc(row), status: 'demoted',
+      note: [row.note, `encoding artifact: the design has no declared padding (the inset is structural) while the DOM declares ${rootPadForEdge} — read from the border edge both sides agree (${round1(row.figma)} vs ${round1(borderEdgeDom)})`]
+        .filter(Boolean).join('; ') };
+  };
   // salvage: figFirst/figLast are not the real first/last (a subset was matched) → padding from the container
   // edge would be a false ❌. We skip padding-start/end; offset-cross/typography per-child — we keep.
   if (!salvaged) {
-    rows.push(applyContainerHugFillDemote(applyJustifyDemote(withNote(
+    rows.push(dualDemote(applyContainerHugFillDemote(applyJustifyDemote(withNote(
       numRow(startName, (start(figFirst.rect, axis) + figPadStart) - figCStart,
         (start(domExt.first.rect, axis) + domPadStart) - domCStart, tol, undefined, SRC_ROOT_LAYOUT),
       startNote,
-    ), jd.start, jc, startName), hugFillMainAxis));
+    ), jd.start, jc, startName), hugFillMainAxis), padStart(eff(d.paddings), axis)));
   }
 
   const lastDom = domExt.last;
@@ -1569,13 +1602,13 @@ function crossAndPaddingRows(
       // structTol (not raw tol): the evidence gate "dom-column edge == its text edge" — robustness
       // of the demotion detector to sub-pixel fractions under strict tol=0 (otherwise a legit text-hug → false red).
       || (figTextsForEnd.items.length > 0 && domHugEndEvidence(lastDom, axis, structTol, maxDescent));
-    rows.push(applyContainerHugFillDemote(applyJustifyDemote(applyTextWidthOverride(
+    rows.push(dualDemote(applyContainerHugFillDemote(applyJustifyDemote(applyTextWidthOverride(
       notePageGutter(withNote(
         numRow(endName, figCEnd - (end(figLast.rect, axis) - figPadEnd), domCEnd - (end(lastDom.rect, axis) - domPadEnd), tol, undefined, SRC_ROOT_LAYOUT),
         endNote,
       ), axis === 'row' ? pageGutter : undefined),
       endDemote,
-    ), jd.end, jc, endName), hugFillMainAxis));
+    ), jd.end, jc, endName), hugFillMainAxis), padEnd(eff(d.paddings), axis)));
   }
 
   // wrapper base: nested DomChild have no captured borders — we assume border≈0 for wrappers (an approximation)
@@ -1627,7 +1660,8 @@ function crossAndPaddingRows(
     // than half the gutter is short by something else, and that something else keeps its fail.
     const share = crossGutterShare(c, domKids[i]);
     const out = share !== undefined ? applyPageGutterDemote(row, share) : row;
-    rows.push(out.status === 'fail' ? notePageGutter(out, axis === 'col' ? pageGutter : undefined) : out);
+    const dual = dualDemote(out, padCross(eff(d.paddings), axis));
+    rows.push(dual.status === 'fail' ? notePageGutter(dual, axis === 'col' ? pageGutter : undefined) : dual);
   });
 
   figKids.forEach((c, i) => {
