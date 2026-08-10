@@ -67,7 +67,8 @@ describe('find_breakpoint_variant tool', () => {
     expect(other.content.every((c: any) => !c.isBestMatch)).toBe(true);
 
     expect(out.match).toEqual({ node_id: 'c2:1', w: 420, variant_node_id: 'v2:1' });
-    expect(api.getDocumentRaw).toHaveBeenCalledWith('abc', 3);
+    expect(api.getDocumentRaw).toHaveBeenCalledWith('abc', 2); // depth-2 SKELETON (v2: per-container deepening replaced the depth-3 whole-doc walk)
+    expect(api.getNodesRaw).toHaveBeenCalledWith('abc', ['s1:1'], 3); // the per-container deep fetch
     expect(api.getNodesRaw).toHaveBeenCalledWith('abc', ['v1:1', 'v2:1'], 2);
   });
 
@@ -78,7 +79,9 @@ describe('find_breakpoint_variant tool', () => {
     const out = JSON.parse(res.content[0].text);
 
     expect(api.getDocumentRaw).not.toHaveBeenCalled();
-    expect(api.getNodesRaw).toHaveBeenCalledWith('abc', ['s1:1'], 3);
+    // v2 (post-wave): ONE scoped fetch at depth 4 - the drill-down remedy stays the cheapest
+    // path in the tool and reaches one level deeper than main's depth-3 anchored walk.
+    expect(api.getNodesRaw).toHaveBeenCalledWith('abc', ['s1:1'], 4);
     expect(out.match).toEqual({ node_id: 'c2:1', w: 420, variant_node_id: 'v2:1' });
   });
 
@@ -104,7 +107,9 @@ describe('find_breakpoint_variant tool', () => {
     const manySection = { id: 'sM:1', name: 'Отмена подписки', type: 'SECTION', children: manyFrames };
     const manyPage = { id: 'pM:1', name: 'Page', type: 'CANVAS', children: [manySection] };
     const manyDoc = { id: '0:0', name: 'Doc', type: 'DOCUMENT', children: [manyPage] };
-    const manyById: Record<string, any> = Object.fromEntries(manyFrames.map((f) => [f.id, f]));
+    // v2: the frames are reached through the per-container deep fetch of their SECTION - the
+    // fake must serve the section id, not only the leaf frames.
+    const manyById: Record<string, any> = { 'sM:1': manySection, ...Object.fromEntries(manyFrames.map((f) => [f.id, f])) };
 
     const getNodesRaw = vi.fn(async (_file: string, ids: string[]) => ({
       nodes: Object.fromEntries(ids.map((id) => [id, manyById[id] ? { document: manyById[id] } : null])),
