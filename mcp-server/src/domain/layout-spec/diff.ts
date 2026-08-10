@@ -1448,6 +1448,11 @@ function crossAndPaddingRows(
           note: c.textAmbiguous
             ? 'several nested TEXT, the descent did not find them in the projection slice — raise max_depth (up to 8) and re-run, or add a separate pair on the TEXT node'
             : 'no TEXT found within the depth slice — it may be deeper: raise max_depth (up to 8) and re-run, or add a pair on the nested TEXT node' });
+      } else if (opts.sides === 'dom-dom' && figs.items.length === 0 && doms.items.length > 0) {
+        // Presence symmetry (dom-dom): the descent zip below runs only when the REFERENCE side
+        // found texts - a text-bearing candidate slot vs a bare reference slot was silence.
+        rows.push({ prop: `typography[${childLabel(c)}]`, status: 'warn',
+          note: 'the CANDIDATE child carries text the REFERENCE does not - if the reference capture is the intended state, this text is unexpected' });
       } else if (figs.items.length > 0) {
         const anyTruncated = figs.truncated || doms.truncated;
         const m = matchTexts(figs.items, doms.items, anyTruncated);
@@ -1756,6 +1761,11 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   // ROOT/property, NOT text('') (the edit lives in the pair's root class).
   // p.7 routing at the root: a fig TEXT paired onto a DOM wrapper (fig TEXT ↔ <button> with a nested
   // span) is the same wrapper-styles trap as the child site - same resolver, same notes.
+  if (!spec.text && opts.sides === 'dom-dom' && domOwnText({ children: d.children })) {
+    // Presence symmetry (dom-dom): a text-bearing candidate root vs a bare reference root.
+    rows.push({ prop: 'typography', status: 'warn',
+      note: 'the CANDIDATE root carries text the REFERENCE does not - if the reference capture is the intended state, this text is unexpected' });
+  }
   if (spec.text) {
     const rootAsDom: DomChild = { kind: 'element', rect: d.rect, styles: d.styles,
       children: d.children, ...(d.childrenTruncated ? { childrenTruncated: true } : {}) };
@@ -1788,6 +1798,17 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
       rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
         ...(v.status === 'fail' ? { srcChannel: SRC_ANCHOR_PROP } : {}) });
     }
+  } else if (opts.sides === 'dom-dom' && spec.fillUnparseable) {
+    // The reference DOES paint a background, but in a color space the extractor cannot reduce to
+    // hex - equality was not checked on either side. Distinct from the presence warn below.
+    rows.push({ prop: 'fill', figma: '(non-hex color)', dom: sBg ?? null, status: 'info',
+      note: 'the REFERENCE background is expressed in a non-hex color space (oklch()/color()) - color equality was not checked on either side; verify visually' });
+  } else if (opts.sides === 'dom-dom' && sBg !== undefined) {
+    // Presence symmetry (dom-dom): the spec-side gate above is correct for Figma (a frame always
+    // declares its fills) and false-green here - a transparent reference vs a painted candidate
+    // was total silence.
+    rows.push({ prop: 'fill', figma: null, dom: sBg, status: 'warn',
+      note: 'the CANDIDATE paints a background the REFERENCE does not - if the reference capture is the intended state, this background is unexpected' });
   }
 
   if (spec.gradient || sGradient) {

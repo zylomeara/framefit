@@ -92,6 +92,9 @@ export function domToSpecShape(reference: DomSnapshotOk): LayoutSpec {
   // a non-#hex backgroundColor projects nothing, and the presence row logic handles the rest.
   if (typeof st.backgroundColor === 'string' && (st.backgroundColor as string).startsWith('#')) {
     spec.fillHex = st.backgroundColor as string;
+  } else if (typeof st.backgroundColor === 'string' && (st.backgroundColor as string).length > 0
+      && st.backgroundColor !== 'transparent' && st.backgroundColor !== 'none') {
+    spec.fillUnparseable = true;
   }
   if (typeof st.borderRadius === 'number' && !(st as { borderRadiusUncomparable?: boolean }).borderRadiusUncomparable) {
     spec.cornerRadius = st.borderRadius as number;

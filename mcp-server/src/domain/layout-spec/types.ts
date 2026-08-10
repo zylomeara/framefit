@@ -93,6 +93,10 @@ export interface LayoutSpec {
   axis?: 'row' | 'col';        // from layoutMode; absent — no auto-layout
   autoLayout?: { gap?: number; padding: Edges }; // DECLARED values (informational; the diff measures rects)
   fillHex?: string;
+  // dom-dom projection only: the reference HAS a background but in a non-hex color space
+  // (oklch()/color()) - distinguishes "skipped, verify visually" from "reference is transparent"
+  // (the latter is a presence asymmetry when the candidate does paint one).
+  fillUnparseable?: true;
   fillBoundVar?: string;       // alias variable id, if fillHex was taken from a bound solid-paint (library default-mode footgun)
   fillToken?: ResolvedColorToken;   // mode-resolved fill token; injected via resolveColorToken (bound var) OR a shared fill STYLE (NAME→'(style: …)', STATE→'(paint)' sentinel — unified)
   strokeHex?: string;
