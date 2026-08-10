@@ -52,7 +52,7 @@ const frame = (id: string, name: string, w: number, children: any[] = []) =>
   ({ id, name, type: 'FRAME', absoluteBoundingBox: bb(w), children });
 
 // THE live-repro shape: the component sits under a SUB-section, document depth 4.
-const shelfComponent = { id: 'comp:1', name: 'scroll shelf', type: 'COMPONENT', absoluteBoundingBox: bb(1920, 86),
+const shelfComponent = { id: 'comp:1', name: 'promo rail', type: 'COMPONENT', absoluteBoundingBox: bb(1920, 86),
   children: [] };
 const subSection = { id: 'sub:1', name: 'Adaptiv', type: 'SECTION', children: [shelfComponent] };
 const promoSection = { id: 'sec:1', name: 'Promo', type: 'SECTION', children: [subSection] };
@@ -62,7 +62,7 @@ const doc = (children: any[]) => ({ id: '0:0', name: 'Document', type: 'DOCUMENT
 describe('reach: the live-repro shape', () => {
   it('finds a name-matched COMPONENT at document depth 4 (canvas > section > sub-section > component)', async () => {
     const run = harness(depthApi(doc([promoSection])));
-    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    const out = await run({ file: 'abc', query: 'promo rail', render_width: 1920 });
     expect(out.variants.map((v: any) => v.node_id)).toContain('comp:1');
     expect(out.match).not.toBeNull();
   });
@@ -78,13 +78,13 @@ describe('reach: the live-repro shape', () => {
 
 describe('COMPONENT_SET as a candidate (panel finding 5)', () => {
   it('a set whose NAME matches yields its variant COMPONENT children as ranked content', async () => {
-    const set = { id: 'set:1', name: 'scroll shelf', type: 'COMPONENT_SET', absoluteBoundingBox: bb(2300),
+    const set = { id: 'set:1', name: 'promo rail', type: 'COMPONENT_SET', absoluteBoundingBox: bb(2300),
       children: [
         { id: 'var:d', name: 'Breakpoint=Desktop', type: 'COMPONENT', absoluteBoundingBox: bb(1920, 86), children: [] },
         { id: 'var:m', name: 'Breakpoint=Mobile', type: 'COMPONENT', absoluteBoundingBox: bb(360, 64), children: [] },
       ] };
     const run = harness(depthApi(doc([{ id: 'sec:2', name: 'Components', type: 'SECTION', children: [set] }])));
-    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 360 });
+    const out = await run({ file: 'abc', query: 'promo rail', render_width: 360 });
     expect(out.variants.map((v: any) => v.node_id)).toContain('set:1');
     expect(out.match?.node_id).toBe('var:m');
   });
@@ -92,10 +92,10 @@ describe('COMPONENT_SET as a candidate (panel finding 5)', () => {
 
 describe('ranking before the cap (panel findings 1/12/19)', () => {
   it('a deep NAME-match survives 12 shallow container-only matches instead of being sliced off', async () => {
-    const bait = { id: 'bait:1', name: 'scroll shelf zone', type: 'SECTION',
+    const bait = { id: 'bait:1', name: 'promo rail zone', type: 'SECTION',
       children: Array.from({ length: 12 }, (_, i) => frame(`b:${i}`, `banner ${i}`, 1280)) };
     const run = harness(depthApi(doc([bait, promoSection])));
-    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    const out = await run({ file: 'abc', query: 'promo rail', render_width: 1920 });
     expect(out.variants.length).toBeLessThanOrEqual(10);
     expect(out.variants.map((v: any) => v.node_id)).toContain('comp:1');
   });
@@ -134,7 +134,7 @@ describe('the coverage ledger (find_nodes vocabulary, panel findings 6/15/16/23)
     const api = depthApi(doc([promoSection]));
     api.getNodesRaw.mockRejectedValue(new FigmaApiError('auth', 401, 'token dead'));
     const run = harness(api);
-    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    const out = await run({ file: 'abc', query: 'promo rail', render_width: 1920 });
     expect(out.isError).toBe(true);
   });
   it('full coverage -> the empty answer keeps a strong absence claim (no searched-slice hedge)', async () => {
@@ -185,7 +185,7 @@ describe('parent_node_id path (panel finding 21)', () => {
   it('the anchored population is the node\'s DIRECT children, and a deep component under it is found', async () => {
     const anchor = { id: 'anc:1', name: 'Anchor', type: 'SECTION', children: [promoSection] };
     const run = harness(depthApi(doc([anchor])));
-    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920, parent_node_id: 'anc:1' });
+    const out = await run({ file: 'abc', query: 'promo rail', render_width: 1920, parent_node_id: 'anc:1' });
     expect(out.variants.map((v: any) => v.node_id)).toContain('comp:1');
     expect(out.coverage.total).toBe(1);
   });
@@ -196,19 +196,19 @@ describe('wave locks', () => {
   it('a COMPONENT at the walk boundary counts as depth_cut - the strong absence claim must not fire over its unfetched subtree', async () => {
     const deepComp = { id: 'w:0', name: 'Zone', type: 'SECTION', children: [
       frame('w:1', 'l1', 500, [frame('w:2', 'l2', 500, [
-        { id: 'w:3', name: 'Card', type: 'COMPONENT', absoluteBoundingBox: bb(500), children: [frame('w:4', 'scroll shelf', 1920)] },
+        { id: 'w:3', name: 'Card', type: 'COMPONENT', absoluteBoundingBox: bb(500), children: [frame('w:4', 'promo rail', 1920)] },
       ])]),
     ] };
     const run = harness(depthApi(doc([deepComp])));
-    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    const out = await run({ file: 'abc', query: 'promo rail', render_width: 1920 });
     expect(out.variants).toEqual([]);
     expect(out.coverage.depth_cut).toBeGreaterThan(0);
     expect(out.note).not.toMatch(/every container within reach was searched/);
   });
   it('no name-match early stop: 12 skeleton-level name matches do not abort the deep walk', async () => {
-    const pageFrames = Array.from({ length: 12 }, (_, i) => frame(`pf:${i}`, `scroll shelf promo ${i}`, 1000));
+    const pageFrames = Array.from({ length: 12 }, (_, i) => frame(`pf:${i}`, `promo rail promo ${i}`, 1000));
     const run = harness(depthApi(doc([...pageFrames, promoSection])));
-    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    const out = await run({ file: 'abc', query: 'promo rail', render_width: 1920 });
     // the deep walk ran despite 12 skeleton-banked name matches: the section was deep-fetched
     // (page-level frames are legitimately part of the container population too - they can hold
     // deeper candidates - so total counts them all)
@@ -222,7 +222,7 @@ describe('wave locks', () => {
     ];
     const api = depthApi(doc([...leaves, promoSection]));
     const run = harness(api);
-    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    const out = await run({ file: 'abc', query: 'promo rail', render_width: 1920 });
     expect(out.coverage.total).toBe(1);
     const fetchedIds = api.getNodesRaw.mock.calls.map((c: any[]) => c[1][0]);
     expect(fetchedIds).not.toContain('t:1');
@@ -289,7 +289,7 @@ describe('wave locks', () => {
       defaultToken: 'figd_x', logger, maxResultChars: 40000,
     };
     registerFindBreakpointVariantTool(server, deps);
-    await call('find_breakpoint_variant', { file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    await call('find_breakpoint_variant', { file: 'abc', query: 'promo rail', render_width: 1920 });
     expect(timeouts).toContain(20_000);
   });
 });

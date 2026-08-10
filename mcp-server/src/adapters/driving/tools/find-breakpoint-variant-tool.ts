@@ -10,7 +10,7 @@ import { FigmaApiError } from '../../../ports/errors.js';
 import { COVERAGE_SKIPPED_NAMES_CAP } from './find-nodes-tool.js';
 
 // COMPONENT_SET is a candidate in its own right (feedback item 10 panel): a set named
-// "scroll shelf" holds the actual breakpoint variants as COMPONENT children named
+// "promo rail" holds the actual breakpoint variants as COMPONENT children named
 // "Breakpoint=..." - matching the set by name and ranking its children is the only way that
 // shape is findable at all. COMPONENT joins CONTENT_TYPES for the same reason.
 const CANDIDATE_TYPES = new Set(['FRAME', 'COMPONENT', 'COMPONENT_SET']);
