@@ -710,7 +710,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   // (1) Cardinality-repair unwrap — BEFORE the size rows: unwrapBase (5.4) switches size to border-box.
   let figKids: SpecChild[] = spec.children;
   let domKids2: DomChild[] = d.children;
-  let unwrapInfo: { side: 'figma' | 'dom'; chain: string[]; figWrapper?: SpecChild; domWrapper?: DomChild } | undefined;
+  let unwrapInfo: { side: 'figma' | 'dom'; chain: string[]; overlap?: boolean; figWrapper?: SpecChild; domWrapper?: DomChild } | undefined;
   let rejectedNote: string | undefined;
 
   if (spec.axis) {
@@ -855,7 +855,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         : '';
       rows.push({ prop: 'structure_mismatch', status: 'warn',
         figma: `${figKids.length} children: ${figDesc}`, dom: `${domKids2.length} children: ${domDescOf(domKids2)}`,
-        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${figOofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${figOofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}; comparing two STATES of one screen (skeleton vs loaded) is compare_dom_to_dom's job, not this pair's` });
       // source-hint: unpaired — the MAIN "add pairs" flow (0 high-conf: nothing
       // matched). All DOM children are unpaired; cap 10 AT the collection site. navigation-to-investigate.
       collectUnpaired(opts, domKids2);
@@ -880,7 +880,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   }
   if (unwrapInfo) {
     rows.push({ prop: 'unwrapped', figma: unwrapInfo.side, dom: unwrapInfo.chain.join(' → '), status: 'pass',
-      note: 'single wrappers unwrapped (cardinality-repair) — their paddings entered the metrics; the pair root paddings are NOT subtracted in the MAIN-axis padding rows (cross-offset — content-edge as usual)' });
+      note: unwrapInfo.overlap === true
+        ? 'single wrappers unwrapped (cardinality-repair) — the substitutes do not form a single file on the pair axis: main-axis gaps over overlapping neighbors are skipped, cross offsets and typography carry the geometry'
+        : 'single wrappers unwrapped (cardinality-repair) — their paddings entered the metrics; the pair root paddings are NOT subtracted in the MAIN-axis padding rows (cross-offset — content-edge as usual)' });
   }
 
   // (5) empty-check, truncation, monotonicity, gap loop, crossAndPaddingRows
@@ -970,9 +972,19 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     // Wrap/reflow under salvage: the matched dom children OVERLAP on the MAIN axis (after sorting by
     // main-start they became neighbors, but they occupy one main range in different cross bands) → the main gap would span
     // a row boundary = a meaningless number with a mis-attributed cause. Skip; the real 2D drift goes into offset-cross.
-    if (salvaged && start(domKids2[i].rect, axis) < end(domKids2[i - 1].rect, axis) - structTol) { // structural: main-axis overlap (wrap/reflow) — robust to fractions, not a measurement
+    const overlapMode = salvaged || unwrapInfo?.overlap === true;
+    if (overlapMode && start(domKids2[i].rect, axis) < end(domKids2[i - 1].rect, axis) - structTol) { // structural: main-axis overlap (wrap/reflow) — robust to fractions, not a measurement
       rows.push({ prop: `gap[${i - 1}] ${childLabel(figKids[i - 1])}↔${childLabel(figKids[i])}`, status: 'skip',
         note: 'DOM children overlap on the main axis (wrap/reflow) — the gap across the row boundary is not computed (see offset-cross)' });
+      continue;
+    }
+    // The mirrored check exists only under an overlap-accepted unwrap: the DESIGN children stack
+    // across the pair axis while the DOM children form a single file (or the reverse above) - a
+    // REAL layout difference whose gap number would be a meaningless negative; the cross offsets
+    // carry the geometry, the note names which side stacks.
+    if (unwrapInfo?.overlap === true && start(figKids[i].rect, axis) < end(figKids[i - 1].rect, axis) - structTol) {
+      rows.push({ prop: `gap[${i - 1}] ${childLabel(figKids[i - 1])}↔${childLabel(figKids[i])}`, status: 'skip',
+        note: 'the design (figma) children overlap on the main axis while the DOM children form a single file — the layouts differ; the cross offsets carry the geometry (see offset-cross)' });
       continue;
     }
     let figGap: number; let domGap: number; let gapNote: string | undefined;
@@ -1010,7 +1022,7 @@ type Unwrappable<T> = { children?: T[]; childrenTruncated?: boolean; kind?: stri
 // visible children, if that yields a matching child count on the other side. A strict
 // post-check (kind/cut/emptiness/overlaps/cap) — full rollback on any refusal.
 function tryUnwrap(fig: SpecChild[], dom: DomChild[], axis: 'row' | 'col', tol: number):
-  { ok: true; fig: SpecChild[]; dom: DomChild[]; info: { side: 'figma' | 'dom'; chain: string[]; figWrapper?: SpecChild; domWrapper?: DomChild } }
+  { ok: true; fig: SpecChild[]; dom: DomChild[]; info: { side: 'figma' | 'dom'; chain: string[]; overlap: boolean; figWrapper?: SpecChild; domWrapper?: DomChild } }
   | { ok: false; rejected?: string } {
   let f = fig; let dm = dom;
   let usedFig = false; let usedDom = false;
@@ -1020,31 +1032,40 @@ function tryUnwrap(fig: SpecChild[], dom: DomChild[], axis: 'row' | 'col', tol: 
   let domWrapper: DomChild | undefined;
 
   const expand = <T extends Unwrappable<T> & { rect: SpecRect }>(wrapper: T, label: string):
-    { ok: true; kids: T[] } | { ok: false; rejected: string } => {
+    { ok: true; kids: T[]; overlap: boolean } | { ok: false; rejected: string } => {
     if (wrapper.kind === 'text') return { ok: false, rejected: `unwrap attempted: ${label} → rejected: text node` };
     if (wrapper.children === undefined) return { ok: false, rejected: `unwrap attempted: ${label} → rejected: children beyond the capture cut` };
     if (wrapper.childrenTruncated) return { ok: false, rejected: `unwrap attempted: ${label} → rejected: level truncated by a cap` };
     if (wrapper.children.length === 0) return { ok: false, rejected: `unwrap attempted: ${label} → rejected: wrapper is empty` };
     const kids = [...wrapper.children].sort((a, b) => start(a.rect, axis) - start(b.rect, axis));
+    // Substitute overlap on the pair axis (a cross-axis stack inside the wrapper) used to REJECT
+    // the whole unwrap - and the one-level salvage cannot anchor 1-vs-N (one wrapper holds all
+    // the texts, every snippet anchors a different dom node, contradiction), so the pair lost
+    // EVERY child metric (feedback item 12, both live shapes). The overlap is now ACCEPTED and
+    // MARKED: main-axis gaps over such neighbors are skipped with the wrap/reflow note (the
+    // protection that already exists under salvage), while cross offsets, per-child zip and
+    // typography descent - all guarded machinery - finally run.
+    let overlap = false;
     for (let i = 1; i < kids.length; i += 1) {
-      if (start(kids[i].rect, axis) < end(kids[i - 1].rect, axis) - tol) {
-        return { ok: false, rejected: `unwrap attempted: ${label} → rejected: substitutes overlap along the axis (grid/different axis?)` };
-      }
+      if (start(kids[i].rect, axis) < end(kids[i - 1].rect, axis) - tol) { overlap = true; break; }
     }
-    return { ok: true, kids };
+    return { ok: true, kids, overlap };
   };
 
+  let overlap = false;
   for (let iter = 0; iter < 2 && f.length !== dm.length; iter += 1) {
     if (f.length === 1 && dm.length > 1 && !usedFig) {
       const r = expand(f[0], f[0].name);
       if (!r.ok) return { ok: false, rejected: r.rejected };
       figWrapper = f[0];
+      overlap = overlap || r.overlap;
       chain.push(f[0].name); f = r.kids; usedFig = true; side = side ?? 'figma';
     } else if (dm.length === 1 && f.length > 1 && !usedDom) {
       const label = dm[0].tag ?? 'text';
       const r = expand(dm[0], label);
       if (!r.ok) return { ok: false, rejected: r.rejected };
       domWrapper = dm[0];
+      overlap = overlap || r.overlap;
       chain.push(label); dm = r.kids; usedDom = true; side = side ?? 'dom';
     } else break;
   }
@@ -1052,7 +1073,7 @@ function tryUnwrap(fig: SpecChild[], dom: DomChild[], axis: 'row' | 'col', tol: 
   if (f.length > MAX_UNWRAP_RESULT) return { ok: false, rejected: `unwrap attempted: ${chain.join(' → ')} → rejected: result > ${MAX_UNWRAP_RESULT} children` };
   // A double unwrap is unreachable: the second iteration requires length===1 on the UNTOUCHED side,
   // and it did not change and was >1 — usedFig/usedDom only work as branching guards.
-  return { ok: true, fig: f, dom: dm, info: { side, chain, ...(figWrapper ? { figWrapper } : {}), ...(domWrapper ? { domWrapper } : {}) } };
+  return { ok: true, fig: f, dom: dm, info: { side, chain, overlap, ...(figWrapper ? { figWrapper } : {}), ...(domWrapper ? { domWrapper } : {}) } };
 }
 
 const crossStart = (r: SpecRect, axis: 'row' | 'col'): number => (axis === 'row' ? r.y : r.x);
