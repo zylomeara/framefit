@@ -119,3 +119,40 @@ describe('what does NOT change', () => {
     expect(sm?.note).toMatch(/compare_dom_to_dom/);
   });
 });
+
+describe('tie-order truth under an overlap unwrap (panel blocker)', () => {
+  // Overlapping substitutes share a main-axis start, so the main-start sort degenerates to
+  // LAYER order - an index zip then pairs the wrong nodes, and the reorder detector's tie-mute
+  // silences itself exactly there. Text anchors must realign the zip; unanchored tie slots are
+  // honestly skipped, never guessed.
+  const fig3 = () => [
+    figText('2:1', 'Title', 0, 0, 100, 20, 'Alpha', 16),
+    figText('2:2', 'Sub', 0, 20, 100, 16, 'Beta', 12),
+    figText('2:3', 'Meta', 200, 0, 60, 16, 'Gamma', 10),
+  ];
+  const domAligned = () => [
+    span(0, 0, 100, 20, 'Alpha', 16),
+    span(0, 20, 100, 16, 'Beta', 12),
+    span(200, 40, 60, 16, 'Gamma', 10),   // Gamma sits 40px lower - a REAL cross defect
+  ];
+  it('anchors realign tied children: the only fail is the REAL one (Gamma cross-shift), no fabricated pairs', () => {
+    const rows = diffPair(listItemSpec(fig3()), domRow(domAligned()), { tolerancePx: 1 });
+    const fails = rows.filter((r) => r.status === 'fail');
+    // correct pairing: Title-Alpha pass, Sub-Beta pass, Meta-Gamma offset-cross FAIL 0 vs 40.
+    expect(fails.length).toBe(1);
+    expect(fails[0].prop).toMatch(/offset-cross.*Meta/);
+    expect(rows.filter((r) => r.prop.startsWith('font-size') && r.status === 'fail')).toEqual([]);
+  });
+  it('textless tie slots are SKIPPED with an honest note, not zipped by layer order', () => {
+    const figNoText = fig3().map((k) => ({ ...k, textSnippet: undefined, text: undefined, type: 'FRAME' })) as SpecChild[];
+    const domNoText = [span(0, 0, 100, 20, undefined, 0), span(0, 20, 100, 16, undefined, 0), span(200, 40, 60, 16, undefined, 0)];
+    const rows = diffPair(listItemSpec(figNoText), domRow(domNoText), { tolerancePx: 1 });
+    // Title/Sub tie at main-start 0 with no anchors -> their per-child rows are unattributable;
+    // Meta (x200, no tie) stays measured and its 40px shift is the one real fail.
+    const skips = rows.filter((r) => r.status === 'skip' && /ambiguous|not attributed/i.test(r.note ?? ''));
+    expect(skips.length).toBeGreaterThan(0);
+    const crossFails = rows.filter((r) => r.prop.startsWith('offset-cross') && r.status === 'fail');
+    expect(crossFails.length).toBe(1);
+    expect(crossFails[0].prop).toMatch(/Meta|2/);
+  });
+});

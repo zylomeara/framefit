@@ -8,7 +8,7 @@ import type {
 } from './types.js';
 import { SNIPPET_CAP } from './types.js';
 import type { CssTokenEvidence } from '../variables.js';
-import { matchChildrenOneLevel, detectChildrenReorder } from './pair-matcher.js';
+import { matchChildrenOneLevel, detectChildrenReorder, buildNestedAnchorMap } from './pair-matcher.js';
 import { gradientVerdict } from './gradient-verdict.js';
 import { widthNoiseTolerance } from './tolerance.js';
 
@@ -722,6 +722,34 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       else rejectedNote = res.rejected;
     }
   }
+  // Tie-order truth under an overlap unwrap (panel blocker): overlapping substitutes share a
+  // main-axis start, so the main-start sort degenerates to LAYER order and an index zip pairs
+  // the wrong nodes - while the reorder detector's tie-mute silences itself exactly there.
+  // Text anchors realign the zip; unanchored slots whose main start ties with another
+  // unanchored slot are UNATTRIBUTABLE - their per-child rows are skipped, never guessed.
+  let overlapAmbiguous: Set<number> | undefined;
+  if (unwrapInfo?.overlap === true && spec.axis && figKids.length === domKids2.length) {
+    const axis = spec.axis;
+    const anchors = buildNestedAnchorMap(figKids, domKids2, { includeOwnText: true }).anchor;
+    if (anchors.size > 0) {
+      const target: (DomChild | undefined)[] = new Array<DomChild | undefined>(figKids.length).fill(undefined);
+      const used = new Set<number>();
+      for (const [fi, a] of anchors) { target[fi] = domKids2[a.domIdx]; used.add(a.domIdx); }
+      const rest = domKids2.filter((_, di) => !used.has(di));
+      for (let i = 0; i < target.length; i += 1) if (target[i] === undefined) target[i] = rest.shift();
+      domKids2 = target as DomChild[];
+    }
+    overlapAmbiguous = new Set();
+    const sTol = Math.max(opts.tolerancePx, 1);
+    for (let i = 0; i < figKids.length; i += 1) {
+      if (anchors.has(i)) continue;
+      for (let j = 0; j < figKids.length; j += 1) {
+        if (j === i || anchors.has(j)) continue;
+        if (Math.abs(start(figKids[i].rect, axis) - start(figKids[j].rect, axis)) <= sTol) { overlapAmbiguous.add(i); break; }
+      }
+    }
+    if (overlapAmbiguous.size === 0) overlapAmbiguous = undefined;
+  }
   const unwrapBase = unwrapInfo !== undefined;
 
   // D-size: the pair root is a hug-width TEXT (not textFixedWidth) → the size.w fail is demoted to
@@ -984,7 +1012,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     // carry the geometry, the note names which side stacks.
     if (unwrapInfo?.overlap === true && start(figKids[i].rect, axis) < end(figKids[i - 1].rect, axis) - structTol) {
       rows.push({ prop: `gap[${i - 1}] ${childLabel(figKids[i - 1])}↔${childLabel(figKids[i])}`, status: 'skip',
-        note: 'the design (figma) children overlap on the main axis while the DOM children form a single file — the layouts differ; the cross offsets carry the geometry (see offset-cross)' });
+        note: opts.sides === 'dom-dom'
+          ? 'the REFERENCE children overlap on the main axis while the CANDIDATE children form a single file — the layouts differ; the cross offsets carry the geometry (see offset-cross)'
+          : 'the design (figma) children overlap on the main axis while the DOM children form a single file — the layouts differ; the cross offsets carry the geometry (see offset-cross)' });
       continue;
     }
     let figGap: number; let domGap: number; let gapNote: string | undefined;
@@ -1010,7 +1040,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       axis === 'row' ? pageGutter : undefined));
   }
 
-  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx));
+  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous));
   return rows;
 }
 
@@ -1344,6 +1374,7 @@ function matchTexts(figs: FigText[], doms: DomText[], anyTruncated: boolean):
 function crossAndPaddingRows(
   spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions, figKids: SpecChild[], domKids: DomChild[], unwrapBase: boolean,
   hugFillMainAxis: boolean, figWrapper?: SpecChild, domWrapper?: DomChild, salvaged = false, movedIdx?: Set<number>,
+  overlapAmbiguous?: Set<number>,
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   const axis = spec.axis!;
@@ -1464,6 +1495,13 @@ function crossAndPaddingRows(
   };
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the offset is mis-attributed
+    if (overlapAmbiguous?.has(i)) {
+      // tie-order truth: an unanchored slot in a main-start tie group after an overlap unwrap -
+      // the pairing is a layer-order guess, so the offset is not attributed; honest skip.
+      rows.push({ prop: `offset-cross[${i}] ${childLabel(c)}`, status: 'skip',
+        note: 'ordering ambiguous after the overlap unwrap (children share the main-axis start, no text anchor) — per-child rows not attributed; add a pair on the nested node' });
+      return;
+    }
     if (domKids[i].kind === 'text') return; // intrinsic line — the offset is not a defect
     // box-edge: the child's own padCross on BOTH sides is not subtracted (5.1) —
     // the child is compared by the fact of its position, not "content-edge within itself".
@@ -1481,6 +1519,7 @@ function crossAndPaddingRows(
 
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the typography is mis-attributed
+    if (overlapAmbiguous?.has(i)) return; // tie-order truth: unattributable slot — the offset-cross skip row carries the note
     // dom-dom per-child EXTENT (wave finding 3): gaps and cross-start are blind to a child whose
     // size changed in place - and skeleton placeholders are exactly boxes with the right position
     // and the wrong extent. Both sides carry raw rects; a plain numeric pair per axis.
