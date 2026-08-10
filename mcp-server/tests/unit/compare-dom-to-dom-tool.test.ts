@@ -24,6 +24,7 @@ const state = (firstCardY: number): DomSnapshotOk => ({
   schema: 6, status: 'ok', selector: '.shelf', innerWidth: 768,
   rect: { x: 0, y: 0, w: 768, h: 900 },
   borders: { top: 1, right: 1, bottom: 1, left: 1 },
+  borderColors: { top: '#e0e0e0', right: '#e0e0e0', bottom: '#e0e0e0', left: '#e0e0e0' },
   paddings: { top: 24, right: 16, bottom: 24, left: 16 },
   clientWidth: 766, clientHeight: 898, scrollHeight: 898,
   scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,

@@ -140,12 +140,15 @@ const COVERAGE_META = new Set([
   'snapshot', 'snapshot_schema', 'snapshot_ref', 'extractor_outdated', 'frame', 'node', 'unwrapped',
   'structure_mismatch', 'children_truncated', 'layout_axis_mismatch', 'children', 'children_reorder',
   'style_anchor', 'passes_condensed',
+  // dom-dom: the reference-side capture warning (a service row, not a visual axis).
+  'reference_fonts',
 ]);
 
 // prop → coverage axis. prop formats: 'size.w' | 'gap[0] a↔b' | 'padding-left' |
 // 'offset-cross[0] …' | 'font-size[title]' | 'corner-radius' | 'typography_descent[…]' | 'component'.
 export function dimensionOf(prop: string): string {
   const base = prop.split(/[[\s]/)[0]; // strip [label] and " a↔b"
+  if (base.startsWith('child-size')) return 'size'; // dom-dom per-child extent rows - the same axis family
   if (base.startsWith('size')) return 'size';
   if (base.startsWith('padding')) return 'padding';
   if (base.startsWith('gap')) return 'gap';
@@ -225,6 +228,10 @@ export function deriveCoverage(rows: DiffRow[]): PairCoverage {
     } else if (r.status === 'info' && dim === 'component') {
       // p.1-p.3: identity was NOT measured — the info pool does not "greenwash" coverage (fixed reason — the note is long)
       if (!seenSkip.has(dim)) { skipped.push({ dim, reason: 'component identity: signal absent' }); seenSkip.add(dim); }
+    } else if (r.coverageSkipped === true) {
+      // dom-dom skeleton-direction info rows: deliberately non-gating, but the axis was NOT
+      // measured (receipt-lens finding 2) - the same no-greenwash rule as the component info.
+      if (!seenSkip.has(dim)) { skipped.push({ dim, reason: r.note ?? '' }); seenSkip.add(dim); }
     } else {
       measured.add(dim);
     }
@@ -1222,7 +1229,7 @@ function carrierNoteRow(prop: string, kind: 'ambiguous' | 'beyond_cut' | 'none',
   // caller cannot clear by any action. The asymmetry stays visible; a content-state check must
   // read this row deliberately.
   if (dd) {
-    return { prop, status: 'info',
+    return { prop, status: 'info', coverageSkipped: true,
       note: 'the CANDIDATE carries no text where the REFERENCE does - expected for a skeleton state; when comparing two CONTENT states, treat this as missing text' };
   }
   return { prop, status: 'unchecked',
@@ -1506,7 +1513,7 @@ function crossAndPaddingRows(
         // The skeleton direction (wave finding 12): unmatched descent texts were SILENT in both
         // modes; in dom-dom the reference-has/candidate-hasn't case is the primary use case's
         // normal shape - visible info, not an uncloseable coverage hole.
-        rows.push({ prop: `typography[${childLabel(c)}]`, status: 'info',
+        rows.push({ prop: `typography[${childLabel(c)}]`, status: 'info', coverageSkipped: true,
           note: 'the CANDIDATE carries no text where the REFERENCE does - expected for a skeleton state; when comparing two CONTENT states, treat this as missing text' });
       } else if (opts.sides === 'dom-dom' && figs.items.length === 0 && doms.items.length > 0) {
         // Presence symmetry (dom-dom): the descent zip below runs only when the REFERENCE side
@@ -1868,7 +1875,8 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   } else if (opts.sides === 'dom-dom' && spec.fillUnparseable) {
     // The reference DOES paint a background, but in a color space the extractor cannot reduce to
     // hex - equality was not checked on either side. Distinct from the presence warn below.
-    rows.push({ prop: 'fill', figma: '(non-hex color)', dom: sBg ?? null, status: 'info',
+    // UNCHECKED, not info (receipt-lens finding 1): 'not checked on either side' must hold the gate.
+    rows.push({ prop: 'fill', figma: '(non-hex color)', dom: sBg ?? null, status: 'unchecked',
       note: 'the REFERENCE background is expressed in a non-hex color space (oklch()/color()) - color equality was not checked on either side; verify visually' });
   } else if (opts.sides === 'dom-dom' && sBg !== undefined) {
     // Presence symmetry (dom-dom): the spec-side gate above is correct for Figma (a frame always

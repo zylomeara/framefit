@@ -459,7 +459,9 @@ unequal capture widths become one loud viewport row instead of thirty confident 
 Both snapshots are DOM captures, so neither declares a flex direction: the layout axis is
 INFERRED from the reference children's geometry. When the children do not progress in a single
 clear direction (grids, overlays), the gap/offset rows are honestly skipped with a visible
-`children` note - sizes and styles are still compared. Each index-paired child also gets its own
+`children` note - sizes and styles are still compared, and the receipt stays `complete: false`
+with a `resolve_skip` item: inter-child geometry the tool cannot measure must be verified
+visually, deliberately (the gate does not pretend it was). Each index-paired child also gets its own
 `child-size.w/h` rows: gaps and cross-offsets are blind to a child whose extent changed in place,
 and skeleton placeholders are exactly boxes with the right position and the wrong extent. A count
 mismatch between the two states salvages by text anchors when they exist; textless skeletons fall
@@ -469,7 +471,10 @@ Presence asymmetries gate the verdict: a background, border or text that the CAN
 and the REFERENCE does not is a `review` row (the receipt stays incomplete until confirmed). The
 notes carry one deliberate caveat: the extractor emits nothing for a color it cannot reduce to
 hex (oklch()/color()), so "declares none" and "paints in an unreadable color space" arrive
-identically - the row says so instead of claiming the stronger reading. The reverse text
+identically - the row says so instead of claiming the stronger reading. An axis neither side can
+prove (a partial/non-uniform/unreadable reference border, a non-hex reference background) is an
+`unchecked` row that keeps the receipt incomplete with a `resolve_skip` item - "was not compared"
+never coexists with a green done-gate. The reverse text
 direction - the reference has text where the candidate has none - is an `info` row, because for
 the primary skeleton use case that is the expected shape; a content-state check must read it
 deliberately. Per-child PAINT (a child's own background/radius/shadow) is not compared in either

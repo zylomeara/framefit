@@ -220,7 +220,9 @@ export function diffDomPair(reference: DomSnapshotOk, candidate: DomSnapshotOk, 
   // weight) cannot express it, so the projection left strokeHex empty - say so instead of
   // letting the border axis fall back to the presence branch.
   if (projected.strokeUnprojectable) {
-    extraRows.push({ prop: 'border-color', status: 'info',
+    // UNCHECKED, not info (receipt-lens finding 1): an axis the note says was not compared must
+    // hold the done-gate - the corner-radius precedent; a divider changing color was green.
+    extraRows.push({ prop: 'border-color', status: 'unchecked',
       note: 'the REFERENCE border is partial, non-uniform, or in a color space the extractor cannot read - the border axis was not compared; verify visually' });
   }
   const drift = fillTokenDrift(

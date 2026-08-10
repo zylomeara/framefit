@@ -124,7 +124,7 @@ export function registerCompareDomToDomTool(server: McpServer, deps: ToolDeps): 
         // No frame and no frameRequested -> 'pairs' scope: the receipt demands nothing beyond the
         // submitted pairs, and complete:false aggregates every pair's fails/reviews/holes in ONE
         // verdict (the done-gate correction: three defects are one incomplete receipt, not three calls).
-        const verification: VerificationReceipt = buildVerification(results, { depthLevels, tolerancePx });
+        const verification: VerificationReceipt = buildVerification(results, { depthLevels, tolerancePx, mode: 'dom-dom' });
 
         const budget = deps.maxResultChars ?? 40000;
         const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(tolerancePx, kept, results.length - kept.length, depthLevels, verification));

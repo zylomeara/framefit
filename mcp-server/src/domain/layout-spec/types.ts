@@ -255,6 +255,9 @@ export interface DiffRow {
   // (a deliberate narrowing — not an environmental hole, blocking is not flooded with resolve_skips), deriveCoverage
   // carries the marker in coverage.skipped. Set ONLY by applyLayoutProfileScope (diff.ts).
   profileScoped?: true;
+  // dom-dom: this info row deliberately does NOT gate (the skeleton direction) but the axis was
+  // NOT measured - deriveCoverage must file it under skipped, never measured.
+  coverageSkipped?: true;
 }
 
 export interface PairSummary { pass: number; fail: number; warn: number; skip: number; info: number; demoted: number; unchecked: number; review: number }

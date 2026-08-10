@@ -27,12 +27,13 @@ describe('dom-dom presence symmetry', () => {
     expect(fill?.status).toBe('review');   // wave finding 5: a warn is advisory - the done-gate stayed green
     expect(fill?.note).toMatch(/REFERENCE/);
   });
-  it('unparseable reference background (oklch) -> symmetric info, not silence, not presence-warn, no token action', () => {
+  it('unparseable reference background (oklch) -> gating UNCHECKED, not silence, not presence-warn, no token action', () => {
     const reference = snap({ styles: { display: 'flex', backgroundColor: 'oklch(0.7 0.1 200)', borderRadius: 0, opacity: 1 } });
     const candidate = snap({ styles: { display: 'flex', backgroundColor: '#808080', borderRadius: 0, opacity: 1 } });
     const rows = diffDomPair(reference, candidate, { tolerancePx: 1 });
     const fill = rows.find((r) => r.prop === 'fill');
-    expect(fill?.status).toBe('info');
+    // Receipt-lens finding 1: 'not checked on either side' must hold the done-gate.
+    expect(fill?.status).toBe('unchecked');
     expect(fill?.note).toMatch(/not checked on either side|verify visually/);
     expect(JSON.stringify(rows)).not.toMatch(/confirm_token/);
   });

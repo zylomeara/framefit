@@ -302,7 +302,9 @@ function uncheckedToBlocking(r: DiffRow, p: PairResult, depthLevels: number): Bl
   // the change that exists to stop a false pass would tell the reader to raise max_depth in order to fix a
   // border radius — the same false navigation the note above says was removed for the viewport case.
   // resolve_skip is the existing "a human must look" bucket; no fourteenth action is invented for this.
-  if (r.prop === 'corner-radius') return { ...base, kind: 'skip', action: 'resolve_skip' };
+  // border-color/fill join corner-radius (receipt-lens finding 1): dom-dom's 'axis was not
+  // compared' rows - a human must look; the existing bucket, no fourteenth action.
+  if (r.prop === 'corner-radius' || r.prop === 'border-color' || r.prop === 'fill') return { ...base, kind: 'skip', action: 'resolve_skip' };
   // p.7 carrier notes (note-guards, viewport precedent). AMBIGUOUS carriers: both texts are ALREADY
   // captured — a deeper capture resolves nothing, the only executable action is a pair on the text
   // node, at any depth. NO text in a fully captured subtree: neither depth nor a text pair exists to
@@ -332,6 +334,11 @@ export function buildVerification(pairs: PairResult[], opts: {
   // exclude_regions (normalized by the tool; normalized again here for direct callers): frame regions
   // whose COVERAGE DEMAND the caller removes. See ExCtx for the governing rule.
   excludeRegions?: string[];
+  // compare_dom_to_dom: presence/drift reviews have no token key, and two of them on one pair
+  // are structurally identical records (receipt-lens finding 3) - in this mode the generic
+  // review blocking carries places:[{node_id, prop}] so a machine consumer can tell WHICH axis
+  // to confirm. Absent -> figma-dom byte-for-byte.
+  mode?: 'dom-dom';
 }): VerificationReceipt {
   const scope: 'pairs' | 'frame' = opts.frame || opts.frameRequested ? 'frame' : 'pairs';
   const notes: string[] = [];
@@ -361,7 +368,8 @@ export function buildVerification(pairs: PairResult[], opts: {
     for (const r of p.rows) if (r.status === 'review') {
       if (!gatingReviewRow(r)) continue; // advisory — see anyReview above
       const key = (r.token && r.token !== '(paint)') ? `tok:${r.token}` : r.tokenReason ? `rsn:${r.tokenReason}` : undefined;
-      if (!key) { blocking.push({ kind: 'unconfirmed_token', node_id: p.node_id, ...(p.selector ? { selector: p.selector } : {}), action: 'confirm_token', detail: r.note ?? r.prop }); continue; }
+      if (!key) { blocking.push({ kind: 'unconfirmed_token', node_id: p.node_id, ...(p.selector ? { selector: p.selector } : {}), action: 'confirm_token', detail: r.note ?? r.prop,
+        ...(opts.mode === 'dom-dom' ? { places: [{ node_id: p.node_id, prop: r.prop }] } : {}) }); continue; }
       const g = tokenGroups.get(key) ?? { places: [], reasons: new Map<string, number>(), firstNote: r.note ?? r.prop, domTokens: new Set<string>() };
       g.places.push({ node_id: p.node_id, ...(p.selector ? { selector: p.selector } : {}), prop: r.prop });
       const reason = r.tokenReason ?? 'unspecified';

@@ -200,7 +200,9 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
   - `confirm_token` — `unconfirmed_token`: confirm the Figma token in the app. The aggregated entry
     carries `places[]` (ALL nodes with this token/reason; `node_id` is just the first place,
     `places_capped` — how many were cut) — confirm EVERY place in `places`; the reasons in `detail`
-    differ (e.g. `not-captured` = the DOM token was not read there).
+    differ (e.g. `not-captured` = the DOM token was not read there). In `compare_dom_to_dom` the
+    same kind/action mean: confirm the flagged change between the two captures (presence
+    asymmetry / tokenization drift) — no Figma call is involved; `places[]` names the row.
   - `fix_viewport` — `kind: 'viewport'`: the window width you captured at and the `frame_node_id`
     frame's width disagree, so geometry was demoted to `unchecked` rather than reported as red.
     Resize to the frame's width (or pass `expected_overlay_width` for a fixed overlay) and re-capture
