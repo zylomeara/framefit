@@ -40,5 +40,11 @@
     "node_id": "12:340",
     "w": 320,
     "variant_node_id": "12:300"
+  },
+  "coverage": {
+    "searched": 1,
+    "total": 1,
+    "skipped": [],
+    "skippedTotal": 0
   }
 }

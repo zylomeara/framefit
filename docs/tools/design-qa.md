@@ -552,8 +552,12 @@ Response (abridged):
 Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query
 (no node_id required - avoids a whole-file `find_nodes` on files with many near-duplicate variant
 frames). Rank is by CONTENT frame width, not the variant frame's own width (a variant named
-"desktop" (w1280) whose inner drawer content is w420 matches `render_width` 420). On huge files
-pass `parent_node_id` (a section or page) to scope the walk and avoid timing out.
+"desktop" (w1280) whose inner drawer content is w420 matches `render_width` 420). The walk
+enumerates top-level containers and searches each to a bounded depth under a time budget; the
+response always carries a coverage ledger (searched/total/skipped, plus `depth_cut` for
+containers deeper than the walk) - an empty variants list claims absence ONLY over the searched
+slice. Pass `parent_node_id` (a section or page) to scope the walk, or to drill one container
+named in `coverage.skipped`.
 
 **Parameters**
 
