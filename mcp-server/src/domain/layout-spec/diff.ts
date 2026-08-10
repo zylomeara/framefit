@@ -115,7 +115,13 @@ export function summarize(rows: DiffRow[]): PairSummary {
 
 // Structural coverage holes: the tool CANNOT measure them (unlike "not applicable to the pair").
 // Surfaced in the report footer — "green does NOT include this, verify visually".
-export const NOT_COVERED_BY_TOOL = ['icons'] as const;
+// icon-color narrowed the old blanket 'icons' entry: COLOR is now compared for svg icons (the
+// icon-color rows). What remains uncovered is named precisely - the per-pair truth lives in the
+// rows (unchecked/info), this static list stays honest about the residuals.
+export const NOT_COVERED_BY_TOOL = [
+  'icon-glyph (shape/path geometry - verify visually or by screenshot crop)',
+  'icon-font/mask-image icons (the color is visible but not compared)',
+] as const;
 
 // Meta rows (not coverage axes): service warnings / navigation / pair quality —
 // not a visual/geometric dimension. Includes the ref fetch (snapshot_ref) and the structural warns
@@ -1393,6 +1399,135 @@ function carrierNoteRow(prop: string, kind: 'ambiguous' | 'beyond_cut' | 'none',
     note: 'the Figma node carries text, the captured DOM subtree carries none - the text is missing or lives outside this element; fix the pair or verify by eye' };
 }
 
+// ── icon-color axis (feedback item 6) ──
+// A row fires ONLY where BOTH sides detect an icon: fig-side detection happened in the projector
+// (SpecChild.icon*), dom-side at extraction (styles.iconColor*). One-sided detection = no row -
+// the geometry rows still cover the box. A tag:'svg' DOM node with NO icon fields is a capture
+// from a pre-icon extractor (the new one always writes SOMETHING for a detected svg) - an honest
+// unchecked routed to re_extract_dom, never silence and never 'no color'.
+type FigIconState = { kind: 'hex'; hex: string; token?: ResolvedColorToken } | { kind: 'multi' } | { kind: 'unknown'; reason: string };
+type DomIconState = { kind: 'hex'; hex: string; domToken?: DomTokenState } | { kind: 'multi' } | { kind: 'unknown'; reason: string } | { kind: 'stale' };
+function figIconState(c: { iconHex?: string; iconToken?: ResolvedColorToken; iconMulti?: true; iconUnknown?: string }): FigIconState | undefined {
+  if (c.iconMulti) return { kind: 'multi' };
+  if (c.iconUnknown !== undefined) return { kind: 'unknown', reason: c.iconUnknown };
+  if (c.iconHex !== undefined) return { kind: 'hex', hex: c.iconHex, token: c.iconToken };
+  return undefined;
+}
+function domIconState(s: { iconColor?: string; iconColorToken?: DomTokenState; iconColorMulti?: true; iconColorUnknown?: string } | undefined,
+  tag: string | undefined): DomIconState | undefined {
+  if (s?.iconColorMulti) return { kind: 'multi' };
+  if (s?.iconColorUnknown !== undefined) return { kind: 'unknown', reason: s.iconColorUnknown };
+  if (s?.iconColor !== undefined) return { kind: 'hex', hex: s.iconColor, domToken: s.iconColorToken };
+  if (tag === 'svg') return { kind: 'stale' };
+  return undefined;
+}
+// DFS descent (the collectFigTexts precedent): a node CARRYING icon state consumes its whole
+// subtree (the extractor and the projector both mark wrapper AND inner svg - descending past the
+// first carrier would double-count the same glyph). childrenTruncated on a visited level =>
+// truncated: icons may hide beyond the slice.
+function collectFigIcons(c: SpecChild, maxDescent: number): Collected<{ state: FigIconState; label: string }> {
+  const self = figIconState(c);
+  if (self) return { items: [{ state: self, label: childLabel(c) }], truncated: false };
+  const items: { state: FigIconState; label: string }[] = [];
+  let truncated = false; let stopped = false;
+  const visit = (node: SpecChild): void => {
+    if (stopped) return;
+    if (node.childrenTruncated) truncated = true;
+    for (const kid of node.children ?? []) {
+      if (stopped) return;
+      const st = figIconState(kid);
+      if (st) {
+        items.push({ state: st, label: childLabel(kid) });
+        if (items.length >= maxDescent) { truncated = true; stopped = true; return; }
+      } else visit(kid);
+    }
+  };
+  visit(c);
+  return { items, truncated };
+}
+function collectDomIcons(c: DomChild, maxDescent: number): Collected<{ state: DomIconState }> {
+  const self = domIconState(c.styles, c.tag);
+  if (self) return { items: [{ state: self }], truncated: false };
+  const items: { state: DomIconState }[] = [];
+  let truncated = false; let stopped = false;
+  const visit = (node: DomChild): void => {
+    if (stopped) return;
+    if (node.childrenTruncated) truncated = true;
+    for (const kid of node.children ?? []) {
+      if (stopped) return;
+      if (kid.kind !== 'element') continue;
+      const st = domIconState(kid.styles, kid.tag);
+      if (st) {
+        items.push({ state: st });
+        if (items.length >= maxDescent) { truncated = true; stopped = true; return; }
+      } else visit(kid);
+    }
+  };
+  visit(c);
+  return { items, truncated };
+}
+// ONE row for a detected pair. Multi-color / unreadable are info WITH coverageSkipped - an info
+// is NOT a measurement (the multi-shadow precedent); the hex pair goes through colorVerdict, the
+// same ladder as text-color. No bound-var id is threaded for icons (the carrier's binding is
+// resolver-known only) - the evidence check degrades to the conservative semantic-confirm.
+function iconColorRow(prop: string, fig: FigIconState, dom: DomIconState, src?: DiffRow['srcChannel'], evidence?: CssTokenEvidence): DiffRow {
+  if (dom.kind === 'stale') {
+    return { prop, status: 'unchecked',
+      note: 'the DOM child is an svg but the snapshot carries no icon-color capture - it was captured by an older extractor; re-extract with the current one' };
+  }
+  if (fig.kind === 'multi' || dom.kind === 'multi') {
+    return { prop, status: 'info', coverageSkipped: true,
+      figma: fig.kind === 'hex' ? fig.hex : '(multi-color)', dom: dom.kind === 'hex' ? dom.hex : '(multi-color)',
+      note: 'multi-color icon - the glyph carries more than one paint, there is no single comparable color; verify visually' };
+  }
+  if (fig.kind === 'unknown') {
+    return { prop, status: 'info', coverageSkipped: true,
+      note: `the Figma icon paint was not comparable (${fig.reason}) - verify visually` };
+  }
+  if (dom.kind === 'unknown') {
+    return { prop, status: 'info', coverageSkipped: true,
+      note: `the DOM icon paint was not comparable (${dom.reason}) - verify visually` };
+  }
+  const v = colorVerdict(fig.token?.hex ?? fig.hex, fig.token, dom.hex, dom.domToken, false, undefined, evidence);
+  return { prop, figma: fig.token?.hex ?? fig.hex, dom: dom.hex, status: v.status,
+    ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}),
+    ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
+    ...(v.status === 'fail' && src ? { srcChannel: src } : {}) };
+}
+// The per-child emission: zip both descents by index (icons have no content anchor; labels
+// disambiguate with #i on collision - icon layers are commonly all named alike). The unmatched
+// tails stay honest: extra DOM icons against a CUT fig subtree are one unchecked routed to
+// raise_max_depth (a deeper fetch really does reveal the vectors); extra DOM icons against a
+// fully captured non-icon subtree are one-sided - no row; extra FIG icons against a truncated
+// DOM subtree are one unchecked naming the re-extract.
+function iconRowsFor(c: SpecChild, domChild: DomChild, i: number, maxDescent: number, evidence?: CssTokenEvidence): DiffRow[] {
+  const figs = collectFigIcons(c, maxDescent);
+  const doms = collectDomIcons(domChild, maxDescent);
+  const rows: DiffRow[] = [];
+  const labelCounts = new Map<string, number>();
+  for (const f of figs.items) labelCounts.set(f.label, (labelCounts.get(f.label) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  const n = Math.min(figs.items.length, doms.items.length);
+  for (let k = 0; k < n; k++) {
+    const f = figs.items[k];
+    const dup = (labelCounts.get(f.label) ?? 0) > 1;
+    const idx = seen.get(f.label) ?? 0; seen.set(f.label, idx + 1);
+    const label = dup ? `${f.label}#${idx}` : f.label;
+    rows.push(iconColorRow(`icon-color[${label}]`, f.state, doms.items[k].state,
+      { kind: 'child', i, editKind: 'property' }, evidence));
+  }
+  if (doms.items.length > figs.items.length && (figs.truncated || c.childrenTruncated === true)) {
+    const suffix = figs.items.length === 0 ? childLabel(c) : `${childLabel(c)}#${figs.items.length}`;
+    rows.push({ prop: `icon-color[${suffix}]`, status: 'unchecked',
+      note: 'the DOM side shows an icon here, but the Figma subtree is cut before its vectors - raise max_depth (up to 8) and re-run, or pair the icon node directly' });
+  } else if (figs.items.length > doms.items.length && doms.truncated) {
+    const suffix = doms.items.length === 0 ? childLabel(c) : `${childLabel(c)}#${doms.items.length}`;
+    rows.push({ prop: `icon-color[${suffix}]`, status: 'unchecked',
+      note: 'the Figma side carries an icon, but the DOM subtree was truncated before one was captured - re-extract deeper or pair the icon node directly' });
+  }
+  return rows;
+}
+
 // Hug-evidence (confirmed by live probing): proof of hug ON the DOM SIDE for
 // fig columns without hugWidth (FILL — width from the parent, not from the content). The right edge
 // of the dom container coincides (within tolerance tol) with the outermost text descendant ⇒ the trailing is produced
@@ -1674,6 +1809,9 @@ function crossAndPaddingRows(
       rows.push(numRow(`child-size.w[${childLabel(c)}]`, c.rect.w, domKids[i].rect.w, tol));
       rows.push(numRow(`child-size.h[${childLabel(c)}]`, c.rect.h, domKids[i].rect.h, tol));
     }
+    // icon-color axis: NOT in dom-dom (its projection types everything TEXT|FRAME and carries no
+    // icon fields; the mode's not_covered keeps its own wording - no claim either way).
+    if (opts.sides !== 'dom-dom') rows.push(...iconRowsFor(c, domKids[i], i, maxDescent, opts.cssEvidence));
     if (c.text) {
       // p.7 routing: direct compare ONLY when the DOM child owns its text; a unique nested carrier
       // supplies the styles otherwise, and a missing carrier is a note, never a wrapper compare.
@@ -2061,6 +2199,16 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
         carrier.uncertain, undefined, true, opts.cssEvidence));
     } else {
       rows.push(carrierNoteRow('typography', carrier.kind, opts.sides === 'dom-dom'));
+    }
+  }
+
+  // icon-color, the root site (a direct icon pair): the same detection, the row without a label.
+  // Root stale capture is decidable through componentHints.tag (the root snapshot has no tag field).
+  if (opts.sides !== 'dom-dom') {
+    const figRootIcon = figIconState(spec);
+    const domRootIcon = domIconState(d.styles, d.componentHints?.tag);
+    if (figRootIcon && domRootIcon) {
+      rows.push(iconColorRow('icon-color', figRootIcon, domRootIcon, { kind: 'root', editKind: 'property' }, opts.cssEvidence));
     }
   }
 

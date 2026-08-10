@@ -1438,7 +1438,10 @@ describe('compare_node_to_dom tool', () => {
     const out = JSON.parse(res.content[0].text);
     expect(out.pairs[0].coverage.measured).toEqual(expect.arrayContaining(['size', 'font-size']));
     expect(out.pairs[0].coverage.skipped).toEqual([]);
-    expect(out.not_covered_by_tool).toEqual(['icons']);
+    expect(out.not_covered_by_tool).toEqual([
+      'icon-glyph (shape/path geometry - verify visually or by screenshot crop)',
+      'icon-font/mask-image icons (the color is visible but not compared)',
+    ]);
     expect(out.report_markdown).toContain('NOT covered by this tool');
     expect(out.report_markdown).toContain('typography checked to 4 nesting levels'); // depth-ceiling note (nit 1)
   });

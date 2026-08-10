@@ -69,7 +69,10 @@ describe('deriveCoverage', () => {
   });
 
   it('NOT_COVERED_BY_TOOL names the structural holes', () => {
-    expect(NOT_COVERED_BY_TOOL).toEqual(['icons']);
+    expect(NOT_COVERED_BY_TOOL).toEqual([
+      'icon-glyph (shape/path geometry - verify visually or by screenshot crop)',
+      'icon-font/mask-image icons (the color is visible but not compared)',
+    ]);
   });
 
   it('a matched border → coverage contains border-color and border-width', () => {

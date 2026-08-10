@@ -63,10 +63,11 @@ describe('renderReport', () => {
 
   it('footer: NOT_COVERED only icons + icons narrowing', () => {
     const md = renderReport({ file: 'f', tolerancePx: 1, pairs: [] });
-    expect(md).toContain('NOT covered by this tool (verify visually): icons');
+    expect(md).toContain('NOT covered by this tool (verify visually): icon-glyph');
+    expect(md).toContain('icon-font/mask-image');
     expect(md).not.toContain('box-shadow');
     expect(md).not.toContain('border-color');
-    expect(md).toContain('size/position are measured geometrically');
+    expect(md).toContain('size/position/color are measured');
   });
 
   it('renders an optional preflight warning BEFORE the per-pair sections', () => {

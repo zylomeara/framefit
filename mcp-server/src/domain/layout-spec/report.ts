@@ -286,7 +286,7 @@ export function renderReport(input: {
       : `ℹ️ ${d.stage}: not resolved after ${Math.round(d.ms / 1000)}s (${d.reason}: ${d.detail}) — that wait is inside this call's duration, and the rows it feeds read as unresolved rather than verified`);
   }
   lines.push('', `⚠️ NOT covered by this tool (verify visually): ${(input.notCovered ?? NOT_COVERED_BY_TOOL).join(', ')}`);
-  lines.push('ℹ️ icons: size/position are measured geometrically, the diff does not check glyph/shape — verify visually or get_screenshot focus-crop');
+  lines.push('ℹ️ icons: size/position/color are measured (icon-color rows for svg icons), the diff does not check glyph/shape — verify visually or get_screenshot focus-crop');
   lines.push(`ℹ️ typography checked to ${input.depthLevels ?? 4} nesting levels — TEXT deeper: raise max_depth (up to 8) and rerun, or add a separate pair on the TEXT node`);
   return lines.join('\n');
 }

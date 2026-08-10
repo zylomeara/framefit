@@ -432,8 +432,8 @@ Response (abridged — see the [tutorial](../design-qa-tutorial.md) for a full a
     ]
   },
   /* a "hydration" receipt follows here, in the same shape as get_layout_spec's */
-  "not_covered_by_tool": ["icons"],
-  "report_markdown": "<verification report markdown, 1257 chars - elided>"
+  "not_covered_by_tool": ["icon-glyph (shape/path geometry - verify visually or by screenshot crop)", "icon-font/mask-image icons (the color is visible but not compared)"],
+  "report_markdown": "<verification report markdown, 1416 chars - elided>"
 }
 ```
 

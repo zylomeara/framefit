@@ -434,9 +434,12 @@ terminal `no discrepancies above tolerance` is the green.
 - A clean number diff (0 ❌) does NOT cancel visual screenshot review where your process requires
   it. The diff covers `border-color`/`border-width` (border color+width, root node), `box-shadow`
   (the first shadow: x/y/blur/spread/color/inset — spread is a regular axis, Figma REST provides
-  it), and gradients (kind, per-stop colors/positions, linear angle, token provenance). The diff
-  does NOT cover: icon GLYPHS (icon size/position are measured as geometry — but which glyph is
-  drawn is not; verify by eye / get_screenshot focus crop), radial/conic gradient GEOMETRY
+  it), gradients (kind, per-stop colors/positions, linear angle, token provenance), and icon
+  COLOR for svg icons (`icon-color` rows through the same verdict ladder as text color; a
+  multi-color or unreadable glyph is an ℹ️ verify-visually info, a stale pre-icon snapshot routes
+  to `re_extract_dom`). The diff does NOT cover: icon GLYPHS (icon size/position/color are
+  measured — but which glyph is drawn is not; verify by eye / get_screenshot focus crop),
+  icon-FONT and mask-image icons (the color is visible but not compared), radial/conic gradient GEOMETRY
   (center/radius/shape — flagged 👁 unchecked), second-and-further background layers (only the
   first layer is compared; a `gradient-layers` info row flags the rest), and multi-shadow stacks
   (>1 shadow → `⚠️ box-shadow` `"the shadow list was not matched (single-shadow-first) — verify visually"`).
