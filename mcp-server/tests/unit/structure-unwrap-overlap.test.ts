@@ -6,7 +6,8 @@
 // overlapping unwrap and extend the existing wrap/reflow protections - everything downstream
 // (per-child zip, offset-cross, typography descent, the gap skip) already exists, guarded.
 import { describe, it, expect } from 'vitest';
-import { diffPair } from '../../src/domain/layout-spec/diff.js';
+import { diffPair, summarize, deriveCoverage } from '../../src/domain/layout-spec/diff.js';
+import { buildVerification } from '../../src/domain/layout-spec/verification.js';
 import type { LayoutSpec, DomSnapshotOk, DomChild, SpecChild } from '../../src/domain/layout-spec/types.js';
 
 const figText = (id: string, name: string, x: number, y: number, w: number, h: number, snippet: string, size: number): SpecChild =>
@@ -63,7 +64,7 @@ describe('the July shape: overlapping unwrap is ACCEPTED', () => {
     const gaps = rows.filter((r) => r.prop.startsWith('gap['));
     // Only OVERLAPPING neighbors skip (title/subtitle stack); subtitle<->meta is genuinely
     // single-file and gets a REAL measured gap - stricter than the spec asked for.
-    expect(gaps.some((r) => r.status === 'skip' && /overlap/.test(r.note ?? ''))).toBe(true);
+    expect(gaps.some((r) => r.status === 'skip' && /stack|overlap/.test(r.note ?? ''))).toBe(true);
     expect(gaps.some((r) => r.status === 'pass')).toBe(true);
     expect(rows.filter((r) => r.status === 'fail')).toEqual([]);
   });
@@ -227,5 +228,64 @@ describe('wave locks: both-sides truth under an overlap unwrap', () => {
     ]);
     const rows = diffPair(listItemSpec(fig), dom, { tolerancePx: 1 });
     expect(rows.find((r) => r.prop === 'children_reorder')).toBeUndefined();
+  });
+});
+
+describe('wave round 2: gaps, receipt, vocabulary', () => {
+  it('a gap touching a tie-group slot is not attributed - FULL ROW EQUALITY across source orders', () => {
+    // 3 children: two tied at one start with different extents + one single-file. The gap from
+    // the tie group to the single child must not ride the layer-order zip (its NUMBER flipped
+    // with markup order before this lock - the prop-names-only comparison hid it).
+    const fig = [
+      figText('7:1', 'A', 16, 12, 50, 20, 'Aaa', 16),
+      figText('7:2', 'B', 76, 12, 50, 20, 'Bbb', 16),
+      figText('7:3', 'C', 216, 12, 50, 20, 'Ccc', 16),
+    ];
+    const mk = (order: 'sw' | 'ws'): DomSnapshotOk => {
+      const small: DomChild = span(16, 12, 50, 20, 'Zz', 16);
+      const wide: DomChild = span(16, 40, 150, 16, 'Yy', 12);
+      const far: DomChild = span(216, 12, 50, 20, 'Xx', 16);
+      return domRow([{ kind: 'element', tag: 'div', rect: { x: 16, y: 12, w: 250, h: 46 },
+        children: order === 'sw' ? [small, wide, far] : [wide, small, far] }]);
+    };
+    const flat = (kids: SpecChild[]): LayoutSpec => ({
+      node: { id: '7:0', name: 'row', type: 'FRAME' }, rect: { x: 0, y: 0, w: 412, h: 70 },
+      axis: 'row', autoLayout: { gap: 12, padding: { top: 12, right: 16, bottom: 12, left: 16 } },
+      children: kids,
+    } as LayoutSpec);
+    const a = diffPair(flat(fig), mk('sw'), { tolerancePx: 1 });
+    const b = diffPair(flat(fig), mk('ws'), { tolerancePx: 1 });
+    const proj = (rows: typeof a) => rows.map((r) => `${r.status}|${r.prop}|${r.figma}|${r.dom}|${r.delta}`).sort().join('\n');
+    expect(proj(a)).toBe(proj(b));
+    expect(a.some((r) => r.prop.startsWith('gap[') && /ambiguous/.test(r.note ?? ''))).toBe(true);
+  });
+  it('the all-pass July pair CLOSES the receipt: the stack gap-skip is an inapplicable axis, not a hole', () => {
+    const rows = diffPair(listItemSpec(figKids()), domRow(domKids()), { tolerancePx: 1 });
+    const skips = rows.filter((r) => r.status === 'skip');
+    expect(skips.every((r) => r.coverageSkipped === true)).toBe(true);
+    expect(skips.some((r) => /pair the wrapper directly/.test(r.note ?? ''))).toBe(true);
+    // The receipt-level promise, locked end to end: complete:true with empty blocking.
+    const pair = { node_id: '1:1', rows, summary: summarize(rows), coverage: deriveCoverage(rows) };
+    const v = buildVerification([pair], { depthLevels: 4, tolerancePx: 1 });
+    expect(v.complete).toBe(true);
+    expect(v.blocking).toEqual([]);
+  });
+  it('a REAL main-axis swap of disjoint children still fires children_reorder under an overlap unwrap', () => {
+    // title/subtitle stack (overlap accepted via the tie), but meta and badge - disjoint main
+    // ranges - are genuinely swapped in the dom: the detector must still catch it.
+    const fig = [
+      figText('8:1', 'title', 16, 12, 100, 20, 'Row title', 16),
+      figText('8:2', 'subtitle', 16, 36, 100, 16, 'Row subtitle', 13),
+      figText('8:3', 'meta', 220, 24, 40, 16, 'Meta tag', 13),
+      figText('8:4', 'badge', 320, 24, 40, 16, 'New badge', 13),
+    ];
+    const dom = domRow([
+      span(16, 12, 100, 20, 'Row title', 16),
+      span(16, 36, 100, 16, 'Row subtitle', 13),
+      span(220, 24, 40, 16, 'New badge', 13),   // swapped
+      span(320, 24, 40, 16, 'Meta tag', 13),    // swapped
+    ]);
+    const rows = diffPair(listItemSpec(fig), dom, { tolerancePx: 1 });
+    expect(rows.find((r) => r.prop === 'children_reorder')).toBeDefined();
   });
 });
