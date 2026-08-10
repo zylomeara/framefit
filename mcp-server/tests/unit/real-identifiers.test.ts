@@ -631,7 +631,18 @@ function scanText(relPath: string, text: string, usedExceptions?: Map<string, nu
       if (idVerdict(c[1], c[2])) add(m.index, 'R1-node-id-colon', c[0]);
     }
   }
+  // A digit run INSIDE a longer hex token is hash luck, not an id: the doc-response captures
+  // carry the extractor's real sha256 fingerprint, and roughly one re-cut in a few dozen lands
+  // a 15+ digit decimal run inside the 64-hex digest (measured live: 736821860439724 inside
+  // 6c30ea...da57). The digest is content-derived - it cannot be replaced, and registering the
+  // exact value in EXCEPTIONS would rot on every extractor edit. Structural, not an allowlist:
+  // the run only escapes R3 when its surrounding [0-9a-f] token is 40+ hex chars (sha1/sha256
+  // lengths) - a bare 15-digit team id never is.
+  const HEX_TOKEN = /[0-9a-f]{40,}/g;
+  const hexSpans: [number, number][] = [];
+  for (const h of text.matchAll(HEX_TOKEN)) hexSpans.push([h.index, h.index + h[0].length]);
   for (const m of text.matchAll(/(?<!\d)\d{15,}(?!\d)/g)) {
+    if (hexSpans.some(([a, b]) => m.index >= a && m.index + m[0].length <= b)) continue;
     if (!NEUTRAL_TEAM_IDS.includes(m[0])) add(m.index, 'R3-team-id', m[0]);
   }
   // SEVEN figma.com path verbs, not the three the rule was first written against -- and SEVEN is the

@@ -161,6 +161,23 @@ describe('icon color capture (phase 1)', () => {
     expect(snap.children[0].styles.iconColor).toBe('#242429');
     expect(snap.children[0].styles.iconColorUnknown).toBeUndefined();
   });
+  it('pure BLACK - the SVG-initial and commonest icon color - is a color, not transparency', async () => {
+    const svg = svgOf([path('rgb(0, 0, 0)')]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColor).toBe('#000000');
+    expect(snap.children[0].styles.iconColorUnknown).toBeUndefined();
+  });
+  it('a zero-blue channel never reads as transparent: black + purple is MULTI, not purple', async () => {
+    const svg = svgOf([path('rgb(0, 0, 0)'), path('rgb(108, 93, 211)')]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColor).toBeUndefined();
+    expect(snap.children[0].styles.iconColorMulti).toBe(true);
+  });
+  it('an anchored #fff shorthand attribute is a literal too (litHex, not a parser subset)', async () => {
+    const svg = svgOf([path('rgb(255, 255, 255)', {}, { fill: '#fff' })]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColorToken).toEqual({ literal: true });
+  });
   it('the WRAPPER\'s own opacity folds into the hex (the projector folds the candidate\'s)', async () => {
     const svg = svgOf([path('rgb(17, 17, 17)')]);
     const span = makeEl('span', rect(0, 0, 24, 24), [svg], { opacity: '0.5' });

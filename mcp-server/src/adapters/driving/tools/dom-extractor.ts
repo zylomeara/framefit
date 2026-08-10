@@ -556,7 +556,10 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       if (!paint || paint === 'none') continue;
       // A fully transparent paint renders nothing - the part contributes NOTHING (like
       // display:none), it is not an 'unreadable' paint (toHex refuses alpha 0 by design).
-      if (paint === 'transparent' || /rgba?\\([^)]+,\\s*0(\\.0+)?\\s*\\)\\s*$/.test(paint)) continue;
+      // rgbA with FOUR components only: the computed 3-component rgb() form ends in the BLUE
+      // channel, and a loose tail match swallowed every opaque color whose blue is 0 - pure
+      // black, the SVG-initial and commonest icon color, read as 'transparent'.
+      if (paint === 'transparent' || /^rgba\\(\\s*\\d+,\\s*\\d+,\\s*\\d+,\\s*0(\\.0+)?\\s*\\)$/.test(paint)) continue;
       const ph = toHexLoose(paint);
       if (ph === undefined) { if (unknown === undefined) unknown = 'unreadable ' + paintProp + ' (' + String(paint).slice(0, 48) + ')'; continue; }
       const fo = num(paintProp === 'fill' ? pcs.fillOpacity : pcs.strokeOpacity);
@@ -566,9 +569,10 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         // Value-anchored attribute claim (the classifyColor doctrine - a literal is only ever
         // claimed from a value that PRODUCED the pixel): fill="currentColor" is a deferral, and
         // a presentation attribute beaten by author CSS painted nothing - both fall through to
-        // the classifier on the property that actually carried the paint.
+        // the classifier on the property that actually carried the paint. litHex, not a
+        // hand-rolled subset: #fff, 8-digit and padded forms are literals too.
         const av = p.getAttribute && p.getAttribute(paintProp);
-        const ah = av ? toHexLoose(av) || namedHex(av) || hslHex(av) || (/^#[0-9a-f]{6}$/i.test(av) ? av.toLowerCase() : undefined) : undefined;
+        const ah = av && av !== 'currentColor' && av !== 'inherit' ? litHex(av) : undefined;
         attrLiteral = ah !== undefined && ah.slice(0, 7) === ph.slice(0, 7).toLowerCase();
       }
       else if (hex !== eff) multi = true;
@@ -577,7 +581,13 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     if (hex === undefined) { styles.iconColorUnknown = unknown || 'no readable fill/stroke'; return; }
     if (unknown !== undefined) { styles.iconColorUnknown = unknown; return; }
     styles.iconColor = hex;
-    const tok = attrLiteral ? { literal: true } : classifyColor(carrier, carrierProp, hex.slice(0, 7));
+    // The CASCADE wins over a presentation attribute (an attribute is the lowest-precedence
+    // author input): the classifier's positive evidence - a token, a CSS literal, an ambiguous
+    // cascade - stands; the anchored attribute claims the literal only in the vacuum, when no
+    // declaration accounts for the pixel ({unknown}), which is exactly when the attribute is
+    // what painted it.
+    const cssTok = classifyColor(carrier, carrierProp, hex.slice(0, 7));
+    const tok = attrLiteral && (cssTok === undefined || cssTok.unknown !== undefined) ? { literal: true } : cssTok;
     if (tok !== undefined) styles.iconColorToken = tok;
   };
     // gradient: bracket-aware top-level comma split (rgb()/var() contain commas — naive split corrupts stops)

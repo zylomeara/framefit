@@ -185,13 +185,36 @@ function iconPaintOf(n: RawSceneNode): { solid: RawPaint; slot: 'fills' | 'strok
 // (VECTOR/BOOLEAN_OPERATION/STAR/REGULAR_POLYGON) is NEVER demoted to plate - a full-bleed
 // checkmark must not surrender its color to a smaller accent part.
 const PLATE_CLASS = new Set(['RECTANGLE', 'ELLIPSE', 'FRAME', 'GROUP', 'INSTANCE', 'COMPONENT']);
-// A BARE box/divider child (rect/ellipse/line with a paint) is a style carrier, not a glyph -
-// the fill/stroke axes already cover it. Counting it as an icon put dividers and skeleton
-// placeholders into the icon inventory and shifted the index zip onto unrelated DOM svgs.
-const NOT_A_BARE_ICON = new Set(['RECTANGLE', 'ELLIPSE', 'LINE']);
+// What QUALIFIES a candidate as an icon: at least one DRAWN leaf - a path-drawn shape no CSS
+// box can express. RECTANGLE/ELLIPSE/LINE are CSS-expressible style carriers (div/hr/dot): they
+// may take part in a real icon (plates, accents), but alone they are dividers, skeleton
+// placeholders and swatches - counting them shifted the index zip onto unrelated DOM svgs, and
+// one wrapper level (FRAME > divider) defeated any bare-child gate.
+const GLYPH_CLASS = new Set(['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'REGULAR_POLYGON']);
+
+// A container holding SEVERAL disjoint icon-bearing containers is a GROUP of icons (a toolbar),
+// not one icon: claiming it as one suppressed the per-child rows of every icon inside it. Glyph
+// layers inside one icon OVERLAP; toolbar members do not - disjointness is the structural line.
+function isIconGroup(raw: RawSceneNode): boolean {
+  const bearing = (raw.children ?? []).filter((c) => {
+    if (c.visible === false || !ICON_CONTAINERS.has(c.type)) return false;
+    const hasGlyph = (n: RawSceneNode): boolean =>
+      n.visible !== false && (GLYPH_CLASS.has(n.type) || (n.children ?? []).some(hasGlyph));
+    return hasGlyph(c);
+  });
+  if (bearing.length < 2) return false;
+  const disjoint = (a?: SpecRect, b?: SpecRect): boolean => !!a && !!b
+    && (a.x + a.w <= b.x + 1 || b.x + b.w <= a.x + 1 || a.y + a.h <= b.y + 1 || b.y + b.h <= a.y + 1);
+  for (let i = 0; i < bearing.length; i++) {
+    for (let j = i + 1; j < bearing.length; j++) {
+      if (disjoint(rectOf(bearing[i]), rectOf(bearing[j]))) return true;
+    }
+  }
+  return false;
+}
 
 function surveyFigIcon(raw: RawSceneNode, ctx: ProjectorContext): IconSurvey | undefined {
-  if (NOT_A_BARE_ICON.has(raw.type)) return undefined;
+  if (isIconGroup(raw)) return undefined;
   const rootRect = rectOf(raw);
   type Carrier = { node: RawSceneNode; slot: 'fills' | 'strokes'; hex: string; alpha: number; plate: boolean };
   const carriers: Carrier[] = [];
@@ -201,7 +224,8 @@ function surveyFigIcon(raw: RawSceneNode, ctx: ProjectorContext): IconSurvey | u
     const a = alpha * (n.opacity ?? 1);
     if (n.type === 'TEXT' || hasImageFill(n.fills)) { not = true; return; }
     const isLeafClass = VECTOR_CLASS.has(n.type);
-    if (isLeafClass) vectors += 1;
+    if (GLYPH_CLASS.has(n.type)) vectors += 1;
+    if (isLeafClass) { /* box-shape leaves (RECTANGLE/ELLIPSE/LINE) are parts, never qualifiers */ }
     else if (ICON_CONTAINERS.has(n.type)) {
       // A container with NO children array was cut by the fetch depth - the inventory cannot
       // complete. [] is a genuinely empty container and just contributes nothing.

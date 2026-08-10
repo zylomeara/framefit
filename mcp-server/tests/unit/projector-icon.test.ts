@@ -47,10 +47,31 @@ describe('fig icon paint projection (phase 2)', () => {
     const spec = buildLayoutSpec(frameWith([icon([outline])]));
     expect(spec.children[0].iconHex).toBe('#242429');
   });
-  it('zero-area LINE with a stroke is counted (the raw walk, not a layout filter)', () => {
-    const line = node('LINE', { strokes: [solid('#242429')], absoluteBoundingBox: { x: 0, y: 8, width: 16, height: 0 } });
-    const spec = buildLayoutSpec(frameWith([icon([line])]));
+  it('zero-area LINE with a stroke is counted as a PART (the raw walk, not a layout filter)', () => {
+    const line = node('LINE', { strokes: [solid('#e02020')], absoluteBoundingBox: { x: 0, y: 8, width: 16, height: 0 } });
+    const spec = buildLayoutSpec(frameWith([icon([line, vec('#242429')])]));
+    // the differing zero-area LINE proves it was surveyed - a layout filter would drop it
+    expect(spec.children[0].iconMulti).toBe(true);
+  });
+  it('box shapes alone do not qualify: a dot INSTANCE (no drawn glyph) is not an icon', () => {
+    const dot = node('ELLIPSE', { fills: [solid('#2ecc71')] });
+    const spec = buildLayoutSpec(frameWith([icon([dot])]));
+    expect(spec.children[0].iconHex).toBeUndefined();
+    expect(spec.children[0].iconUnknown).toBeUndefined();
+  });
+  it('a WRAPPED divider (FRAME > RECTANGLE) is still not an icon - one wrapper level does not defeat the gate', () => {
+    const wrapped = node('FRAME', { children: [node('RECTANGLE', { fills: [solid('#e0e0e0')] })] });
+    const spec = buildLayoutSpec(frameWith([wrapped]));
+    expect(spec.children[0].iconHex).toBeUndefined();
+  });
+  it('a toolbar (two disjoint icon-bearing containers) is a GROUP, not one icon - children keep their fields', () => {
+    const a = icon([vec('#242429')], { absoluteBoundingBox: { x: 0, y: 0, width: 16, height: 16 } });
+    const b = icon([vec('#242429')], { absoluteBoundingBox: { x: 24, y: 0, width: 16, height: 16 } });
+    const bar = node('FRAME', { absoluteBoundingBox: { x: 0, y: 0, width: 40, height: 16 }, children: [a, b] });
+    const spec = buildLayoutSpec(bar);
+    expect(spec.iconHex).toBeUndefined();
     expect(spec.children[0].iconHex).toBe('#242429');
+    expect(spec.children[1].iconHex).toBe('#242429');
   });
   it('alpha folds: color.a x paint opacity x node opacity chain -> 8-digit hex', () => {
     // 0.5 (color.a) * 0.6 (paint opacity) * 0.8 (vector opacity) = 0.24 -> 0x3d
@@ -81,9 +102,10 @@ describe('fig icon paint projection (phase 2)', () => {
     expect(spec.children[0].iconHex).toBe('#ffffff');
     expect(spec.children[0].iconMulti).toBeUndefined();
   });
-  it('a plate-only icon (a status dot) falls back to the plate color', () => {
-    const dot = node('ELLIPSE', { fills: [solid('#2ecc71')] });
-    const spec = buildLayoutSpec(frameWith([icon([dot])]));
+  it('a paint-less glyph on a colored plate falls back to the plate color', () => {
+    const ghost = node('VECTOR');
+    const plateBg = node('ELLIPSE', { fills: [solid('#2ecc71')] });
+    const spec = buildLayoutSpec(frameWith([icon([ghost, plateBg])]));
     expect(spec.children[0].iconHex).toBe('#2ecc71');
   });
   it('vectors nested in a transparent GROUP are surveyed', () => {

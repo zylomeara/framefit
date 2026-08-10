@@ -133,7 +133,7 @@ describe('icon-color: descent and the root site', () => {
     // the typography channel's mis-addressing; no address beats a wrong one.
     expect(r?.srcChannel).toBeUndefined();
   });
-  it('UNEQUAL inventories are never zipped: one honest info instead of N wrong-element compares', () => {
+  it('UNEQUAL inventories are never zipped - and the refusal HOLDS the gate (unchecked, not info)', () => {
     const figWrap: SpecChild = { id: '1:5', name: 'cell', type: 'FRAME', rect: { x: 0, y: 0, w: 40, h: 16 },
       children: [figIcon({ iconHex: '#242429' })] };
     const domTwo: DomChild = { kind: 'element', tag: 'div', rect: { x: 0, y: 0, w: 40, h: 16 },
@@ -141,14 +141,36 @@ describe('icon-color: descent and the root site', () => {
     const rows = diffPair(spec([figWrap]), snap([domTwo]), { tolerancePx: 1 });
     const rs = iconRows(rows);
     expect(rs.length).toBe(1);
-    expect(rs[0].status).toBe('info');
-    expect(rs[0].coverageSkipped).toBe(true);
+    expect(rs[0].status).toBe('unchecked');
     expect(rs[0].note).toMatch(/NOT compared/);
     expect(rows.filter((r) => r.prop.startsWith('icon-color') && r.status === 'fail')).toEqual([]);
+    const pair = { node_id: '1:1', rows, summary: summarize(rows), coverage: deriveCoverage(rows) };
+    const v = buildVerification([pair], { depthLevels: 4, tolerancePx: 1 });
+    expect(v.complete).toBe(false);
+    expect(v.blocking.some((b) => b.action === 'resolve_skip')).toBe(true);
   });
-  it('a direct child pair keeps its srcChannel (the address IS the paired element)', () => {
-    const rows = diffPair(spec([figIcon({ iconHex: '#242429' })]), snap([domIcon({ iconColor: '#6c5dd3' })]), { tolerancePx: 1 });
+  it('srcChannel is gated on the DOM side: a dom-self carrier keeps the address even under fig descent', () => {
+    const figWrap: SpecChild = { id: '1:5', name: 'cell', type: 'FRAME', rect: { x: 0, y: 0, w: 32, h: 32 },
+      children: [figIcon({ iconHex: '#242429' })] };
+    const rows = diffPair(spec([figWrap]), snap([domIcon({ iconColor: '#6c5dd3' })]), { tolerancePx: 1 });
     expect(iconRows(rows)[0]?.srcChannel).toEqual({ kind: 'child', i: 0, editKind: 'property' });
+  });
+  it('srcChannel is dropped when the DOM carrier was found by descent - even for a fig-self icon', () => {
+    const domWrap: DomChild = { kind: 'element', tag: 'div', rect: { x: 8, y: 8, w: 24, h: 24 },
+      children: [domIcon({ iconColor: '#6c5dd3' })] };
+    const rows = diffPair(spec([figIcon({ iconHex: '#242429' })]), snap([domWrap]), { tolerancePx: 1 });
+    const r = iconRows(rows)[0];
+    expect(r?.status).toBe('fail');
+    expect(r?.srcChannel).toBeUndefined();
+  });
+  it('an equal-count zip under a truncated inventory appends one unchecked for the unseen tail', () => {
+    const figWrap: SpecChild = { id: '1:5', name: 'cell', type: 'FRAME', rect: { x: 0, y: 0, w: 32, h: 32 },
+      childrenTruncated: true, children: [figIcon({ iconHex: '#242429' })] };
+    const rows = diffPair(spec([figWrap]), snap([domIcon({ iconColor: '#242429' })]), { tolerancePx: 1 });
+    const rs = iconRows(rows);
+    expect(rs.some((r) => r.status === 'pass')).toBe(true);
+    const tail = rs.find((r) => r.status === 'unchecked');
+    expect(tail?.note).toMatch(/beyond the cut/);
   });
   it('label collision: two nested icons named alike -> #i disambiguates, both rows emitted', () => {
     const two = (hexes: [string, string]): SpecChild => ({ id: '1:5', name: 'cell', type: 'FRAME', rect: { x: 0, y: 0, w: 40, h: 16 },
@@ -184,6 +206,22 @@ describe('icon-color: descent and the root site', () => {
     const r = rows.find((x) => x.prop === 'icon-color');
     expect(r?.status).toBe('unchecked');
     expect(r?.note).toMatch(/older extractor/);
+  });
+  it('the root-descent row carries NO srcChannel (the root address would name the wrapper)', () => {
+    const rows = diffPair(
+      spec([], { iconHex: '#242429' }),
+      snap([domIcon({ iconColor: '#6c5dd3' })], { componentHints: { tag: 'span', classList: ['btn'], data: {} } }), { tolerancePx: 1 });
+    const r = rows.find((x) => x.prop === 'icon-color');
+    expect(r?.status).toBe('fail');
+    expect(r?.srcChannel).toBeUndefined();
+  });
+  it('a fig root icon over a truncated captureless DOM subtree -> unchecked re-extract, not silence', () => {
+    const rows = diffPair(
+      spec([], { iconHex: '#242429' }),
+      snap([], { childrenTruncated: true, componentHints: { tag: 'span', classList: [], data: {} } }), { tolerancePx: 1 });
+    const r = rows.find((x) => x.prop === 'icon-color');
+    expect(r?.status).toBe('unchecked');
+    expect(r?.note).toMatch(/re-extract/);
   });
   it('a root icon CONSUMES its children: one row for the glyph, never a second per-child row', () => {
     const figInner = figIcon({ iconHex: '#242429' });
