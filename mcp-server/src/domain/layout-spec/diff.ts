@@ -766,6 +766,40 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   // info (see applyTextWidthOverride). A fixed-width TEXT does NOT pass the gate — stays a fail.
   const textWidthDemote = spec.textNode === true && spec.textFixedWidth !== true;
 
+  // Items 3+18 (two live false-red runs, both reproduced byte-for-byte): the design POSITIVELY
+  // declares zero padding on the pair (autoLayout present, all four values zero - absence never
+  // counts, any nonzero proves the padding channel is in use) while the DOM declares one - the
+  // design encodes its insets structurally (spacer children, a nested component's padding), and
+  // the content-box convention compares a full box against a content box, fabricating deltas of
+  // exactly the dom padding. The DEMOTE road (the vault's own alternative; a border-box
+  // convention SWITCH was killed by two panel rounds - it deleted the padding from rows that
+  // have no compensator: the cross axis has no padding row, padding-end skips text-last):
+  // when the content-box row FAILS but the raw boxes agree within tolerance, the fail is an
+  // encoding artifact - demoted with both numbers, receipt stays incomplete (anyDemoted), no
+  // fix_plan edit is minted. When the raw boxes ALSO differ, the fail stands and the note adds
+  // the honest border-box magnitude (the July width: a real D11, not the fabricated D21).
+  // Everything else - anchors, padding rows, offset rows, gaps - is byte-untouched: the
+  // content-box math still carries every inset it carried before.
+  const encodingMismatch = opts.sides !== 'dom-dom' && spec.axis !== undefined
+    && spec.autoLayout !== undefined
+    && spec.autoLayout.padding.top === 0 && spec.autoLayout.padding.right === 0
+    && spec.autoLayout.padding.bottom === 0 && spec.autoLayout.padding.left === 0
+    && d.paddings !== undefined
+    && (d.paddings.top > 0 || d.paddings.right > 0 || d.paddings.bottom > 0 || d.paddings.left > 0);
+  const applyEncodingDemote = (row: DiffRow, figBorder: number, domBorder: number): DiffRow => {
+    if (!encodingMismatch || row.status !== 'fail') return row;
+    const delta = round1(Math.abs(figBorder - domBorder));
+    if (delta <= tol) {
+      return { ...stripSrc(row), status: 'demoted',
+        note: [row.note, `the design declares no padding on this pair (insets are encoded structurally) while the DOM does — the content-box delta is an encoding artifact; the raw boxes match (${round1(figBorder)} vs ${round1(domBorder)})`]
+          .filter(Boolean).join('; ') };
+    }
+    return { ...row,
+      note: [row.note, `the design declares no padding on this pair while the DOM does — the content-box delta overstates the difference; the raw boxes differ by ${delta} (${round1(figBorder)} vs ${round1(domBorder)})`]
+        .filter(Boolean).join('; '),
+      caveat: row.caveat ?? `raw boxes: ${round1(figBorder)} vs ${round1(domBorder)} (D${delta}) — the content-box numbers include a padding-encoding mismatch` };
+  };
+
   // (2) size rows
   if (unwrapBase) {
     const ddBorderW = opts.sides === 'dom-dom' ? d.borders.left + d.borders.right : 0;
@@ -782,7 +816,11 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       applyContainerHugFillDemote(
         applyTextWidthOverride(
           applyPageGutterDemote(
-            numRow('size.w', rect.w - (spec.autoLayout ? spec.autoLayout.padding.left + spec.autoLayout.padding.right : 0), domW, tol, undefined, SRC_ROOT_LAYOUT),
+            applyEncodingDemote(
+              numRow('size.w', rect.w - (spec.autoLayout ? spec.autoLayout.padding.left + spec.autoLayout.padding.right : 0), domW, tol, undefined, SRC_ROOT_LAYOUT),
+              // clientWidth is an integer: a fractional rect manufactures a sub-1px phantom
+              // scrollbar - a real bar is never <1px; the raw-box numbers must not carry it.
+              rect.w, d.rect.w - (scrollbarW < 1 ? 0 : scrollbarW)),
             pageGutter,
           ),
           textWidthDemote,
@@ -807,7 +845,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   } else if (d.paddings !== undefined && d.clientHeight !== undefined) {
     const scrollbarH = Math.max(0, d.rect.h - d.borders.top - d.borders.bottom - d.clientHeight);
     const domH = d.rect.h - scrollbarH - d.paddings.top - d.paddings.bottom - (opts.sides === 'dom-dom' ? d.borders.top + d.borders.bottom : 0);
-    rows.push(numRow('size.h', rect.h - (spec.autoLayout ? spec.autoLayout.padding.top + spec.autoLayout.padding.bottom : 0), domH, tol, undefined, SRC_ROOT_LAYOUT));
+    rows.push(applyEncodingDemote(
+      numRow('size.h', rect.h - (spec.autoLayout ? spec.autoLayout.padding.top + spec.autoLayout.padding.bottom : 0), domH, tol, undefined, SRC_ROOT_LAYOUT),
+      rect.h, d.rect.h - (scrollbarH < 1 ? 0 : scrollbarH)));
   } else {
     rows.push(numRow('size.h', rect.h, d.rect.h, tol, undefined, SRC_ROOT_LAYOUT));
   }
