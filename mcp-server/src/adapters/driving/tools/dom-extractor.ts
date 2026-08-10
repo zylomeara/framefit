@@ -519,9 +519,26 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     if (!svg) return;
     const parts = Array.from(svg.querySelectorAll(ICON_PARTS));
     if (parts.length === 0) { styles.iconColorUnknown = 'no path-like elements'; return; }
+    // Template containers (defs/clipPath/mask/symbol/pattern/marker) hold geometry that is not
+    // itself rendered, and display:none does NOT inherit - a descendant of a hidden <g> still
+    // computes its own display 'inline'. One ancestor walk answers both.
+    const NON_PAINTING = ['defs', 'clippath', 'mask', 'symbol', 'pattern', 'marker'];
+    const hiddenOrTemplate = (n) => {
+      let cur = n;
+      while (cur) {
+        if (getComputedStyle(cur).display === 'none') return true;
+        if (NON_PAINTING.indexOf((cur.tagName || '').toLowerCase()) !== -1) return true;
+        if (cur === svg) break;
+        cur = cur.parentElement;
+      }
+      return false;
+    };
+    // The opacity chain folds up to the SURVEYED element INCLUSIVE: a wrapper's own opacity dims
+    // the glyph exactly like a Figma candidate's own opacity, which the projector folds - stopping
+    // at the svg made the two sides compare different conventions on the padded-wrapper shape.
     const alphaChainOf = (n) => {
       let a = 1; let cur = n;
-      while (cur) { const o = num(getComputedStyle(cur).opacity); if (o !== undefined) a *= o; if (cur === svg) break; cur = cur.parentElement; }
+      while (cur) { const o = num(getComputedStyle(cur).opacity); if (o !== undefined) a *= o; if (cur === el) break; cur = cur.parentElement; }
       return a;
     };
     const withAlpha = (hex, alpha) => {
@@ -530,25 +547,37 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       const a = Math.max(0, Math.min(1, prior * alpha));
       return a >= 1 ? base : base + Math.round(a * 255).toString(16).padStart(2, '0');
     };
-    let hex; let multi = false; let unknown; let carrier; let usedAttr = false;
+    let hex; let multi = false; let unknown; let carrier; let carrierProp = 'fill'; let attrLiteral = false;
     for (const p of parts) {
+      if (hiddenOrTemplate(p)) continue;
       const pcs = getComputedStyle(p);
-      if (pcs.display === 'none') continue;
       let paintProp = 'fill'; let paint = pcs.fill;
       if (!paint || paint === 'none') { paintProp = 'stroke'; paint = pcs.stroke; }
       if (!paint || paint === 'none') continue;
+      // A fully transparent paint renders nothing - the part contributes NOTHING (like
+      // display:none), it is not an 'unreadable' paint (toHex refuses alpha 0 by design).
+      if (paint === 'transparent' || /rgba?\\([^)]+,\\s*0(\\.0+)?\\s*\\)\\s*$/.test(paint)) continue;
       const ph = toHexLoose(paint);
       if (ph === undefined) { if (unknown === undefined) unknown = 'unreadable ' + paintProp + ' (' + String(paint).slice(0, 48) + ')'; continue; }
       const fo = num(paintProp === 'fill' ? pcs.fillOpacity : pcs.strokeOpacity);
       const eff = withAlpha(ph, (fo === undefined ? 1 : fo) * alphaChainOf(p));
-      if (hex === undefined) { hex = eff; carrier = p; usedAttr = !!(p.getAttribute && p.getAttribute(paintProp)); }
+      if (hex === undefined) {
+        hex = eff; carrier = p; carrierProp = paintProp;
+        // Value-anchored attribute claim (the classifyColor doctrine - a literal is only ever
+        // claimed from a value that PRODUCED the pixel): fill="currentColor" is a deferral, and
+        // a presentation attribute beaten by author CSS painted nothing - both fall through to
+        // the classifier on the property that actually carried the paint.
+        const av = p.getAttribute && p.getAttribute(paintProp);
+        const ah = av ? toHexLoose(av) || namedHex(av) || hslHex(av) || (/^#[0-9a-f]{6}$/i.test(av) ? av.toLowerCase() : undefined) : undefined;
+        attrLiteral = ah !== undefined && ah.slice(0, 7) === ph.slice(0, 7).toLowerCase();
+      }
       else if (hex !== eff) multi = true;
     }
     if (multi) { styles.iconColorMulti = true; return; }
     if (hex === undefined) { styles.iconColorUnknown = unknown || 'no readable fill/stroke'; return; }
     if (unknown !== undefined) { styles.iconColorUnknown = unknown; return; }
     styles.iconColor = hex;
-    const tok = usedAttr ? { literal: true } : classifyColor(carrier, 'fill', hex.slice(0, 7));
+    const tok = attrLiteral ? { literal: true } : classifyColor(carrier, carrierProp, hex.slice(0, 7));
     if (tok !== undefined) styles.iconColorToken = tok;
   };
     // gradient: bracket-aware top-level comma split (rgb()/var() contain commas — naive split corrupts stops)

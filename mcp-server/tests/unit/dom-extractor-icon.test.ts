@@ -119,10 +119,65 @@ describe('icon color capture (phase 1)', () => {
     expect(snap.children[0].styles.iconColor).toBeUndefined();
     expect(snap.children[0].styles.iconColorUnknown).toBeUndefined();
   });
-  it('an attribute-authored fill classifies as a LITERAL (an attribute IS a hardcoded value)', async () => {
+  it('an attribute whose VALUE produced the pixel classifies as a LITERAL', async () => {
     const svg = svgOf([path('rgb(36, 36, 41)', {}, { fill: '#242429' })]);
     const snap = await extract(rootWith([svg]));
     expect(snap.children[0].styles.iconColorToken).toEqual({ literal: true });
+  });
+  it('fill="currentColor" is a deferral, NEVER a literal (the ecosystem-dominant icon idiom)', async () => {
+    const svg = svgOf([path('rgb(36, 36, 41)', {}, { fill: 'currentColor' })]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColor).toBe('#242429');
+    expect(snap.children[0].styles.iconColorToken).not.toEqual({ literal: true });
+  });
+  it('an attribute beaten by author CSS painted nothing - not a literal either', async () => {
+    const svg = svgOf([path('rgb(36, 36, 41)', {}, { fill: '#ff0000' })]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColorToken).not.toEqual({ literal: true });
+  });
+  it('a value-anchored STROKE attribute is a literal through the stroke property', async () => {
+    const svg = svgOf([path('none', { stroke: 'rgb(36, 36, 41)' }, { stroke: '#242429' })]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColor).toBe('#242429');
+    expect(snap.children[0].styles.iconColorToken).toEqual({ literal: true });
+  });
+  it('parts under a display:none ancestor are invisible (display does not inherit)', async () => {
+    const hidden = makeEl('g', rect(0, 0, 16, 16), [path('rgb(255, 0, 0)')], { display: 'none' });
+    const svg = svgOf([hidden, path('rgb(36, 36, 41)')]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColor).toBe('#242429');
+    expect(snap.children[0].styles.iconColorMulti).toBeUndefined();
+  });
+  it('template geometry (defs/clipPath/mask) is not rendered - not surveyed', async () => {
+    const defs = makeEl('defs', rect(0, 0, 0, 0), [path('rgb(255, 0, 0)')]);
+    const svg = svgOf([defs, path('rgb(36, 36, 41)')]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColor).toBe('#242429');
+    expect(snap.children[0].styles.iconColorMulti).toBeUndefined();
+  });
+  it('a fully transparent paint contributes nothing - never the false "unreadable"', async () => {
+    const svg = svgOf([path('rgba(0, 0, 0, 0)'), path('rgb(36, 36, 41)')]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColor).toBe('#242429');
+    expect(snap.children[0].styles.iconColorUnknown).toBeUndefined();
+  });
+  it('the WRAPPER\'s own opacity folds into the hex (the projector folds the candidate\'s)', async () => {
+    const svg = svgOf([path('rgb(17, 17, 17)')]);
+    const span = makeEl('span', rect(0, 0, 24, 24), [svg], { opacity: '0.5' });
+    const snap = await extract(rootWith([span]));
+    expect(snap.children[0].styles.iconColor).toBe('#11111180');
+  });
+  it('one readable part + one unreadable part -> unknown, the hex is never claimed', async () => {
+    const svg = svgOf([path('rgb(36, 36, 41)'), path('url("#grad")')]);
+    const snap = await extract(rootWith([svg]));
+    expect(snap.children[0].styles.iconColor).toBeUndefined();
+    expect(snap.children[0].styles.iconColorUnknown).toMatch(/unreadable/);
+  });
+  it('the half-cover threshold is per-DIMENSION: one passing dimension is not enough', async () => {
+    const svg = makeEl('svg', rect(0, 0, 16, 8), [path('rgb(36, 36, 41)')]);
+    const wide = makeEl('span', rect(0, 0, 24, 24), [svg]);
+    const snap = await extract(rootWith([wide]));
+    expect(snap.children[0].styles.iconColor).toBeUndefined();
   });
   it('non-svg children carry NO icon fields (absence stays meaningful)', async () => {
     const div = makeEl('div', rect(0, 0, 40, 40), []);
@@ -132,7 +187,7 @@ describe('icon color capture (phase 1)', () => {
   });
   it('the pair ROOT itself an svg is surveyed (the direct icon pair)', async () => {
     const svg = svgOf([path('rgb(36, 36, 41)')]);
-    (svg as { classList: string[] }).classList = ['x'];
+    svg.classList = ['x'];
     const snap = await extract(svg as FakeEl);
     expect(snap.styles.iconColor).toBe('#242429');
   });

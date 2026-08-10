@@ -129,6 +129,26 @@ describe('icon-color: descent and the root site', () => {
     const r = iconRows(rows)[0];
     expect(r?.status).toBe('fail');
     expect(r?.prop).toContain('star');
+    // a descent row carries NO srcChannel: the child address would name the WRAPPER's class -
+    // the typography channel's mis-addressing; no address beats a wrong one.
+    expect(r?.srcChannel).toBeUndefined();
+  });
+  it('UNEQUAL inventories are never zipped: one honest info instead of N wrong-element compares', () => {
+    const figWrap: SpecChild = { id: '1:5', name: 'cell', type: 'FRAME', rect: { x: 0, y: 0, w: 40, h: 16 },
+      children: [figIcon({ iconHex: '#242429' })] };
+    const domTwo: DomChild = { kind: 'element', tag: 'div', rect: { x: 0, y: 0, w: 40, h: 16 },
+      children: [domIcon({ iconColor: '#242429' }), domIcon({ iconColor: '#6c5dd3' }, { rect: { x: 28, y: 8, w: 16, h: 16 } })] };
+    const rows = diffPair(spec([figWrap]), snap([domTwo]), { tolerancePx: 1 });
+    const rs = iconRows(rows);
+    expect(rs.length).toBe(1);
+    expect(rs[0].status).toBe('info');
+    expect(rs[0].coverageSkipped).toBe(true);
+    expect(rs[0].note).toMatch(/NOT compared/);
+    expect(rows.filter((r) => r.prop.startsWith('icon-color') && r.status === 'fail')).toEqual([]);
+  });
+  it('a direct child pair keeps its srcChannel (the address IS the paired element)', () => {
+    const rows = diffPair(spec([figIcon({ iconHex: '#242429' })]), snap([domIcon({ iconColor: '#6c5dd3' })]), { tolerancePx: 1 });
+    expect(iconRows(rows)[0]?.srcChannel).toEqual({ kind: 'child', i: 0, editKind: 'property' });
   });
   it('label collision: two nested icons named alike -> #i disambiguates, both rows emitted', () => {
     const two = (hexes: [string, string]): SpecChild => ({ id: '1:5', name: 'cell', type: 'FRAME', rect: { x: 0, y: 0, w: 40, h: 16 },
@@ -155,6 +175,25 @@ describe('icon-color: descent and the root site', () => {
     const r = rows.find((x) => x.prop === 'icon-color');
     expect(r?.status).toBe('unchecked');
     expect(r?.note).toMatch(/older extractor/);
+  });
+  it('a stale WRAPPER root is found by descent: the bare svg lives deeper with no fields', () => {
+    const staleSvg: DomChild = { kind: 'element', tag: 'svg', rect: { x: 4, y: 4, w: 16, h: 16 } };
+    const rows = diffPair(
+      spec([], { iconHex: '#242429' }),
+      snap([staleSvg], { componentHints: { tag: 'span', classList: [], data: {} } }), { tolerancePx: 1 });
+    const r = rows.find((x) => x.prop === 'icon-color');
+    expect(r?.status).toBe('unchecked');
+    expect(r?.note).toMatch(/older extractor/);
+  });
+  it('a root icon CONSUMES its children: one row for the glyph, never a second per-child row', () => {
+    const figInner = figIcon({ iconHex: '#242429' });
+    const domInner = domIcon({ iconColor: '#6c5dd3' });
+    const rows = diffPair(
+      spec([figInner], { iconHex: '#242429' }),
+      snap([domInner], { styles: { display: 'block', iconColor: '#6c5dd3' } }), { tolerancePx: 1 });
+    const rs = iconRows(rows);
+    expect(rs.length).toBe(1);
+    expect(rs[0].prop).toBe('icon-color');
   });
 });
 

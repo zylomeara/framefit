@@ -1425,9 +1425,9 @@ function domIconState(s: { iconColor?: string; iconColorToken?: DomTokenState; i
 // subtree (the extractor and the projector both mark wrapper AND inner svg - descending past the
 // first carrier would double-count the same glyph). childrenTruncated on a visited level =>
 // truncated: icons may hide beyond the slice.
-function collectFigIcons(c: SpecChild, maxDescent: number): Collected<{ state: FigIconState; label: string }> {
+function collectFigIcons(c: SpecChild, maxDescent: number): Collected<{ state: FigIconState; label: string; self?: true }> {
   const self = figIconState(c);
-  if (self) return { items: [{ state: self, label: childLabel(c) }], truncated: false };
+  if (self) return { items: [{ state: self, label: childLabel(c), self: true }], truncated: false };
   const items: { state: FigIconState; label: string }[] = [];
   let truncated = false; let stopped = false;
   const visit = (node: SpecChild): void => {
@@ -1494,36 +1494,42 @@ function iconColorRow(prop: string, fig: FigIconState, dom: DomIconState, src?: 
     ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
     ...(v.status === 'fail' && src ? { srcChannel: src } : {}) };
 }
-// The per-child emission: zip both descents by index (icons have no content anchor; labels
-// disambiguate with #i on collision - icon layers are commonly all named alike). The unmatched
-// tails stay honest: extra DOM icons against a CUT fig subtree are one unchecked routed to
-// raise_max_depth (a deeper fetch really does reveal the vectors); extra DOM icons against a
-// fully captured non-icon subtree are one-sided - no row; extra FIG icons against a truncated
-// DOM subtree are one unchecked naming the re-extract.
+// The per-child emission. EQUAL inventories zip by index (icons have no content anchor; labels
+// disambiguate with #i on collision - icon layers are commonly all named alike); a row found by
+// DFS descent carries NO srcChannel - the child address would name the WRAPPER's class, the
+// exact mis-addressing the typography channel had to fix, and no address beats a wrong one.
+// UNEQUAL inventories are never zipped: the index pairing would confidently compare wrong
+// elements and silently drop the tail - a cut explains itself as an executable unchecked
+// (raise_max_depth / re-extract), a clean structural difference is ONE visible info.
 function iconRowsFor(c: SpecChild, domChild: DomChild, i: number, maxDescent: number, evidence?: CssTokenEvidence): DiffRow[] {
   const figs = collectFigIcons(c, maxDescent);
   const doms = collectDomIcons(domChild, maxDescent);
   const rows: DiffRow[] = [];
+  if (figs.items.length !== doms.items.length) {
+    if (doms.items.length > figs.items.length && (figs.truncated || c.childrenTruncated === true)) {
+      rows.push({ prop: `icon-color[${childLabel(c)}]`, status: 'unchecked',
+        note: 'the DOM side shows an icon here, but the Figma subtree is cut before its vectors - raise max_depth (up to 8) and re-run, or pair the icon node directly' });
+    } else if (figs.items.length > doms.items.length && doms.truncated) {
+      rows.push({ prop: `icon-color[${childLabel(c)}]`, status: 'unchecked',
+        note: 'the Figma side carries an icon, but the DOM subtree was truncated before one was captured - re-extract deeper or pair the icon node directly' });
+    } else if (figs.items.length > 0 && doms.items.length > 0) {
+      rows.push({ prop: `icon-color[${childLabel(c)}]`, status: 'info', coverageSkipped: true,
+        figma: `${figs.items.length} icon(s)`, dom: `${doms.items.length} icon(s)`,
+        note: 'the icon inventories differ in shape - an index pairing would be a guess, so the icons were NOT compared; pair the icon nodes directly to compare them' });
+    }
+    // one side found nothing and no cut explains it: genuinely one-sided - no row.
+    return rows;
+  }
   const labelCounts = new Map<string, number>();
   for (const f of figs.items) labelCounts.set(f.label, (labelCounts.get(f.label) ?? 0) + 1);
   const seen = new Map<string, number>();
-  const n = Math.min(figs.items.length, doms.items.length);
-  for (let k = 0; k < n; k++) {
+  for (let k = 0; k < figs.items.length; k++) {
     const f = figs.items[k];
     const dup = (labelCounts.get(f.label) ?? 0) > 1;
     const idx = seen.get(f.label) ?? 0; seen.set(f.label, idx + 1);
     const label = dup ? `${f.label}#${idx}` : f.label;
     rows.push(iconColorRow(`icon-color[${label}]`, f.state, doms.items[k].state,
-      { kind: 'child', i, editKind: 'property' }, evidence));
-  }
-  if (doms.items.length > figs.items.length && (figs.truncated || c.childrenTruncated === true)) {
-    const suffix = figs.items.length === 0 ? childLabel(c) : `${childLabel(c)}#${figs.items.length}`;
-    rows.push({ prop: `icon-color[${suffix}]`, status: 'unchecked',
-      note: 'the DOM side shows an icon here, but the Figma subtree is cut before its vectors - raise max_depth (up to 8) and re-run, or pair the icon node directly' });
-  } else if (figs.items.length > doms.items.length && doms.truncated) {
-    const suffix = doms.items.length === 0 ? childLabel(c) : `${childLabel(c)}#${doms.items.length}`;
-    rows.push({ prop: `icon-color[${suffix}]`, status: 'unchecked',
-      note: 'the Figma side carries an icon, but the DOM subtree was truncated before one was captured - re-extract deeper or pair the icon node directly' });
+      f.self ? { kind: 'child', i, editKind: 'property' } : undefined, evidence));
   }
   return rows;
 }
@@ -1810,8 +1816,10 @@ function crossAndPaddingRows(
       rows.push(numRow(`child-size.h[${childLabel(c)}]`, c.rect.h, domKids[i].rect.h, tol));
     }
     // icon-color axis: NOT in dom-dom (its projection types everything TEXT|FRAME and carries no
-    // icon fields; the mode's not_covered keeps its own wording - no claim either way).
-    if (opts.sides !== 'dom-dom') rows.push(...iconRowsFor(c, domKids[i], i, maxDescent, opts.cssEvidence));
+    // icon fields; the mode's not_covered keeps its own wording - no claim either way). When the
+    // pair ROOT is itself an icon, its children are the glyph's internals - the root site owns
+    // the row and a per-child pass would emit a second row for the same glyph.
+    if (opts.sides !== 'dom-dom' && !figIconState(spec)) rows.push(...iconRowsFor(c, domKids[i], i, maxDescent, opts.cssEvidence));
     if (c.text) {
       // p.7 routing: direct compare ONLY when the DOM child owns its text; a unique nested carrier
       // supplies the styles otherwise, and a missing carrier is a note, never a wrapper compare.
@@ -2203,12 +2211,28 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   }
 
   // icon-color, the root site (a direct icon pair): the same detection, the row without a label.
-  // Root stale capture is decidable through componentHints.tag (the root snapshot has no tag field).
+  // Root stale capture is decidable through componentHints.tag (the root snapshot has no tag
+  // field) - and when the root shows NO icon state, through a descent: a wrapper-root capture
+  // from a pre-icon extractor carries the bare svg DEEPER with no fields anywhere, and without
+  // this scan that shape was silent (neither a row nor a re-extract).
   if (opts.sides !== 'dom-dom') {
     const figRootIcon = figIconState(spec);
     const domRootIcon = domIconState(d.styles, d.componentHints?.tag);
     if (figRootIcon && domRootIcon) {
       rows.push(iconColorRow('icon-color', figRootIcon, domRootIcon, { kind: 'root', editKind: 'property' }, opts.cssEvidence));
+    } else if (figRootIcon) {
+      const pseudo: DomChild = { kind: 'element', rect: d.rect,
+        children: d.children, ...(d.childrenTruncated ? { childrenTruncated: true } : {}) };
+      const nested = collectDomIcons(pseudo, descentFor(opts.maxDepth ?? 4));
+      if (nested.items.length === 1) {
+        // exactly one carrier below the wrapper root - the same glyph, pair it (stale included:
+        // iconColorRow routes a stale svg to the re-extract unchecked).
+        rows.push(iconColorRow('icon-color', figRootIcon, nested.items[0].state, { kind: 'root', editKind: 'property' }, opts.cssEvidence));
+      } else if (nested.items.length > 1) {
+        rows.push({ prop: 'icon-color', status: 'info', coverageSkipped: true,
+          figma: '1 icon(s)', dom: `${nested.items.length} icon(s)`,
+          note: 'the icon inventories differ in shape - an index pairing would be a guess, so the icons were NOT compared; pair the icon nodes directly to compare them' });
+      }
     }
   }
 

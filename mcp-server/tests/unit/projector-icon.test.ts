@@ -114,6 +114,59 @@ describe('fig icon paint projection (phase 2)', () => {
     const spec = buildLayoutSpec(icon([vec('#242429')]));
     expect(spec.iconHex).toBe('#242429');
   });
+  it('a BARE rect/ellipse/line child is a style box, never an icon (dividers shifted the zip)', () => {
+    for (const t of ['RECTANGLE', 'ELLIPSE', 'LINE']) {
+      const divider = node(t, { fills: [solid('#e0e0e0')] });
+      const spec = buildLayoutSpec(frameWith([divider]));
+      expect(spec.children[0].iconHex, t).toBeUndefined();
+      expect(spec.children[0].iconUnknown, t).toBeUndefined();
+    }
+  });
+  it('the candidate\'s OWN fill is the plate: a tinted icon-button reads the glyph, not multi', () => {
+    const glyph = node('VECTOR', { fills: [solid('#ffffff')], absoluteBoundingBox: { x: 4, y: 4, width: 8, height: 8 } });
+    const tinted = icon([glyph], { fills: [solid('#6c5dd3')] });
+    const spec = buildLayoutSpec(frameWith([tinted]));
+    expect(spec.children[0].iconHex).toBe('#ffffff');
+    expect(spec.children[0].iconMulti).toBeUndefined();
+  });
+  it('a full-bleed DRAWN glyph is never demoted to plate (its color wins, not an accent dot)', () => {
+    const check = node('VECTOR', { fills: [solid('#242429')], absoluteBoundingBox: { x: 0, y: 0, width: 16, height: 16 } });
+    const dot = node('ELLIPSE', { fills: [solid('#e02020')], absoluteBoundingBox: { x: 12, y: 0, width: 4, height: 4 } });
+    const spec = buildLayoutSpec(frameWith([icon([check, dot])]));
+    // both are glyph-set members with differing hexes -> honest multi, NOT the dot's color
+    expect(spec.children[0].iconHex).toBeUndefined();
+    expect(spec.children[0].iconMulti).toBe(true);
+  });
+  it('a PARTIALLY cut subtree claims nothing (the cut guard is load-bearing)', () => {
+    const seen = vec('#242429');
+    const deeper = node('FRAME', { children: undefined });
+    const spec = buildLayoutSpec(frameWith([icon([seen, deeper])]));
+    expect(spec.children[0].iconHex).toBeUndefined();
+    expect(spec.children[0].iconMulti).toBeUndefined();
+    expect(spec.children[0].iconUnknown).toBeUndefined();
+  });
+  it('one readable part + one gradient part -> unknown, the hex is never claimed', () => {
+    const grad = node('VECTOR', { fills: [{ type: 'GRADIENT_LINEAR' } as never] });
+    const spec = buildLayoutSpec(frameWith([icon([vec('#242429'), grad])]));
+    expect(spec.children[0].iconHex).toBeUndefined();
+    expect(spec.children[0].iconUnknown).toMatch(/unreadable/);
+  });
+  it('invisible layers and invisible paints contribute nothing', () => {
+    const hiddenLayer = node('VECTOR', { fills: [solid('#ff0000')], visible: false });
+    const hiddenPaint = node('VECTOR', { fills: [{ ...solid('#ff0000'), visible: false } as never] });
+    const spec = buildLayoutSpec(frameWith([icon([hiddenLayer, hiddenPaint, vec('#242429')])]));
+    expect(spec.children[0].iconHex).toBe('#242429');
+    expect(spec.children[0].iconMulti).toBeUndefined();
+  });
+  it('the token hex folds the SAME alpha as iconHex (paint opacity x node chain)', () => {
+    const bound = node('VECTOR', { fills: [{ ...solid('#242429'), opacity: 0.5 } as never], opacity: 0.8 });
+    const spec = buildLayoutSpec(frameWith([icon([bound])]), {
+      resolveColorToken: (n, key) => (n.id === bound.id && key === 'fills' ? { token: '--icon-neutral', hex: '#242429' } : undefined),
+    });
+    // 0.5 * 0.8 = 0.4 -> 0x66 on BOTH the raw hex and the token hex
+    expect(spec.children[0].iconHex).toBe('#24242966');
+    expect(spec.children[0].iconToken?.hex).toBe('#24242966');
+  });
   it('an ordinary text-bearing card carries NO icon fields (absence stays meaningful)', () => {
     const card = node('FRAME', { children: [node('TEXT'), node('RECTANGLE', { fills: [solid('#ffffff')] })] });
     const spec = buildLayoutSpec(frameWith([card]));

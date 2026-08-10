@@ -180,9 +180,20 @@ function iconPaintOf(n: RawSceneNode): { solid: RawPaint; slot: 'fills' | 'strok
   return undefined;
 }
 
+// Shapes that can BE a backdrop plate: boxes and circles (and a filled container - a tinted
+// icon-button, whose own fill spans its bbox by definition). A drawn glyph
+// (VECTOR/BOOLEAN_OPERATION/STAR/REGULAR_POLYGON) is NEVER demoted to plate - a full-bleed
+// checkmark must not surrender its color to a smaller accent part.
+const PLATE_CLASS = new Set(['RECTANGLE', 'ELLIPSE', 'FRAME', 'GROUP', 'INSTANCE', 'COMPONENT']);
+// A BARE box/divider child (rect/ellipse/line with a paint) is a style carrier, not a glyph -
+// the fill/stroke axes already cover it. Counting it as an icon put dividers and skeleton
+// placeholders into the icon inventory and shifted the index zip onto unrelated DOM svgs.
+const NOT_A_BARE_ICON = new Set(['RECTANGLE', 'ELLIPSE', 'LINE']);
+
 function surveyFigIcon(raw: RawSceneNode, ctx: ProjectorContext): IconSurvey | undefined {
+  if (NOT_A_BARE_ICON.has(raw.type)) return undefined;
   const rootRect = rectOf(raw);
-  type Carrier = { node: RawSceneNode; slot: 'fills' | 'strokes'; hex: string; plate: boolean };
+  type Carrier = { node: RawSceneNode; slot: 'fills' | 'strokes'; hex: string; alpha: number; plate: boolean };
   const carriers: Carrier[] = [];
   let vectors = 0; let cut = false; let not = false; let unreadable: string | undefined;
   const walk = (n: RawSceneNode, alpha: number): void => {
@@ -201,12 +212,15 @@ function surveyFigIcon(raw: RawSceneNode, ctx: ProjectorContext): IconSurvey | u
     if (!p) return;
     if ('unreadable' in p) { unreadable ??= p.unreadable; return; }
     const c0 = p.solid.color!;
-    const hex = rgbaToHex({ ...c0, a: (c0.a ?? 1) * (p.solid.opacity ?? 1) * a });
-    // Plate discrimination: a filled box spanning ~the candidate's whole bbox is the badge
-    // plate, not the glyph - kept separate so a red badge with a white glyph reads white.
+    const paintAlpha = (p.solid.opacity ?? 1) * a;
+    const hex = rgbaToHex({ ...c0, a: (c0.a ?? 1) * paintAlpha });
+    // Plate discrimination: a PLATE_CLASS node whose fill spans ~the candidate's whole bbox is
+    // the badge backdrop, not the glyph - kept separate so a red badge with a white glyph reads
+    // white. The candidate's OWN fill qualifies (a tinted icon-button container IS the plate).
     const r = rectOf(n);
-    const plate = !!(rootRect && r && n !== raw && r.w >= rootRect.w * 0.9 && r.h >= rootRect.h * 0.9);
-    carriers.push({ node: n, slot: p.slot, hex, plate });
+    const plate = PLATE_CLASS.has(n.type)
+      && !!(rootRect && r && r.w >= rootRect.w * 0.9 && r.h >= rootRect.h * 0.9);
+    carriers.push({ node: n, slot: p.slot, hex, alpha: paintAlpha, plate });
   };
   walk(raw, 1);
   if (not || cut || vectors === 0) return undefined; // not an icon, or unknowable - the diff reads childrenTruncated
@@ -219,7 +233,16 @@ function surveyFigIcon(raw: RawSceneNode, ctx: ProjectorContext): IconSurvey | u
   if (unreadable !== undefined) return { unknown: unreadable }; // a partial inventory never claims the hex
   const first = set[0];
   const rt = ctx.resolveColorToken?.(first.node, first.slot);
-  const token = rt ? withPaintAlpha(rt, first.node[first.slot]) : undefined;
+  // The token hex must sit on the SAME alpha convention as iconHex and the DOM side: the
+  // variable's value knows nothing of the paint opacity OR the node opacity chain - comparing
+  // it unfolded false-fails a dimmed token-bound icon (and false-greens a mismatched one).
+  const token = rt === undefined ? undefined : first.alpha >= 1 ? rt : {
+    ...rt,
+    hex: hexTimesAlpha(rt.hex, first.alpha),
+    ...(rt.all_modes
+      ? { all_modes: Object.fromEntries(Object.entries(rt.all_modes).map(([k, v]) => [k, hexTimesAlpha(v, first.alpha)])) }
+      : {}),
+  };
   return { hex: first.hex, ...(token ? { token } : {}) };
 }
 
