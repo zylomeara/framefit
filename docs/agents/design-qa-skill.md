@@ -436,8 +436,10 @@ terminal `no discrepancies above tolerance` is the green.
   (the first shadow: x/y/blur/spread/color/inset — spread is a regular axis, Figma REST provides
   it), gradients (kind, per-stop colors/positions, linear angle, token provenance), and icon
   COLOR for svg icons (`icon-color` rows through the same verdict ladder as text color; a
-  multi-color or unreadable glyph is an ℹ️ verify-visually info, a stale pre-icon snapshot routes
-  to `re_extract_dom`). The diff does NOT cover: icon GLYPHS (icon size/position/color are
+  multi-color or unreadable glyph is an ℹ️ verify-visually info; the gate-holding shapes route to
+  their fixes - a stale pre-icon snapshot to `re_extract_dom`, a Figma subtree cut before its
+  vectors to `raise_max_depth` (at the depth-8 ceiling: `add_pairs_on_children`), unequal icon
+  inventories to `resolve_skip` naming the direct pairing). The diff does NOT cover: icon GLYPHS (icon size/position/color are
   measured — but which glyph is drawn is not; verify by eye / get_screenshot focus crop),
   icon-FONT and mask-image icons (the color is visible but not compared), radial/conic gradient GEOMETRY
   (center/radius/shape — flagged 👁 unchecked), second-and-further background layers (only the

@@ -450,8 +450,19 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     // pixel. A token is claimed ONLY when it is the single, unambiguous explanation; otherwise → unknown.
     const anchoredNames = new Set();
     let explainingLiteral = false;
+    let sawCurrentColor = false;
     const cl = computedHex.toLowerCase();
     for (const cand of candidates) {
+      // fill/stroke: currentColor (and inherit) is a DEFERRAL to the color property, not a
+      // value - it must never satisfy the final {literal:true} fallback. The pixel it paints is
+      // whatever the color property computes, so the authored-binding question moves THERE
+      // (recursed below when the deferral is the only explanation) - the ecosystem's dominant
+      // icon idiom (fill: currentColor over a tokened color) was read as a hardcoded literal
+      // without this.
+      if ((prop === 'fill' || prop === 'stroke') && /^(currentcolor|inherit)$/i.test(String(cand).trim())) {
+        sawCurrentColor = true;
+        continue;
+      }
       const names = varMatchAll(cand);
       if (names.length) {
         // var carrier (incl. var(--undef,#lit) fallback): only its anchoring vars count; its literal
@@ -480,6 +491,13 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     if (anchoredNames.size > 1) return { unknown: 'ambiguous-cascade' };
     // no var anchors the pixel
     if (sawUnreadable) return { unknown: 'cross-origin' };
+    // The deferral was seen and nothing else explains the pixel: the winner is (or may be)
+    // currentColor, so the binding question is the COLOR property's. A co-present literal
+    // cannot prove itself the winner over the deferral -> ambiguous, never literal.
+    if (sawCurrentColor) {
+      if (explainingLiteral || sawLayeredMatch) return { unknown: 'ambiguous-cascade' };
+      return classifyColor(el, 'color', computedHex) ?? { unknown: 'inherited' };
+    }
     if (candidates.length === 0) {
       // (D) honest reason-code: 'inherited' is only truthful for an INHERITING prop (color). A non-inheriting
       // prop (background / border-*-color) with a real color but no matched authoring rule was NOT inherited —
@@ -583,11 +601,14 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     styles.iconColor = hex;
     // The CASCADE wins over a presentation attribute (an attribute is the lowest-precedence
     // author input): the classifier's positive evidence - a token, a CSS literal, an ambiguous
-    // cascade - stands; the anchored attribute claims the literal only in the vacuum, when no
-    // declaration accounts for the pixel ({unknown}), which is exactly when the attribute is
-    // what painted it.
+    // cascade - stands; the anchored attribute claims the literal ONLY in the true vacuum,
+    // when NO declaration was found at all ('inherited'/'unattributed'). The other unknowns
+    // (ambiguous-cascade, cross-origin, layered-undecidable) mean a declaration DOES or MAY
+    // account for the pixel - claiming the attribute there would be the false literal the
+    // classifier's own doctrine forbids.
     const cssTok = classifyColor(carrier, carrierProp, hex.slice(0, 7));
-    const tok = attrLiteral && (cssTok === undefined || cssTok.unknown !== undefined) ? { literal: true } : cssTok;
+    const vacuum = cssTok === undefined || cssTok.unknown === 'inherited' || cssTok.unknown === 'unattributed';
+    const tok = attrLiteral && vacuum ? { literal: true } : cssTok;
     if (tok !== undefined) styles.iconColorToken = tok;
   };
     // gradient: bracket-aware top-level comma split (rgb()/var() contain commas — naive split corrupts stops)

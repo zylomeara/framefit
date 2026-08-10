@@ -3,6 +3,99 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.25.0
+
+Four merged lines, all born from one live design-QA run's feedback: a rewritten
+`find_breakpoint_variant` that can actually reach deep variants and says exactly what it did
+not search, overlap-aware structure unwrapping, a demote that stops content-box math from
+fabricating size deltas over structurally-encoded insets, and a new icon-color axis - the diff
+was blind to icon COLOR by design, and a glyph in the wrong color could only be caught by eye.
+Existing tools changed their delivered `tools/list` entries: `find_breakpoint_variant` changed
+its description and schema; `suggest_pairs`, `compare_node_to_dom` and `compare_dom_to_dom`
+changed their snapshot schema (the four optional icon fields). Responses carry the new fields
+either way, but a client that never re-lists tools keeps reading the 0.24.0 schemas and
+descriptions - reconnect after upgrading. (`get_layout_spec`'s listed entry is byte-unchanged;
+what it returns gained the new extractor, which needs no re-list.)
+
+### Added
+
+**Icon color is measured (`icon-color` rows in `compare_node_to_dom`).** Both sides must
+independently detect an icon: on the Figma side a subtree whose leaves bottom out in at least
+one DRAWN vector shape (rect/ellipse/line boxes are style carriers - parts of an icon, never
+what makes one), on the DOM side an `<svg>` (the element itself, or the only svg spanning at
+least half of each dimension of its wrapper). The extractor surveys ALL path-like parts - fill,
+or stroke when fill is none (outline icons) - folds alpha through fill/stroke-opacity and the
+element opacity chain, and classifies the color's authored binding with the cascade winning
+over a presentation attribute (`fill="currentColor"` is a deferral, never a hardcoded literal).
+The pair goes through the same verdict ladder as text color: hex divergence fails with both
+values, a token-vs-hardcoded-literal fails even on matching hexes, token-vs-token asks for a
+semantic confirm. What the axis cannot measure says so: unequal icon inventories refuse the
+index guess with an unchecked that HOLDS the done-gate (pair the icon nodes directly), a
+subtree cut before its vectors is an unchecked routed to `raise_max_depth`, and a snapshot
+taken by a pre-0.25.0 extractor shows a bare `svg` with no icon fields - that shape is an
+unchecked routed to `re_extract_dom` wherever that svg node survives into the capture (an
+out-of-flow svg the extractor drops is counted in `outOfFlow`, not silently green). Multi-color
+glyphs and unreadable paints (gradients, `url()` references) are deliberately advisory:
+verify-visually info rows - the color is real but plural or unreadable, a human call, not a
+coverage hole. A toolbar of icons is a GROUP, not one icon (disjoint icon-bearing containers
+stay separate pairs).
+`not_covered_by_tool` narrows accordingly: the blanket `icons` entry becomes the two real
+residuals - `icon-glyph` shape geometry, and icon-font/mask-image icons (color visible, not
+compared). The four snapshot fields are additive with NO schema bump, and the direction is the
+safe one: an old capture still validates and never GAINS a green - where it hides an icon the
+receipt now says re-extract instead of staying silent.
+
+### Changed
+
+**`find_breakpoint_variant` reaches deep variants and accounts for its coverage.** The old
+single fetch at a fixed depth missed variants nested behind sections and returned "not found"
+it could not stand behind. The rewrite walks a depth-2 skeleton of the page, then fetches each
+candidate container separately under one deadline (20s per-container sub-cap): name matches
+rank above container matches BEFORE the result cap, component sets are searched (a matched
+set surfaces its variants as its ranked content), and an anchored search (`anchor_node_id`) is
+ONE depth-4 fetch. The response now carries a
+coverage ledger - `searched`/`total`, the skipped containers by id and name, and a `depth_cut`
+flag - and the tool claims a variant is ABSENT only when `searched === total` and nothing was
+depth-cut; anything less is honestly "not found within what was searched". Rate limiting
+during the container sweep stops the sweep and skips forward (the ledger records what was
+skipped); a rate-limited content fetch, like an auth error, still fails the call.
+
+**Overlapping children unwrap instead of poisoning structure.** The single-wrapper unwrap now
+accepts overlapping IN-FLOW boxes (negative margins, transforms pulling a child over its
+sibling), so that shape no longer collapses the pair into `structure_mismatch`; out-of-flow
+children (`position: absolute/fixed`) are counted in `outOfFlow` on both sides, as before.
+Where geometry genuinely cannot answer, the rows say so per neighbor: two overlapped children
+stacked on the SAME axis make the inter-child gap inapplicable (a visible skip naming "pair
+the wrapper directly"), and a one-sided overlap is a named per-neighbor skip - no number is
+invented for a distance that does not exist on both sides. When an overlap unwrap re-orders anchor candidates, the tie is
+resolved by the nested-text anchor map, and slots that stay ambiguous are skipped honestly -
+never guessed. Effective padding under overlap reads the by-physical extremes with tolerance
+clustering, and the children-reorder detector is filtered where an unwrap makes order
+unprovable.
+
+**Structurally-encoded insets stop failing as size deltas (the encoding demote).** A design
+that POSITIVELY declares zero padding while the DOM declares one (the inset lives in spacer
+children or a nested component) used to fabricate `size.w`/`size.h` fails of exactly the DOM
+padding. Content-box math is byte-unchanged; when a size row fails but the two RAW boxes agree,
+the fail is re-labeled an encoding artifact - a demoted row carrying both numbers, still
+holding `complete:false`, never a silent green. When the raw boxes also differ, the fail stands
+and the note carries the honest raw magnitude. The same dual-convention check demotes
+padding-start/end and cross-offset rows that agree at the border edge. A flush design against a
+DOM-only padding stays red - that difference has exactly one witness, and the demote never
+touches it.
+
+### Fixed
+
+- `npm publish` can no longer ship orphaned compiled files: `prepublishOnly` now clears `dist`
+  before the build (`tsc` does not delete removed modules' output).
+
+### For agents
+
+The report footer's icon line now states color IS measured in the Figma comparator - and
+explicitly does NOT claim it in `compare_dom_to_dom`, where the axis is off (two captures have
+no token side; its own not-covered list stands). The coverage doc gains the icon-color row;
+the design-QA skill page documents the new rows and their blocking routes.
+
 ## 0.24.0
 
 One new tool, and it is the first one with no Figma side at all: `compare_dom_to_dom` measures
