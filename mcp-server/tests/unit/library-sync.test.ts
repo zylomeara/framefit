@@ -4,7 +4,7 @@ import { syncUser } from '../../src/multi-tenant/library-sync.js';
 const logger = { info() {}, warn() {}, error() {}, debug() {}, child() { return logger; } } as any;
 
 const LIB_META = { meta: {
-  variables: { v1: { id: 'VariableID:1:1', key: 'k'.repeat(40), name: 'bg', valuesByMode: { m: '#fff' }, variableCollectionId: 'C', resolvedType: 'COLOR' }, vNoKey: { id: 'VariableID:2:2', name: 'x', valuesByMode: { m: 1 }, variableCollectionId: 'C', resolvedType: 'FLOAT' } },
+  variables: { v1: { id: 'VariableID:1:1', key: 'k'.repeat(40), name: 'bg', valuesByMode: { m: '#fff' }, variableCollectionId: 'C', resolvedType: 'COLOR', codeSyntax: { WEB: 'var(--ds-bg)' } }, vNoKey: { id: 'VariableID:2:2', name: 'x', valuesByMode: { m: 1 }, variableCollectionId: 'C', resolvedType: 'FLOAT' } },
   variableCollections: { C: { id: 'C', name: 'ThemeColl', key: 'c011ec110bab1e'.padEnd(40, '0'), defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
 } };
 
@@ -44,6 +44,9 @@ describe('syncUser', () => {
     expect(replaced[0].fk).toBe('good');
     expect(replaced[0].vars).toHaveLength(1); // vNoKey (no published key) dropped
     expect(replaced[0].vars[0].library_key).toBe('k'.repeat(40));
+    // The 7th field is asserted EXPLICITLY: the sync literal is type-unchecked (SyncDeps takes
+    // unknown[]), so forgetting it compiles green everywhere - only this line goes red.
+    expect(replaced[0].vars[0].code_syntax_web).toBe('var(--ds-bg)');
     expect(replaced[0].colls[0]).toEqual({ collection_id: 'C', default_mode: 'm', modes: [{ modeId: 'm', name: 'L' }], name: 'ThemeColl', key: 'c011ec110bab1e'.padEnd(40, '0') });
     expect(res.libraries).toBe(1);
     expect(res.variables).toBe(1);

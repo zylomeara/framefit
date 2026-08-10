@@ -12,9 +12,10 @@ describe.skipIf(!url)('library-graph-db', () => {
 
   it('replaceLibrary + loadGraph round-trips byKey/byLocal/collDefaultMode', async () => {
     await replaceLibrary('u1', 'LIB', [
-      { library_key: K, local_id: 'VariableID:1:2', collection_id: 'C', values_by_mode: { m: { r: 1, g: 1, b: 1, a: 1 } }, name: 'bg', resolved_type: 'COLOR' },
+      { library_key: K, local_id: 'VariableID:1:2', collection_id: 'C', values_by_mode: { m: { r: 1, g: 1, b: 1, a: 1 } }, name: 'bg', resolved_type: 'COLOR', code_syntax_web: 'var(--ds-rt)' },
     ], [{ collection_id: 'C', default_mode: 'm', modes: [{ modeId: 'm', name: 'Light' }] }]);
     const g = await loadGraph('u1');
+    expect(g.byCssName.get('--ds-rt')).toBeDefined(); // round-trip lock for the SELECT column
     expect(g.byKey.get(K)?.name).toBe('bg');
     expect(g.byKey.get(K)?.fileKey).toBe('LIB');
     expect(g.byLocal.get('LIB|VariableID:1:2')?.collectionId).toBe('C');
@@ -24,10 +25,10 @@ describe.skipIf(!url)('library-graph-db', () => {
   it('keys default mode per file_key — two files sharing collection_id resolve independently', async () => {
     const KA = 'a'.repeat(40), KB = 'b'.repeat(40);
     await replaceLibrary('u1', 'FILE_A',
-      [{ library_key: KA, local_id: 'VariableID:1:1', collection_id: 'C', values_by_mode: { mLight: { r: 1, g: 1, b: 1, a: 1 }, mDark: { r: 0, g: 0, b: 0, a: 1 } }, name: 'bg', resolved_type: 'COLOR' }],
+      [{ library_key: KA, local_id: 'VariableID:1:1', collection_id: 'C', values_by_mode: { mLight: { r: 1, g: 1, b: 1, a: 1 }, mDark: { r: 0, g: 0, b: 0, a: 1 } }, name: 'bg', resolved_type: 'COLOR', code_syntax_web: '' }],
       [{ collection_id: 'C', default_mode: 'mLight', modes: [] }]);
     await replaceLibrary('u1', 'FILE_B',
-      [{ library_key: KB, local_id: 'VariableID:1:1', collection_id: 'C', values_by_mode: { mLight: { r: 1, g: 1, b: 1, a: 1 }, mDark: { r: 0, g: 0, b: 0, a: 1 } }, name: 'bg', resolved_type: 'COLOR' }],
+      [{ library_key: KB, local_id: 'VariableID:1:1', collection_id: 'C', values_by_mode: { mLight: { r: 1, g: 1, b: 1, a: 1 }, mDark: { r: 0, g: 0, b: 0, a: 1 } }, name: 'bg', resolved_type: 'COLOR', code_syntax_web: '' }],
       [{ collection_id: 'C', default_mode: 'mDark', modes: [] }]);
     const g = await loadGraph('u1');
     expect(g.collDefaultMode.get('FILE_A|C')).toBe('mLight');
@@ -37,8 +38,8 @@ describe.skipIf(!url)('library-graph-db', () => {
     expect(resolveKey(g, KB).value).toBe('#000000');
   });
   it('replaceLibrary replaces per (user,file_key); per-user isolation', async () => {
-    await replaceLibrary('u1', 'LIB', [{ library_key: K, local_id: 'VariableID:1:1', collection_id: 'C', values_by_mode: { m: 1 }, name: 'a', resolved_type: 'FLOAT' }], []);
-    await replaceLibrary('u1', 'LIB', [{ library_key: 'a'.repeat(40), local_id: 'VariableID:2:2', collection_id: 'C', values_by_mode: { m: 2 }, name: 'b', resolved_type: 'FLOAT' }], []);
+    await replaceLibrary('u1', 'LIB', [{ library_key: K, local_id: 'VariableID:1:1', collection_id: 'C', values_by_mode: { m: 1 }, name: 'a', resolved_type: 'FLOAT', code_syntax_web: '' }], []);
+    await replaceLibrary('u1', 'LIB', [{ library_key: 'a'.repeat(40), local_id: 'VariableID:2:2', collection_id: 'C', values_by_mode: { m: 2 }, name: 'b', resolved_type: 'FLOAT', code_syntax_web: '' }], []);
     const g1 = await loadGraph('u1');
     expect(g1.byKey.has(K)).toBe(false);
     expect(g1.byKey.has('a'.repeat(40))).toBe(true);

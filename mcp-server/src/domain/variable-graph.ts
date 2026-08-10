@@ -4,13 +4,18 @@
 // mode, and converts literal COLOR to hex. Supports both default-mode resolution
 // (resolveKey/resolveNode) and per-mode resolution (resolveKeyModes/resolveNodeInMode).
 import { extractLibraryKey } from './variable-snapshot.js';
+import { extractCssName } from './variables.js';
 import { rgbaToHex } from './design-context/color.js';
 import type { RawColor } from './figma-raw.js';
 import { recordApplied, formatModesApplied, type AppliedMode } from './design-context/resolved-token.js';
 
-interface Node { name: string; valuesByMode: Record<string, unknown>; collectionId: string; fileKey: string }
+interface Node { name: string; valuesByMode: Record<string, unknown>; collectionId: string; fileKey: string; codeSyntaxWeb: string }
 export interface Graph {
   byKey: Map<string, Node>; byLocal: Map<string, Node>;
+  // Authored css name (extractCssName over codeSyntaxWeb) -> deduped lower-cased libKeys.
+  // Keys are VERBATIM (CSS custom properties are case-sensitive; only the 40-hex identity
+  // keys fold) - a folded name would merge --Brand with --brand and mint wrong uniqueness.
+  byCssName: Map<string, string[]>;
   collDefaultMode: Map<string, string>;
   collModes: Map<string, { modeId: string; name: string }[]>;   // key = fileKey|collectionId
   collNames: Map<string, string>;                                // key = fileKey|collectionId
@@ -18,15 +23,16 @@ export interface Graph {
 }
 export interface Lib {
   fileKey: string;
-  vars: { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; resolved_type: string }[];
+  vars: { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; resolved_type: string; code_syntax_web: string }[];
   colls: { collection_id: string; default_mode: string; modes: unknown; name?: string; key?: string }[];
 }
 
 export function buildGraphMaps(
-  vars: { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; fileKey: string }[],
+  vars: { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; fileKey: string; code_syntax_web: string }[],
   colls: { collection_id: string; default_mode: string; modes?: { modeId: string; name: string }[]; name?: string; key?: string; fileKey: string }[],
 ): Graph {
   const byKey = new Map<string, Node>(), byLocal = new Map<string, Node>(), collDefaultMode = new Map<string, string>();
+  const byCssName = new Map<string, string[]>();
   const collModes = new Map<string, { modeId: string; name: string }[]>();
   const collNames = new Map<string, string>();
   const collKeys = new Map<string, string>();
@@ -39,13 +45,22 @@ export function buildGraphMaps(
     if (c.key) collKeys.set(c.fileKey + '|' + c.collection_id, c.key.toLowerCase());
   }
   for (const v of vars) {
-    const node: Node = { name: v.name, valuesByMode: v.values_by_mode, collectionId: v.collection_id, fileKey: v.fileKey };
+    const node: Node = { name: v.name, valuesByMode: v.values_by_mode, collectionId: v.collection_id, fileKey: v.fileKey, codeSyntaxWeb: v.code_syntax_web };
     byLocal.set(v.fileKey + '|' + v.local_id, node);
     // Published keys are lower-hex; lower-case here so cross-library lookups (which
     // also lower-case the consumer's alias key, see extractLibraryKey) always join.
-    if (v.library_key) byKey.set(v.library_key.toLowerCase(), node);
+    if (v.library_key) {
+      const lk = v.library_key.toLowerCase();
+      byKey.set(lk, node);
+      const css = extractCssName(v.code_syntax_web);
+      if (css !== undefined) {
+        const ids = byCssName.get(css) ?? [];
+        if (!ids.includes(lk)) ids.push(lk); // dedup: duplicate team ids ingest a library twice
+        byCssName.set(css, ids);
+      }
+    }
   }
-  return { byKey, byLocal, collDefaultMode, collModes, collNames, collKeys };
+  return { byKey, byLocal, byCssName, collDefaultMode, collModes, collNames, collKeys };
 }
 
 export function buildGraph(libs: Lib[]): Graph {
@@ -318,4 +333,116 @@ export function keyIsMultiMode(g: Graph, key: string): boolean {
   const node = g.byKey.get(key.toLowerCase());
   if (!node) return false;
   return (g.collModes.get(node.fileKey + '|' + node.collectionId)?.length ?? 0) > 1;
+}
+
+
+// ── codeSyntax evidence over the graph (graph-css-evidence line) ─────────────────────────────
+// The gate rule (diff.ts D-branch) does not move; these primitives only widen what the merged
+// CssTokenEvidence facade can answer for cross-library bindings.
+
+/** The bound variable's own authored css name, by lower-cased published key. '' or an
+ * unanchored authored string is NO evidence (extractCssName). */
+export function graphAuthoredName(g: Graph, libKey: string): string | undefined {
+  const node = g.byKey.get(libKey.toLowerCase());
+  if (!node) return undefined;
+  return extractCssName(node.codeSyntaxWeb);
+}
+
+/** Every library variable minting `cssName` (VERBATIM key), as lower-cased libKeys. */
+export function graphIdsByCssName(g: Graph, cssName: string): string[] {
+  return g.byCssName.get(cssName) ?? [];
+}
+
+export type GraphRef = { kind: 'key'; key: string } | { kind: 'local'; fileKey: string; id: string };
+const refId = (r: GraphRef): string => (r.kind === 'key' ? 'k:' + r.key.toLowerCase() : 'l:' + r.fileKey + '|' + r.id);
+const refNode = (g: Graph, r: GraphRef): Node | undefined =>
+  r.kind === 'key' ? g.byKey.get(r.key.toLowerCase()) : g.byLocal.get(r.fileKey + '|' + r.id);
+
+/**
+ * TRI-STATE alias reachability (panel-locked): 'unknown' - a hop target absent from the
+ * published-only projection (sync drops keyless variables, so holes are ROUTINE, not exotic)
+ * or the budget exhausted - is NOT 'unrelated'. The caller may treat only a fully-walked
+ * chain as evidence of non-relation; the positive-collision gate must never fire on an
+ * incompletely-walked chain. Edges are scanned across ALL modes (a non-default-mode alias is
+ * a real tier - resolveKey's default-mode pick must never be copied here). One budget, one
+ * composite-ref visited set - no reset at any boundary.
+ */
+export function graphAliasWalk(g: Graph, from: GraphRef, to: GraphRef, budget = 24): 'related' | 'unrelated' | 'unknown' {
+  const target = refId(to);
+  if (refId(from) === target) return 'related';
+  const seen = new Set<string>();
+  let frontier: GraphRef[] = [from];
+  let sawHole = false;
+  for (let depth = 0; depth < budget && frontier.length; depth++) {
+    const next: GraphRef[] = [];
+    for (const ref of frontier) {
+      const id = refId(ref);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const node = refNode(g, ref);
+      if (!node) { sawHole = true; continue; } // hole in the projection - cannot exclude relation
+      for (const val of Object.values(node.valuesByMode)) {
+        const alias = val as { type?: string; id?: string };
+        if (alias?.type !== 'VARIABLE_ALIAS' || typeof alias.id !== 'string') continue;
+        const k = extractLibraryKey(alias.id);
+        const edgeRef: GraphRef = k !== null ? { kind: 'key', key: k } : { kind: 'local', fileKey: node.fileKey, id: alias.id };
+        // The EDGE's identity counts even when its node is absent - an alias pointing AT the
+        // target is a relation regardless of whether the target row itself was synced.
+        if (refId(edgeRef) === target) return 'related';
+        next.push(edgeRef);
+      }
+    }
+    frontier = next;
+  }
+  if (frontier.length) sawHole = true; // budget exhausted with unexplored refs
+  return sawHole ? 'unknown' : 'unrelated';
+}
+
+/** Scoped evidence view for the merged facade. The MINTER population is limited to the
+ * libraries the compared subtree actually references (referencedKeys -> their fileKeys) -
+ * tenant-wide uniqueness would collide the commonest DS names across unrelated brands - and
+ * EXCLUDES the compared file itself (excludeFileKey): when the compared file is a registered
+ * library, the local index IS that file, fresher and complete; keeping its graph copy would
+ * mint twin identities for every variable (evidence lost or a self-collision gate). The alias
+ * WALK stays unscoped - relatedness is a property of the wiring, not of the minter set. */
+export interface GraphCssView {
+  authoredNameOf(libKey: string): string | undefined;
+  idsByCssName(cssName: string): string[];
+  aliasWalk(fromKey: string, toKey: string, budget?: number): 'related' | 'unrelated' | 'unknown';
+}
+export function graphCssEvidenceView(g: Graph, referencedKeys: string[], excludeFileKey?: string): GraphCssView {
+  // Transitive scope (v2 addendum #4, the 'plus files reached during alias walks' clause): a
+  // referenced variable's alias chain legitimately pulls its TARGET libraries into play - a
+  // minter living in a transitively-reached file must be able to collide. Bounded BFS over the
+  // same all-modes edges the walk uses; the compared file stays excluded throughout.
+  const allowedFiles = new Set<string>();
+  const seenRefs = new Set<string>();
+  let frontier: GraphRef[] = referencedKeys.map((k) => ({ kind: 'key', key: k }));
+  for (let depth = 0; depth < 24 && frontier.length; depth++) {
+    const next: GraphRef[] = [];
+    for (const ref of frontier) {
+      const rid = refId(ref);
+      if (seenRefs.has(rid)) continue;
+      seenRefs.add(rid);
+      const node = refNode(g, ref);
+      if (!node) continue;
+      if (node.fileKey !== excludeFileKey) allowedFiles.add(node.fileKey);
+      for (const val of Object.values(node.valuesByMode)) {
+        const alias = val as { type?: string; id?: string };
+        if (alias?.type !== 'VARIABLE_ALIAS' || typeof alias.id !== 'string') continue;
+        const k = extractLibraryKey(alias.id);
+        next.push(k !== null ? { kind: 'key', key: k } : { kind: 'local', fileKey: node.fileKey, id: alias.id });
+      }
+    }
+    frontier = next;
+  }
+  const admits = (libKey: string): boolean => {
+    const node = g.byKey.get(libKey.toLowerCase());
+    return node !== undefined && node.fileKey !== excludeFileKey && allowedFiles.has(node.fileKey);
+  };
+  return {
+    authoredNameOf: (libKey) => (admits(libKey) ? graphAuthoredName(g, libKey) : undefined),
+    idsByCssName: (cssName) => graphIdsByCssName(g, cssName).filter(admits),
+    aliasWalk: (fromKey, toKey, budget) => graphAliasWalk(g, { kind: 'key', key: fromKey }, { kind: 'key', key: toKey }, budget),
+  };
 }

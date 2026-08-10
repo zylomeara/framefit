@@ -599,7 +599,7 @@ function crossLibGraph() {
         values_by_mode: {
           ThemeLight: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + BRAND_KEY + '/9:9' },
           ThemeDark: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + BRAND_KEY + '/9:9' },
-        }, name: 'text color/accent', resolved_type: 'COLOR' }] },
+        }, name: 'text color/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
     { fileKey: 'FSubBrand',
       colls: [{ collection_id: SUBBRAND_COLL, default_mode: '12:0',
         modes: [{ modeId: '12:0', name: 'Lunar' }, { modeId: '34:0', name: 'Solar' }] }],
@@ -607,15 +607,15 @@ function crossLibGraph() {
         values_by_mode: {
           '12:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + PURPLE_MARKET_KEY + '/1:1' },
           '34:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + PURPLE_ALT_KEY + '/1:1' },
-        }, name: 'brand/600', resolved_type: 'COLOR' }] },
+        }, name: 'brand/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
     { fileKey: 'FPurpleMarket',
       colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
       vars: [{ library_key: PURPLE_MARKET_KEY, local_id: 'VariableID:1:1', collection_id: 'C',
-        values_by_mode: { p: { r: 0.655, g: 0.227, b: 0.992, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR' }] },
+        values_by_mode: { p: { r: 0.655, g: 0.227, b: 0.992, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
     { fileKey: 'FPurpleSolar',
       colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
       vars: [{ library_key: PURPLE_ALT_KEY, local_id: 'VariableID:1:1', collection_id: 'C',
-        values_by_mode: { p: { r: 0.545, g: 0.416, b: 0.984, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR' }] },
+        values_by_mode: { p: { r: 0.545, g: 0.416, b: 0.984, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
   ]);
 }
 

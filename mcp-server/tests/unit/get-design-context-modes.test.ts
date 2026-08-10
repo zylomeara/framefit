@@ -202,10 +202,10 @@ describe('get_design_context modes_applied', () => {
     const g = buildGraph([
       { fileKey: 'L1', colls: [{ collection_id: 'C_sem', default_mode: 's1', modes: [{ modeId: 's1', name: 'Only' }] }],
         vars: [{ library_key: KA, local_id: 'VariableID:1:1', collection_id: 'C_sem',
-          values_by_mode: { s1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + KB + '/9:9' } }, name: 'surface/card', resolved_type: 'COLOR' }] },
+          values_by_mode: { s1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + KB + '/9:9' } }, name: 'surface/card', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'L2', colls: [{ collection_id: 'C_pal', default_mode: 'pA', modes: [{ modeId: 'pA', name: 'Lunar' }, { modeId: 'pB', name: 'Solar' }] }],
         vars: [{ library_key: KB, local_id: 'VariableID:9:9', collection_id: 'C_pal',
-          values_by_mode: { pA: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, pB: { r: 0.545, g: 0.416, b: 0.984, a: 1 } }, name: 'palette/accent', resolved_type: 'COLOR' }] },
+          values_by_mode: { pA: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, pB: { r: 0.545, g: 0.416, b: 0.984, a: 1 } }, name: 'palette/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
     ]);
     const variableGraph: ToolDeps['variableGraph'] = {
       resolve: (key) => { const r = resolveKey(g, key); return r.value !== undefined ? { value: r.value, name: r.name } : undefined; },

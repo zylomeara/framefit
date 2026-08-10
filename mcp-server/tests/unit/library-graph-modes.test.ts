@@ -15,7 +15,7 @@ describe('rowsToGraphInput', () => {
     expect(colls[0]).toEqual({ collection_id: 'C', default_mode: 'm1', fileKey: 'L1',
       modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'Dark' }], name: 'Theme', key: 'facade'.padEnd(40, '0') });
     expect(vars[0]).toEqual({ library_key: 'k'.repeat(40), local_id: 'VariableID:1:1', collection_id: 'C',
-      values_by_mode: { m1: { r: 1, g: 1, b: 1 } }, name: 'x', fileKey: 'L1' });
+      values_by_mode: { m1: { r: 1, g: 1, b: 1 } }, name: 'x', fileKey: 'L1', code_syntax_web: '' });
   });
 
   it('defaults modes to [] when the DB row has no modes value', () => {
@@ -36,6 +36,19 @@ describe('rowsToGraphInput', () => {
     expect(colls[0].key).toBe('');
   });
 
+  it("defaults code_syntax_web to '' when the DB row predates the column (stale rows are evidence-free)", () => {
+    const { vars } = rowsToGraphInput([{ file_key: 'L1', library_key: 'k'.repeat(40), local_id: 'VariableID:1:1',
+      collection_id: 'C', values_by_mode: {}, name: 'bg' }], []);
+    expect(vars[0].code_syntax_web).toBe('');
+  });
+
+  it('a NON-empty code_syntax_web survives the row mapping into byCssName (mutation lock: drop the column from the loadGraph SELECT and this goes red)', () => {
+    const { vars, colls } = rowsToGraphInput([{ file_key: 'L1', library_key: 'k'.repeat(40), local_id: 'VariableID:1:1',
+      collection_id: 'C', values_by_mode: {}, name: 'bg', code_syntax_web: 'var(--ds-x)' }], []);
+    const g = buildGraphMaps(vars, colls);
+    expect(g.byCssName.get('--ds-x')).toEqual(['k'.repeat(40)]);
+  });
+
   it('is a pure mapping — no DB, and its output feeds buildGraphMaps to populate collModes', () => {
     const varRows = [{ file_key: 'L1', library_key: 'k'.repeat(40), local_id: 'VariableID:1:1', collection_id: 'C',
       values_by_mode: { m1: '#fff', m2: '#000' }, name: 'bg' }];
@@ -48,3 +61,4 @@ describe('rowsToGraphInput', () => {
     expect(graph.collModes.get('L1|C')).toEqual([{ modeId: 'm1', name: 'Light' }, { modeId: 'm2', name: 'Dark' }]);
   });
 });
+

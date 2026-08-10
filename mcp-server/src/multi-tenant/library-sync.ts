@@ -47,6 +47,10 @@ export async function syncUser(userId: string, deps: SyncDeps, opts?: { teamId?:
         const vars = Object.values(meta.variables ?? {}).filter((v: any) => v.key).map((v: any) => ({
           library_key: v.key, local_id: v.id, collection_id: v.variableCollectionId,
           values_by_mode: v.valuesByMode, name: v.name, resolved_type: v.resolvedType,
+          // The authored name->code mapping, RAW (extraction lives in extractCssName alone, so
+          // an extraction fix never requires a fleet resync). REQUIRED downstream: this literal
+          // is type-unchecked (SyncDeps takes unknown[]), so the sync test asserts the field.
+          code_syntax_web: v.codeSyntax?.WEB ?? '',
         }));
         if (vars.length === 0) continue; // not a usable variable library (no published keys) — LEGITIMATE eviction
         const colls = Object.values(meta.variableCollections ?? {}).map((c: any) => ({ collection_id: c.id, default_mode: c.defaultModeId, modes: c.modes, name: c.name ?? '', key: c.key ?? '' }));

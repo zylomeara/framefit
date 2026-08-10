@@ -5,11 +5,12 @@ import { getSharedPool } from './db.js';
 import { buildGraphMaps } from '../domain/variable-graph.js';
 import type { GraphStats } from '../infrastructure/status.js';
 
-export interface GraphVar { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; resolved_type: string }
+export interface GraphVar { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; resolved_type: string; code_syntax_web: string }
 export interface GraphColl { collection_id: string; default_mode: string; modes: unknown; name?: string; key?: string }
-export interface GraphNode { name: string; valuesByMode: Record<string, unknown>; collectionId: string; fileKey: string }
+export interface GraphNode { name: string; valuesByMode: Record<string, unknown>; collectionId: string; fileKey: string; codeSyntaxWeb: string }
 export interface LoadedGraph {
   byKey: Map<string, GraphNode>; byLocal: Map<string, GraphNode>;
+  byCssName: Map<string, string[]>;
   collDefaultMode: Map<string, string>;
   // Populated by loadGraph() from library_collections.modes (JSONB) via rowsToGraphInput.
   // key = fileKey|collectionId; kept structurally in sync with domain Graph.
@@ -29,6 +30,7 @@ export async function ensureLibraryGraphSchema(): Promise<void> {
       values_by_mode   JSONB NOT NULL DEFAULT '{}'::jsonb,
       name             VARCHAR NOT NULL DEFAULT '',
       resolved_type    VARCHAR NOT NULL DEFAULT '',
+      code_syntax_web  VARCHAR NOT NULL DEFAULT '',
       PRIMARY KEY (keycloak_user_id, file_key, local_id)
     );
     CREATE INDEX IF NOT EXISTS idx_libvars_key ON library_variables (keycloak_user_id, library_key);
@@ -46,6 +48,7 @@ export async function ensureLibraryGraphSchema(): Promise<void> {
     -- existing table, so the column must also be added explicitly (idempotent).
     ALTER TABLE library_collections ADD COLUMN IF NOT EXISTS name VARCHAR NOT NULL DEFAULT '';
     ALTER TABLE library_collections ADD COLUMN IF NOT EXISTS key VARCHAR NOT NULL DEFAULT '';
+    ALTER TABLE library_variables ADD COLUMN IF NOT EXISTS code_syntax_web VARCHAR NOT NULL DEFAULT '';
   `);
 }
 
@@ -63,11 +66,11 @@ export async function replaceLibrary(userId: string, fileKey: string, vars: Grap
     await client.query('DELETE FROM library_collections WHERE keycloak_user_id=$1 AND file_key=$2', [userId, fileKey]);
     for (const v of vars) {
       await client.query(
-        `INSERT INTO library_variables (keycloak_user_id, file_key, library_key, local_id, collection_id, values_by_mode, name, resolved_type)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        `INSERT INTO library_variables (keycloak_user_id, file_key, library_key, local_id, collection_id, values_by_mode, name, resolved_type, code_syntax_web)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (keycloak_user_id, file_key, local_id) DO UPDATE
-           SET library_key=EXCLUDED.library_key, collection_id=EXCLUDED.collection_id, values_by_mode=EXCLUDED.values_by_mode, name=EXCLUDED.name, resolved_type=EXCLUDED.resolved_type`,
-        [userId, fileKey, v.library_key, v.local_id, v.collection_id, JSON.stringify(v.values_by_mode), v.name, v.resolved_type],
+           SET library_key=EXCLUDED.library_key, collection_id=EXCLUDED.collection_id, values_by_mode=EXCLUDED.values_by_mode, name=EXCLUDED.name, resolved_type=EXCLUDED.resolved_type, code_syntax_web=EXCLUDED.code_syntax_web`,
+        [userId, fileKey, v.library_key, v.local_id, v.collection_id, JSON.stringify(v.values_by_mode), v.name, v.resolved_type, v.code_syntax_web ?? ''],
       );
     }
     for (const c of colls) {
@@ -82,7 +85,7 @@ export async function replaceLibrary(userId: string, fileKey: string, vars: Grap
   } catch (e) { try { await client.query('ROLLBACK'); } catch { /* dead */ } throw e; } finally { client.release(); }
 }
 
-type VarRow = { file_key: string; library_key: string; local_id: string; collection_id: string; values_by_mode: unknown; name: string };
+type VarRow = { file_key: string; library_key: string; local_id: string; collection_id: string; values_by_mode: unknown; name: string; code_syntax_web?: string };
 type CollRow = { file_key: string; collection_id: string; default_mode: string; modes?: unknown; name?: string; key?: string };
 
 /**
@@ -93,13 +96,16 @@ export function rowsToGraphInput(
   varRows: VarRow[],
   collRows: CollRow[],
 ): {
-  vars: { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; fileKey: string }[];
+  vars: { library_key: string; local_id: string; collection_id: string; values_by_mode: Record<string, unknown>; name: string; fileKey: string; code_syntax_web: string }[];
   colls: { collection_id: string; default_mode: string; modes: { modeId: string; name: string }[]; name: string; key: string; fileKey: string }[];
 } {
   return {
     vars: varRows.map((row) => ({
       library_key: row.library_key, local_id: row.local_id, collection_id: row.collection_id,
       values_by_mode: (row.values_by_mode ?? {}) as Record<string, unknown>, name: row.name, fileKey: row.file_key,
+      // '' for rows predating the column (the name/key precedent): stale rows are honestly
+      // evidence-free until the next sync.
+      code_syntax_web: row.code_syntax_web ?? '',
     })),
     colls: collRows.map((row) => ({
       collection_id: row.collection_id, default_mode: row.default_mode,
@@ -111,7 +117,10 @@ export function rowsToGraphInput(
 export async function loadGraph(userId: string): Promise<LoadedGraph> {
   const p = getSharedPool();
   // ORDER BY: deterministic row order so buildGraphMaps' byKey "last write wins" winner is stable across re-syncs.
-  const vr = await p.query('SELECT file_key, library_key, local_id, collection_id, values_by_mode, name FROM library_variables WHERE keycloak_user_id=$1 ORDER BY file_key, local_id', [userId]);
+  // code_syntax_web IS in this SELECT on purpose - pg rows are any[], a forgotten column reads
+  // as a silent undefined all the way down (resolved_type is already absent here BY CHOICE; the
+  // evidence column must not repeat that shape by accident).
+  const vr = await p.query('SELECT file_key, library_key, local_id, collection_id, values_by_mode, name, code_syntax_web FROM library_variables WHERE keycloak_user_id=$1 ORDER BY file_key, local_id', [userId]);
   const cr = await p.query('SELECT file_key, collection_id, default_mode, modes, name, key FROM library_collections WHERE keycloak_user_id=$1 ORDER BY file_key, collection_id', [userId]);
   const { vars, colls } = rowsToGraphInput(vr.rows, cr.rows);
   return buildGraphMaps(vars, colls);

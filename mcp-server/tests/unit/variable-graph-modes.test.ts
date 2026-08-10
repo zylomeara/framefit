@@ -7,7 +7,7 @@ const colls = [{ collection_id: 'C', default_mode: 'm1',
 const libs = [
   { fileKey: 'L1', colls, vars: [{ library_key: K('aaa'), local_id: 'VariableID:1:1', collection_id: 'C',
     values_by_mode: { m1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, m2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } },
-    name: 'text color/accent', resolved_type: 'COLOR' }] },
+    name: 'text color/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
 ];
 
 describe('keyIsMultiMode', () => {
@@ -18,7 +18,7 @@ describe('keyIsMultiMode', () => {
   it('false for a single-mode top collection', () => {
     const single = [{ fileKey: 'L1', colls: [{ collection_id: 'S', default_mode: 's1', modes: [{ modeId: 's1', name: 'Only' }] }],
       vars: [{ library_key: K('ccc'), local_id: 'VariableID:2:2', collection_id: 'S',
-        values_by_mode: { s1: { r: 0, g: 0, b: 0, a: 1 } }, name: 'mono', resolved_type: 'COLOR' }] }];
+        values_by_mode: { s1: { r: 0, g: 0, b: 0, a: 1 } }, name: 'mono', resolved_type: 'COLOR', code_syntax_web: '' }] }];
     expect(keyIsMultiMode(buildGraph(single), K('ccc'))).toBe(false);
   });
 
@@ -35,7 +35,7 @@ describe('keyIsMultiMode', () => {
       vars: [{ library_key: K('ddd'), local_id: 'VariableID:3:3', collection_id: 'P',
         values_by_mode: { p1: { r: 0.5, g: 0.4, b: 0.9, a: 1 },
           p2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('eee') + '/9:9' } },  // cross-lib, not in graph
-        name: 'partial/accent', resolved_type: 'COLOR' }] }];
+        name: 'partial/accent', resolved_type: 'COLOR', code_syntax_web: '' }] }];
     const g = buildGraph(partial);
     expect(Object.keys(resolveKeyModes(g, K('ddd'))!.modesByName).length).toBe(1);   // p2 dropped (unresolvable)
     expect(keyIsMultiMode(g, K('ddd'))).toBe(true);                                   // but 2 modes EXIST
@@ -64,11 +64,11 @@ describe('resolveKeyModes', () => {
     const g = buildGraph([
       { fileKey: 'L1', colls: collsSrc, vars: [{ library_key: K('a11'), local_id: 'VariableID:1:1', collection_id: 'C_src',
         values_by_mode: { m1: { type: 'VARIABLE_ALIAS', id: aliasId }, m2: { type: 'VARIABLE_ALIAS', id: aliasId } },
-        name: 'src/accent', resolved_type: 'COLOR' }] },
+        name: 'src/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'L2', colls: collsTgt, vars: [{ library_key: K('b22'), local_id: 'VariableID:9:9', collection_id: 'C_tgt',
         // Decoy (black) is inserted first; the real default t1 (white) is second.
         values_by_mode: { tDecoy: { r: 0, g: 0, b: 0, a: 1 }, t1: { r: 1, g: 1, b: 1, a: 1 } },
-        name: 'tgt/base', resolved_type: 'COLOR' }] },
+        name: 'tgt/base', resolved_type: 'COLOR', code_syntax_web: '' }] },
     ]);
     const r = resolveKeyModes(g, K('a11'))!;
     // Both source modes hop to the target, which lacks m1/m2 -> resolve to target default t1 (#ffffff),
@@ -112,12 +112,12 @@ describe('resolveKeyInMode', () => {
         values_by_mode: {
           m1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('b22') + '/9:9' },
           m2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('b22') + '/9:9' },
-        }, name: 'src/accent', resolved_type: 'COLOR' }] },
+        }, name: 'src/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
     { fileKey: 'L2', colls: [{ collection_id: 'C_tgt', default_mode: 'tA',
       modes: [{ modeId: 'tA', name: 'Light' }, { modeId: 'tB', name: 'Night' }] }],
       vars: [{ library_key: K('b22'), local_id: 'VariableID:9:9', collection_id: 'C_tgt',
         values_by_mode: { tA: { r: 1, g: 1, b: 1, a: 1 }, tB: { r: 0, g: 0, b: 0, a: 1 } },
-        name: 'tgt/base', resolved_type: 'COLOR' }] },
+        name: 'tgt/base', resolved_type: 'COLOR', code_syntax_web: '' }] },
   ]);
 
   it('downgrades to default when a cross-collection hop falls back (target mode unconfirmed)', () => {
@@ -149,13 +149,13 @@ describe('resolveKeyInMode', () => {
           values_by_mode: {
             c_def: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('b22') + '/9:9' },
             '1:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('b22') + '/9:9' },
-          }, name: 'src/accent', resolved_type: 'COLOR' }] },
+          }, name: 'src/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'L2', colls: [{ collection_id: 'C_tgt', default_mode: 't_def',
         modes: [{ modeId: 't_def', name: 'Base' }, { modeId: '1:0', name: 'Collide' }] }],
         vars: [{ library_key: K('b22'), local_id: 'VariableID:9:9', collection_id: 'C_tgt',
           // Colliding-id mode '1:0' (black) differs from the default t_def (white).
           values_by_mode: { t_def: { r: 1, g: 1, b: 1, a: 1 }, '1:0': { r: 0, g: 0, b: 0, a: 1 } },
-          name: 'tgt/base', resolved_type: 'COLOR' }] },
+          name: 'tgt/base', resolved_type: 'COLOR', code_syntax_web: '' }] },
     ]);
     // Stack confirms only the SOURCE collection ('1:0'); NO entry for the target collection.
     const r = resolveKeyInMode(g, K('a11'), new Map([['C_src', '1:0']]))!;
@@ -178,12 +178,12 @@ describe('resolveKeyInMode single-mode-top + downstream multi-mode fellback (gra
       modes: [{ modeId: 's1', name: 'Only' }] }],
       vars: [{ library_key: K('a11'), local_id: 'VariableID:1:1', collection_id: 'C_sem',
         values_by_mode: { s1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('b22') + '/9:9' } },
-        name: 'surface/card', resolved_type: 'COLOR' }] },
+        name: 'surface/card', resolved_type: 'COLOR', code_syntax_web: '' }] },
     { fileKey: 'L2', colls: [{ collection_id: 'C_pal', default_mode: 'pA',
       modes: [{ modeId: 'pA', name: 'Lunar' }, { modeId: 'pB', name: 'Solar' }] }],
       vars: [{ library_key: K('b22'), local_id: 'VariableID:9:9', collection_id: 'C_pal',
         values_by_mode: { pA: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, pB: { r: 0.545, g: 0.416, b: 0.984, a: 1 } },
-        name: 'palette/accent', resolved_type: 'COLOR' }] },
+        name: 'palette/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
   ]);
   it('incomplete coverage (downstream palette unconfirmed) → mode_dependent:true, mode_source:default (NOT hardcoded false)', () => {
     const g = singleTopGraph();
@@ -230,7 +230,7 @@ describe('resolveKeyInMode: honest mode_source under complete coverage', () => {
           values_by_mode: {
             ThemeLight: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + brandKey + '/9:9' },
             ThemeDark: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + brandKey + '/9:9' },
-          }, name: 'text color/accent', resolved_type: 'COLOR' }] },
+          }, name: 'text color/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'FSubBrand',
         colls: [{ collection_id: subBrandCollId, default_mode: '12:0',
           modes: [{ modeId: '12:0', name: 'Lunar' }, { modeId: '34:0', name: 'Solar' }] }],
@@ -238,15 +238,15 @@ describe('resolveKeyInMode: honest mode_source under complete coverage', () => {
           values_by_mode: {
             '12:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleMarketKey + '/1:1' },
             '34:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleSolarKey + '/1:1' },
-          }, name: 'brand/600', resolved_type: 'COLOR' }] },
+          }, name: 'brand/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'FPurpleMarket',
         colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
         vars: [{ library_key: purpleMarketKey, local_id: 'VariableID:1:1', collection_id: 'C',
-          values_by_mode: { p: { r: 0.655, g: 0.227, b: 0.992, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR' }] },
+          values_by_mode: { p: { r: 0.655, g: 0.227, b: 0.992, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'FPurpleSolar',
         colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
         vars: [{ library_key: purpleSolarKey, local_id: 'VariableID:1:1', collection_id: 'C',
-          values_by_mode: { p: { r: 0.545, g: 0.416, b: 0.984, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR' }] },
+          values_by_mode: { p: { r: 0.545, g: 0.416, b: 0.984, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
     ]);
   }
 
@@ -332,7 +332,7 @@ describe('resolveKeyInMode: cross-library collection matching by library key (Ta
           values_by_mode: {
             ThemeLight: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + brandKey + '/9:9' },
             ThemeDark: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + brandKey + '/9:9' },
-          }, name: 'text color/accent', resolved_type: 'COLOR' }] },
+          }, name: 'text color/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'FSubBrand',
         colls: [{ collection_id: subBrandCollId, default_mode: '12:0',
           modes: [{ modeId: '12:0', name: 'Lunar' }, { modeId: '34:0', name: 'Solar' }] }],
@@ -340,15 +340,15 @@ describe('resolveKeyInMode: cross-library collection matching by library key (Ta
           values_by_mode: {
             '12:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleMarketKey + '/1:1' },
             '34:0': { type: 'VARIABLE_ALIAS', id: 'VariableID:' + purpleSolarKey + '/1:1' },
-          }, name: 'brand/600', resolved_type: 'COLOR' }] },
+          }, name: 'brand/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'FPurpleMarket',
         colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
         vars: [{ library_key: purpleMarketKey, local_id: 'VariableID:1:1', collection_id: 'C',
-          values_by_mode: { p: { r: 0.655, g: 0.227, b: 0.992, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR' }] },
+          values_by_mode: { p: { r: 0.655, g: 0.227, b: 0.992, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'FPurpleSolar',
         colls: [{ collection_id: 'C', default_mode: 'p', modes: [{ modeId: 'p', name: 'Default' }] }],
         vars: [{ library_key: purpleSolarKey, local_id: 'VariableID:1:1', collection_id: 'C',
-          values_by_mode: { p: { r: 0.545, g: 0.416, b: 0.984, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR' }] },
+          values_by_mode: { p: { r: 0.545, g: 0.416, b: 0.984, a: 1 } }, name: 'purple/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
     ]);
   }
 
@@ -391,12 +391,12 @@ const crossLibs = () => [
       values_by_mode: {
         t1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' },
         t2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' },
-      }, name: 'text color/accent', resolved_type: 'COLOR' }] },
+      }, name: 'text color/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
   { fileKey: 'L2', colls: [{ collection_id: 'CS', default_mode: 's1', name: 'sub-brand',
     modes: [{ modeId: 's1', name: 'default' }, { modeId: 's2', name: 'Solar' }] }],
     vars: [{ library_key: K('cab'), local_id: 'VariableID:9:9', collection_id: 'CS',
       values_by_mode: { s1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, s2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } },
-      name: 'brand/accent', resolved_type: 'COLOR' }] },
+      name: 'brand/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
 ];
 
 describe('resolveKeyInMode modes_applied', () => {
@@ -439,17 +439,17 @@ describe('resolveKeyInMode modes_applied', () => {
           { library_key: K('acc'), local_id: 'VariableID:1:1', collection_id: 'CT',
             values_by_mode: { t1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' },
                               t2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' } },
-            name: 'text color/accent', resolved_type: 'COLOR' },
+            name: 'text color/accent', resolved_type: 'COLOR', code_syntax_web: '' },
           { library_key: K('ccc'), local_id: 'VariableID:2:2', collection_id: 'CT',
             values_by_mode: { t1: { r: 1, g: 1, b: 1, a: 1 }, t2: { r: 0, g: 0, b: 0, a: 1 } },
-            name: 'core/base', resolved_type: 'COLOR' },
+            name: 'core/base', resolved_type: 'COLOR', code_syntax_web: '' },
         ] },
       { fileKey: 'L2', colls: [{ collection_id: 'CS', default_mode: 's1', name: 'sub-brand',
         modes: [{ modeId: 's1', name: 'default' }, { modeId: 's2', name: 'Solar' }] }],
         vars: [{ library_key: K('cab'), local_id: 'VariableID:9:9', collection_id: 'CS',
           values_by_mode: { s1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('ccc') + '/2:2' },
                             s2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('ccc') + '/2:2' } },
-          name: 'brand/accent', resolved_type: 'COLOR' }] },
+          name: 'brand/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
     ];
     const r = resolveKeyInMode(buildGraph(cyc), K('acc'), new Map([['CT', 't2'], ['CS', 's2']]), true)!;
     expect(r.value).toBe('#000000');                       // vC resolved in stack-pinned t2 (Dark)
@@ -476,13 +476,13 @@ const originLibs = () => [
       values_by_mode: {
         t1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('bab') + '/9:9' },
         t2: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('bab') + '/9:9' },
-      }, name: 'text color/accent', resolved_type: 'COLOR' }] },
+      }, name: 'text color/accent', resolved_type: 'COLOR', code_syntax_web: '' }] },
   { fileKey: 'ORIGIN', colls: [{ collection_id: 'VariableCollectionId:21:43', default_mode: 's1',
     name: 'SubBrand', key: K('5eed'),
     modes: [{ modeId: 's1', name: 'Lunar' }, { modeId: 's2', name: 'Solar' }] }],
     vars: [{ library_key: K('bab'), local_id: 'VariableID:9:9', collection_id: 'VariableCollectionId:21:43',
       values_by_mode: { s1: { r: 0.655, g: 0.227, b: 0.992, a: 1 }, s2: { r: 0.545, g: 0.416, b: 0.984, a: 1 } },
-      name: 'brand/600', resolved_type: 'COLOR' }] },
+      name: 'brand/600', resolved_type: 'COLOR', code_syntax_web: '' }] },
 ];
 
 describe('resolveKeyInMode plain-id origin join via published collection key', () => {
@@ -566,16 +566,102 @@ describe('resolveKeyInMode pinned_axis_used (port-level, unconditional)', () => 
         modes: [{ modeId: 'o1', name: 'Only' }] }],
         vars: [{ library_key: K('5e5e'), local_id: 'VariableID:1:1', collection_id: 'CS1',
           values_by_mode: { o1: { type: 'VARIABLE_ALIAS', id: 'VariableID:' + K('cab') + '/9:9' } },
-          name: 'semantic/base', resolved_type: 'COLOR' }] },
+          name: 'semantic/base', resolved_type: 'COLOR', code_syntax_web: '' }] },
       { fileKey: 'L2', colls: [{ collection_id: 'CB', default_mode: 'b1', name: 'Palette',
         modes: [{ modeId: 'b1', name: 'Light' }, { modeId: 'b2', name: 'Night' }] }],
         vars: [{ library_key: K('cab'), local_id: 'VariableID:9:9', collection_id: 'CB',
           values_by_mode: { b1: { r: 1, g: 1, b: 1, a: 1 }, b2: { r: 0, g: 0, b: 0, a: 1 } },
-          name: 'palette/base', resolved_type: 'COLOR' }] },
+          name: 'palette/base', resolved_type: 'COLOR', code_syntax_web: '' }] },
     ];
     const r = resolveKeyInMode(buildGraph(libs), K('5e5e'), new Map([['CB', 'b2']]), true)!;
     expect(r.mode_dependent).toBe(false);       // Option-B shape unchanged
     expect(r.value).toBe('#000000');
     expect(r.pinned_axis_used).toBe(true);
+  });
+});
+
+// ── codeSyntax evidence on the graph (graph-css-evidence line) ──
+// Panel-locked semantics: byCssName keys VERBATIM (CSS custom properties are case-sensitive;
+// only the 40-hex identity keys fold), values deduped by libKey; the alias walk is TRI-STATE -
+// 'unknown' (hole in the published-only projection, or cap exhausted) is NOT 'unrelated', and
+// edges are scanned across ALL modes, never resolveKey's default-mode pick.
+import { buildGraph as bg22, graphAuthoredName, graphIdsByCssName, graphAliasWalk, graphCssEvidenceView } from '../../src/domain/variable-graph.js';
+const KK = (c: string) => c.repeat(40);
+
+const evLib = (over: Partial<import('../../src/domain/variable-graph.js').Lib> = {}): import('../../src/domain/variable-graph.js').Lib => ({
+  fileKey: 'LIBFILE',
+  vars: [
+    { library_key: KK('a'), local_id: 'V:1', collection_id: 'C1', name: 'brand/primary', resolved_type: 'COLOR',
+      values_by_mode: { m1: { r: 1, g: 0, b: 0 } }, code_syntax_web: 'var(--ds-primary)' },
+    { library_key: KK('b'), local_id: 'V:2', collection_id: 'C1', name: 'brand/secondary', resolved_type: 'COLOR',
+      values_by_mode: { m1: { r: 0, g: 1, b: 0 } }, code_syntax_web: '--ds-Secondary' },
+    // semantic tier aliasing primary in a NON-default mode only (m2): the edge must still count
+    { library_key: KK('c'), local_id: 'V:3', collection_id: 'C2', name: 'button/bg', resolved_type: 'COLOR',
+      values_by_mode: { m1: { r: 0, g: 0, b: 1 }, m2: { type: 'VARIABLE_ALIAS', id: `VariableID:${KK('a')}/1:1` } }, code_syntax_web: '' },
+  ],
+  colls: [
+    { collection_id: 'C1', default_mode: 'm1', modes: [{ modeId: 'm1', name: 'Only' }] },
+    { collection_id: 'C2', default_mode: 'm1', modes: [{ modeId: 'm1', name: 'L' }, { modeId: 'm2', name: 'D' }] },
+  ],
+  ...over,
+});
+
+describe('graph codeSyntax evidence primitives', () => {
+  it('graphAuthoredName by lower-cased libKey; extraction is anchored; empty string = no evidence', () => {
+    const g = bg22([evLib()]);
+    expect(graphAuthoredName(g, KK('a'))).toBe('--ds-primary');
+    expect(graphAuthoredName(g, KK('a').toUpperCase())).toBe('--ds-primary'); // identity keys fold
+    expect(graphAuthoredName(g, KK('c'))).toBeUndefined();                    // '' = no evidence
+    expect(graphAuthoredName(g, KK('d'))).toBeUndefined();
+  });
+  it('byCssName keys are VERBATIM (case-sensitive), values deduped across duplicate ingestion', () => {
+    const g = bg22([evLib(), evLib()]); // duplicate team id ingests the same library twice
+    expect(graphIdsByCssName(g, '--ds-Secondary')).toEqual([KK('b')]);
+    expect(graphIdsByCssName(g, '--ds-secondary')).toEqual([]); // case variant = different name
+  });
+  it('alias walk: non-default-mode edge counts as related (all modes scanned)', () => {
+    const g = bg22([evLib()]);
+    expect(graphAliasWalk(g, { kind: 'key', key: KK('c') }, { kind: 'key', key: KK('a') })).toBe('related');
+  });
+  it('alias walk: genuinely unrelated over a fully-visible chain → unrelated', () => {
+    const g = bg22([evLib()]);
+    expect(graphAliasWalk(g, { kind: 'key', key: KK('b') }, { kind: 'key', key: KK('a') })).toBe('unrelated');
+  });
+  it('alias walk: a hop target absent from the graph (published-only hole) → unknown, never unrelated', () => {
+    const lib = evLib();
+    lib.vars[2].values_by_mode = { m1: { type: 'VARIABLE_ALIAS', id: 'VariableID:9:9' } }; // keyless local target, dropped at sync
+    const g = bg22([lib]);
+    expect(graphAliasWalk(g, { kind: 'key', key: KK('c') }, { kind: 'key', key: KK('a') })).toBe('unknown');
+  });
+  it('alias walk: cycle terminates as unrelated (fully visible, no relation)', () => {
+    const lib = evLib();
+    lib.vars[0].values_by_mode = { m1: { type: 'VARIABLE_ALIAS', id: `VariableID:${KK('c')}/3:3` } };
+    lib.vars[2].values_by_mode = { m1: { type: 'VARIABLE_ALIAS', id: `VariableID:${KK('a')}/1:1` } };
+    const g = bg22([lib]);
+    expect(graphAliasWalk(g, { kind: 'key', key: KK('a') }, { kind: 'key', key: KK('b') })).toBe('unrelated');
+  });
+});
+
+describe('graphCssEvidenceView — transitive scope (wave lock)', () => {
+  it('a minter in a file reached only THROUGH an alias chain is admitted; an unreached file is not', () => {
+    const g = bg22([
+      { fileKey: 'F1', vars: [
+        { library_key: KK('a'), local_id: 'V:1', collection_id: 'C1', name: 'sem/x', resolved_type: 'COLOR',
+          values_by_mode: { m: { type: 'VARIABLE_ALIAS', id: `VariableID:${KK('b')}/2:2` } }, code_syntax_web: '' }],
+        colls: [{ collection_id: 'C1', default_mode: 'm', modes: [{ modeId: 'm', name: 'M' }] }] },
+      { fileKey: 'F2', vars: [
+        { library_key: KK('b'), local_id: 'V:2', collection_id: 'C2', name: 'prim/x', resolved_type: 'COLOR',
+          values_by_mode: { m: { r: 1, g: 1, b: 1 } }, code_syntax_web: '' },
+        { library_key: KK('c'), local_id: 'V:3', collection_id: 'C2', name: 'other/y', resolved_type: 'COLOR',
+          values_by_mode: { m: { r: 0, g: 0, b: 0 } }, code_syntax_web: '--ds-y' }],
+        colls: [{ collection_id: 'C2', default_mode: 'm', modes: [{ modeId: 'm', name: 'M' }] }] },
+      { fileKey: 'F3', vars: [
+        { library_key: KK('d'), local_id: 'V:4', collection_id: 'C3', name: 'far/z', resolved_type: 'COLOR',
+          values_by_mode: { m: { r: 0, g: 0, b: 0 } }, code_syntax_web: '--ds-z' }],
+        colls: [{ collection_id: 'C3', default_mode: 'm', modes: [{ modeId: 'm', name: 'M' }] }] },
+    ]);
+    const view = graphCssEvidenceView(g, [KK('a')]); // only F1's variable directly referenced
+    expect(view.idsByCssName('--ds-y')).toEqual([KK('c')]); // F2 reached via the alias chain — admitted
+    expect(view.idsByCssName('--ds-z')).toEqual([]);        // F3 reached by nothing — never a minter
   });
 });
