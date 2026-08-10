@@ -16,7 +16,7 @@
 //  - CONDITIONAL typography projection: the extractor puts a typo bundle on EVERY element;
 //    mapping styles->text unconditionally would run the text-carrier machinery on every node.
 //    Only children that genuinely carry text project a text.
-import type { DomSnapshotOk, DomChild, LayoutSpec, SpecChild, DiffRow, Edges, SpecRect } from './types.js';
+import type { DomSnapshotOk, DomChild, DomColorToken, LayoutSpec, SpecChild, DiffRow, Edges, SpecRect } from './types.js';
 import { diffPair, type DiffOptions } from './diff.js';
 
 const ZERO: Edges = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -128,6 +128,23 @@ export function referencePreflight(reference: DomSnapshotOk): DiffRow[] {
   return rows;
 }
 
+// Token-provenance drift (D4): the value row can pass on equal hexes while the tokenization
+// silently changed between states (var()-anchored reference vs a literal candidate, or two
+// different var names). Symmetric comparison of two DomColorTokens - NOT colorVerdict. The
+// figma/dom fields carry PROVENANCE STRINGS (the gradient tokOf precedent), never hexes: a
+// review row with equal figma/dom self-demotes via rowValuesMatched, and equal hexes would.
+// Both-literal and any unknown/uncaptured side stay silent - drift is only claimable when both
+// provenances are decisive.
+function fillTokenDrift(ref: DomColorToken | undefined, cand: DomColorToken | undefined): DiffRow | undefined {
+  const provOf = (t: DomColorToken | undefined): string | undefined =>
+    t === undefined || 'unknown' in t ? undefined : 'token' in t ? `var(${t.token})` : 'literal';
+  const a = provOf(ref), b = provOf(cand);
+  if (a === undefined || b === undefined || (a === 'literal' && b === 'literal')) return undefined;
+  if (a === b) return { prop: 'fill-token-drift', figma: a, dom: b, status: 'pass' };
+  return { prop: 'fill-token-drift', figma: a, dom: b, status: 'review',
+    note: 'the background tokenization changed between states - the rendered value may still match, but the CANDIDATE no longer resolves it the way the REFERENCE does; confirm the change is intended' };
+}
+
 /** The dom-dom differ: preflight + the existing engine in explicit dom-dom mode. */
 export function diffDomPair(reference: DomSnapshotOk, candidate: DomSnapshotOk, opts: { tolerancePx: number; maxDepth?: number }): DiffRow[] {
   const preflight = referencePreflight(reference);
@@ -141,5 +158,8 @@ export function diffDomPair(reference: DomSnapshotOk, candidate: DomSnapshotOk, 
     sides: 'dom-dom',
     ...(reference.innerWidth !== undefined ? { frameWidth: reference.innerWidth } : {}),
   };
-  return [...preflight, ...diffPair(projected, candidate, engineOpts)];
+  const drift = fillTokenDrift(
+    (reference.styles as { backgroundColorToken?: DomColorToken } | undefined)?.backgroundColorToken,
+    (candidate.styles as { backgroundColorToken?: DomColorToken } | undefined)?.backgroundColorToken);
+  return [...preflight, ...diffPair(projected, candidate, engineOpts), ...(drift ? [drift] : [])];
 }

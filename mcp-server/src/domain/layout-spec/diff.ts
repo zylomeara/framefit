@@ -765,7 +765,10 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
 
   // (3) no auto-layout — inter-element metrics are not computed (unwrap was not applied either)
   if (!spec.axis) {
-    rows.push({ prop: 'children', status: 'skip', note: 'node without auto-layout — inter-element metrics are not computed' });
+    rows.push({ prop: 'children', status: 'skip',
+      note: opts.sides === 'dom-dom'
+        ? 'axis not inferable from the reference children geometry — gap/offset rows skipped; sizes and styles still compared'
+        : 'node without auto-layout — inter-element metrics are not computed' });
     return rows;
   }
   const axis = spec.axis;
