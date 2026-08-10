@@ -38,7 +38,7 @@ import { DomSnapshotStore } from './dom-snapshot-store.js';
 import { createDomSnapshotRoutes } from './dom-snapshot-routes.js';
 import { signBridgeToken, verifyBridgeToken } from '../multi-tenant/bridge-token.js';
 import { replaceSnapshot, lookupSnapshot, type SnapshotHit } from '../multi-tenant/variable-snapshot-db.js';
-import { resolveKey as resolveKeyFn, resolveKeyModes, resolveKeyInMode, keyIsMultiMode } from '../domain/variable-graph.js';
+import { userGraphPort } from './user-graph-port.js';
 import type { Graph } from '../domain/variable-graph.js';
 import type { SnapshotEntry } from '../domain/variable-snapshot.js';
 import type { MultiTenantEnv } from '../multi-tenant/env.js';
@@ -809,23 +809,9 @@ async function startMultiTenantHttpServer(
       ...(mt.variableGraph
         ? { variableGraph: { resolve: (key: string) => mt.variableGraph!.resolve(userId, key) } }
         : userGraph
-          ? { variableGraph: {
-              resolve: (key: string) => {
-                const r = resolveKeyFn(userGraph!, key);
-                if (r.value === undefined) return undefined;
-                const m = resolveKeyModes(userGraph!, key);
-                const multi = m && Object.keys(m.modesByName).length > 1;
-                return {
-                  // byKey is stored lower-cased (buildGraphMaps); normalize the lookup key so a
-                  // mixed-case published key still finds its source fileKey (raw get was a latent
-                  // mixed-case miss → sourceLibrary silently undefined). Mirrors env-graph.ts's resolve.
-                  value: r.value, name: r.name, sourceLibrary: userGraph!.byKey.get(key.toLowerCase())?.fileKey,
-                  ...(multi ? { modesByName: m!.modesByName } : {}),
-                };
-              },
-              resolveInMode: (key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean) => resolveKeyInMode(userGraph!, key, modeByCollection, coverageComplete),
-              isMultiMode: (key: string) => keyIsMultiMode(userGraph!, key),
-            } }
+          // Extracted to user-graph-port.ts (unit-tested): the wave caught this exact branch
+          // shipping WITHOUT the cssEvidence method while everything else stayed green.
+          ? { variableGraph: userGraphPort(userGraph) }
           : {}),
     };
 

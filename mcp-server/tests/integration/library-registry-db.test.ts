@@ -34,7 +34,7 @@ describe.skipIf(!url)('library-registry-db', () => {
     await addTeam('u1', 'T1');
     await setLibraries('u1', 'T1', [{ file_key: 'fk1', name: 'DS Colors', vars: 1 }]);
     await replaceLibrary('u1', 'fk1', [
-      { library_key: 'lib/color/brand', local_id: 'lid1', collection_id: 'coll1', values_by_mode: { mode1: '#fff' }, name: 'Brand', resolved_type: 'COLOR' },
+      { library_key: 'lib/color/brand', local_id: 'lid1', collection_id: 'coll1', values_by_mode: { mode1: '#fff' }, name: 'Brand', resolved_type: 'COLOR', code_syntax_web: '' },
     ], [
       { collection_id: 'coll1', default_mode: 'mode1', modes: ['mode1'] },
     ]);
@@ -43,7 +43,7 @@ describe.skipIf(!url)('library-registry-db', () => {
     await addTeam('u2', 'T2');
     await setLibraries('u2', 'T2', [{ file_key: 'fk2', name: 'DS Spacing', vars: 1 }]);
     await replaceLibrary('u2', 'fk2', [
-      { library_key: 'lib/spacing/base', local_id: 'lid2', collection_id: 'coll2', values_by_mode: { mode1: 8 }, name: 'Base', resolved_type: 'FLOAT' },
+      { library_key: 'lib/spacing/base', local_id: 'lid2', collection_id: 'coll2', values_by_mode: { mode1: 8 }, name: 'Base', resolved_type: 'FLOAT', code_syntax_web: '' },
     ], [
       { collection_id: 'coll2', default_mode: 'mode1', modes: ['mode1'] },
     ]);

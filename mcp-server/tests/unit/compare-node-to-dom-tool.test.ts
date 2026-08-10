@@ -535,7 +535,7 @@ describe('compare_node_to_dom tool', () => {
         fileKey: 'LIB',
         colls: [{ collection_id: 'C', default_mode: 'default', key: LIB_KEY, name: 'Theme',
           modes: [{ modeId: 'default', name: 'Default' }, { modeId: 'modeA', name: 'A' }, { modeId: 'modeB', name: 'B' }] }],
-        vars: [{ library_key: LIB_KEY, local_id: 'VariableID:1:1', collection_id: 'C', resolved_type: 'COLOR',
+        vars: [{ library_key: LIB_KEY, local_id: 'VariableID:1:1', collection_id: 'C', resolved_type: 'COLOR', code_syntax_web: '',
           name: 'brand/accent',
           values_by_mode: {
             default: { r: 1, g: 1, b: 1, a: 1 },      // '#ffffff' — ANTI-VACUUM: neither HEX_A nor HEX_B
@@ -1016,7 +1016,7 @@ describe('compare_node_to_dom tool', () => {
         fileKey: 'LIB',
         colls: [{ collection_id: 'C', default_mode: 'default', key: LIB_KEY, name: 'Theme',
           modes: [{ modeId: 'default', name: 'Default' }, { modeId: 'modeA', name: 'A' }] }],
-        vars: [{ library_key: LIB_KEY, local_id: 'VariableID:1:1', collection_id: 'C', resolved_type: 'COLOR',
+        vars: [{ library_key: LIB_KEY, local_id: 'VariableID:1:1', collection_id: 'C', resolved_type: 'COLOR', code_syntax_web: '',
           name: 'brand/accent',
           values_by_mode: {
             default: { r: 1, g: 1, b: 1, a: 1 },      // HEX_DEFAULT_G — must lose

@@ -39,7 +39,7 @@ async function libFromFile(api: FigmaApi, fileKey: string): Promise<Lib> {
   const meta = raw?.meta ?? {};
   const vars = Object.values(meta.variables ?? {}).filter((v: any) => v.key).map((v: any) => ({
     library_key: v.key, local_id: v.id, collection_id: v.variableCollectionId,
-    values_by_mode: v.valuesByMode, name: v.name, resolved_type: v.resolvedType,
+    values_by_mode: v.valuesByMode, name: v.name, resolved_type: v.resolvedType, code_syntax_web: v.codeSyntax?.WEB ?? '',
   }));
   const colls = Object.values(meta.variableCollections ?? {}).map((c: any) => ({
     collection_id: c.id, default_mode: c.defaultModeId, modes: c.modes,

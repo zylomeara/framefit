@@ -16,10 +16,10 @@ import { buildVerification } from '../../../domain/layout-spec/verification.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
 import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, LayoutSpec, VerificationReceipt, CaptureInfo, PairAttribution, PairSource, DiffRow, FixPlanGroup, FixPlanEdit, MatchProfile } from '../../../domain/layout-spec/types.js';
 import { hintForNode, type SourceHint } from '../../../domain/layout-spec/class-source.js';
-import { buildVariableIndex, buildCssEvidence, type VariableIndex } from '../../../domain/variables.js';
-import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, ancestorChainFromSubtree, buildModeByCollection, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
+import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
+import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, collectExternalPaintKeys, ancestorChainFromSubtree, buildModeByCollection, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
 import { discoverAncestorModes } from './get-design-context-tool.js';
-import { makeColorTokenResolver, prefetchSnapshotHits, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
+import { makeColorTokenResolver, prefetchSnapshotHits, buildMergedCssEvidence, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
 import { FigmaApiError } from '../../../ports/errors.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 
@@ -272,7 +272,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
       '(-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote ' +
       'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
       'rename), answer **unsure** and escalate - never call it wrong. `review` rows keep the verdict non-green until ' +
-      'resolved; a name that merely differs textually is not a defect. Exception: a `semantic-diverged` row was measured against the file\'s own authored codeSyntax mapping - the DOM var is the authored name of a DIFFERENT variable - and blocks even when the hexes match; align the code with the authored var (or fix the mapping in Figma).',
+      'resolved; a name that merely differs textually is not a defect. Exception: a `semantic-diverged` row was measured against the authored codeSyntax mappings (the file\'s own variables and its synced libraries\') - the DOM var is the authored name of a DIFFERENT variable - and blocks even when the hexes match; align the code with the authored var (or fix the mapping in Figma).',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -366,9 +366,22 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // the MT wrappers and when no env graph is configured.
         await deps.variableGraph?.ensureReady?.();
 
-        // codeSyntax evidence for the D-branch (semantic-confirm v3): built ONCE per call from
-        // the local index. Absent index -> undefined -> every both-token row stays legacy.
-        const cssEvidence = variableIndex ? buildCssEvidence(variableIndex) : undefined;
+        // codeSyntax evidence for the D-branch: the MERGED facade (local index + a graph view
+        // SCOPED to the libraries this call's subtrees actually reference, excluding the
+        // compared file itself - its truth lives in the fresher local index). Index REQUIRED:
+        // uniqueness over a partial population is not uniqueness, so a failed local fetch means
+        // no evidence at all - every both-token row stays legacy, byte-for-byte 0.22.0. Ordered
+        // after ensureReady above (the graph view is a read).
+        const referencedLibKeys = variableIndex
+          ? [...new Set(pairIds.flatMap((pid) => {
+              const doc = res.nodes[pid]?.document;
+              return doc ? [...collectExternalPaintKeys(doc)] : [];
+            }))]
+          : [];
+        const graphView = variableIndex
+          ? deps.variableGraph?.cssEvidence?.(referencedLibKeys, parsed.value)
+          : undefined;
+        const cssEvidence = variableIndex ? buildMergedCssEvidence(variableIndex, graphView) : undefined;
 
         const frameWidth = frameId ? res.nodes[frameId]?.document?.absoluteBoundingBox?.width : undefined;
 

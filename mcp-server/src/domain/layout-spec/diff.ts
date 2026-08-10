@@ -1628,14 +1628,22 @@ function colorVerdict(
     if (evidence && boundVarId) {
       const authored = evidence.nameOf(boundVarId);
       const minters = evidence.idsByName(dt.token);
-      if (authored !== undefined && authored === dt.token && minters.length === 1) {
+      // QUANTIFIERS relative to the BOUND variable, never a representative (delta wave,
+      // CONFIRMED with a live repro): pairwise alias-relatedness is NOT an equivalence relation
+      // (siblings of a shared ancestor are unrelated to each other), so any collapse-and-pick
+      // scheme makes the verdict depend on sync/insertion order. aliasRelated is tri-state-safe:
+      // it answers false only after a CLEAN walk (unknown -> true -> never gates).
+      // PASS: the bound variable mints the DOM name itself, and every co-minter is alias-related
+      // to it (an alias twin re-exporting the same token) - an UNRELATED co-minter means the
+      // name identifies no single mapping, so no pass, fall through to legacy.
+      if (authored !== undefined && authored === dt.token && minters.every((m) => evidence.aliasRelated(m, boundVarId))) {
         return { status: 'pass', note: `token wiring matches the authored codeSyntax mapping (${dt.token})` };
       }
-      // `authored !== undefined` is load-bearing (wave, CONFIRMED): without it a bound variable
-      // that has NO authored mapping (or is cross-library, absent from the index) gates on a
-      // coincidental collision with an UNRELATED variable's name — evidence about the bound side
-      // is required on BOTH branches, not just PASS. Absence of evidence never gates.
-      if (authored !== undefined && minters.length === 1 && minters[0] !== boundVarId && !evidence.aliasRelated(minters[0], boundVarId)) {
+      // DIVERGED: the bound side carries its own authored mapping (`authored !== undefined` is
+      // load-bearing - absence of evidence never gates), it does NOT mint the DOM name, at least
+      // one variable does, and the bound variable is PROVABLY unrelated to every one of them.
+      if (authored !== undefined && authored !== dt.token && minters.length > 0
+        && minters.every((m) => !evidence.aliasRelated(m, boundVarId))) {
         return { status: 'review',
           note: `token wiring DIVERGES from the authored codeSyntax: Figma ${figToken.token}${authored ? ` (authored ${authored})` : ''} vs DOM ${dt.token}, which is the authored name of a different variable — same hex today, different wiring; it separates under another mode/theme`,
           token: figToken.token, tokenReason: 'semantic-diverged', domToken: dt.token };
