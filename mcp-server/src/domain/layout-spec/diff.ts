@@ -693,7 +693,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
 
   // page scrollbar gutter — see pageGutterOf. Undefined unless the pair root IS the layout viewport
   // (width AND anchoring), so a nested/max-width/sidebar pair keeps every fail it has today.
-  const pageGutter = pageGutterOf(d, structTol);
+  // dom-dom: the gutter demote is OFF - between two BROWSER captures a gutter-sized width
+  // difference is a real difference (the reference capture had its own gutter conditions).
+  const pageGutter = opts.sides === 'dom-dom' ? undefined : pageGutterOf(d, structTol);
 
   // (1) Cardinality-repair unwrap — BEFORE the size rows: unwrapBase (5.4) switches size to border-box.
   let figKids: SpecChild[] = spec.children;
@@ -783,10 +785,11 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     // below sends the reader after something a deeper capture can never return. Measured on a live
     // page: a fixed site header, carrying the whole navigation, disappeared exactly this way and the
     // verdict said "raise max_depth". Name the action that does work instead.
+    const ddMode = opts.sides === 'dom-dom';
     const oofHint = d.outOfFlow
-      ? `; ${d.outOfFlow} DOM child(ren) are out of flow (position: absolute/fixed) and are not part of `
+      ? `; ${d.outOfFlow} ${ddMode ? 'CANDIDATE' : 'DOM'} child(ren) are out of flow (position: absolute/fixed) and are not part of `
         + 'this box layout - a deeper capture will NOT reveal them; pair such an element directly if the '
-        + 'design counts it as a child'
+        + (ddMode ? 'reference counts it as a child' : 'design counts it as a child')
       : '';
     // The same class in the other direction (measured live: a frame's overlay and three modals,
     // DIRECT children, vanished from the spec and the reader was sent after a depth knob). The
@@ -795,11 +798,29 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     // unwrapInfo never coexist — the pair root's own count is the only reachable one.
     const figOof = spec.outOfFlow ?? 0;
     const figOofHint = figOof
-      ? `; ${figOof} Figma child(ren) are out of flow (layoutPositioning ABSOLUTE - overlay/modal/pin class) `
-        + 'and are not in the spec flow - raising max_depth will NOT reveal them; pair such a node directly if it '
-        + 'must be verified'
+      ? (ddMode
+        ? `; ${figOof} REFERENCE child(ren) are out of flow (position: absolute/fixed) and are not part of `
+          + 'its box layout - a deeper capture will NOT reveal them; pair such an element directly if it must be verified'
+        : `; ${figOof} Figma child(ren) are out of flow (layoutPositioning ABSOLUTE - overlay/modal/pin class) `
+          + 'and are not in the spec flow - raising max_depth will NOT reveal them; pair such a node directly if it '
+          + 'must be verified')
       : '';
-    const high = sal.matched.filter((m) => m.confidence === 'high');
+    // dom-dom: 'high' is reachable ONLY via text-exact (+100 vs ~45 max for size+order), so
+    // textless skeletons - the primary dom-dom subject - could never salvage; unambiguous
+    // geometry matches ('medium': best clearly beats runner) are accepted there and the note
+    // names the lower confidence honestly. Ambiguous ('low') stays out in both modes.
+    // dom-dom: 'high' AND 'medium' are unreachable without text ('high' needs text-exact +100;
+    // 'medium' needs score>=55 while size+order max out at 40) - so textless skeletons, the
+    // primary dom-dom subject, could never salvage. The binding fallback is geometry-RANK: accept
+    // the greedy matches ONLY when they zip monotonically on both sides in main-axis order (k-th
+    // candidate onto k-th reference), and say 'low confidence' out loud. A non-monotone zip is a
+    // genuine ambiguity - it falls back to the total skip in both modes.
+    let high = sal.matched.filter((m) => m.confidence === 'high' || (opts.sides === 'dom-dom' && m.confidence === 'medium'));
+    let rankFallback = false;
+    if (opts.sides === 'dom-dom' && high.length === 0 && sal.matched.length > 0) {
+      const rank = [...sal.matched].sort((a, b) => a.figIdx - b.figIdx);
+      if (rank.every((m, k) => k === 0 || m.domIdx > rank[k - 1].domIdx)) { high = rank; rankFallback = true; }
+    }
     if (high.length === 0) {
       const figDesc = figKids.map((c) => `${c.name}(${c.type})`).join(', ');
       // Phase-0 was muted by a content-unknown sibling — a no-op must not be mute:
@@ -812,7 +833,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       // - 'longtext' (text ≥SNIPPET_CAP chars — a FULL long text, the snippet is structurally cut at
       //   SNIPPET_CAP) → the cut is insurmountable by a drill (fetching deeper gives the same SNIPPET_CAP cut), the promise would be false.
       const drillHint = sal.nestedAnchorMuted === 'truncation'
-        ? '; children truncated by depth/budget — raise max_depth (the Figma side is from cache) and re-extract deeper: the nested-text recovery will fire on the full capture'
+        ? (ddMode
+          ? '; children truncated by depth/budget — re-capture BOTH sides with a higher max_depth: the nested-text recovery will fire on the full capture'
+          : '; children truncated by depth/budget — raise max_depth (the Figma side is from cache) and re-extract deeper: the nested-text recovery will fire on the full capture')
         : sal.nestedAnchorMuted === 'longtext'
         ? `; a sibling has text ≥${SNIPPET_CAP} chars — the nested-text anchor is unresolvable (snippets are cut at ${SNIPPET_CAP}), a drill will not help; verify this container visually or add pairs on the nested nodes`
         : '';
@@ -833,7 +856,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     collectUnpaired(opts, domKids2.filter((_, i) => !matchedDom.has(i)));
     rows.push({ prop: 'structure_mismatch', status: 'warn',
       figma: `${figKids.length} children`, dom: `${domKids2.length} children`,
-      note: `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+      note: ddMode
+        ? `the child count does not match — ${high.length} matched by ${rankFallback ? 'geometry order (LOW confidence: no text anchors - verify the pairing visually)' : 'content/geometry'} (their metrics below), gaps through unmatched ones skipped; unpaired: reference [${unFig}] / candidate [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}`
+        : `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
     const figSub = high.map((m) => figKids[m.figIdx]);
     const domSub = high.map((m) => domKids2[m.domIdx]);
     salvageAdj = high.map((m, k) => k > 0 && m.figIdx === high[k - 1].figIdx + 1 && m.domIdx === high[k - 1].domIdx + 1);
@@ -1288,7 +1313,9 @@ function crossAndPaddingRows(
   // trailing padding (measured, left-anchored children at 1920: fig 1280 / dom 1269), on a col axis
   // the cross offset (measured, centred content: half the gutter, 5.5). The LEADING edge never moves
   // on either axis — domCStart is built from the left edge — so padding-start gets no note either.
-  const pageGutter = pageGutterOf(d, structTol);
+  // dom-dom: the gutter demote is OFF - between two BROWSER captures a gutter-sized width
+  // difference is a real difference (the reference capture had its own gutter conditions).
+  const pageGutter = opts.sides === 'dom-dom' ? undefined : pageGutterOf(d, structTol);
   const [startName, endName] = axis === 'col' ? ['padding-top', 'padding-bottom'] : ['padding-left', 'padding-right'];
   const borderStart = axis === 'col' ? d.borders.top : d.borders.left;
   const borderEnd = axis === 'col' ? d.borders.bottom : d.borders.right;
@@ -1729,7 +1756,9 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   // below 1 (structTol ≥1) — a child inset sub-pixel under strict would otherwise stop being
   // "transparent" and the style would be read from the wrapper root (a false red on the carrier). See match-profiles.
   const structTol = Math.max(opts.tolerancePx, 1);
-  const aRes = styleAnchor(d, Math.min(structTol, 1));
+  // dom-dom: the anchor descent is OFF - it would read the CANDIDATE's nested carrier while
+  // the reference was projected flat, hiding that the candidate root itself paints nothing.
+  const aRes = opts.sides === 'dom-dom' ? undefined : styleAnchor(d, Math.min(structTol, 1));
   const a = aRes?.anchor;
   const sBg        = a ? a.styles?.backgroundColor            : d.styles?.backgroundColor;
   const sBgToken   = a ? a.styles?.backgroundColorToken       : d.styles?.backgroundColorToken;
@@ -1792,7 +1821,10 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     // Separate from colorVerdict: an undefined bg here means "the background may be on a different element"
     // (a structural signal), NOT "DOM color not recognized" (A1) — a different cause, a different note.
     if (bg === undefined) {
-      rows.push({ prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
+      rows.push({ prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn',
+        note: opts.sides === 'dom-dom'
+          ? 'the CANDIDATE has no background while the REFERENCE paints one — the background may be on a different element'
+          : 'the DOM element has no background — the background may be on a different element' });
     } else {
       const v = colorVerdict(spec.fillToken?.hex ?? spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined, spec.fillBoundVar, opts.cssEvidence);
       rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),

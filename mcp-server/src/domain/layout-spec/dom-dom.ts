@@ -106,6 +106,9 @@ export function domToSpecShape(reference: DomSnapshotOk): LayoutSpec {
       ...(reference.shadow.colorHex ? { colorHex: reference.shadow.colorHex } : {}) };
   }
   if (reference.childrenTruncated) (spec as { childrenTruncated?: boolean }).childrenTruncated = true;
+  // The reference extractor drops out-of-flow children the same way the candidate one does; the
+  // count feeds the symmetric structure hint (a deeper capture will never reveal them).
+  if (reference.outOfFlow) (spec as { outOfFlow?: number }).outOfFlow = reference.outOfFlow;
   return spec;
 }
 
