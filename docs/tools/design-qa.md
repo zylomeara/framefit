@@ -439,6 +439,93 @@ Response (abridged — see the [tutorial](../design-qa-tutorial.md) for a full a
 
 ---
 
+### compare_dom_to_dom
+
+Deterministic metric diff between TWO DOM states of one screen: reference (what geometry should
+hold - e.g. the loaded page) vs candidate (what is checked - e.g. its skeleton). Same row
+machinery as the Figma comparator - sizes, inter-child gaps, effective paddings, cross-axis
+offsets, typography, colors - plus symmetric presence checks (a background or text present on
+exactly one side is named, never silent) and a fill token-provenance drift row (var()-anchored on
+one side, literal on the other = review). Makes ZERO Figma calls: no file and no `figma_token`
+parameter.
+
+The primary use is skeleton verification - the point of a skeleton is that content does not jump
+on swap, and the reference for a skeleton is the loaded state of its own page. Capture both
+states with the SAME extractor and the SAME selectors (freeze the skeleton by delaying its data
+requests in DevTools if it swaps too fast), then submit them as one pair. The same engine serves
+before/after edit checks, hover-vs-default, and breakpoint-vs-breakpoint - for the latter the
+unequal capture widths become one loud viewport row instead of thirty confident deltas.
+
+Both snapshots are DOM captures, so neither declares a flex direction: the layout axis is
+INFERRED from the reference children's geometry. When the children do not progress in a single
+clear direction (grids, overlays), the gap/offset rows are honestly skipped with a visible
+`children` note - sizes and styles are still compared. A count mismatch between the two states
+salvages by text anchors when they exist; textless skeletons fall back to a geometry-rank zip
+that says `LOW confidence` out loud in the `structure_mismatch` note.
+
+There are no Figma node ids anywhere: the pair's REQUIRED `label` is the identity every row,
+blocking item and report line uses. The receipt aggregates ALL pairs - three defects in three
+pairs are ONE `complete: false`, and `verification.complete` is the done-gate exactly as in the
+Figma comparator: never claim the states match while it is false or `blocking[]` is non-empty.
+
+A stale capture on EITHER side trips its own named gate (`snapshot_schema` naming REFERENCE or
+CANDIDATE), and a reference captured under a CSS transform, scrolled, or with unloaded fonts is
+refused as a baseline by its own preflight rows before any number is compared against it.
+
+**Parameters**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `pairs` | array, **required** | reference/candidate snapshot pairs - up to 10 per call. Each item: `{ label, reference: { dom? \| dom_ref? }, candidate: { dom? \| dom_ref? } }` - `label` is required (it IS the pair's identity), each side passes exactly one of `dom` (extractor snapshot object) or `dom_ref` (uploaded-snapshot reference, same store and TTLs as `compare_node_to_dom`; on stdio pass `dom` inline). |
+| `tolerance_px` | number 0-10 | A delta below this is a pass (px metrics); omitted -> 1 |
+| `max_depth` | integer 1-8 (default 4) | Capture depth used for BOTH captures. Pass the SAME `max_depth` the extractor ran with, or one side stays shallow while the other is deep. |
+
+**Example**
+
+```json
+{
+  "pairs": [
+    {
+      "label": "product-shelf",
+      "reference": { "dom_ref": { "ref": "snap_9f2c", "selector": ".shelf" } },
+      "candidate": { "dom_ref": { "ref": "snap_a41d", "selector": ".shelf" } }
+    }
+  ],
+  "tolerance_px": 1
+}
+```
+
+Response (abridged):
+
+```jsonc
+{
+  "tolerance_px": 1,
+  "pairs": [
+    {
+      "node_id": "product-shelf",       // the label IS the identity - no Figma ids exist here
+      "label": "product-shelf",
+      "selector": ".shelf",
+      "rows": [
+        { "prop": "size.w", "figma": 734, "dom": 734, "status": "pass" },
+        // the `figma` field carries the REFERENCE value, `dom` the CANDIDATE (serialized field
+        // names are a wire contract shared with compare_node_to_dom; the report prose says
+        // reference/candidate)
+        { "prop": "padding-top", "figma": 341, "dom": 281, "delta": 60, "status": "fail" },
+        { "prop": "fill-token-drift", "figma": "var(--bg)", "dom": "literal", "status": "review",
+          "note": "the background tokenization changed between states - ..." }
+      ],
+      "summary": { "pass": 9, "fail": 1, "review": 1 /* ... */ }
+    }
+  ],
+  "verification": {
+    "scope": "pairs",
+    "complete": false,                  // the aggregate done-gate across ALL submitted pairs
+    "blocking": [ /* names the failing pair by its label */ ]
+  },
+  "report_markdown": "Verified reference vs candidate (tolerance 1px): ..."
+}
+```
+
 ### find_breakpoint_variant
 
 Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query

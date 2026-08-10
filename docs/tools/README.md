@@ -18,6 +18,7 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
 | [`get_layout_spec`](design-qa.md#get_layout_spec) | Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Also ships the canonical DOM extractor. |
 | [`suggest_pairs`](design-qa.md#suggest_pairs) | Propose Figma-node <-> DOM-element pairs (by text/size/order/role) with confidence, ambiguous flags and honest unmatched lists. |
 | [`compare_node_to_dom`](design-qa.md#compare_node_to_dom) | Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, gaps, paddings, cross-axis offsets, typography, colors, component identity. |
+| [`compare_dom_to_dom`](design-qa.md#compare_dom_to_dom) | Deterministic metric diff between TWO DOM states of one screen (reference vs candidate): skeleton-vs-loaded, before/after an edit, breakpoint-vs-breakpoint. Zero Figma calls. |
 | [`find_breakpoint_variant`](design-qa.md#find_breakpoint_variant) | Resolve which breakpoint variant frame matches your rendered width, ranked by content-frame width. |
 | [`get_view`](design-qa.md#get_view) | Five pure lenses over one held frame (skeleton / branch / coverage / typography / spacing) sliced from a single deep fetch. |
 
@@ -71,10 +72,11 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
   at all, so it validates nothing. A malformed id is passed through to the Figma API instead of
   being refused, and the error you get back is Figma's rather than the server's.
 - `figma_token` overrides the Figma personal access token for a single call; otherwise the
-  server-configured token is used. It is declared by 23 of the 26 tools -- every read tool -- and
-  by none of the three write tools (`post_comment`, `reply_to_comment`, `delete_comment`). All 26
-  declare `additionalProperties: false`, so passing it to a write tool is a schema error, not a
-  silent no-op.
+  server-configured token is used. It is declared by 23 of the 27 tools -- every read tool except
+  `compare_dom_to_dom`, which makes zero Figma calls and takes no token at all -- and by none of
+  the three write tools (`post_comment`, `reply_to_comment`, `delete_comment`). All 27 declare
+  `additionalProperties: false`, so passing it to a tool that does not take it is a schema error,
+  not a silent no-op.
 - Code fences: a request example is tagged `json` and a response example `jsonc`, which is what
   lets a response body carry comments and elisions.
 - Sizes, depths and limits are capped server-side; responses that would exceed the transport budget

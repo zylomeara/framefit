@@ -66,6 +66,18 @@ export async function runTool(
   }
 }
 
+// compare_dom_to_dom makes ZERO Figma calls - no token gate, same uniform error surface.
+export async function runTokenlessTool(
+  toolName: string, logger: Logger, fn: () => Promise<ToolResult>,
+): Promise<ToolResult> {
+  try {
+    return await fn();
+  } catch (err) {
+    logger.warn({ tool: toolName, error_kind: kindOf(err) }, 'tool.error');
+    return { isError: true, content: [{ type: 'text', text: formatError(err) }] };
+  }
+}
+
 export function jsonResult(value: unknown): ToolResult {
   return { content: [{ type: 'text', text: serializeForDelivery(value) }] };
 }

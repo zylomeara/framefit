@@ -445,3 +445,12 @@ terminal `no discrepancies above tolerance` is the green.
   the cut signals 👁 unchecked (`typography[...]`/`typography_descent[...]`) — raise `max_depth`
   OR add a deeper pair. If typography is silent AND there is no 👁 row — all visible text within
   the cut was verified.
+
+## Beyond the Figma cycle: two DOM states of one screen
+
+`compare_dom_to_dom` measures two DOM captures of the SAME screen against each other — skeleton
+vs loaded (the reference for a skeleton is the loaded state of its own page; content must not
+jump on swap), before vs after an edit, hover vs default. It is not a step of the cycle above:
+there is no Figma side, no file and no `figma_token`. Capture both states with the same extractor
+and selectors, pass them as `{ label, reference, candidate }` pairs, and read the same
+`verification.complete` done-gate. See `docs/tools/design-qa.md#compare_dom_to_dom`.

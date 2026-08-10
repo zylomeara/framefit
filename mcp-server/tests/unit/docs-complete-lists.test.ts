@@ -80,7 +80,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Repo layout: <root>/docs/tools/*.md and <root>/mcp-server/tests/unit/<this file>.
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DOCS_TOOLS_DIR = path.join(REPO_ROOT, 'docs', 'tools');
-const TOOL_COUNT = 26;
+const TOOL_COUNT = 27;
 
 // =================================================================================================
 // THE MECHANISM -- exported, because docs-response-examples.test.ts instantiates it over the
@@ -285,6 +285,10 @@ const ARRAY_BOUNDS_NOT_IN_PARAMETER_TABLES = [
   'suggest_pairs.dom_snapshot.children[].children',
   'compare_node_to_dom.pairs[].dom.children',
   'compare_node_to_dom.pairs[].dom.children[].children',
+  // compare_dom_to_dom embeds the same DOM snapshot schema on BOTH sides of a pair; the
+  // candidate side arrives as a $ref of the reference side, so the walk sees the caps once.
+  'compare_dom_to_dom.pairs[].reference.dom.children',
+  'compare_dom_to_dom.pairs[].reference.dom.children[].children',
 ];
 
 // =================================================================================================
@@ -410,11 +414,16 @@ describe('Gate 5 reads a capture that is pinned against drift', () => {
       }
     }
     expect(census).toEqual({
-      minLength: 74, maxLength: 2, pattern: 24, enum: 15, // 23 -> 24: exclude_regions[] items carry the compound-id pattern
-      minimum: 68, maximum: 34, minItems: 5, maxItems: 10, // 60 -> 64: outOfFlow is nonnegative, and the DOM schema sits in two tools x two places
+      minLength: 77, maxLength: 3, pattern: 24, enum: 18, // 23 -> 24: exclude_regions[] items carry the compound-id pattern
+      minimum: 82, maximum: 36, minItems: 6, maxItems: 13, // 60 -> 64: outOfFlow is nonnegative, and the DOM schema sits in two tools x two places
       // 64 -> 68: reservedGutter + reservedGutterLeft are min(0) and sit at the ROOT of the DOM
       // schema only, so each lands once per tool
       // maxItems 9 -> 10: exclude_regions caps at 50 ids per call
+      // compare_dom_to_dom (a third embedding of the DOM snapshot schema, non-deduped once):
+      // minLength 74 -> 77 (label min 1 + dom_ref ref/selector), maxLength 2 -> 3 (label max 80),
+      // enum 15 -> 18 (status enums of the embedded snapshot union), minimum 68 -> 82 and
+      // maximum 34 -> 36 (the embedded snapshot's numeric bounds + tolerance_px/max_depth),
+      // minItems 5 -> 6 and maxItems 10 -> 13 (pairs 1..10 + the embedded children caps)
     });
   });
 });
@@ -446,7 +455,7 @@ describe('Gate 5A1: every array cap a caller can hit is stated in its parameter 
       label: 'array caps stated in a `**Parameters**` Description cell (top-level parameters only)',
       codeSide: new Set(documented.map((n) => n.key)),
       proseSide,
-      expectedCodeSize: 6, // 5 -> 6: exclude_regions (max 50)
+      expectedCodeSize: 7, // 5 -> 6: exclude_regions (max 50); 6 -> 7: compare_dom_to_dom.pairs (max 10)
     });
   });
 
@@ -489,7 +498,7 @@ describe('Gate 5A1: every array cap a caller can hit is stated in its parameter 
       }
     }
     expect(wrong).toEqual([]);
-    expect(checked, 'no cell was value-checked, so this row asserted nothing').toBe(6); // 5 -> 6: exclude_regions
+    expect(checked, 'no cell was value-checked, so this row asserted nothing').toBe(7); // 5 -> 6: exclude_regions; 6 -> 7: compare_dom_to_dom.pairs
   });
 
   it('accounts for every array cap in the payload, so none hides in the excluded bucket', async () => {
@@ -501,7 +510,7 @@ describe('Gate 5A1: every array cap a caller can hit is stated in its parameter 
     expect(
       ARRAY_BOUNDS_NOT_IN_PARAMETER_TABLES,
       'the declared exclusion list changed size without anyone saying so',
-    ).toHaveLength(4);
+    ).toHaveLength(6);
     expect(
       excluded.map((n) => n.key).sort(),
       'the caps below a top-level parameter are not the four that were declared '
@@ -513,7 +522,7 @@ describe('Gate 5A1: every array cap a caller can hit is stated in its parameter 
       documented.length + ARRAY_BOUNDS_NOT_IN_PARAMETER_TABLES.length,
       'documented + declared-excluded no longer covers every array-bounded node in the payload',
     ).toBe(deep.length);
-    expect(deep.length, 'the full walk found no array-bounded node at all').toBe(10); // 9 -> 10: exclude_regions
+    expect(deep.length, 'the full walk found no array-bounded node at all').toBe(13); // 9 -> 10: exclude_regions; 10 -> 13: compare_dom_to_dom (pairs + the once-seen embedded children caps)
   });
 });
 
@@ -716,7 +725,7 @@ describe('Gate 5A3: the figma_token bullet names exactly the tools that lack the
       label: "docs/tools/README.md's `figma_token` bullet (tools with no such property)",
       codeSide,
       proseSide,
-      expectedCodeSize: 3,
+      expectedCodeSize: 4, // 3 -> 4: compare_dom_to_dom makes zero Figma calls and takes no token
     });
   });
 

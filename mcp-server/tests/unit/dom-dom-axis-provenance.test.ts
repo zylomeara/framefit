@@ -43,9 +43,9 @@ describe('provenance silence (row-prop census)', () => {
       el(0, 110, 600, 90),
       el(0, 220, 600, 90),
     ];
-    const reference = snap(kids('ref'), { shadow: { x: 0, y: 2, blur: 8, spread: 0, colorHex: '#00000033', count: 1 },
+    const reference = snap(kids('ref'), { shadow: { inset: false, x: 0, y: 2, blur: 8, spread: 0, colorHex: '#00000033', count: 1 },
       styles: { display: 'flex', backgroundColor: '#ffffff', backgroundColorToken: { token: '--bg' }, borderRadius: 8, opacity: 1 } });
-    const candidate = snap(kids('cand'), { shadow: { x: 0, y: 2, blur: 8, spread: 0, colorHex: '#00000033', count: 1 },
+    const candidate = snap(kids('cand'), { shadow: { inset: false, x: 0, y: 2, blur: 8, spread: 0, colorHex: '#00000033', count: 1 },
       styles: { display: 'flex', backgroundColor: '#ffffff', backgroundColorToken: { literal: true }, borderRadius: 8, opacity: 1 } });
     const rows = diffDomPair(reference, candidate, { tolerancePx: 1 });
     const ALLOW = /^(viewport|size\.[wh]|fill|fill-token-drift|corner-radius|opacity|box-shadow|shadow-.*|border.*|gap.*|offset-cross.*|padding-(top|right|bottom|left|start|end).*|typography.*|font-.*|line-height.*|letter-spacing.*|text-color.*|children.*|structure_mismatch|reference_.*|snapshot.*|extractor_outdated|justify.*)$/;

@@ -15,6 +15,18 @@
       "readOnlyHint": true
     }
   },
+  "compare_dom_to_dom": {
+    "description": "Deterministic metric diff between TWO DOM states of one screen: reference (what geometry should hold - e.g. the loaded page) vs candidate (what is checked - e.g. its skeleton). Same row machinery as the Figma comparator - sizes, inter-child gaps, effective paddings, cross-axis offsets, typography, colors - plus symmetric presence checks (a background or text present on exactly one side is named, never silent) and a fill token-provenance drift row (var()-anchored on one side, literal on the other = review). Makes ZERO Figma calls: no file and no figma_token parameter. Both captures come from the canonical extractor (get_layout_spec include_extractor:true), inline or via dom_ref. The layout axis is INFERRED from the reference children geometry (snapshots do not declare flex direction); when ambiguous the gap/offset rows are honestly skipped with a visible note. verification.complete aggregates ALL pairs and is the done-gate: never claim the states match while it is false or blocking[] is non-empty. Primary uses: skeleton-vs-loaded (content must not jump on swap), before/after an edit, breakpoint-vs-breakpoint (unequal capture widths become one loud viewport row), hover/default.",
+    "inputSchemaKeys": [
+      "max_depth",
+      "pairs",
+      "tolerance_px"
+    ],
+    "digest": "8a24202ce2ee11ce6cec21f48615d51a57454836c9053cda52f05d2b35228fa3",
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
   "compare_node_to_dom": {
     "description": "Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, inter-child gaps (derived from geometry - insensitive to margin/padding/gap implementation), effective paddings, cross-axis offsets, typography, colors, component identity (warn-only). Returns machine-readable rows {prop, figma, dom, delta, status} per pair + a ready \"Verified against Figma\" markdown block. Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). The variables index is fetched only when a pair binds a colour to a variable - a call with no bound colour never waits on it. When it IS needed and does not arrive, degraded_stages says so with the ms it cost: the token rows then read unresolved rather than verified, the verdict stays incomplete, and a failure is remembered per file for a few minutes - so a later call does not re-pay the wait and does not retry it either. get_variables with a larger timeout_ms is what gets past that. Token rows with status `review` carry `figma`/`dom` token names - judge them: return **same token** (-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible rename), answer **unsure** and escalate - never call it wrong. `review` rows keep the verdict non-green until resolved; a name that merely differs textually is not a defect. Exception: a `semantic-diverged` row was measured against the authored codeSyntax mappings (the file's own variables and its synced libraries') - the DOM var is the authored name of a DIFFERENT variable - and blocks even when the hexes match; align the code with the authored var (or fix the mapping in Figma).",
     "inputSchemaKeys": [
