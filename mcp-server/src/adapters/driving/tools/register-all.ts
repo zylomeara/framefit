@@ -22,6 +22,7 @@ import { registerGetLayoutSpecTool } from './get-layout-spec-tool.js';
 import { registerGetViewTool } from './get-view-tool.js';
 import { registerSuggestPairsTool } from './suggest-pairs-tool.js';
 import { registerCompareNodeToDomTool } from './compare-node-to-dom-tool.js';
+import { registerCompareDomToDomTool } from './compare-dom-to-dom-tool.js';
 import { registerFindBreakpointVariantTool } from './find-breakpoint-variant-tool.js';
 import { registerGetNodeAncestryTool } from './get-node-ancestry-tool.js';
 
@@ -37,6 +38,7 @@ export function registerAllTools(server: McpServer, deps: ToolDeps): void {
   registerGetViewTool(server, deps);
   registerSuggestPairsTool(server, deps);
   registerCompareNodeToDomTool(server, deps);
+  registerCompareDomToDomTool(server, deps);
   registerFindBreakpointVariantTool(server, deps);
   registerGetNodeAncestryTool(server, deps);
   registerGetReviewBoardTool(server, deps);

@@ -448,7 +448,10 @@ including fails.
     another file, or a page/section id instead of the breakpoint frame's. Re-run step 1 and pass the
     id it returns
     (see `mcp-server/src/domain/layout-spec/verification.ts`, `frame_node_id given, but the frame node was not found in the file`).
-  - `confirm_token` — judge a token `review` row.
+  - `confirm_token` — judge a token `review` row. In `compare_dom_to_dom` the same action means:
+    confirm the flagged change between the two captures (a presence asymmetry or a tokenization
+    drift) — there is no Figma side there, so no Figma tool is involved; each item's `places[]`
+    names the row (`fill`, `border-color`, `typography`, `fill-token-drift`).
   - `resolve_skip` — something could not be measured in this environment (a scroll container, a
     transform, or a node with no auto-layout): fix the environment or verify that axis by eye.
   - `run_token_aware` — you finished on a scope-narrowed profile — see step 7.

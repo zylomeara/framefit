@@ -93,6 +93,14 @@ export interface LayoutSpec {
   axis?: 'row' | 'col';        // from layoutMode; absent — no auto-layout
   autoLayout?: { gap?: number; padding: Edges }; // DECLARED values (informational; the diff measures rects)
   fillHex?: string;
+  // dom-dom projection only: the reference HAS a background but in a non-hex color space
+  // (oklch()/color()) - distinguishes "skipped, verify visually" from "reference is transparent"
+  // (the latter is a presence asymmetry when the candidate does paint one).
+  fillUnparseable?: true;
+  // dom-dom projection only: the reference HAS an active border but the Figma stroke model
+  // cannot express it (partial sides / non-uniform / colors the extractor could not parse) -
+  // the presence branch must not read the missing strokeHex as "reference has no border".
+  strokeUnprojectable?: true;
   fillBoundVar?: string;       // alias variable id, if fillHex was taken from a bound solid-paint (library default-mode footgun)
   fillToken?: ResolvedColorToken;   // mode-resolved fill token; injected via resolveColorToken (bound var) OR a shared fill STYLE (NAME→'(style: …)', STATE→'(paint)' sentinel — unified)
   strokeHex?: string;
@@ -247,6 +255,9 @@ export interface DiffRow {
   // (a deliberate narrowing — not an environmental hole, blocking is not flooded with resolve_skips), deriveCoverage
   // carries the marker in coverage.skipped. Set ONLY by applyLayoutProfileScope (diff.ts).
   profileScoped?: true;
+  // dom-dom: this info row deliberately does NOT gate (the skeleton direction) but the axis was
+  // NOT measured - deriveCoverage must file it under skipped, never measured.
+  coverageSkipped?: true;
 }
 
 export interface PairSummary { pass: number; fail: number; warn: number; skip: number; info: number; demoted: number; unchecked: number; review: number }

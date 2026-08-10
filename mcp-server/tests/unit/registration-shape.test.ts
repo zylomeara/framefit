@@ -24,7 +24,7 @@ import { createLogger } from '../../src/infrastructure/logger.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const toolsDir = join(here, '..', '..', 'src', 'adapters', 'driving', 'tools');
-const TOOL_COUNT = 26;
+const TOOL_COUNT = 27;
 
 // Registration only describes schemas - deps are captured in handler closures and never called -
 // so a throwing buildApi both suffices and proves registration stays lazy.

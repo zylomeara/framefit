@@ -11,10 +11,10 @@ const EMOJI: Record<DiffRow['status'], string> = { pass: '✅', fail: '❌', war
 
 const fmt = (v: string | number | null | undefined): string => (v === null || v === undefined ? '—' : String(v));
 
-function rowLine(r: DiffRow): string {
+function rowLine(r: DiffRow, left = 'Figma', right = 'DOM'): string {
   const delta = r.delta !== undefined ? ` (Δ${r.delta})` : '';
   const note = r.note ? ` — ${r.note}` : '';
-  return `- ${EMOJI[r.status]} ${r.prop}: Figma ${fmt(r.figma)} / DOM ${fmt(r.dom)}${delta}${note}`;
+  return `- ${EMOJI[r.status]} ${r.prop}: ${left} ${fmt(r.figma)} / ${right} ${fmt(r.dom)}${delta}${note}`;
 }
 
 // source-hint: render FROM the already-collected PairSource — report.ts does not
@@ -129,7 +129,12 @@ function renderProfileSkips(p: PairResult): string[] {
 }
 
 export function renderReport(input: {
-  file: string; tolerancePx: number; pairs: PairResult[];
+  // dom-dom (#9, compare_dom_to_dom): label-based identity. headerLine replaces the whole
+  // "Verified against Figma (file ...)" line (there is no Figma file), sideLabels rename the
+  // row sides (the DiffRow FIELD names stay figma/dom - a serialized contract; only the prose
+  // forks). file is required exactly when headerLine is absent - the default header prints it.
+  file?: string; headerLine?: string; sideLabels?: [string, string];
+  tolerancePx: number; pairs: PairResult[];
   frame?: { node_id: string; width?: number }; omittedPairs?: number;
   preflight?: string;
   // max_depth drill-down: the depth-ceiling footer note used to hardcode a fixed
@@ -153,7 +158,9 @@ export function renderReport(input: {
   // Absence of verification/the field (legacy calls, unit tests without it) → honest default 'token-aware'
   // (deliberate explicitness — the profile is ALWAYS in the header, not only when explicitly passed).
   const profile: MatchProfile = input.verification?.match_profile ?? 'token-aware';
-  lines.push(`Verified against Figma (file ${input.file}${frameNote}, tolerance ${input.tolerancePx}px, profile ${profile}):`, '');
+  lines.push(input.headerLine !== undefined
+    ? `${input.headerLine}:`
+    : `Verified against Figma (file ${input.file}${frameNote}, tolerance ${input.tolerancePx}px, profile ${profile}):`, '');
 
   // layout — a scope narrowing, not a final check (the machine gate keeps complete:false separately,
   // verification.ts sentinel scope_incomplete); this line is a human-readable echo of THE SAME fact,
@@ -172,7 +179,10 @@ export function renderReport(input: {
     const demHead = p.summary.demoted > 0 ? ` 🟰${p.summary.demoted}` : '';
     const unchHead = p.summary.unchecked > 0 ? ` 👁${p.summary.unchecked}` : '';
     const revHead = p.summary.review > 0 ? ` 📝${p.summary.review}` : '';
-    const head = `**${p.label ?? p.node_id}** (node ${p.node_id}${p.selector ? ` ↔ ${p.selector}` : ''}): ` +
+    const head = input.headerLine !== undefined
+      ? `**${p.label ?? p.node_id}**${p.selector ? ` (${p.selector})` : ''}: ` +
+        `✅${p.summary.pass} ❌${p.summary.fail}${demHead}${unchHead}${revHead} ⚠️${p.summary.warn} ⏭${p.summary.skip} ℹ️${p.summary.info}`
+      : `**${p.label ?? p.node_id}** (node ${p.node_id}${p.selector ? ` ↔ ${p.selector}` : ''}): ` +
       `✅${p.summary.pass} ❌${p.summary.fail}${demHead}${unchHead}${revHead} ⚠️${p.summary.warn} ⏭${p.summary.skip} ℹ️${p.summary.info}`;
     lines.push(head);
     // profiles: profileScoped rows are excluded from the rowLine loop — they carry ONLY a bare dim
@@ -188,7 +198,7 @@ export function renderReport(input: {
     // row carries none and this stays byte-identical.
     for (const r of p.rows) {
       const shown = r.status !== 'pass' || r.prop === 'unwrapped' || (r.prop === 'viewport' && r.note !== undefined);
-      if (shown && r.profileScoped !== true) lines.push(rowLine(r));
+      if (shown && r.profileScoped !== true) lines.push(rowLine(r, input.sideLabels?.[0], input.sideLabels?.[1]));
     }
     lines.push(...renderProfileSkips(p));
     if (p.source) {

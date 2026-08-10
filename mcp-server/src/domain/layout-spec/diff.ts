@@ -64,6 +64,11 @@ export interface DiffOptions {
   // codeSyntax evidence for the D-branch (semantic-confirm v3): positive-collision gating only.
   // Absent → every both-token row lands on the legacy value-based rule, byte-for-byte.
   cssEvidence?: CssTokenEvidence;
+  // compare_dom_to_dom engine mode. The one geometry consumer today: size rows subtract the
+  // candidate's borders too (symmetric content-box) — the projected reference is a padding box
+  // with no border term, and without this two byte-identical bordered states differ by the
+  // border width on size.w/size.h (panel-confirmed worked example).
+  sides?: 'dom-dom';
 }
 
 const round1 = (n: number): number => Math.round(n * 10) / 10;
@@ -135,12 +140,15 @@ const COVERAGE_META = new Set([
   'snapshot', 'snapshot_schema', 'snapshot_ref', 'extractor_outdated', 'frame', 'node', 'unwrapped',
   'structure_mismatch', 'children_truncated', 'layout_axis_mismatch', 'children', 'children_reorder',
   'style_anchor', 'passes_condensed',
+  // dom-dom: the reference-side capture warning (a service row, not a visual axis).
+  'reference_fonts',
 ]);
 
 // prop → coverage axis. prop formats: 'size.w' | 'gap[0] a↔b' | 'padding-left' |
 // 'offset-cross[0] …' | 'font-size[title]' | 'corner-radius' | 'typography_descent[…]' | 'component'.
 export function dimensionOf(prop: string): string {
   const base = prop.split(/[[\s]/)[0]; // strip [label] and " a↔b"
+  if (base.startsWith('child-size')) return 'size'; // dom-dom per-child extent rows - the same axis family
   if (base.startsWith('size')) return 'size';
   if (base.startsWith('padding')) return 'padding';
   if (base.startsWith('gap')) return 'gap';
@@ -220,6 +228,10 @@ export function deriveCoverage(rows: DiffRow[]): PairCoverage {
     } else if (r.status === 'info' && dim === 'component') {
       // p.1-p.3: identity was NOT measured — the info pool does not "greenwash" coverage (fixed reason — the note is long)
       if (!seenSkip.has(dim)) { skipped.push({ dim, reason: 'component identity: signal absent' }); seenSkip.add(dim); }
+    } else if (r.coverageSkipped === true) {
+      // dom-dom skeleton-direction info rows: deliberately non-gating, but the axis was NOT
+      // measured (receipt-lens finding 2) - the same no-greenwash rule as the component info.
+      if (!seenSkip.has(dim)) { skipped.push({ dim, reason: r.note ?? '' }); seenSkip.add(dim); }
     } else {
       measured.add(dim);
     }
@@ -622,8 +634,11 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
   // (overlay_width below takes over this role). Without expectedOverlayWidth the reason stays,
   // the text is augmented with a hint — P2 without a duplicate row.
   if (viewportOff && opts.expectedOverlayWidth === undefined) {
-    reasons.push(`viewport ${d.innerWidth} vs frame ${opts.frameWidth} — adjust the window width OR pass ` +
-      'expected_overlay_width (fixed overlay) / check the breakpoint variant (find_breakpoint_variant)');
+    reasons.push(opts.sides === 'dom-dom'
+      // 'viewport' is load-bearing (verification.ts routes on the word) — keep it in both forks.
+      ? `viewport ${d.innerWidth} vs the reference capture ${opts.frameWidth} — the two states were captured at different widths; re-capture the candidate at the reference's width`
+      : `viewport ${d.innerWidth} vs frame ${opts.frameWidth} — adjust the window width OR pass ` +
+        'expected_overlay_width (fixed overlay) / check the breakpoint variant (find_breakpoint_variant)');
   }
 
   if (reasons.length) {
@@ -688,7 +703,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
 
   // page scrollbar gutter — see pageGutterOf. Undefined unless the pair root IS the layout viewport
   // (width AND anchoring), so a nested/max-width/sidebar pair keeps every fail it has today.
-  const pageGutter = pageGutterOf(d, structTol);
+  // dom-dom: the gutter demote is OFF - between two BROWSER captures a gutter-sized width
+  // difference is a real difference (the reference capture had its own gutter conditions).
+  const pageGutter = opts.sides === 'dom-dom' ? undefined : pageGutterOf(d, structTol);
 
   // (1) Cardinality-repair unwrap — BEFORE the size rows: unwrapBase (5.4) switches size to border-box.
   let figKids: SpecChild[] = spec.children;
@@ -713,15 +730,16 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
 
   // (2) size rows
   if (unwrapBase) {
+    const ddBorderW = opts.sides === 'dom-dom' ? d.borders.left + d.borders.right : 0;
     const scrollbarW = (d.clientWidth !== undefined)
       ? Math.max(0, d.rect.w - d.borders.left - d.borders.right - d.clientWidth) : 0;
     rows.push(applyOverlayWidthOverride(
-      applyContainerHugFillDemote(applyTextWidthOverride(applyPageGutterDemote(numRow('size.w', rect.w, d.rect.w - scrollbarW, tol, undefined, SRC_ROOT_LAYOUT), pageGutter), textWidthDemote), containerHugFill),
+      applyContainerHugFillDemote(applyTextWidthOverride(applyPageGutterDemote(numRow('size.w', rect.w, d.rect.w - scrollbarW - ddBorderW, tol, undefined, SRC_ROOT_LAYOUT), pageGutter), textWidthDemote), containerHugFill),
       opts.expectedOverlayWidth,
     ));
   } else if (d.paddings !== undefined && d.clientWidth !== undefined) {
     const scrollbarW = Math.max(0, d.rect.w - d.borders.left - d.borders.right - d.clientWidth);
-    const domW = d.rect.w - scrollbarW - d.paddings.left - d.paddings.right;
+    const domW = d.rect.w - scrollbarW - d.paddings.left - d.paddings.right - (opts.sides === 'dom-dom' ? d.borders.left + d.borders.right : 0);
     rows.push(applyOverlayWidthOverride(
       applyContainerHugFillDemote(
         applyTextWidthOverride(
@@ -747,10 +765,10 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   } else if (unwrapBase) {
     const scrollbarH = (d.clientHeight !== undefined)
       ? Math.max(0, d.rect.h - d.borders.top - d.borders.bottom - d.clientHeight) : 0;
-    rows.push(numRow('size.h', rect.h, d.rect.h - scrollbarH, tol, undefined, SRC_ROOT_LAYOUT));
+    rows.push(numRow('size.h', rect.h, d.rect.h - scrollbarH - (opts.sides === 'dom-dom' ? d.borders.top + d.borders.bottom : 0), tol, undefined, SRC_ROOT_LAYOUT));
   } else if (d.paddings !== undefined && d.clientHeight !== undefined) {
     const scrollbarH = Math.max(0, d.rect.h - d.borders.top - d.borders.bottom - d.clientHeight);
-    const domH = d.rect.h - scrollbarH - d.paddings.top - d.paddings.bottom;
+    const domH = d.rect.h - scrollbarH - d.paddings.top - d.paddings.bottom - (opts.sides === 'dom-dom' ? d.borders.top + d.borders.bottom : 0);
     rows.push(numRow('size.h', rect.h - (spec.autoLayout ? spec.autoLayout.padding.top + spec.autoLayout.padding.bottom : 0), domH, tol, undefined, SRC_ROOT_LAYOUT));
   } else {
     rows.push(numRow('size.h', rect.h, d.rect.h, tol, undefined, SRC_ROOT_LAYOUT));
@@ -758,7 +776,10 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
 
   // (3) no auto-layout — inter-element metrics are not computed (unwrap was not applied either)
   if (!spec.axis) {
-    rows.push({ prop: 'children', status: 'skip', note: 'node without auto-layout — inter-element metrics are not computed' });
+    rows.push({ prop: 'children', status: 'skip',
+      note: opts.sides === 'dom-dom'
+        ? 'axis not inferable from the reference children geometry — gap/offset rows skipped; sizes and styles still compared'
+        : 'node without auto-layout — inter-element metrics are not computed' });
     return rows;
   }
   const axis = spec.axis;
@@ -778,10 +799,11 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     // below sends the reader after something a deeper capture can never return. Measured on a live
     // page: a fixed site header, carrying the whole navigation, disappeared exactly this way and the
     // verdict said "raise max_depth". Name the action that does work instead.
+    const ddMode = opts.sides === 'dom-dom';
     const oofHint = d.outOfFlow
-      ? `; ${d.outOfFlow} DOM child(ren) are out of flow (position: absolute/fixed) and are not part of `
+      ? `; ${d.outOfFlow} ${ddMode ? 'CANDIDATE' : 'DOM'} child(ren) are out of flow (position: absolute/fixed) and are not part of `
         + 'this box layout - a deeper capture will NOT reveal them; pair such an element directly if the '
-        + 'design counts it as a child'
+        + (ddMode ? 'reference counts it as a child' : 'design counts it as a child')
       : '';
     // The same class in the other direction (measured live: a frame's overlay and three modals,
     // DIRECT children, vanished from the spec and the reader was sent after a depth knob). The
@@ -790,11 +812,29 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     // unwrapInfo never coexist — the pair root's own count is the only reachable one.
     const figOof = spec.outOfFlow ?? 0;
     const figOofHint = figOof
-      ? `; ${figOof} Figma child(ren) are out of flow (layoutPositioning ABSOLUTE - overlay/modal/pin class) `
-        + 'and are not in the spec flow - raising max_depth will NOT reveal them; pair such a node directly if it '
-        + 'must be verified'
+      ? (ddMode
+        ? `; ${figOof} REFERENCE child(ren) are out of flow (position: absolute/fixed) and are not part of `
+          + 'its box layout - a deeper capture will NOT reveal them; pair such an element directly if it must be verified'
+        : `; ${figOof} Figma child(ren) are out of flow (layoutPositioning ABSOLUTE - overlay/modal/pin class) `
+          + 'and are not in the spec flow - raising max_depth will NOT reveal them; pair such a node directly if it '
+          + 'must be verified')
       : '';
-    const high = sal.matched.filter((m) => m.confidence === 'high');
+    // dom-dom: 'high' is reachable ONLY via text-exact (+100 vs ~45 max for size+order), so
+    // textless skeletons - the primary dom-dom subject - could never salvage; unambiguous
+    // geometry matches ('medium': best clearly beats runner) are accepted there and the note
+    // names the lower confidence honestly. Ambiguous ('low') stays out in both modes.
+    // dom-dom: 'high' AND 'medium' are unreachable without text ('high' needs text-exact +100;
+    // 'medium' needs score>=55 while size+order max out at 40) - so textless skeletons, the
+    // primary dom-dom subject, could never salvage. The binding fallback is geometry-RANK: accept
+    // the greedy matches ONLY when they zip monotonically on both sides in main-axis order (k-th
+    // candidate onto k-th reference), and say 'low confidence' out loud. A non-monotone zip is a
+    // genuine ambiguity - it falls back to the total skip in both modes.
+    let high = sal.matched.filter((m) => m.confidence === 'high' || (opts.sides === 'dom-dom' && m.confidence === 'medium'));
+    let rankFallback = false;
+    if (opts.sides === 'dom-dom' && high.length === 0 && sal.matched.length > 0) {
+      const rank = [...sal.matched].sort((a, b) => a.figIdx - b.figIdx);
+      if (rank.every((m, k) => k === 0 || m.domIdx > rank[k - 1].domIdx)) { high = rank; rankFallback = true; }
+    }
     if (high.length === 0) {
       const figDesc = figKids.map((c) => `${c.name}(${c.type})`).join(', ');
       // Phase-0 was muted by a content-unknown sibling — a no-op must not be mute:
@@ -807,7 +847,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       // - 'longtext' (text ≥SNIPPET_CAP chars — a FULL long text, the snippet is structurally cut at
       //   SNIPPET_CAP) → the cut is insurmountable by a drill (fetching deeper gives the same SNIPPET_CAP cut), the promise would be false.
       const drillHint = sal.nestedAnchorMuted === 'truncation'
-        ? '; children truncated by depth/budget — raise max_depth (the Figma side is from cache) and re-extract deeper: the nested-text recovery will fire on the full capture'
+        ? (ddMode
+          ? '; children truncated by depth/budget — re-capture BOTH sides with a higher max_depth: the nested-text recovery will fire on the full capture'
+          : '; children truncated by depth/budget — raise max_depth (the Figma side is from cache) and re-extract deeper: the nested-text recovery will fire on the full capture')
         : sal.nestedAnchorMuted === 'longtext'
         ? `; a sibling has text ≥${SNIPPET_CAP} chars — the nested-text anchor is unresolvable (snippets are cut at ${SNIPPET_CAP}), a drill will not help; verify this container visually or add pairs on the nested nodes`
         : '';
@@ -828,7 +870,9 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     collectUnpaired(opts, domKids2.filter((_, i) => !matchedDom.has(i)));
     rows.push({ prop: 'structure_mismatch', status: 'warn',
       figma: `${figKids.length} children`, dom: `${domKids2.length} children`,
-      note: `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+      note: ddMode
+        ? `the child count does not match — ${high.length} matched by ${rankFallback ? 'geometry order (LOW confidence: no text anchors - verify the pairing visually)' : 'content/geometry'} (their metrics below), gaps through unmatched ones skipped; unpaired: reference [${unFig}] / candidate [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}`
+        : `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
     const figSub = high.map((m) => figKids[m.figIdx]);
     const domSub = high.map((m) => domKids2[m.domIdx]);
     salvageAdj = high.map((m, k) => k > 0 && m.figIdx === high[k - 1].figIdx + 1 && m.domIdx === high[k - 1].domIdx + 1);
@@ -1166,14 +1210,27 @@ function resolveDomTypoCarrier(n: DomChild, maxDescent: number): CarrierResult {
 // left complete:true and a terminal-green prose verdict — reproduced end-to-end by the adversarial
 // pass, and a regression against the pre-carrier behavior, which at least failed red. Unchecked
 // rows flow through uncheckedToBlocking, where each note routes to its executable action.
-function carrierNoteRow(prop: string, kind: 'ambiguous' | 'beyond_cut' | 'none'): DiffRow {
+function carrierNoteRow(prop: string, kind: 'ambiguous' | 'beyond_cut' | 'none', dd = false): DiffRow {
   if (kind === 'ambiguous') {
     return { prop, status: 'unchecked',
-      note: 'the DOM side has several nested text carriers - metrics not attributed; add a pair on the text node' };
+      note: dd
+        ? 'the CANDIDATE side has several nested text carriers - metrics not attributed; add a pair on the text node'
+        : 'the DOM side has several nested text carriers - metrics not attributed; add a pair on the text node' };
   }
   if (kind === 'beyond_cut') {
     return { prop, status: 'unchecked',
-      note: 'the Figma node carries text, but no DOM text was captured and the subtree was truncated - the carrier may be beyond the slice: re-extract deeper or add a pair on the text node' };
+      note: dd
+        ? 'the REFERENCE carries text, but no CANDIDATE text was captured and the subtree was truncated - the carrier may be beyond the slice: re-capture deeper or add a pair on the text node'
+        : 'the Figma node carries text, but no DOM text was captured and the subtree was truncated - the carrier may be beyond the slice: re-extract deeper or add a pair on the text node' };
+  }
+  // dom-dom 'none' is INFO, not unchecked (wave finding 12): in the PRIMARY use case - skeleton
+  // vs loaded - the candidate having no text where the reference does is the expected shape, and
+  // an unchecked coverage hole made the done-gate permanently uncloseable with a blocker the
+  // caller cannot clear by any action. The asymmetry stays visible; a content-state check must
+  // read this row deliberately.
+  if (dd) {
+    return { prop, status: 'info', coverageSkipped: true,
+      note: 'the CANDIDATE carries no text where the REFERENCE does - expected for a skeleton state; when comparing two CONTENT states, treat this as missing text' };
   }
   return { prop, status: 'unchecked',
     note: 'the Figma node carries text, the captured DOM subtree carries none - the text is missing or lives outside this element; fix the pair or verify by eye' };
@@ -1283,7 +1340,9 @@ function crossAndPaddingRows(
   // trailing padding (measured, left-anchored children at 1920: fig 1280 / dom 1269), on a col axis
   // the cross offset (measured, centred content: half the gutter, 5.5). The LEADING edge never moves
   // on either axis — domCStart is built from the left edge — so padding-start gets no note either.
-  const pageGutter = pageGutterOf(d, structTol);
+  // dom-dom: the gutter demote is OFF - between two BROWSER captures a gutter-sized width
+  // difference is a real difference (the reference capture had its own gutter conditions).
+  const pageGutter = opts.sides === 'dom-dom' ? undefined : pageGutterOf(d, structTol);
   const [startName, endName] = axis === 'col' ? ['padding-top', 'padding-bottom'] : ['padding-left', 'padding-right'];
   const borderStart = axis === 'col' ? d.borders.top : d.borders.left;
   const borderEnd = axis === 'col' ? d.borders.bottom : d.borders.right;
@@ -1401,6 +1460,13 @@ function crossAndPaddingRows(
 
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the typography is mis-attributed
+    // dom-dom per-child EXTENT (wave finding 3): gaps and cross-start are blind to a child whose
+    // size changed in place - and skeleton placeholders are exactly boxes with the right position
+    // and the wrong extent. Both sides carry raw rects; a plain numeric pair per axis.
+    if (opts.sides === 'dom-dom' && domKids[i]) {
+      rows.push(numRow(`child-size.w[${childLabel(c)}]`, c.rect.w, domKids[i].rect.w, tol));
+      rows.push(numRow(`child-size.h[${childLabel(c)}]`, c.rect.h, domKids[i].rect.h, tol));
+    }
     if (c.text) {
       // p.7 routing: direct compare ONLY when the DOM child owns its text; a unique nested carrier
       // supplies the styles otherwise, and a missing carrier is a note, never a wrapper compare.
@@ -1420,7 +1486,7 @@ function crossAndPaddingRows(
           (opts.attributionOut.text ??= []).push({ label: tLabel, classListChain: carrier.chain });
         }
       } else {
-        rows.push(carrierNoteRow(`typography[${childLabel(c)}]`, carrier.kind));
+        rows.push(carrierNoteRow(`typography[${childLabel(c)}]`, carrier.kind, opts.sides === 'dom-dom'));
       }
     } else {
       const figs = collectFigTexts(c, maxDescent);
@@ -1443,6 +1509,18 @@ function crossAndPaddingRows(
           note: c.textAmbiguous
             ? 'several nested TEXT, the descent did not find them in the projection slice — raise max_depth (up to 8) and re-run, or add a separate pair on the TEXT node'
             : 'no TEXT found within the depth slice — it may be deeper: raise max_depth (up to 8) and re-run, or add a pair on the nested TEXT node' });
+      } else if (opts.sides === 'dom-dom' && figs.items.length > 0 && doms.items.length === 0) {
+        // The skeleton direction (wave finding 12): unmatched descent texts were SILENT in both
+        // modes; in dom-dom the reference-has/candidate-hasn't case is the primary use case's
+        // normal shape - visible info, not an uncloseable coverage hole.
+        rows.push({ prop: `typography[${childLabel(c)}]`, status: 'info', coverageSkipped: true,
+          note: 'the CANDIDATE carries no text where the REFERENCE does - expected for a skeleton state; when comparing two CONTENT states, treat this as missing text' });
+      } else if (opts.sides === 'dom-dom' && figs.items.length === 0 && doms.items.length > 0) {
+        // Presence symmetry (dom-dom): the descent zip below runs only when the REFERENCE side
+        // found texts - a text-bearing candidate slot vs a bare reference slot was silence.
+        // Review (gating): candidate-EXTRA content is suspicious in every dom-dom use case.
+        rows.push({ prop: `typography[${childLabel(c)}]`, status: 'review', figma: null, dom: '(text present)',
+          note: 'the CANDIDATE child carries text the REFERENCE does not - if the reference capture is the intended state, this text is unexpected' });
       } else if (figs.items.length > 0) {
         const anyTruncated = figs.truncated || doms.truncated;
         const m = matchTexts(figs.items, doms.items, anyTruncated);
@@ -1719,7 +1797,9 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   // below 1 (structTol ≥1) — a child inset sub-pixel under strict would otherwise stop being
   // "transparent" and the style would be read from the wrapper root (a false red on the carrier). See match-profiles.
   const structTol = Math.max(opts.tolerancePx, 1);
-  const aRes = styleAnchor(d, Math.min(structTol, 1));
+  // dom-dom: the anchor descent is OFF - it would read the CANDIDATE's nested carrier while
+  // the reference was projected flat, hiding that the candidate root itself paints nothing.
+  const aRes = opts.sides === 'dom-dom' ? undefined : styleAnchor(d, Math.min(structTol, 1));
   const a = aRes?.anchor;
   const sBg        = a ? a.styles?.backgroundColor            : d.styles?.backgroundColor;
   const sBgToken   = a ? a.styles?.backgroundColorToken       : d.styles?.backgroundColorToken;
@@ -1751,6 +1831,12 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   // ROOT/property, NOT text('') (the edit lives in the pair's root class).
   // p.7 routing at the root: a fig TEXT paired onto a DOM wrapper (fig TEXT ↔ <button> with a nested
   // span) is the same wrapper-styles trap as the child site - same resolver, same notes.
+  if (!spec.text && opts.sides === 'dom-dom' && domOwnText({ children: d.children })) {
+    // Presence symmetry (dom-dom): a text-bearing candidate root vs a bare reference root.
+    // Review (gating) - candidate-EXTRA content is suspicious in every dom-dom use case.
+    rows.push({ prop: 'typography', status: 'review', figma: null, dom: '(text present)',
+      note: 'the CANDIDATE root carries text the REFERENCE does not - if the reference capture is the intended state, this text is unexpected' });
+  }
   if (spec.text) {
     const rootAsDom: DomChild = { kind: 'element', rect: d.rect, styles: d.styles,
       children: d.children, ...(d.childrenTruncated ? { childrenTruncated: true } : {}) };
@@ -1767,7 +1853,7 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
       rows.push(...typographyRows(spec.text, carrier.node, '', d.fontsLoaded, undefined,
         carrier.uncertain, undefined, true, opts.cssEvidence));
     } else {
-      rows.push(carrierNoteRow('typography', carrier.kind));
+      rows.push(carrierNoteRow('typography', carrier.kind, opts.sides === 'dom-dom'));
     }
   }
 
@@ -1777,12 +1863,31 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     // Separate from colorVerdict: an undefined bg here means "the background may be on a different element"
     // (a structural signal), NOT "DOM color not recognized" (A1) — a different cause, a different note.
     if (bg === undefined) {
-      rows.push({ prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
+      rows.push(opts.sides === 'dom-dom'
+        ? { prop: 'fill', figma: spec.fillHex, dom: null, status: 'review',
+            note: 'the CANDIDATE declares no background while the REFERENCE paints one — the CANDIDATE either paints none or paints in a color space the extractor cannot read (oklch()/color()); confirm which before treating this as a defect' }
+        : { prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
     } else {
       const v = colorVerdict(spec.fillToken?.hex ?? spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined, spec.fillBoundVar, opts.cssEvidence);
       rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
         ...(v.status === 'fail' ? { srcChannel: SRC_ANCHOR_PROP } : {}) });
     }
+  } else if (opts.sides === 'dom-dom' && spec.fillUnparseable) {
+    // The reference DOES paint a background, but in a color space the extractor cannot reduce to
+    // hex - equality was not checked on either side. Distinct from the presence warn below.
+    // UNCHECKED, not info (receipt-lens finding 1): 'not checked on either side' must hold the gate.
+    rows.push({ prop: 'fill', figma: '(non-hex color)', dom: sBg ?? null, status: 'unchecked',
+      note: 'the REFERENCE background is expressed in a non-hex color space (oklch()/color()) - color equality was not checked on either side; verify visually' });
+  } else if (opts.sides === 'dom-dom' && sBg !== undefined) {
+    // Presence symmetry (dom-dom): the spec-side gate above is correct for Figma (a frame always
+    // declares its fills) and false-green here - a transparent reference vs a painted candidate
+    // was total silence. REVIEW, not warn (wave finding 5): a warn is advisory and the done-gate
+    // stayed green over the asymmetry. The oklch caveat (wave finding 16): the canonical
+    // extractor emits NOTHING for a color it cannot reduce to hex, so 'reference has no
+    // background' and 'reference paints in oklch' arrive identically - the row must not claim
+    // the stronger of the two.
+    rows.push({ prop: 'fill', figma: null, dom: sBg, status: 'review',
+      note: 'the CANDIDATE declares a background the REFERENCE does not - the REFERENCE either paints none or paints in a color space the extractor cannot read (oklch()/color()); confirm which before treating this as a defect' });
   }
 
   if (spec.gradient || sGradient) {
@@ -1806,9 +1911,18 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
   const domHasBorder = activeSides.length > 0;
   const figHasStroke = spec.strokeHex !== undefined;
   if (domHasBorder || figHasStroke) {
-    if (domHasBorder !== figHasStroke) {
-      rows.push({ prop: 'border-color', figma: spec.strokeHex ?? null, dom: domHasBorder ? 'present' : null,
-        status: 'warn', note: figHasStroke ? 'border only in the layout — not in the DOM' : 'border only in the DOM — not in the layout' });
+    if (opts.sides === 'dom-dom' && spec.strokeUnprojectable && domHasBorder) {
+      // The reference DOES have a border - it just cannot be expressed as one stroke (partial /
+      // non-uniform / unparsed colors). The projection's own info row says so; claiming
+      // 'the CANDIDATE has a border the REFERENCE does not' here would be a false asymmetry.
+    } else if (domHasBorder !== figHasStroke) {
+      rows.push(opts.sides === 'dom-dom'
+        ? { prop: 'border-color', figma: spec.strokeHex ?? null, dom: domHasBorder ? 'present' : null,
+            status: 'review', note: figHasStroke
+              ? 'the REFERENCE has a border the CANDIDATE does not - confirm the change is intended'
+              : 'the CANDIDATE has a border the REFERENCE does not - confirm the change is intended' }
+        : { prop: 'border-color', figma: spec.strokeHex ?? null, dom: domHasBorder ? 'present' : null,
+            status: 'warn', note: figHasStroke ? 'border only in the layout — not in the DOM' : 'border only in the DOM — not in the layout' });
     } else {
       const bc = sBorderCol ?? {};
       const activeColors = activeSides.map((s) => bc[s]);

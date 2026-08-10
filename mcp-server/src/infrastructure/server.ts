@@ -193,6 +193,8 @@ export const SERVER_INSTRUCTIONS = [
   'never claim the UI matches the design while it is false or `blocking[]` is non-empty — each',
   'blocking item names the action that fixes coverage. The cycle is stated once in',
   'docs/tools/design-qa.md; the full agent workflow is docs/agents/design-qa-skill.md.',
+  'Separately from the cycle: compare_dom_to_dom measures two DOM states of ONE screen against',
+  'each other (skeleton vs loaded, before vs after an edit) - no Figma side, no figma_token.',
 ].join('\n');
 
 export function makeReadCaches(config: AppConfig, logger?: Logger, budget?: CacheBudget,

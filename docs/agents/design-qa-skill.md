@@ -200,7 +200,9 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
   - `confirm_token` — `unconfirmed_token`: confirm the Figma token in the app. The aggregated entry
     carries `places[]` (ALL nodes with this token/reason; `node_id` is just the first place,
     `places_capped` — how many were cut) — confirm EVERY place in `places`; the reasons in `detail`
-    differ (e.g. `not-captured` = the DOM token was not read there).
+    differ (e.g. `not-captured` = the DOM token was not read there). In `compare_dom_to_dom` the
+    same kind/action mean: confirm the flagged change between the two captures (presence
+    asymmetry / tokenization drift) — no Figma call is involved; `places[]` names the row.
   - `fix_viewport` — `kind: 'viewport'`: the window width you captured at and the `frame_node_id`
     frame's width disagree, so geometry was demoted to `unchecked` rather than reported as red.
     Resize to the frame's width (or pass `expected_overlay_width` for a fixed overlay) and re-capture
@@ -445,3 +447,12 @@ terminal `no discrepancies above tolerance` is the green.
   the cut signals 👁 unchecked (`typography[...]`/`typography_descent[...]`) — raise `max_depth`
   OR add a deeper pair. If typography is silent AND there is no 👁 row — all visible text within
   the cut was verified.
+
+## Beyond the Figma cycle: two DOM states of one screen
+
+`compare_dom_to_dom` measures two DOM captures of the SAME screen against each other — skeleton
+vs loaded (the reference for a skeleton is the loaded state of its own page; content must not
+jump on swap), before vs after an edit, hover vs default. It is not a step of the cycle above:
+there is no Figma side, no file and no `figma_token`. Capture both states with the same extractor
+and selectors, pass them as `{ label, reference, candidate }` pairs, and read the same
+`verification.complete` done-gate. See `docs/tools/design-qa.md#compare_dom_to_dom`.
