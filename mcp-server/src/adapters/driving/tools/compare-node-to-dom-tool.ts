@@ -6,7 +6,7 @@ import { serializeForDelivery } from './serialize.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { buildLayoutSpec, ENUM_CAPS, anyTruncatedSpec } from '../../../domain/layout-spec/projector.js';
-import { diffPair, summarize, widthNoiseTolerance, deriveCoverage, condenseBulkPass, NOT_COVERED_BY_TOOL } from '../../../domain/layout-spec/diff.js';
+import { diffPair, summarize, widthNoiseTolerance, deriveCoverage, condenseBulkPass, dimensionOf, NOT_COVERED_BY_TOOL } from '../../../domain/layout-spec/diff.js';
 import { renderReport } from '../../../domain/layout-spec/report.js';
 import { DomSnapshotSchema, DOM_SNAPSHOT_SCHEMA_VERSION } from './dom-snapshot-schema.js';
 import { buildSetNames } from './component-set-names.js';
@@ -190,6 +190,62 @@ export function buildFixPlan(
 // fix-plan: budget tier — fix_plan/fix_plan_capped are BOTH dropped together (fix_plan
 // without the capped flag is as honest as it gets; a dangling capped is forbidden). A fresh object (delete on a copy) —
 // the input is not mutated.
+// ── the placeholder-frame signal (feedback item 17) ──
+// A consumer once compared a rendered page against a SKELETON design frame and reported two
+// size deltas as defects - both false: a placeholder frame's sizes are conditional, and the
+// hazard is FRAME-WIDE (an ordinary DS button inside a skeleton frame is just as conditional
+// as the placeholder instances). Detection is ONE walk over the RAW node tree - never the
+// projection, which is pruned by branch caps and drops out-of-flow children. Two signals per
+// node: a name carrying the (dictionary-generic) word skeleton, and a componentProperties key
+// carrying it whose value is POSITIVELY on - the live counter-example value "no" is a
+// non-empty (JS-truthy) string and must never fire. Invisible layers do not render and do not
+// count. Emitted at THIS tool layer on purpose: compare_dom_to_dom never executes this file,
+// so the fig-only boundary is structural, not a sentence.
+export function scanPlaceholders(root: RawSceneNode): { count: number; visited: number } {
+  let count = 0; let visited = 0;
+  const walk = (n: RawSceneNode): void => {
+    if (n.visible === false) return;
+    visited += 1;
+    let hit = /skeleton/i.test(n.name ?? '');
+    if (!hit) {
+      for (const [k, v] of Object.entries(n.componentProperties ?? {})) {
+        if (!/skeleton/i.test(k.replace(/#[0-9:]*/g, ''))) continue;
+        const val = (v as { value?: unknown }).value;
+        if (val === true || (typeof val === 'string' && /^(yes|true|on|1)$/i.test(val))) { hit = true; break; }
+      }
+    }
+    if (hit) count += 1;
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(root);
+  return { count, visited };
+}
+
+// The verdict protection is deliberately NOT a gate (the panel's resolution of a malformed
+// advisory-vs-gating question): the verdict is already held by the fails such a compare
+// produces - the incident's cost was those fails being TRUSTED and edit-prescribed. Three
+// carriers instead: the advisory row, a caveat on every extent FAIL (it travels into
+// fix_plan's edits via buildFixPlan), and a verification.notes[] line that renders in BOTH
+// complete branches and survives the response-budget clamp. All-pass + detection stays
+// complete:true WITH the visible note - a skeleton RENDER against a skeleton frame is a
+// legitimate, productive flow and must not be blocked.
+const PLACEHOLDER_EXTENT_DIMS = new Set(['size', 'gap', 'padding', 'offset-cross']);
+const PLACEHOLDER_CAVEAT = 'the design side is a placeholder (skeleton) frame — this delta may be placeholder-conditional; verify against the loaded-state frame before editing';
+export function placeholderNote(count: number, frameScoped: boolean): string {
+  const scope = frameScoped
+    ? `the design frame carries ${count} placeholder (skeleton) component(s) within the fetched slice`
+    : `the paired subtree carries ${count} placeholder (skeleton) component(s) within the fetched slice — checked only the paired subtrees, pass frame_node_id to check the whole frame`;
+  return `${scope} — sizes in a placeholder frame may not match the loaded state; if a loaded-state frame of this breakpoint exists, it is the geometry reference; to verify a skeleton RENDER, capture both DOM states and use compare_dom_to_dom`;
+}
+export function applyPlaceholderSignal(rows: DiffRow[], count: number, frameScoped: boolean): void {
+  if (count <= 0) return;
+  rows.push({ prop: 'placeholder_frame', figma: `${count} placeholder component(s)`, dom: null,
+    status: 'warn', note: placeholderNote(count, frameScoped) });
+  for (const r of rows) {
+    if (r.status === 'fail' && PLACEHOLDER_EXTENT_DIMS.has(dimensionOf(r.prop))) r.caveat ??= PLACEHOLDER_CAVEAT;
+  }
+}
+
 function stripFixPlan(p: PairResult): PairResult {
   if (p.fix_plan === undefined && p.fix_plan_capped === undefined) return p;
   const out = { ...p };
@@ -401,6 +457,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // in bestFrameRaw, NOT by a tier-3 failure (a transient cov-fetch failure
         // must not drop a heavy file back into the 60-90s whole-file path).
         let bestFrameRaw: RawSceneNode | undefined;
+        // placeholder-frame signal state: the frame walk is memoized (one scan per call), the
+        // max detected count feeds ONE receipt-level notes[] line after buildVerification.
+        let framePlaceholderScan: { count: number; visited: number } | undefined;
+        let placeholdersDetected = 0;
 
         // Coverage enumeration. 3 tiers (the store keys are disjoint by id-set,
         // "sharing with the main fetch" is impossible — we gate the second fetch): (1) effDepth=8 (final
@@ -704,6 +764,17 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
             rows.unshift({ prop: 'frame', figma: frameId, dom: null, status: 'warn' as const,
               note: `frame ${frameId} not found in file — viewport guard disabled` });
           }
+          // placeholder-frame signal: FRAME-scoped when the frame raw is in hand (the hazard is
+          // frame-wide - the incident's second false defect had no placeholder in its own
+          // subtree), pair-scoped with scope-honest wording otherwise. Memoized: one walk per
+          // call. Applied BEFORE buildFixPlan so the caveat travels into the edits.
+          const phScan = bestFrameRaw !== undefined
+            ? (framePlaceholderScan ??= scanPlaceholders(bestFrameRaw))
+            : scanPlaceholders(entry.document);
+          if (phScan.count > 0) {
+            applyPlaceholderSignal(rows, phScan.count, bestFrameRaw !== undefined);
+            placeholdersDetected = Math.max(placeholdersDetected, phScan.count);
+          }
           // captures AFTER diffPair (rows are ready for geometryUnchecked), BEFORE return — only
           // the OK path reaches here (the early returns above don't write captures). rect/borders ONLY if
           // domSnap is really ok (a status:'ok' snapshot; a failed union member has no .rect — okSnap.rect is then
@@ -734,6 +805,13 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           captures, tolerancePx, matchProfile: profile,
           ...(args.exclude_regions?.length ? { excludeRegions: args.exclude_regions.map(normalizeCompoundNodeId) } : {}),
         });
+        // placeholder-frame signal, the receipt carrier: notes[] renders as a ⚠ line in BOTH
+        // the complete and incomplete report branches and survives the response-budget clamp -
+        // the per-pair rows alone can be trimmed by the cascade, the receipt line cannot.
+        if (placeholdersDetected > 0) {
+          (verification.notes ??= []).push(
+            `placeholder (skeleton) components detected on the design side — size deltas may be placeholder-conditional (see the placeholder_frame row)`);
+        }
 
         // (c) dominant_blocker REPLACES the generic preflight (the slot :34-36 in report.ts
         // is single; the overlay case doesn't intersect — overlay suppresses the viewport reason in diff).

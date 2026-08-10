@@ -36,6 +36,7 @@ See the [Design QA tutorial](design-qa-tutorial.md) for the workflow and
 
 | Area | How it is flagged |
 | --- | --- |
+| A placeholder (skeleton) design frame as the reference | `placeholder_frame` service ⚠️ per pair + a receipt note; every extent ❌ in such a pair carries a caveat that travels into `fix_plan` — sizes in a placeholder frame may not match the loaded state, and the tool says so instead of prescribing an edit. Detection walks the raw design tree (names and component props); the count is honest to the fetched slice. Advisory by design: a skeleton RENDER against a skeleton frame is a legitimate flow, so the row never blocks a matching pair |
 | Icon glyphs (WHICH icon is drawn; box size/position/color ARE measured) | named in `not_covered_by_tool` as `icon-glyph (shape/path geometry - verify visually or by screenshot crop)`; icon-font/mask-image icons are named there too — their color is visible but not compared |
 | Radial/conic gradient geometry (center/radius/shape/rotation) | dedicated 👁 unchecked `gradient-geometry` row — counted as a coverage hole, blocks terminal green |
 | Second and further background layers | only the first layer is compared; a `gradient-layers` ℹ️ info row surfaces both sides |

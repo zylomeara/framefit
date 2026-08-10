@@ -445,6 +445,11 @@ terminal `no discrepancies above tolerance` is the green.
   (center/radius/shape — flagged 👁 unchecked), second-and-further background layers (only the
   first layer is compared; a `gradient-layers` info row flags the rest), and multi-shadow stacks
   (>1 shadow → `⚠️ box-shadow` `"the shadow list was not matched (single-shadow-first) — verify visually"`).
+- A `placeholder_frame` ⚠️ (and its receipt note) means the DESIGN side is or contains skeleton
+  placeholders: sizes in such a frame may be placeholder-conditional, and every extent ❌ of the
+  pair carries a caveat repeating that. Do NOT ship edits from those fails without checking the
+  loaded-state frame of the same breakpoint; to verify a skeleton RENDER, capture both DOM
+  states and use compare_dom_to_dom instead.
 - offset-cross is measured on the child's BOX edges: internal cross-axis alignment of CONTENT
   inside the child (e.g. text pushed down by the child's own padding) is invisible to the pair's
   diff — check it with a separate pair on that child.

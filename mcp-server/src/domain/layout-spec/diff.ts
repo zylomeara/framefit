@@ -148,6 +148,11 @@ const COVERAGE_META = new Set([
   'style_anchor', 'passes_condensed',
   // dom-dom: the reference-side capture warning (a service row, not a visual axis).
   'reference_fonts',
+  // placeholder_frame: the design side is (or contains) skeleton placeholders - a service
+  // warning about the REFERENCE's nature, not a visual axis. Emitted at the compare tool layer
+  // (never by this differ - the fig-only boundary is structural). NOT in COVERAGE_HOLING_WARN:
+  // the metrics WERE measured; the protection is the caveat on the fail rows + the receipt note.
+  'placeholder_frame',
 ]);
 
 // prop → coverage axis. prop formats: 'size.w' | 'gap[0] a↔b' | 'padding-left' |
