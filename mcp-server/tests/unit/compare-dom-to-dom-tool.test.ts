@@ -109,6 +109,15 @@ describe('compare_dom_to_dom tool', () => {
     expect(ok.success).toBe(true);
   });
 
+  it('an unresolvable ref is a blocked verdict, not a skipped pair: complete:false + re_extract_dom naming the side', async () => {
+    const call = harness();
+    const out = parse(await call({ pairs: [{ label: 'p',
+      reference: { dom_ref: { ref: 'r1', selector: '.x' } }, candidate: { dom: state(366) } }] }));
+    expect(out.verification.complete).toBe(false);
+    const b = out.verification.blocking.find((x: any) => x.action === 're_extract_dom');
+    expect(b.detail).toMatch(/^reference: /);
+  });
+
   it('token drift reaches blocking: the review row gates the receipt with the tokenization note', async () => {
     const call = harness();
     const withTok = (t: object): DomSnapshotOk => ({ ...state(366),
