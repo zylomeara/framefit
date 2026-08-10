@@ -74,16 +74,16 @@ describe('buildMergedCssEvidence', () => {
   });
   it('THE BRIDGE: a local variable aliasing a published primitive is related to it across the boundary', () => {
     const ev = buildMergedCssEvidence(IDX, VIEW);
-    expect(ev.aliasRelated('V:2', `VariableID:${KA}/1:1`)).toBe(true);
-    expect(ev.aliasRelated(`VariableID:${KA}/1:1`, 'V:2')).toBe(true); // either argument order
+    expect(ev.aliasRelation('V:2', `VariableID:${KA}/1:1`)).toBe('related');
+    expect(ev.aliasRelation(`VariableID:${KA}/1:1`, 'V:2')).toBe('related'); // either argument order
   });
   it('fully-visible unrelated pair stays unrelated (the gate may fire)', () => {
     const ev = buildMergedCssEvidence(IDX, VIEW);
-    expect(ev.aliasRelated('V:1', `VariableID:${KB}/2:2`)).toBe(false);
+    expect(ev.aliasRelation('V:1', `VariableID:${KB}/2:2`)).toBe('unrelated');
   });
   it('a cross-boundary edge with NO graph half wired is "cannot exclude", never unrelated', () => {
     const ev = buildMergedCssEvidence(IDX, undefined);
-    expect(ev.aliasRelated('V:2', `VariableID:${KA}/1:1`)).toBe(true);
+    expect(ev.aliasRelation('V:2', `VariableID:${KA}/1:1`)).toBe('related');
   });
   it('scoping: a minter from a NON-referenced library is invisible to idsByName', () => {
     const scoped = graphCssEvidenceView(GRAPH, [KA]); // KB's file referenced only via KA... same file here
@@ -130,8 +130,8 @@ describe('buildMergedCssEvidence — alias-related minters collapse to one', () 
     const ev = buildMergedCssEvidence(emptyIdx, view2);
     expect(ev.idsByName('--ds-x')).toHaveLength(2);
     const [m1, m2] = ev.idsByName('--ds-x');
-    expect(ev.aliasRelated(m1, 'key:' + KC)).toBe(true);
-    expect(ev.aliasRelated(m2, 'key:' + KC)).toBe(true);
+    expect(ev.aliasRelation(m1, 'key:' + KC)).toBe('related');
+    expect(ev.aliasRelation(m2, 'key:' + KC)).toBe('related');
   });
   it('a PROVEN-unrelated second minter does NOT collapse (real ambiguity stays silent)', () => {
     const g = buildGraph([

@@ -3,6 +3,69 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.23.0
+
+One line, and it finishes what 0.22.0 started: the codeSyntax evidence gate now reaches
+CROSS-LIBRARY bindings - the design-system layer itself. No input schema moved and no snapshot
+schema bumped, so nothing breaks without a reconnect - but the compare_node_to_dom DESCRIPTION
+changed (the evidence scope it names), and a client that never re-lists tools keeps reading the
+0.22.0 wording. The gate itself works either way. One deployment note at the end matters if you
+run the server yourself.
+
+### Changed
+
+**The authored codeSyntax mapping survives the library sync.** 0.22.0 read the evidence only
+from the compared file's own variables - and a cross-library binding's variable lives in the
+library, not the file, so the gate was structurally dark for exactly the tokens a design
+system serves. The sync used to fetch `codeSyntax` on every library variable and narrow it
+away one line later; it now carries the RAW authored string into the variable graph, and the
+compare's evidence facade merges the local index with a graph view SCOPED to the libraries
+the compared subtrees actually reference through their fill and stroke bindings - directly or
+through alias chains - and never the compared file's own graph twin: the fresher local index
+is the authority for it. The facade still REQUIRES the local variables index: when that fetch
+degrades, there is no evidence at all - uniqueness over a partial population is not
+uniqueness. (Shadow-color bindings do not pull their library into scope - the shadow token
+axis is deferred as before.)
+
+**The gate quantifies over ALL minters of the DOM name, relative to the bound variable, with
+a TRI-STATE relatedness - never a unique-count, never a boolean.** Measured live before
+building: design systems re-export each other's tokens as alias twins under the SAME authored
+name, so 0.22.0's "exactly one minter" rule would have silenced the evidence on the
+highest-traffic names. The obvious fix - collapse alias-related minters and keep a
+representative - was built and killed by its own adversarial review with a reproduced verdict
+flip: pairwise alias-relatedness is not transitive, so any representative makes the verdict
+depend on library sync order. And the next draft's boolean relatedness fell to the release
+verification itself: it conflated "proven related" with "cannot exclude", turning an
+unwalkable co-minter into a green pass. What ships: a row PASSES when the bound variable
+mints the DOM name itself and every co-minter is PROVABLY alias-related to it; it becomes
+"semantic-diverged" - the one review row that blocks even on matched hexes - only when the
+bound side carries its own authored mapping, does not mint the DOM name, and is PROVABLY
+unrelated to every variable that does. "Unknown" - a hole in the published-only graph, an
+exhausted walk budget, a missing graph half - is neither: it always falls back to the 0.22.0
+advisory rule, in both directions.
+
+**Some 0.22.0 gates become advisory, deliberately.** The relatedness engine is shared now:
+the walk reaches deeper than 0.22.0's local-only cap, and a chain it cannot finish walking -
+including a local alias pointing at a published variable the local index cannot see - reads
+"cannot exclude" instead of "unrelated". Rows that gated on such half-walked chains were
+false reds, and they now stay on the advisory rule. A row whose name is minted once and whose
+chain walks clean keeps its 0.22.0 verdict.
+
+**The multi-tenant graph port is a unit-tested factory now.** The review wave caught the
+feature wired everywhere except the multi-tenant branch - green types, green tests, dead
+feature on the hosted deployment - because the port object was assembled inline where no test
+could reach it. It is a factory with its own lock, plus a tool-level compare test through the
+multi-tenant-shaped port.
+
+### Deployment
+
+The variable graph gains a `code_syntax_web` column (idempotent ALTER, applied on the
+multi-tenant server's boot and by the operator CLI - no manual migration). Rows synced before
+this release read as evidence-free until their library is re-synced: multi-tenant syncs on
+demand (portal or CLI - trigger one after deploying if you want the evidence live
+immediately); single-tenant holds no rows at all - it rebuilds its graph from a fresh fetch,
+so a restarted process has the evidence on its first compare.
+
 ## 0.22.0
 
 Two verification lines with one subject - what a color row can honestly claim about tokens - plus

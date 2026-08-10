@@ -137,9 +137,9 @@ describe('buildCssEvidence — authored map + alias relatedness', () => {
   });
   it('aliasRelated: V:2 aliases V:1 (both directions true); V:3 unrelated', () => {
     const ev = buildCssEvidence(buildVariableIndex(evResp));
-    expect(ev.aliasRelated('V:2', 'V:1')).toBe(true);
-    expect(ev.aliasRelated('V:1', 'V:2')).toBe(true);
-    expect(ev.aliasRelated('V:3', 'V:1')).toBe(false);
-    expect(ev.aliasRelated('V:1', 'V:1')).toBe(true);
+    expect(ev.aliasRelation('V:2', 'V:1')).toBe('related');
+    expect(ev.aliasRelation('V:1', 'V:2')).toBe('related');
+    expect(ev.aliasRelation('V:3', 'V:1')).toBe('unrelated');
+    expect(ev.aliasRelation('V:1', 'V:1')).toBe('related');
   });
 });
