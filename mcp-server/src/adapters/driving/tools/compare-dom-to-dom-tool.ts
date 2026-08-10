@@ -146,7 +146,7 @@ function buildOutput(tolerancePx: number, pairs: PairResult[], omitted: number,
     tolerance_px: tolerancePx, pairs, summary, verification,
     not_covered_by_tool: DOM_DOM_NOT_COVERED,
     report_markdown: renderReport({
-      tolerancePx, pairs, depthLevels, verification,
+      tolerancePx, pairs, depthLevels, verification, notCovered: DOM_DOM_NOT_COVERED,
       headerLine: `Verified reference vs candidate (tolerance ${tolerancePx}px)`,
       sideLabels: ['reference', 'candidate'],
       ...(omitted ? { omittedPairs: omitted } : {}),

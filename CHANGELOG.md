@@ -3,6 +3,93 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.24.0
+
+One new tool, and it is the first one with no Figma side at all: `compare_dom_to_dom` measures
+TWO DOM states of one screen against each other - the skeleton against the loaded page, a layout
+before an edit against after, one breakpoint capture against another, hover against default. The
+tools you already use are byte-unchanged (their schemas and descriptions did not move), so
+nothing breaks without a reconnect - but a client that never re-lists tools will not SEE the new
+tool until it reconnects. The server INSTRUCTIONS text did change (it now names
+`compare_dom_to_dom` beside the five-step cycle), so a never-reconnecting client keeps reading
+the 0.23.0 wording - nothing depends on it.
+
+### Added
+
+**`compare_dom_to_dom` - two states of one screen, measured.** The reference state (what
+geometry SHOULD hold - for a skeleton check that is the loaded page, not the skeleton frame in
+the design file) is compared against the candidate state through the same row machinery the
+Figma comparator uses: sizes, inter-child gaps, effective paddings, cross-axis offsets,
+typography, colors, shadows. The tool takes `pairs` of `{ label, reference, candidate }` - the
+label is the pair's identity everywhere (there are no Figma node ids - the serialized `node_id`
+field carries your label), each side is an extractor
+snapshot passed inline as `dom` or by reference as `dom_ref` (same store and TTLs as
+`compare_node_to_dom`). No `file`, no `figma_token`: the tool makes zero Figma calls.
+
+What the dom-dom mode does differently, because two browser captures are not a design and a
+render:
+
+- the layout axis is INFERRED from the reference children's geometry (snapshots do not declare
+  flex direction); when the children do not progress in one clear direction - grids, overlays -
+  the inter-child AND per-child-extent rows are skipped with a visible note and the receipt
+  stays incomplete with a verify-visually (resolve-skip) blocking item: geometry the tool
+  cannot measure is never silently waved through - a grid whose cards all shrank in place is
+  held by that gate, not by numbers;
+- when the axis IS inferred, each index-paired child gets `child-size.w`/`child-size.h` rows:
+  gaps and cross-offsets are blind to a child whose extent changed in place, and skeleton
+  placeholders are exactly boxes with the right position and the wrong extent;
+- presence asymmetries GATE the verdict: a background, border or text the candidate declares
+  and the reference does not is a `review` row, and the receipt stays incomplete until it is
+  confirmed. The reverse text direction - the reference has text where the candidate has none -
+  is a visible `info` row instead, because for the skeleton use case that is the expected shape
+  and an uncloseable gate would make the tool's primary purpose unreachable;
+- a fill token-provenance drift row: a ROOT background that is `var()`-anchored in one state
+  and a literal (or a different variable) in the other is a `review` even when the rendered
+  hexes match - the tokenization changed between states, and that is worth confirming (two
+  literals, or a provenance either capture did not record, stay silent);
+- axes neither side can prove are `unchecked`, never green: a partial, non-uniform, or
+  non-hex-parseable reference border, or a reference background in a color space the extractor
+  cannot read (`oklch()`, `color()`), keep `verification.complete` false with the honest note
+  that the axis was not compared;
+- a reference captured under a CSS transform, scrolled, with a degenerate rect, or by an
+  outdated extractor is REFUSED as a baseline: no numbers are produced over a corrupt baseline,
+  and the pair blocks the receipt with a re-capture action naming WHICH side to re-capture
+  (unloaded reference fonts are an advisory info row instead - geometry still compares);
+- the report speaks reference/candidate throughout ("Verified reference vs candidate"); the
+  serialized row field names stay `figma`/`dom` as a wire contract shared with the Figma
+  comparator - read `figma` as the reference value and `dom` as the candidate value.
+
+The receipt is aggregate: `verification.complete` covers ALL submitted pairs - three defects in
+three pairs are one incomplete verdict, not three calls. Blocking items reuse the existing
+action vocabulary; in this tool `confirm_token` means "confirm the flagged change between the
+two captures" and each such item carries `places[]` naming the exact row (`fill`,
+`border-color`, `typography`, `fill-token-drift`), so two asymmetries on one pair are
+machine-distinguishable.
+
+What it deliberately does not cover, named in `not_covered_by_tool`: content correctness (two
+captures of the same wrong text agree with each other), per-child paint (a child's own
+background/radius/shadow - compare that child as its own pair), and icons.
+
+### Known limitation
+
+When a response outgrows the transport budget, whole pairs are dropped (the `omitted_pairs`
+counter and a report line say so). The receipt is built BEFORE the drop, so
+`verification.complete` still covers the dropped pairs - and `blocking` still names them by
+label for their skips, unchecked rows and reviews, which means blocking can point at a label
+absent from `pairs`. A dropped pair whose only defect is a plain fail leaves no blocking trace
+at all (fails never enter `blocking` in either comparator); the omitted-pairs counter is then
+the only pointer. Shared machinery with `compare_node_to_dom`.
+
+### For agents
+
+The five-step design-QA cycle is unchanged - this tool is not a step of it. Reach for it when
+both sides of your question are the SAME screen: skeleton-vs-loaded (capture both states with
+the same extractor and selectors; freeze the skeleton by delaying its data requests), before
+and after an edit, breakpoint against breakpoint (unequal capture widths become one loud
+viewport row instead of thirty confident deltas). The done-gate discipline is the same as
+everywhere: never claim the states match while `verification.complete` is false or `blocking`
+is non-empty.
+
 ## 0.23.0
 
 One line, and it finishes what 0.22.0 started: the codeSyntax evidence gate now reaches
