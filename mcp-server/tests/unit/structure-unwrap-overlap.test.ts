@@ -156,3 +156,76 @@ describe('tie-order truth under an overlap unwrap (panel blocker)', () => {
     expect(crossFails[0].prop).toMatch(/Meta|2/);
   });
 });
+
+describe('wave locks: both-sides truth under an overlap unwrap', () => {
+  // A DOM-side wrapper holding the cross-stack: fig children have DISTINCT main starts, the dom
+  // substitutes tie at one x. The verdict must not depend on markup source order.
+  // FLAT spec (no Body wrapper): 2 fig children vs 1 dom wrapper = the DOM-side unwrap path.
+  const flatSpec = (kids: SpecChild[]): LayoutSpec => ({
+    node: { id: '3:0', name: 'row', type: 'FRAME' },
+    rect: { x: 0, y: 0, w: 412, h: 70 },
+    axis: 'row',
+    autoLayout: { gap: 12, padding: { top: 12, right: 16, bottom: 12, left: 16 } },
+    children: kids,
+  } as LayoutSpec);
+  const figDistinct = () => [
+    figText('3:1', 'Left', 16, 12, 40, 20, 'Alpha', 16),
+    figText('3:2', 'Right', 60, 36, 56, 16, 'Beta', 12),
+  ];
+  const domWrapped = (topFirst: boolean): DomSnapshotOk => {
+    const top: DomChild = span(16, 12, 100, 20, 'Zulu', 16);      // texts deliberately unmatched
+    const bottom: DomChild = span(16, 36, 100, 16, 'Yankee', 12); // (dynamic content - no anchors)
+    return domRow([{ kind: 'element', tag: 'div', rect: { x: 16, y: 12, w: 100, h: 46 },
+      children: topFirst ? [top, bottom] : [bottom, top] }]);
+  };
+  it('dom-side tie group without anchors -> honest ambiguous skips, IDENTICAL verdict for both source orders', () => {
+    const a = diffPair(flatSpec(figDistinct()), domWrapped(true), { tolerancePx: 1 });
+    const b = diffPair(flatSpec(figDistinct()), domWrapped(false), { tolerancePx: 1 });
+    const verdictOf = (rows: typeof a) => rows.filter((r) => r.status === 'fail').map((r) => r.prop).sort().join('|');
+    expect(verdictOf(a)).toBe(verdictOf(b));
+    expect(a.some((r) => r.status === 'skip' && /ambiguous/.test(r.note ?? ''))).toBe(true);
+  });
+  it('padding rows measure the PHYSICAL extremes after anchor realignment - a real leading overshoot fails', () => {
+    // fig: Title/Sub tied at x16 (overlap unwrap, anchors exist). dom: Beta overshoots to x=8.
+    const fig = [
+      figText('4:1', 'Title', 16, 12, 100, 20, 'Alpha', 16),
+      figText('4:2', 'Sub', 16, 36, 100, 16, 'Beta', 12),
+    ];
+    const dom = domRow([
+      span(8, 36, 108, 16, 'Beta', 12),   // physically leading (x=8): 8px overshoot
+      span(16, 12, 100, 20, 'Alpha', 16),
+    ]);
+    const rows = diffPair(listItemSpec(fig), dom, { tolerancePx: 1 });
+    const pl = rows.find((r) => r.prop === 'padding-left');
+    expect(pl?.status).toBe('fail');
+  });
+  it('fig-side overlap does not arm the monotonicity guard over stack-order markup', () => {
+    // fig wrapper holds the stack (fig-side unwrap); dom children are flat but written
+    // icon-after-label (document order not main-start-sorted) - the norm for a stack.
+    const dom = domRow([
+      span(60, 36, 56, 16, 'Row subtitle', 13),   // written first, sits second by x
+      span(16, 12, 50, 20, 'Row title', 16),      // written second, sits first by x
+    ]);
+    const fig = [
+      figText('5:1', 'title', 16, 12, 50, 20, 'Row title', 16),      // ends x66 - overlaps subtitle (x60): the overlap-accepted case
+      figText('5:2', 'subtitle', 60, 36, 56, 16, 'Row subtitle', 13),
+    ];
+    const rows = diffPair(listItemSpec(fig), dom, { tolerancePx: 1 });
+    expect(rows.find((r) => r.prop === 'layout_axis_mismatch')).toBeUndefined();
+    expect(rows.filter((r) => r.status === 'fail')).toEqual([]);
+  });
+  it('no false children_reorder across a stack (main-start order is meaningless there)', () => {
+    // Title/Sub cross-stacked with a few px of centring drift flipping their main-start order
+    // between design and dom - NOT a reorder.
+    const fig = [
+      figText('6:1', 'title', 18, 12, 100, 20, 'Row title', 16),
+      figText('6:2', 'subtitle', 16, 36, 100, 16, 'Row subtitle', 13),
+    ];
+    const dom = domRow([
+      span(16, 12, 100, 20, 'Row title', 16),     // title now leads by x
+      span(18, 36, 100, 16, 'Row subtitle', 13),
+    ]);
+    const rows = diffPair(listItemSpec(fig), dom, { tolerancePx: 1 });
+    expect(rows.find((r) => r.prop === 'children_reorder')).toBeUndefined();
+  });
+});

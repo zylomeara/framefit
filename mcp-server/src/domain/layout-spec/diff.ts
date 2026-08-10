@@ -739,13 +739,19 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       for (let i = 0; i < target.length; i += 1) if (target[i] === undefined) target[i] = rest.shift();
       domKids2 = target as DomChild[];
     }
+    // The degeneracy lives on WHICHEVER side ties (the wave's worked example: a dom-side
+    // wrapper's substitutes tie while the fig starts are distinct - the verdict flipped on
+    // markup source order). An unanchored slot is unattributable if it ties with another
+    // unanchored slot on EITHER side's main starts.
     overlapAmbiguous = new Set();
     const sTol = Math.max(opts.tolerancePx, 1);
     for (let i = 0; i < figKids.length; i += 1) {
       if (anchors.has(i)) continue;
       for (let j = 0; j < figKids.length; j += 1) {
         if (j === i || anchors.has(j)) continue;
-        if (Math.abs(start(figKids[i].rect, axis) - start(figKids[j].rect, axis)) <= sTol) { overlapAmbiguous.add(i); break; }
+        const figTie = Math.abs(start(figKids[i].rect, axis) - start(figKids[j].rect, axis)) <= sTol;
+        const domTie = Math.abs(start(domKids2[i].rect, axis) - start(domKids2[j].rect, axis)) <= sTol;
+        if (figTie || domTie) { overlapAmbiguous.add(i); break; }
       }
     }
     if (overlapAmbiguous.size === 0) overlapAmbiguous = undefined;
@@ -883,7 +889,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         : '';
       rows.push({ prop: 'structure_mismatch', status: 'warn',
         figma: `${figKids.length} children: ${figDesc}`, dom: `${domKids2.length} children: ${domDescOf(domKids2)}`,
-        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${figOofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}; comparing two STATES of one screen (skeleton vs loaded) is compare_dom_to_dom's job, not this pair's` });
+        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${figOofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}${ddMode ? '' : "; comparing two STATES of one screen (skeleton vs loaded) is compare_dom_to_dom's job, not this pair's"}` });
       // source-hint: unpaired — the MAIN "add pairs" flow (0 high-conf: nothing
       // matched). All DOM children are unpaired; cap 10 AT the collection site. navigation-to-investigate.
       collectUnpaired(opts, domKids2);
@@ -932,7 +938,10 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   // salvage are limited to salvageAdj (fig- AND dom-adjacent on the sorted domKids2) AND are skipped on a
   // main-axis overlap (wrap/reflow, below), while a residual 2D drift falls into offset-cross → the verdict is
   // non-green. (Sorting by main-start does NOT prove single-row — hence the extra wrap-skip in the loop.)
-  if (!salvaged && unwrapInfo?.side !== 'dom') {
+  // An overlap-accepted unwrap is BY DEFINITION a cross-axis stack: the dom children have no
+  // meaningful main-axis order, and document order not matching main-start order is the NORM
+  // there (an icon written after its label) - not a layout_axis_mismatch.
+  if (!salvaged && unwrapInfo?.side !== 'dom' && unwrapInfo?.overlap !== true) {
     for (let i = 1; i < d.children.length; i += 1) {
       // structural guard (structTol, not raw tol): under strict tol=0 a sub-pixel non-monotonicity of the
       // document order must not fabricate a layout_axis_mismatch (a false-alarm class).
@@ -955,10 +964,13 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   // offset-cross zip figKids[i]↔domKids2[i] below) — the detector's defensive sort is idempotent
   // for this call, does not diverge from the figKids order.
   let movedIdx: Set<number> | undefined;
-  if (!salvaged) {
+  if (!salvaged && unwrapInfo?.overlap !== true) {
     // structural (structTol): the detector's tol-tie cushion is clamped at 1px — under strict tol=0 close
     // (sub-pixel) main-start neighbors would otherwise stop counting as a "tie", and the stable-sort
     // tie-break would give a false children_reorder on a correct layout (mutation "cushion=tol" → RED).
+    // Overlap-accepted unwraps skip the detector entirely: children stacked ACROSS the pair axis
+    // flip their main-start order on a few px of centring drift - a reorder claim there is noise,
+    // and the anchor realignment has already aligned content where anchors exist.
     const reorder = detectChildrenReorder(figKids, domKids2, structTol, axis);
     if (reorder !== undefined && 'moved' in reorder) {
       // BLOCKER: skip by the UNION of the sides — on a PARTIAL bijection (fig[0]→dom[2], while fig[2]
@@ -1040,7 +1052,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       axis === 'row' ? pageGutter : undefined));
   }
 
-  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous));
+  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous, unwrapInfo?.overlap === true));
   return rows;
 }
 
@@ -1374,7 +1386,7 @@ function matchTexts(figs: FigText[], doms: DomText[], anyTruncated: boolean):
 function crossAndPaddingRows(
   spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions, figKids: SpecChild[], domKids: DomChild[], unwrapBase: boolean,
   hugFillMainAxis: boolean, figWrapper?: SpecChild, domWrapper?: DomChild, salvaged = false, movedIdx?: Set<number>,
-  overlapAmbiguous?: Set<number>,
+  overlapAmbiguous?: Set<number>, overlapUnwrap = false,
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   const axis = spec.axis!;
@@ -1411,8 +1423,22 @@ function crossAndPaddingRows(
   const isDistributingContext = display !== undefined && FLEX_GRID_DISPLAY.has(display);
   const jd = (unwrapBase || !isDistributingContext) ? { start: false, end: false } : justifyDistribution(jc);
 
-  const figFirst = figKids[0];
-  const figLast = figKids[figKids.length - 1];
+  // Overlap-accepted unwrap: index order is anchor-realigned and main-start order is degenerate
+  // (ties) - the padding rows must measure the PHYSICAL extremes (leading = smallest main start,
+  // trailing = largest main END) on BOTH sides, or a real overshoot of a non-index-0 child
+  // silently passes (wave blocker: the realignment moved a leading 8px overshoot off index 0).
+  const byPhysical = <T extends { rect: SpecRect }>(ks: readonly T[]): { first: T; last: T } => {
+    let first = ks[0]; let last = ks[0];
+    for (const k of ks) {
+      if (start(k.rect, axis) < start(first.rect, axis)) first = k;
+      if (end(k.rect, axis) > end(last.rect, axis)) last = k;
+    }
+    return { first, last };
+  };
+  const figExt = overlapUnwrap ? byPhysical(figKids) : { first: figKids[0], last: figKids[figKids.length - 1] };
+  const domExt = overlapUnwrap ? byPhysical(domKids) : { first: domKids[0], last: domKids[domKids.length - 1] };
+  const figFirst = figExt.first;
+  const figLast = figExt.last;
 
   const figCStart = start(rect, axis) + (unwrapBase ? 0 : padStart(eff(spec.autoLayout?.padding), axis));
   const figCEnd = end(rect, axis) - (unwrapBase ? 0 : padEnd(eff(spec.autoLayout?.padding), axis));
@@ -1423,19 +1449,19 @@ function crossAndPaddingRows(
   // INTENDED), not from dom (what RESULTED) — otherwise the note would point at the symptom, not the
   // cause. Only the note (join), the padding row's numbers do not change.
   const figPadStart = padStart(eff(figFirst.paddings), axis);
-  const domPadStart = padStart(eff(domKids[0].paddings), axis);
+  const domPadStart = padStart(eff(domExt.first.paddings), axis);
   const startNote = paddingProvenanceNote(figPadStart, domPadStart, childLabel(figFirst));
   // salvage: figFirst/figLast are not the real first/last (a subset was matched) → padding from the container
   // edge would be a false ❌. We skip padding-start/end; offset-cross/typography per-child — we keep.
   if (!salvaged) {
     rows.push(applyContainerHugFillDemote(applyJustifyDemote(withNote(
       numRow(startName, (start(figFirst.rect, axis) + figPadStart) - figCStart,
-        (start(domKids[0].rect, axis) + domPadStart) - domCStart, tol, undefined, SRC_ROOT_LAYOUT),
+        (start(domExt.first.rect, axis) + domPadStart) - domCStart, tol, undefined, SRC_ROOT_LAYOUT),
       startNote,
     ), jd.start, jc, startName), hugFillMainAxis));
   }
 
-  const lastDom = domKids[domKids.length - 1];
+  const lastDom = domExt.last;
   if (!salvaged && lastDom.kind !== 'text') {
     const figPadEnd = padEnd(eff(figLast.paddings), axis);
     const domPadEnd = padEnd(eff(lastDom.paddings), axis);
