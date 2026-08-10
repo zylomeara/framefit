@@ -151,6 +151,12 @@ export interface DomTypography {
   backgroundColor?: string; // hex; transparent → undefined
   colorToken?: DomColorToken;           // authored-binding of the text color (schema v2)
   backgroundColorToken?: DomColorToken; // authored-binding of the background (schema v2)
+  // icon-color axis (additive): present only on a surveyed svg icon. A new extractor always writes
+  // one of the four for a detected icon, so on a tag:'svg' node all-four-absent = stale capture.
+  iconColor?: string;         // shared 6/8-digit hex across every painted part
+  iconColorToken?: DomColorToken; // authored-binding of that color's carrier
+  iconColorMulti?: true;      // parts differ - a real multi-color glyph, no single hex
+  iconColorUnknown?: string;  // a part's paint was unreadable (url()/gradient) - why
 }
 
 export interface DomChild {

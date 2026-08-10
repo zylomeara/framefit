@@ -63,6 +63,14 @@ const Typo = z.object({
   backgroundColor: z.string().optional(),
   colorToken: TokenState.optional(),
   backgroundColorToken: TokenState.optional(),
+  // v6-additive (icon-color axis, phase 1): a surveyed svg's painted color. Additive and optional
+  // deliberately - see the layoutViewportWidth note for the direction argument. A pre-this-release
+  // capture omits ALL FOUR on a tag:'svg' child; a NEW extractor always writes one of them for a
+  // detected icon, which is what makes absent-field = stale-capture decidable downstream.
+  iconColor: z.string().optional(),           // shared 6/8-digit hex across every painted part
+  iconColorToken: TokenState.optional(),      // authored-binding state of that color's carrier
+  iconColorMulti: z.literal(true).optional(), // parts differ - a real multi-color glyph, no single hex
+  iconColorUnknown: z.string().optional(),    // a part's paint was unreadable (url()/gradient) - why
 });
 
 // v5 (style-anchor): a child's styles are extended with a style bundle (radius/opacity/gradient) — compact

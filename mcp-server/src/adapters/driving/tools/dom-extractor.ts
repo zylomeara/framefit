@@ -240,6 +240,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       else if (crad.value > 0) child.styles.borderRadius = crad.value;
       const cop = num(cs.opacity);
       if (cop !== undefined && cop < 1) child.styles.opacity = cop;
+      surveyIcon(n, child.styles);
       if (cs.backgroundImage && cs.backgroundImage !== 'none') {
         const cgrad = classifyGradient(n, cs);
         // Raster / url(...) background: classifyGradient sees no gradient layer → undefined. It is still a
@@ -485,13 +486,70 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       // the rule simply was not found (dev-server-evicted <style>, or an adopted/shadow-root sheet we do not
       // scan). Label that 'unattributed' instead of mislabeling it 'inherited'. Either way it stays unknown —
       // never a false token/literal.
-      return { unknown: prop === 'color' ? 'inherited' : 'unattributed' };
+      return { unknown: (prop === 'color' || prop === 'fill' || prop === 'stroke') ? 'inherited' : 'unattributed' };
     }
     // under layers a {literal:true} verdict is unprovable: an unparseable-form winner (oklch/lab/color-mix) in a
     // winning layer can shadow a coincident literal in a losing layer, and litHex can't see it to set
     // explainingLiteral. Suppress to unknown — never a false {literal} under layers. (never-false-green)
     if (sawLayeredMatch) return { unknown: 'layered-undecidable' };
     return { literal: true };   // var(--undef,#lit) fallback / pure literal (non-layered)
+  };
+  // icon-color (feedback item 6, phase 1): the painted color of an svg icon. Panel-locked
+  // rules: survey ALL path-like descendants (first-path-only is a one-sided multi-color
+  // detector); fill -> none => stroke (outline icons paint the stroke); alpha folds through
+  // fill/stroke-opacity and the element opacity chain up to the svg (toHex's 8-digit
+  // convention); computed fill already resolves currentColor - no fallback (for an unset fill
+  // it would replace the SVG-initial black with an invented inherited color); unreadable
+  // paints (url()/gradients) emit an explicit unknown - a new extractor always writes
+  // SOMETHING for a detected svg, which is what makes an ABSENT field mean 'older extractor'.
+  const ICON_PARTS = 'path,circle,rect,line,polygon,polyline,ellipse';
+  const iconSvgOf = (el) => {
+    if (el.tagName.toLowerCase() === 'svg') return el;
+    if (!el.querySelectorAll) return undefined;
+    const svgs = Array.from(el.querySelectorAll('svg'));
+    if (svgs.length !== 1) return undefined;
+    const sr = svgs[0].getBoundingClientRect(); const er = el.getBoundingClientRect();
+    if (er.width <= 0 || er.height <= 0) return undefined;
+    // per-DIMENSION threshold: a 16x16 glyph inside a 24x24 padded button is 44% by area but
+    // clearly THE icon - each dimension must cover at least half its box.
+    return (sr.width >= er.width / 2 && sr.height >= er.height / 2) ? svgs[0] : undefined;
+  };
+  const surveyIcon = (el, styles) => {
+    const svg = iconSvgOf(el);
+    if (!svg) return;
+    const parts = Array.from(svg.querySelectorAll(ICON_PARTS));
+    if (parts.length === 0) { styles.iconColorUnknown = 'no path-like elements'; return; }
+    const alphaChainOf = (n) => {
+      let a = 1; let cur = n;
+      while (cur) { const o = num(getComputedStyle(cur).opacity); if (o !== undefined) a *= o; if (cur === svg) break; cur = cur.parentElement; }
+      return a;
+    };
+    const withAlpha = (hex, alpha) => {
+      const base = hex.slice(0, 7);
+      const prior = hex.length === 9 ? parseInt(hex.slice(7, 9), 16) / 255 : 1;
+      const a = Math.max(0, Math.min(1, prior * alpha));
+      return a >= 1 ? base : base + Math.round(a * 255).toString(16).padStart(2, '0');
+    };
+    let hex; let multi = false; let unknown; let carrier; let usedAttr = false;
+    for (const p of parts) {
+      const pcs = getComputedStyle(p);
+      if (pcs.display === 'none') continue;
+      let paintProp = 'fill'; let paint = pcs.fill;
+      if (!paint || paint === 'none') { paintProp = 'stroke'; paint = pcs.stroke; }
+      if (!paint || paint === 'none') continue;
+      const ph = toHexLoose(paint);
+      if (ph === undefined) { if (unknown === undefined) unknown = 'unreadable ' + paintProp + ' (' + String(paint).slice(0, 48) + ')'; continue; }
+      const fo = num(paintProp === 'fill' ? pcs.fillOpacity : pcs.strokeOpacity);
+      const eff = withAlpha(ph, (fo === undefined ? 1 : fo) * alphaChainOf(p));
+      if (hex === undefined) { hex = eff; carrier = p; usedAttr = !!(p.getAttribute && p.getAttribute(paintProp)); }
+      else if (hex !== eff) multi = true;
+    }
+    if (multi) { styles.iconColorMulti = true; return; }
+    if (hex === undefined) { styles.iconColorUnknown = unknown || 'no readable fill/stroke'; return; }
+    if (unknown !== undefined) { styles.iconColorUnknown = unknown; return; }
+    styles.iconColor = hex;
+    const tok = usedAttr ? { literal: true } : classifyColor(carrier, 'fill', hex.slice(0, 7));
+    if (tok !== undefined) styles.iconColorToken = tok;
   };
     // gradient: bracket-aware top-level comma split (rgb()/var() contain commas — naive split corrupts stops)
     const splitTop = (s) => {
@@ -736,7 +794,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     const shadow = parseShadow(cs.boxShadow);
     if (shadow) shadow.colorToken = classifyColor(el, 'box-shadow', shadow.colorHex);
     const rrad = radiusOf(cs);
-    return {
+    const snap = {
       schema: SCHEMA, status: 'ok', selector,
       innerWidth: window.innerWidth,
       // the width CSS laid the page out in: innerWidth includes the page scrollbar, this does not
@@ -773,6 +831,8 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       childrenTruncated: kids.length > 30 ? true : undefined,
       outOfFlow: kids.outOfFlow || undefined,
     };
+    surveyIcon(el, snap.styles);
+    return snap;
   });
   // Back-compat: no uploadUrl -> the historical plain-array return (byte-for-byte).
   if (!uploadUrl) return snapshots;
