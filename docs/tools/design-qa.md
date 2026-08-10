@@ -134,7 +134,7 @@ Response (abridged), from the stdio server:
     { "node_id": "12:340", "held_depth": 5, "hydrated": true, "drill_free_upto": 4,
       "cause_breakdown": { "depth": 0, "breadth": 0, "budget": 0 } }
   ],
-  "extractor_js": "<full inline extractor script, 58116 chars - elided>",
+  "extractor_js": "<full inline extractor script, 64526 chars - elided>",
   "extractor_note": "loader unavailable without public base URL — inline returned",
   "extractor_hint": "no upload_url on this server: the extractor hands the snapshots back to you. Paste extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare assignment throws) — then every capture is `async () => await window.__extract([\"<sel>\", …], undefined, 3, 90)` (a reload drops the handle — paste again). Pass include_extractor:false on every later get_layout_spec call. Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom."
   /* On an HTTP server with a public base URL, extractor_js is the versioned loader thunk instead,
@@ -432,8 +432,8 @@ Response (abridged — see the [tutorial](../design-qa-tutorial.md) for a full a
     ]
   },
   /* a "hydration" receipt follows here, in the same shape as get_layout_spec's */
-  "not_covered_by_tool": ["icons"],
-  "report_markdown": "<verification report markdown, 1257 chars - elided>"
+  "not_covered_by_tool": ["icon-glyph (shape/path geometry - verify visually or by screenshot crop)", "icon-font/mask-image icons (the color is visible but not compared)"],
+  "report_markdown": "<verification report markdown, 1416 chars - elided>"
 }
 ```
 

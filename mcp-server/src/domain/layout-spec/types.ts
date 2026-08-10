@@ -67,6 +67,13 @@ export interface SpecChild {
   truncationCause?: 'depth' | 'breadth' | 'budget'; // which cap cut children; only 'depth' is drill-fixable
   outOfFlow?: number;          // mirror of DomChild.outOfFlow: visible non-zero-area ABSOLUTE children dropped
                                // from this box's flow — a deeper capture will NOT reveal them; pair directly
+  // icon-color axis: present only when the RAW subtree classifies as an icon (all leaves
+  // vector-class, no TEXT/image). A CUT subtree emits none of these — the diff derives
+  // unknown-because-cut from childrenTruncated, so absence stays three-way honest.
+  iconHex?: string;                 // shared 6/8-digit glyph hex (plate excluded; alpha folded)
+  iconToken?: ResolvedColorToken;   // mode-resolved binding of the glyph carrier's paint
+  iconMulti?: true;                 // glyph parts differ - a real multi-color icon, no single hex
+  iconUnknown?: string;             // a part's paint was unreadable (gradient) or nothing is painted - why
 }
 
 export interface TextLeaf {
@@ -120,6 +127,11 @@ export interface LayoutSpec {
   childrenTruncated?: boolean; // the MAX_SPEC_CHILDREN cap fired
   truncationCause?: 'depth' | 'breadth' | 'budget'; // which cap cut children; only 'depth' is drill-fixable
   outOfFlow?: number;          // see SpecChild.outOfFlow — the same count for the requested root
+  // icon-color axis, the root site (a direct icon pair): same semantics as SpecChild.icon*.
+  iconHex?: string;
+  iconToken?: ResolvedColorToken;
+  iconMulti?: true;
+  iconUnknown?: string;
 }
 
 // ── DOM side (produced by the canonical extractor, validated by a Zod schema in adapters) ──
@@ -151,6 +163,12 @@ export interface DomTypography {
   backgroundColor?: string; // hex; transparent → undefined
   colorToken?: DomColorToken;           // authored-binding of the text color (schema v2)
   backgroundColorToken?: DomColorToken; // authored-binding of the background (schema v2)
+  // icon-color axis (additive): present only on a surveyed svg icon. A new extractor always writes
+  // one of the four for a detected icon, so on a tag:'svg' node all-four-absent = stale capture.
+  iconColor?: string;         // shared 6/8-digit hex across every painted part
+  iconColorToken?: DomColorToken; // authored-binding of that color's carrier
+  iconColorMulti?: true;      // parts differ - a real multi-color glyph, no single hex
+  iconColorUnknown?: string;  // a part's paint was unreadable (url()/gradient) - why
 }
 
 export interface DomChild {

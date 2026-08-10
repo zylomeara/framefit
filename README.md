@@ -105,7 +105,7 @@ The design-QA cycle measures a *rendered* page, so it drives a
 real browser through a browser-automation MCP running alongside framefit (the
 [agent skill](docs/agents/design-qa-skill.md) is written against chrome-devtools tool names). On
 stdio there is no server for that browser to fetch the DOM extractor from, so `get_layout_spec`
-hands it back inline — 58116 characters, once per session if you park it on a global
+hands it back inline — 64526 characters, once per session if you park it on a global
 (`() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` — `evaluate_script` calls
 what you send, so the paste has to be a thunk). Each snapshot it returns then runs to tens of
 thousands of characters — it scales with the nodes captured, up to the default 90-node budget, so
@@ -176,7 +176,7 @@ loopback socket and the file are worth; the same run with both of them pasted th
 times as much, and the snapshot half of it grows with every pair.
 
 `prepare` is the same recipe with the extractor written to a file for you to paste **verbatim** —
-58116 characters through your context. Keep it for a page whose CSP forbids the `eval` the fetch
+64526 characters through your context. Keep it for a page whose CSP forbids the `eval` the fetch
 thunk needs; there is no reason to reach for it otherwise.
 
 Swap `AbCdEf012345`, the node ids and the selectors for your own; if your token already sits in

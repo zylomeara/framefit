@@ -305,6 +305,21 @@ function uncheckedToBlocking(r: DiffRow, p: PairResult, depthLevels: number): Bl
   // border-color/fill join corner-radius (receipt-lens finding 1): dom-dom's 'axis was not
   // compared' rows - a human must look; the existing bucket, no fourteenth action.
   if (r.prop === 'corner-radius' || r.prop === 'border-color' || r.prop === 'fill') return { ...base, kind: 'skip', action: 'resolve_skip' };
+  // icon-color note-guards (the p.7 precedent): each unchecked routes to ITS executable action.
+  // Stale capture / dom-side truncation -> re-extract (the current extractor always writes icon
+  // fields for a detected svg); a cut fig subtree -> a deeper fetch genuinely reveals the vectors.
+  if (r.prop.startsWith('icon-color')) {
+    if ((r.note ?? '').includes('older extractor') || (r.note ?? '').includes('re-extract')) {
+      return { ...base, kind: 'snapshot', action: 're_extract_dom' };
+    }
+    if ((r.note ?? '').includes('raise max_depth')) {
+      return depthLevels < 8
+        ? { ...base, kind: 'children_truncated', action: 'raise_max_depth' }
+        : { ...base, kind: 'children_truncated', action: 'add_pairs_on_children',
+            detail: `${base.detail} - already at the maximum capture depth (8): pair the icon node directly` };
+    }
+    return { ...base, kind: 'skip', action: 'resolve_skip' };
+  }
   // p.7 carrier notes (note-guards, viewport precedent). AMBIGUOUS carriers: both texts are ALREADY
   // captured — a deeper capture resolves nothing, the only executable action is a pair on the text
   // node, at any depth. NO text in a fully captured subtree: neither depth nor a text pair exists to

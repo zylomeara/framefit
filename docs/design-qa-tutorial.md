@@ -353,8 +353,8 @@ The response to exactly that request, abridged (`/* ... */` marks an elided tail
   "summary": { "pass": 26, "fail": 2, "warn": 0, "skip": 2, "info": 0, "demoted": 0, "unchecked": 0, "review": 0 },
   "verification": { /* see step 5 */ },
   /* a "hydration" receipt follows, one entry per pair, in the same shape as get_layout_spec's */
-  "not_covered_by_tool": ["icons"],
-  "report_markdown": "<verification report markdown, 1775 chars - elided>"
+  "not_covered_by_tool": ["icon-glyph (shape/path geometry - verify visually or by screenshot crop)", "icon-font/mask-image icons (the color is visible but not compared)"],
+  "report_markdown": "<verification report markdown, 1934 chars - elided>"
 }
 ```
 
@@ -522,8 +522,10 @@ reminds you to finish with a full-scope run.
 
 ## Step 8 — what the tool does not check
 
-The response says so itself: `not_covered_by_tool: ["icons"]`. Icon glyphs (and any purely
-pictorial content) are not metrically diffed — verify them visually, e.g. with
+The response says so itself: `not_covered_by_tool` names the residuals. Icon COLOR is compared
+for svg icons (the `icon-color` rows); the glyph's shape/path geometry — and any purely
+pictorial content — is not metrically diffed, and icon-font/mask-image icons are not compared
+at all. Verify those visually, e.g. with
 [`get_screenshot`](tools/navigation.md#get_screenshot) `return=preview` next to the rendered page.
 Decorative leaf nodes (backgrounds, dividers, vector glyphs) are covered by their container's
 geometry rather than flagged as missing pairs.

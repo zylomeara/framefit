@@ -240,6 +240,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       else if (crad.value > 0) child.styles.borderRadius = crad.value;
       const cop = num(cs.opacity);
       if (cop !== undefined && cop < 1) child.styles.opacity = cop;
+      surveyIcon(n, child.styles);
       if (cs.backgroundImage && cs.backgroundImage !== 'none') {
         const cgrad = classifyGradient(n, cs);
         // Raster / url(...) background: classifyGradient sees no gradient layer → undefined. It is still a
@@ -485,13 +486,109 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       // the rule simply was not found (dev-server-evicted <style>, or an adopted/shadow-root sheet we do not
       // scan). Label that 'unattributed' instead of mislabeling it 'inherited'. Either way it stays unknown —
       // never a false token/literal.
-      return { unknown: prop === 'color' ? 'inherited' : 'unattributed' };
+      return { unknown: (prop === 'color' || prop === 'fill' || prop === 'stroke') ? 'inherited' : 'unattributed' };
     }
     // under layers a {literal:true} verdict is unprovable: an unparseable-form winner (oklch/lab/color-mix) in a
     // winning layer can shadow a coincident literal in a losing layer, and litHex can't see it to set
     // explainingLiteral. Suppress to unknown — never a false {literal} under layers. (never-false-green)
     if (sawLayeredMatch) return { unknown: 'layered-undecidable' };
     return { literal: true };   // var(--undef,#lit) fallback / pure literal (non-layered)
+  };
+  // icon-color (feedback item 6, phase 1): the painted color of an svg icon. Panel-locked
+  // rules: survey ALL path-like descendants (first-path-only is a one-sided multi-color
+  // detector); fill -> none => stroke (outline icons paint the stroke); alpha folds through
+  // fill/stroke-opacity and the element opacity chain up to the svg (toHex's 8-digit
+  // convention); computed fill already resolves currentColor - no fallback (for an unset fill
+  // it would replace the SVG-initial black with an invented inherited color); unreadable
+  // paints (url()/gradients) emit an explicit unknown - a new extractor always writes
+  // SOMETHING for a detected svg, which is what makes an ABSENT field mean 'older extractor'.
+  const ICON_PARTS = 'path,circle,rect,line,polygon,polyline,ellipse';
+  const iconSvgOf = (el) => {
+    if (el.tagName.toLowerCase() === 'svg') return el;
+    if (!el.querySelectorAll) return undefined;
+    const svgs = Array.from(el.querySelectorAll('svg'));
+    if (svgs.length !== 1) return undefined;
+    const sr = svgs[0].getBoundingClientRect(); const er = el.getBoundingClientRect();
+    if (er.width <= 0 || er.height <= 0) return undefined;
+    // per-DIMENSION threshold: a 16x16 glyph inside a 24x24 padded button is 44% by area but
+    // clearly THE icon - each dimension must cover at least half its box.
+    return (sr.width >= er.width / 2 && sr.height >= er.height / 2) ? svgs[0] : undefined;
+  };
+  const surveyIcon = (el, styles) => {
+    const svg = iconSvgOf(el);
+    if (!svg) return;
+    const parts = Array.from(svg.querySelectorAll(ICON_PARTS));
+    if (parts.length === 0) { styles.iconColorUnknown = 'no path-like elements'; return; }
+    // Template containers (defs/clipPath/mask/symbol/pattern/marker) hold geometry that is not
+    // itself rendered, and display:none does NOT inherit - a descendant of a hidden <g> still
+    // computes its own display 'inline'. One ancestor walk answers both.
+    const NON_PAINTING = ['defs', 'clippath', 'mask', 'symbol', 'pattern', 'marker'];
+    const hiddenOrTemplate = (n) => {
+      let cur = n;
+      while (cur) {
+        if (getComputedStyle(cur).display === 'none') return true;
+        if (NON_PAINTING.indexOf((cur.tagName || '').toLowerCase()) !== -1) return true;
+        if (cur === svg) break;
+        cur = cur.parentElement;
+      }
+      return false;
+    };
+    // The opacity chain folds up to the SURVEYED element INCLUSIVE: a wrapper's own opacity dims
+    // the glyph exactly like a Figma candidate's own opacity, which the projector folds - stopping
+    // at the svg made the two sides compare different conventions on the padded-wrapper shape.
+    const alphaChainOf = (n) => {
+      let a = 1; let cur = n;
+      while (cur) { const o = num(getComputedStyle(cur).opacity); if (o !== undefined) a *= o; if (cur === el) break; cur = cur.parentElement; }
+      return a;
+    };
+    const withAlpha = (hex, alpha) => {
+      const base = hex.slice(0, 7);
+      const prior = hex.length === 9 ? parseInt(hex.slice(7, 9), 16) / 255 : 1;
+      const a = Math.max(0, Math.min(1, prior * alpha));
+      return a >= 1 ? base : base + Math.round(a * 255).toString(16).padStart(2, '0');
+    };
+    let hex; let multi = false; let unknown; let carrier; let carrierProp = 'fill'; let attrLiteral = false;
+    for (const p of parts) {
+      if (hiddenOrTemplate(p)) continue;
+      const pcs = getComputedStyle(p);
+      let paintProp = 'fill'; let paint = pcs.fill;
+      if (!paint || paint === 'none') { paintProp = 'stroke'; paint = pcs.stroke; }
+      if (!paint || paint === 'none') continue;
+      // A fully transparent paint renders nothing - the part contributes NOTHING (like
+      // display:none), it is not an 'unreadable' paint (toHex refuses alpha 0 by design).
+      // rgbA with FOUR components only: the computed 3-component rgb() form ends in the BLUE
+      // channel, and a loose tail match swallowed every opaque color whose blue is 0 - pure
+      // black, the SVG-initial and commonest icon color, read as 'transparent'.
+      if (paint === 'transparent' || /^rgba\\(\\s*\\d+,\\s*\\d+,\\s*\\d+,\\s*0(\\.0+)?\\s*\\)$/.test(paint)) continue;
+      const ph = toHexLoose(paint);
+      if (ph === undefined) { if (unknown === undefined) unknown = 'unreadable ' + paintProp + ' (' + String(paint).slice(0, 48) + ')'; continue; }
+      const fo = num(paintProp === 'fill' ? pcs.fillOpacity : pcs.strokeOpacity);
+      const eff = withAlpha(ph, (fo === undefined ? 1 : fo) * alphaChainOf(p));
+      if (hex === undefined) {
+        hex = eff; carrier = p; carrierProp = paintProp;
+        // Value-anchored attribute claim (the classifyColor doctrine - a literal is only ever
+        // claimed from a value that PRODUCED the pixel): fill="currentColor" is a deferral, and
+        // a presentation attribute beaten by author CSS painted nothing - both fall through to
+        // the classifier on the property that actually carried the paint. litHex, not a
+        // hand-rolled subset: #fff, 8-digit and padded forms are literals too.
+        const av = p.getAttribute && p.getAttribute(paintProp);
+        const ah = av && av !== 'currentColor' && av !== 'inherit' ? litHex(av) : undefined;
+        attrLiteral = ah !== undefined && ah.slice(0, 7) === ph.slice(0, 7).toLowerCase();
+      }
+      else if (hex !== eff) multi = true;
+    }
+    if (multi) { styles.iconColorMulti = true; return; }
+    if (hex === undefined) { styles.iconColorUnknown = unknown || 'no readable fill/stroke'; return; }
+    if (unknown !== undefined) { styles.iconColorUnknown = unknown; return; }
+    styles.iconColor = hex;
+    // The CASCADE wins over a presentation attribute (an attribute is the lowest-precedence
+    // author input): the classifier's positive evidence - a token, a CSS literal, an ambiguous
+    // cascade - stands; the anchored attribute claims the literal only in the vacuum, when no
+    // declaration accounts for the pixel ({unknown}), which is exactly when the attribute is
+    // what painted it.
+    const cssTok = classifyColor(carrier, carrierProp, hex.slice(0, 7));
+    const tok = attrLiteral && (cssTok === undefined || cssTok.unknown !== undefined) ? { literal: true } : cssTok;
+    if (tok !== undefined) styles.iconColorToken = tok;
   };
     // gradient: bracket-aware top-level comma split (rgb()/var() contain commas — naive split corrupts stops)
     const splitTop = (s) => {
@@ -736,7 +833,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     const shadow = parseShadow(cs.boxShadow);
     if (shadow) shadow.colorToken = classifyColor(el, 'box-shadow', shadow.colorHex);
     const rrad = radiusOf(cs);
-    return {
+    const snap = {
       schema: SCHEMA, status: 'ok', selector,
       innerWidth: window.innerWidth,
       // the width CSS laid the page out in: innerWidth includes the page scrollbar, this does not
@@ -773,6 +870,8 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       childrenTruncated: kids.length > 30 ? true : undefined,
       outOfFlow: kids.outOfFlow || undefined,
     };
+    surveyIcon(el, snap.styles);
+    return snap;
   });
   // Back-compat: no uploadUrl -> the historical plain-array return (byte-for-byte).
   if (!uploadUrl) return snapshots;

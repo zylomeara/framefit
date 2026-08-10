@@ -26,6 +26,7 @@ See the [Design QA tutorial](design-qa-tutorial.md) for the workflow and
 | Corner radius | one uniform px corner radius | the DOM side yields ONE comparable px number or it says so: all four CSS corners equal **and** a px length → diffed as that number (including the exponent form, which is not a size threshold but Chrome's six-significant-digit serialization: measured, `999999.4px` reads back as `999999px`, and `999999.5px` — seven digits once rounded — as `1e+06px`); **anything else the browser computed** → 👁 unchecked, never a pass (see limits). The corners are compared as strings rather than parsed values, because `parseFloat('8px 4px')` is 8 and would read an 8×4 ellipse as a circle. The one silence left is an empty computed value: nothing was computed, so no number and no row |
 | Gradients | kind (linear/radial/conic), per-stop colors and positions (equal stop counts), linear angle (±3°), token provenance per stop and whole | radial/conic geometry is NOT measured — flagged 👁 unchecked (see below); unequal stop counts → ⚠️ warn, no guessed matching |
 | Opacity | node opacity | delta-gated like other numeric axes |
+| Icon color (svg icons) | one shared glyph color per icon detected on BOTH sides (Figma vector subtree vs `<svg>`), through the same token-aware verdict ladder as text color | plate/backdrop excluded from the glyph set; multi-color or unreadable paints → ℹ️ verify-visually with `coverageSkipped`; a pre-icon snapshot (bare `svg` with no icon fields) → 👁 unchecked routed to `re_extract_dom`; unequal icon inventories are never index-guessed — an ℹ️ info names the direct pairing instead. Glyph SHAPE stays visual-only (see below) |
 | Component identity | DS component detection from class/data tokens vs Figma component-set name; explicit `expected_component` | **warn-only** — it is a heuristic, never a ❌ fail |
 | Overlay width | fixed-width overlays via `expected_overlay_width` | ℹ️ info row (app vs overlay width), viewport guard decoupled |
 | Between-children spacing audit | gaps inside containers that have no pair of their own | works only when the adjacent pairs came through `dom_ref` of ONE batch (one extractor POST = one layout state). Inline `dom` or mixed refs → the gap is honestly `unchecked`, so **on stdio this channel never verifies a gap at all** — add a container pair there instead of waiting for it |
@@ -35,7 +36,7 @@ See the [Design QA tutorial](design-qa-tutorial.md) for the workflow and
 
 | Area | How it is flagged |
 | --- | --- |
-| Icon glyphs (WHICH icon is drawn; box size/position ARE measured) | listed in the report footer as not covered by the tool (`not_covered_by_tool: ['icons']`) |
+| Icon glyphs (WHICH icon is drawn; box size/position/color ARE measured) | named in `not_covered_by_tool` as `icon-glyph (shape/path geometry - verify visually or by screenshot crop)`; icon-font/mask-image icons are named there too — their color is visible but not compared |
 | Radial/conic gradient geometry (center/radius/shape/rotation) | dedicated 👁 unchecked `gradient-geometry` row — counted as a coverage hole, blocks terminal green |
 | Second and further background layers | only the first layer is compared; a `gradient-layers` ℹ️ info row surfaces both sides |
 | Multi-shadow stacks (>1 shadow) | ⚠️ warn `"the shadow list was not matched (single-shadow-first) — verify visually"` |
