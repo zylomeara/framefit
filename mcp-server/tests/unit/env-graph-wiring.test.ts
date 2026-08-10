@@ -233,3 +233,127 @@ describe('get_design_context: ensureReady await dominates the late mode-context 
     expect(JSON.parse(res.content[0].text).mode_context).toBeUndefined();
   });
 });
+
+// ── End-to-end (graph-css-evidence line): compare_node_to_dom gates a cross-library binding
+// against the library's OWN authored codeSyntax, served through the real env graph. The whole
+// chain is exercised: sync projection carries code_syntax_web -> graph builds byCssName ->
+// scoped view -> merged facade -> colorVerdict D-branch -> verification blocking.
+import { registerCompareNodeToDomTool } from '../../src/adapters/driving/tools/compare-node-to-dom-tool.js';
+import { withFrameRaw } from './helpers/frame-raw.js';
+
+const KB2 = 'b'.repeat(40);
+const EV_LIB_RAW = { meta: {
+  variables: {
+    v1: { id: 'VariableID:10:1', key: LIB_KEY, name: 'ds/primary', variableCollectionId: 'LC',
+      resolvedType: 'COLOR', valuesByMode: { lm: { r: 1, g: 0, b: 0 } }, codeSyntax: { WEB: 'var(--ds-primary)' } },
+    v2: { id: 'VariableID:10:2', key: KB2, name: 'ds/other', variableCollectionId: 'LC',
+      resolvedType: 'COLOR', valuesByMode: { lm: { r: 0, g: 1, b: 0 } }, codeSyntax: { WEB: '--ds-other' } },
+  },
+  variableCollections: { LC: { id: 'LC', name: 'Palette', key: 'c'.repeat(40), defaultModeId: 'lm', modes: [{ modeId: 'lm', name: 'Only' }] } },
+} };
+
+describe('compare_node_to_dom + env graph: cross-library codeSyntax evidence end-to-end', () => {
+  const boundCard = {
+    id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 343, height: 120 },
+    fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: `VariableID:${LIB_KEY}/10:1` } } }],
+  };
+  const domFor = (domVar: string) => ({
+    schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
+    rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
+    scroll: { top: 0, left: 0 }, transformed: false,
+    styles: { backgroundColor: '#ff0000', backgroundColorToken: { token: domVar } },
+    children: [],
+  });
+  function compareHarness() {
+    const envGraph = createEnvGraphFromConfig(
+      { DS_LIBRARY_TTL_SEC: 86400, DS_TEAM_IDS: '123', FIGMA_TOKEN: 'figd_x' }, logger, () => libraryApi(EV_LIB_RAW));
+    const { server, call } = makeFakeMcpServer();
+    const api = withFrameRaw({
+      getNodesRaw: async () => ({ nodes: { '1:1': { document: boundCard } } }),
+      // The CONSUMER file's own variables: an empty index (the merged facade requires it to
+      // exist; the graph half carries the evidence for the cross-library binding).
+      getVariablesLocal: async () => ({ meta: { variables: {}, variableCollections: {} } }),
+    } as Partial<FigmaApi>);
+    const deps = { buildApi: () => api as FigmaApi, defaultToken: 'figd_x', logger,
+      maxResultChars: 400000, variableGraph: envGraph } as unknown as ToolDeps;
+    registerCompareNodeToDomTool(server, deps);
+    return (a: any): Promise<any> => call('compare_node_to_dom', a);
+  }
+
+  it('DOM var = authored name of a DIFFERENT library variable -> semantic-diverged, gating', async () => {
+    const run = compareHarness();
+    const res = await run({ file: 'consumerfile', pairs: [{ node_id: '1:1', dom: domFor('--ds-other') }] });
+    const body = JSON.parse(res.content[0].text);
+    const fill = body.pairs[0].rows.find((r: any) => r.prop === 'fill');
+    expect(fill?.tokenReason).toBe('semantic-diverged');
+    expect(fill?.domToken).toBe('--ds-other');
+    expect(body.verification.complete).toBe(false);
+    expect(body.verification.blocking.some((b: any) => b.kind === 'unconfirmed_token')).toBe(true);
+  });
+
+  it('DOM var = the bound variable\'s own authored name -> PASS retires the review noise', async () => {
+    const run = compareHarness();
+    const res = await run({ file: 'consumerfile', pairs: [{ node_id: '1:1', dom: domFor('--ds-primary') }] });
+    const body = JSON.parse(res.content[0].text);
+    const fill = body.pairs[0].rows.find((r: any) => r.prop === 'fill');
+    expect(fill?.status).toBe('pass');
+    expect(fill?.note).toMatch(/codeSyntax/);
+  });
+
+  it('unknown DOM var (absent from every authored map) -> legacy semantic-confirm, byte-for-byte 0.22.0', async () => {
+    const run = compareHarness();
+    const res = await run({ file: 'consumerfile', pairs: [{ node_id: '1:1', dom: domFor('--app-custom') }] });
+    const body = JSON.parse(res.content[0].text);
+    const fill = body.pairs[0].rows.find((r: any) => r.prop === 'fill');
+    expect(fill?.status).toBe('review');
+    expect(fill?.tokenReason).toBe('semantic-confirm');
+  });
+});
+
+// ── The live-measured twin shape: a second library re-exports the first's token as an alias
+// twin under the SAME authored name. Without the minter collapse the name reads ambiguous and
+// the evidence is silenced on exactly the highest-traffic DS names.
+describe('compare_node_to_dom + env graph: alias-twin minters collapse end-to-end', () => {
+  const KD2 = 'd'.repeat(40);
+  const TWO_LIB_RAW: Record<string, unknown> = {
+    colorlib: { meta: {
+      variables: { v1: { id: 'VariableID:10:1', key: LIB_KEY, name: 'ds/primary', variableCollectionId: 'LC',
+        resolvedType: 'COLOR', valuesByMode: { lm: { r: 1, g: 0, b: 0 } }, codeSyntax: { WEB: '--ds-primary' } } },
+      variableCollections: { LC: { id: 'LC', name: 'P', key: 'c'.repeat(40), defaultModeId: 'lm', modes: [{ modeId: 'lm', name: 'O' }] } },
+    } },
+    uikitlib: { meta: {
+      variables: { v2: { id: 'VariableID:20:1', key: KD2, name: 'ds/primary', variableCollectionId: 'UC',
+        resolvedType: 'COLOR', valuesByMode: { um: { type: 'VARIABLE_ALIAS', id: `VariableID:${LIB_KEY}/10:1` } }, codeSyntax: { WEB: '--ds-primary' } } },
+      variableCollections: { UC: { id: 'UC', name: 'U', key: 'e'.repeat(40), defaultModeId: 'um', modes: [{ modeId: 'um', name: 'O' }] } },
+    } },
+  };
+  it('bound to the origin variable, DOM uses the shared authored name -> PASS despite the twin', async () => {
+    const envGraph = createEnvGraphFromConfig(
+      { DS_LIBRARY_TTL_SEC: 86400, DS_TEAM_IDS: '123', FIGMA_TOKEN: 'figd_x' }, logger,
+      () => ({ getTeamProjects: async () => [{ id: 'p1', name: 'DS' }],
+        getProjectFiles: async () => [{ key: 'colorlib', name: 'C' }, { key: 'uikitlib', name: 'U' }],
+        getVariablesLocal: async (fk: string) => TWO_LIB_RAW[fk] } as unknown as FigmaApi));
+    const { server, call } = makeFakeMcpServer();
+    const api = withFrameRaw({
+      getNodesRaw: async () => ({ nodes: { '1:1': { document: {
+        id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 343, height: 120 },
+        fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: `VariableID:${LIB_KEY}/10:1` } } }],
+      } } } }),
+      getVariablesLocal: async () => ({ meta: { variables: {}, variableCollections: {} } }),
+    } as Partial<FigmaApi>);
+    const deps = { buildApi: () => api as FigmaApi, defaultToken: 'figd_x', logger,
+      maxResultChars: 400000, variableGraph: envGraph } as unknown as ToolDeps;
+    registerCompareNodeToDomTool(server, deps);
+    const res = await call('compare_node_to_dom', { file: 'consumerfile', pairs: [{ node_id: '1:1', dom: {
+      schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
+      rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
+      scroll: { top: 0, left: 0 }, transformed: false,
+      styles: { backgroundColor: '#ff0000', backgroundColorToken: { token: '--ds-primary' } },
+      children: [],
+    } }] });
+    const body = JSON.parse(res.content[0].text as string);
+    const fill = body.pairs[0].rows.find((r: any) => r.prop === 'fill');
+    expect(fill?.status).toBe('pass');
+    expect(fill?.note).toMatch(/codeSyntax/);
+  });
+});

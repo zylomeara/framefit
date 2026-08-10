@@ -17,3 +17,4 @@ token*.txt
 # LICENSE files in one repo drift, and the drift is invisible until someone reads the tarball.
 mcp-server/README.md
 mcp-server/LICENSE
+mcp-server/*.tgz

@@ -298,16 +298,20 @@ token** (-> resolved) only if the names denote the same concept; **wrong token**
 when they denote clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be
 bridged either way (a possible rename), answer **unsure** and escalate - never call it wrong.
 `review` rows keep the verdict non-green until resolved; a name that merely differs textually is
-not a defect. Exception: a `semantic-diverged` row was measured against the file's own authored
-codeSyntax mapping - the DOM var is the authored name of a DIFFERENT variable - and blocks even
-when the hexes match; align the code with the authored var (or fix the mapping in Figma).
+not a defect. Exception: a `semantic-diverged` row was measured against the authored codeSyntax
+mappings (the file's own variables and its synced libraries') - the DOM var is the authored name
+of a DIFFERENT variable - and blocks even when the hexes match; align the code with the authored
+var (or fix the mapping in Figma).
 
 The response also carries a `verification` receipt - a machine gate with `complete: true|false`
 and an actionable `blocking` list - plus per-pair `source` hints (CSS-module file candidates) and
 a `fix_plan` (grouped edits derived from fail rows). See the
 [Design QA tutorial](../design-qa-tutorial.md) for how to read them.
 
-Token wiring is checked against the file's own authored `codeSyntax.WEB` mappings when they exist:
+Token wiring is checked against the authored `codeSyntax.WEB` mappings when they exist - the
+file's own variables and, for cross-library bindings, the synced libraries' (scoped to the
+libraries the compared subtrees actually reference; ambiguous names and alias tiers across the
+library boundary never gate):
 a DOM custom property that exactly matches the bound variable's authored name (and no other
 variable mints that name) passes outright, and one that is the authored name of a DIFFERENT,
 non-alias-related variable becomes `semantic-diverged` - the one review row that blocks even when
