@@ -154,6 +154,83 @@ function withPaintAlpha(rt: ResolvedColorToken, paints: RawPaint[] | undefined):
   };
 }
 
+// ── icon-color axis: paint survey of an icon candidate's RAW subtree ──
+// Detection is structural, never lexical (no name/class heuristics): a candidate is an icon when
+// its visible RAW subtree bottoms out in vector-class leaves - at least one - with no TEXT and no
+// image fill anywhere. The walk reads raw.children, NOT inFlowChildren: zero-area LINEs and
+// absolute glyphs vanish from a layout filter, and they paint.
+const VECTOR_CLASS = new Set(['VECTOR', 'BOOLEAN_OPERATION', 'ELLIPSE', 'RECTANGLE', 'LINE', 'STAR', 'REGULAR_POLYGON']);
+const ICON_CONTAINERS = new Set(['FRAME', 'GROUP', 'INSTANCE', 'COMPONENT']);
+
+interface IconSurvey { hex?: string; token?: ResolvedColorToken; multi?: true; unknown?: string }
+
+// One node's paint through the DOM-mirrored ladder: fill first, none -> stroke (Figma paints
+// outline icons with STROKE). The SOLID paint is returned raw so the caller can fold
+// color.a x paint opacity x the node opacity chain in ONE rounding (hexing first and
+// multiplying after drifts a hex step from the DOM side's single final rounding).
+// A visible non-solid paint (gradient) = unreadable; nothing visible = contributes nothing.
+function iconPaintOf(n: RawSceneNode): { solid: RawPaint; slot: 'fills' | 'strokes' } | { unreadable: string } | undefined {
+  for (const slot of ['fills', 'strokes'] as const) {
+    const paints = (n[slot] ?? []).filter((p) => p.visible !== false);
+    if (paints.length === 0) continue;
+    const solid = paints.find((p) => p.type === 'SOLID' && p.color);
+    if (solid) return { solid, slot };
+    return { unreadable: `unreadable ${slot === 'fills' ? 'fill' : 'stroke'} (${paints[0].type})` };
+  }
+  return undefined;
+}
+
+function surveyFigIcon(raw: RawSceneNode, ctx: ProjectorContext): IconSurvey | undefined {
+  const rootRect = rectOf(raw);
+  type Carrier = { node: RawSceneNode; slot: 'fills' | 'strokes'; hex: string; plate: boolean };
+  const carriers: Carrier[] = [];
+  let vectors = 0; let cut = false; let not = false; let unreadable: string | undefined;
+  const walk = (n: RawSceneNode, alpha: number): void => {
+    if (not || n.visible === false) return;
+    const a = alpha * (n.opacity ?? 1);
+    if (n.type === 'TEXT' || hasImageFill(n.fills)) { not = true; return; }
+    const isLeafClass = VECTOR_CLASS.has(n.type);
+    if (isLeafClass) vectors += 1;
+    else if (ICON_CONTAINERS.has(n.type)) {
+      // A container with NO children array was cut by the fetch depth - the inventory cannot
+      // complete. [] is a genuinely empty container and just contributes nothing.
+      if (n.children === undefined) { cut = true; return; }
+      for (const c of n.children) walk(c, a);
+    } else { not = true; return; }
+    const p = iconPaintOf(n);
+    if (!p) return;
+    if ('unreadable' in p) { unreadable ??= p.unreadable; return; }
+    const c0 = p.solid.color!;
+    const hex = rgbaToHex({ ...c0, a: (c0.a ?? 1) * (p.solid.opacity ?? 1) * a });
+    // Plate discrimination: a filled box spanning ~the candidate's whole bbox is the badge
+    // plate, not the glyph - kept separate so a red badge with a white glyph reads white.
+    const r = rectOf(n);
+    const plate = !!(rootRect && r && n !== raw && r.w >= rootRect.w * 0.9 && r.h >= rootRect.h * 0.9);
+    carriers.push({ node: n, slot: p.slot, hex, plate });
+  };
+  walk(raw, 1);
+  if (not || cut || vectors === 0) return undefined; // not an icon, or unknowable - the diff reads childrenTruncated
+  // Glyph set = non-plate paints; a plate-only icon (a status dot) falls back to the plate -
+  // that IS its visible color (the DOM side surveys such a circle the same way).
+  const glyphs = carriers.filter((c) => !c.plate);
+  const set = glyphs.length > 0 ? glyphs : carriers;
+  if (set.length === 0) return { unknown: unreadable ?? 'no painted parts' };
+  if (new Set(set.map((c) => c.hex)).size > 1) return { multi: true };
+  if (unreadable !== undefined) return { unknown: unreadable }; // a partial inventory never claims the hex
+  const first = set[0];
+  const rt = ctx.resolveColorToken?.(first.node, first.slot);
+  const token = rt ? withPaintAlpha(rt, first.node[first.slot]) : undefined;
+  return { hex: first.hex, ...(token ? { token } : {}) };
+}
+
+function assignIcon(target: { iconHex?: string; iconToken?: ResolvedColorToken; iconMulti?: true; iconUnknown?: string }, s: IconSurvey | undefined): void {
+  if (!s) return;
+  if (s.multi) { target.iconMulti = true; return; }
+  if (s.unknown !== undefined) { target.iconUnknown = s.unknown; return; }
+  if (s.hex !== undefined) target.iconHex = s.hex;
+  if (s.token) target.iconToken = s.token;
+}
+
 function projectShadow(effects: RawEffect[] | undefined): SpecShadow | undefined {
   const shadows = (effects ?? []).filter((e) => e.visible !== false
     && (e.type === 'DROP_SHADOW' || e.type === 'INNER_SHADOW'));
@@ -403,6 +480,7 @@ function projectChildren(kids: RawSceneNode[], axisOf: (n: RawSceneNode) => 'row
     // with zero signal on either channel.
     const oof = outOfFlowCount(c);
     if (oof > 0) child.outOfFlow = oof;
+    assignIcon(child, surveyFigIcon(c, ctx));
     if (depthLeft > 0) {
       const grand = sortByAxis(inFlowChildren(c), axisOf(c));
       const sub = projectChildren(grand, axisOf, depthLeft - 1, caps.maxNestedChildren, caps, ctx);
@@ -535,6 +613,8 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
 
   const text = typographyOf(raw, ctx);
   if (text) spec.text = text;
+
+  assignIcon(spec, surveyFigIcon(raw, ctx));
 
   const rootTd = textDataOf(raw);
   if (rootTd.snippet !== undefined) spec.textNode = true;
