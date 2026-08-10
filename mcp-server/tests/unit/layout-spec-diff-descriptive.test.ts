@@ -652,7 +652,7 @@ describe('colorVerdict D — codeSyntax evidence (positive collision only)', () 
   const EV = (over: Partial<{ nameOf: any; idsByName: any; aliasRelated: any }> = {}) => ({
     nameOf: (id: string) => (id === 'V:1' ? '--ds-x' : undefined),
     idsByName: (n: string) => (n === '--ds-x' ? ['V:1'] : n === '--ds-other' ? ['V:9'] : []),
-    aliasRelated: () => false,
+    aliasRelated: (a: string, b: string) => a === b,
     ...over,
   });
   const evSpec = () => {
@@ -720,7 +720,7 @@ describe('colorVerdict D evidence — wave locks', () => {
   const EV2 = {
     nameOf: (id: string) => (id === 'V:1' ? '--ds-x' : undefined),
     idsByName: (n: string) => (n === '--ds-x' ? ['V:1'] : n === '--ds-other' ? ['V:9'] : []),
-    aliasRelated: () => false,
+    aliasRelated: (a: string, b: string) => a === b,
   };
 
   it('ROOT-is-TEXT pair: evidence reaches the root text color row (5th producer — the census miss)', () => {
@@ -764,6 +764,63 @@ describe('colorVerdict D evidence — wave locks', () => {
     const d = baseSnap();
     (d.styles as Record<string, unknown>).backgroundColorToken = { token: '--DS-X' };
     const f = row(diffPair(s, d, { tolerancePx: 1, cssEvidence: EV2 }), 'fill');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+});
+
+// ── delta-wave locks: the quantifier gate has NO representative and no order dependence ──
+describe('colorVerdict D evidence — quantifier gate (delta-wave locks)', () => {
+  const spec = () => {
+    const s = baseSpec();
+    s.fillBoundVar = 'V:F';
+    s.fillToken = { token: 'bg/f', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    return s;
+  };
+  const snapWith = (domVar: string) => {
+    const d = baseSnap();
+    (d.styles as Record<string, unknown>).backgroundColorToken = { token: domVar };
+    return d;
+  };
+
+  it('HUB REPRO (was order-dependent semantic-diverged): bound related to ONE of several minters → legacy, never a gate', () => {
+    // minters KD,KE,KC all mint --ds-x; bound V:F aliases KE (related to it, unrelated to KD/KC).
+    const EV = {
+      nameOf: (id: string) => (id === 'V:F' ? '--other-name' : undefined),
+      idsByName: (n: string) => (n === '--ds-x' ? ['key:d', 'key:e', 'key:c'] : []),
+      aliasRelated: (a: string, b: string) => a === b || (new Set([a, b]).has('key:e') && new Set([a, b]).has('V:F')),
+    };
+    const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
+    expect(f?.tokenReason).toBe('semantic-confirm'); // related to at least one minter → no gate
+  });
+
+  it('gate fires only when bound is provably unrelated to EVERY minter', () => {
+    const EV = {
+      nameOf: (id: string) => (id === 'V:F' ? '--other-name' : undefined),
+      idsByName: (n: string) => (n === '--ds-x' ? ['key:d', 'key:e'] : []),
+      aliasRelated: (a: string, b: string) => a === b,
+    };
+    const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
+    expect(f?.tokenReason).toBe('semantic-diverged');
+  });
+
+  it('PASS through an alias twin: bound mints the name, the co-minter is related → pass', () => {
+    const EV = {
+      nameOf: (id: string) => (id === 'V:F' ? '--ds-x' : undefined),
+      idsByName: (n: string) => (n === '--ds-x' ? ['V:F', 'key:twin'] : []),
+      aliasRelated: (a: string, b: string) => a === b || (new Set([a, b]).has('key:twin') && new Set([a, b]).has('V:F')),
+    };
+    const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
+    expect(f?.status).toBe('pass');
+  });
+
+  it('NO pass when an UNRELATED co-minter exists (the name identifies no single mapping)', () => {
+    const EV = {
+      nameOf: (id: string) => (id === 'V:F' ? '--ds-x' : undefined),
+      idsByName: (n: string) => (n === '--ds-x' ? ['V:F', 'key:stranger'] : []),
+      aliasRelated: (a: string, b: string) => a === b,
+    };
+    const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
+    expect(f?.status).toBe('review');
     expect(f?.tokenReason).toBe('semantic-confirm');
   });
 });

@@ -49,6 +49,11 @@ export type ToolDeps = {
     // exact condition under which resolveInMode emits a mode-dependent object. Lets needsAncestors
     // gate ancestor discovery precisely; when absent, callers fall back to `resolve().modesByName`.
     isMultiMode?(key: string): boolean;
+    // Scoped codeSyntax-evidence view for the merged CssTokenEvidence facade (graph-css-evidence
+    // line). ONE method on purpose: a wrapper exposing part of the evidence surface would be
+    // indistinguishable from an unwired one, and a missing alias walk must never read as "no
+    // relation exists". Same ensureReady precondition as every other read.
+    cssEvidence?(referencedKeys: string[], excludeFileKey?: string): import('../../../domain/variable-graph.js').GraphCssView | undefined;
   };
   /** Write gate. Multi-tenant resolves the user's read_only flag per request; single-tenant sets a
    * constant gate when FRAMEFIT_READ_ONLY=true (buildToolDeps). Undefined → no read-only mode was

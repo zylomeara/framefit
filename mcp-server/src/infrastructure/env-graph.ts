@@ -10,8 +10,7 @@
 import { syncUser, type SyncDeps } from '../multi-tenant/library-sync.js';
 import {
   buildGraph, resolveKey, resolveKeyModes, resolveKeyInMode, keyIsMultiMode,
-  type Graph, type Lib,
-} from '../domain/variable-graph.js';
+  graphCssEvidenceView, type Graph, type Lib, type GraphCssView } from '../domain/variable-graph.js';
 import { isMultiTenant } from '../multi-tenant/env.js';
 import type { FigmaApi } from '../ports/figma-api.js';
 import type { Logger } from './logger.js';
@@ -33,6 +32,7 @@ export interface EnvGraph {
   resolveInMode(key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean):
     { token?: string; value: string; mode?: string; mode_dependent: boolean; mode_source: 'node' | 'default'; modes_applied?: Record<string, string>; pinned_axis_used: boolean; unconfirmed_default_used: boolean } | undefined;
   isMultiMode(key: string): boolean;
+  cssEvidence(referencedKeys: string[], excludeFileKey?: string): GraphCssView | undefined;
 }
 
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;    // re-sync the library graph every 6h
@@ -173,6 +173,10 @@ export function createEnvGraph(opts: {
     isMultiMode(key) {
       if (!graph) return false;
       return keyIsMultiMode(graph, key);
+    },
+    cssEvidence(referencedKeys, excludeFileKey) {
+      if (!graph) return undefined;
+      return graphCssEvidenceView(graph, referencedKeys, excludeFileKey);
     },
   };
 }
