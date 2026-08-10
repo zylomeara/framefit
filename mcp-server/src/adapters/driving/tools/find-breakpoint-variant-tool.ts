@@ -19,7 +19,7 @@ const CONTENT_TYPES = new Set(['FRAME', 'GROUP', 'INSTANCE', 'COMPONENT']);
 // Types whose subtree can still HOLD candidates - a node of one of these types sitting AT the
 // per-container fetch boundary is a real coverage residual (depth_cut), counted BY CONSTRUCTION
 // from the known walk depth, never by inspecting the wire shape of a cut node.
-const CONTAINERISH_TYPES = new Set(['SECTION', 'CANVAS', 'FRAME', 'GROUP', 'COMPONENT_SET', 'INSTANCE']);
+const CONTAINERISH_TYPES = new Set(['SECTION', 'CANVAS', 'FRAME', 'GROUP', 'COMPONENT_SET', 'INSTANCE', 'COMPONENT']);
 const MAX_VARIANTS = 10;
 const MAX_CONTENT_PER_VARIANT = 5;
 // The whole-document skeleton depth (page -> top-level container), and the depth of each
@@ -30,6 +30,12 @@ const MAX_CONTENT_PER_VARIANT = 5;
 const SKELETON_DEPTH = 2;
 const PER_CONTAINER_DEPTH = 3;
 const CONTENT_FETCH_DEPTH = 2;
+// A single slow container must not eat the whole tool budget (the per-request default equals
+// the tool budget, 90s == 90s): each container fetch gets its own cap under the shared deadline.
+const PER_CONTAINER_TIMEOUT_MS = 20_000;
+// parent_node_id is ONE scoped fetch, one level deeper than the per-container walk - the
+// drill-down remedy must be the CHEAPEST path in the tool (2 REST calls, as on main), not 1+N.
+const ANCHOR_DEPTH = 4;
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
@@ -84,8 +90,11 @@ interface ContentOut extends ContentCandidate { isBestMatch?: true }
 // closest-to-render_width first, capped to MAX_CONTENT_PER_VARIANT.
 function collectContentCandidates(frameDoc: RawSceneNode, renderWidth: number): ContentOut[] {
   const out: ContentCandidate[] = [];
+  // COMPONENT children enter the width race ONLY under a COMPONENT_SET (its variants ARE the
+  // content) - inside an ordinary FRAME they would flip matches on files that did not change.
+  const contentTypes = frameDoc.type === 'COMPONENT_SET' ? CONTENT_TYPES : new Set([...CONTENT_TYPES].filter((t) => t !== 'COMPONENT'));
   const consider = (n: RawSceneNode): void => {
-    if (CONTENT_TYPES.has(n.type) && n.absoluteBoundingBox) {
+    if (contentTypes.has(n.type) && n.absoluteBoundingBox) {
       out.push({ node_id: n.id, name: n.name, w: Math.round(n.absoluteBoundingBox.width) });
     }
   };
@@ -113,6 +122,8 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         // budget could not reach land in the ledger instead of failing the call.
         const deadlineAt = Date.now() + (deps.toolTimeBudgetMs ?? 90_000);
         const api = deps.buildApi(token, undefined, deadlineAt);
+        // The container loop's client: per-request sub-cap under the same absolute deadline.
+        const walkApi = deps.buildApi(token, PER_CONTAINER_TIMEOUT_MS, deadlineAt);
         const queryLower = args.query.toLowerCase();
         const tolerance = widthNoiseTolerance(args.render_width);
 
@@ -120,6 +131,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         // children (no type filter - the find_nodes precedent; FRAME/GROUP wrappers nest
         // candidates exactly like sub-sections do). parent_node_id: the node's DIRECT children.
         let containers: { node: RawSceneNode; container?: string }[];
+        let anchored = false;
         const byId = new Map<string, VariantCandidate>();
         let depthCut = 0;
         const addAll = (cands: VariantCandidate[]): void => {
@@ -127,16 +139,20 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         };
 
         if (args.parent_node_id) {
+          // ONE scoped fetch at ANCHOR_DEPTH (wave findings 1/3/8): the anchor's NAME is the
+          // container context regardless of its type (an anchor IS the deliberate scope - a
+          // FRAME anchor must not silently drop container matching), a matched anchor stops the
+          // walk at itself exactly like the whole-file path, and the documented drill-down
+          // remedy stays the cheapest call in the tool instead of 1+N.
           const parentId = normalizeNodeId(args.parent_node_id);
-          const res = await api.getNodesRaw(parsed.value, [parentId], 1);
+          const res = await api.getNodesRaw(parsed.value, [parentId], ANCHOR_DEPTH);
           const doc = res.nodes[parentId]?.document;
           if (!doc) throw new Error(`node ${parentId} not found in file`);
-          const anchorContainer = CONTAINER_TYPES.has(doc.type) ? doc.name : undefined;
-          // The anchor slice (depth 1) is the skeleton here: the anchor and its direct children
-          // stay candidates themselves.
-          const skel = collectVariantCandidates(doc, queryLower, undefined, 1);
-          addAll(skel.candidates);
-          containers = (doc.children ?? []).map((c) => ({ node: c, container: anchorContainer }));
+          const found = collectVariantCandidates(doc, queryLower, doc.name, ANCHOR_DEPTH);
+          addAll(found.candidates);
+          depthCut += found.depthCut;
+          containers = [];
+          anchored = true;
         } else {
           const file = await api.getDocumentRaw(parsed.value, SKELETON_DEPTH);
           // Skeleton pass: canvas-level frames and the top-level containers themselves are
@@ -144,18 +160,27 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
           // every skeleton-boundary container is either deep-fetched below or ledgered.
           const skel = collectVariantCandidates(file.document, queryLower, undefined, SKELETON_DEPTH);
           addAll(skel.candidates);
+          // Only nodes that can BE or HOLD a candidate join the population: a loose TEXT or
+          // VECTOR at page level would cost a REST call each and inflate the ledger denominator
+          // with containers that were never searchable (wave finding: leaves as 'containers').
           containers = (file.document.children ?? []).flatMap((p) =>
-            (p.children ?? []).map((c) => ({ node: c, container: p.name })));
+            (p.children ?? [])
+              .filter((c) => CONTAINERISH_TYPES.has(c.type) || CANDIDATE_TYPES.has(c.type))
+              .map((c) => ({ node: c, container: p.name })));
         }
 
-        const skippedNames: string[] = [];
+        // Skipped entries carry the node_id BESIDE the name (a deliberate divergence from
+        // find_nodes' name-only list): every drill note says 'pass parent_node_id' - advice
+        // that is unactionable unless the response hands over an id to pass.
+        const skippedEntries: { node_id: string; name: string }[] = [];
         let skippedTotal = 0;
         let searched = 0;
-        const skip = (name: string): void => {
+        let sawRateLimit = false;
+        const skip = (node: RawSceneNode): void => {
           skippedTotal += 1;
-          if (skippedNames.length < COVERAGE_SKIPPED_NAMES_CAP) skippedNames.push(name);
+          if (skippedEntries.length < COVERAGE_SKIPPED_NAMES_CAP) skippedEntries.push({ node_id: node.id, name: node.name });
         };
-        const skipFrom = (idx: number): void => { for (const rest of containers.slice(idx)) skip(rest.node.name); };
+        const skipFrom = (idx: number): void => { for (const rest of containers.slice(idx)) skip(rest.node); };
 
         for (let i = 0; i < containers.length; i += 1) {
           const c = containers[i];
@@ -163,15 +188,13 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
           // the first fetch too (honest FigmaApiError) - this only stops paying for containers
           // 2..N once we KNOW we are past budget.
           if (i > 0 && Date.now() >= deadlineAt) { skipFrom(i); break; }
-          // Early-stop: name-matches outrank container-matches below, so MAX_VARIANTS
-          // name-matches cannot be improved on - the exactNow precedent from find_nodes.
-          let nameMatched = 0;
-          for (const cand of byId.values()) if (cand.nameMatch) nameMatched += 1;
-          if (nameMatched >= MAX_VARIANTS) { skipFrom(i); break; }
+          // NO name-match early-stop (wave blocker): unlike find_nodes' score===1 - a proven
+          // maximum - a name match is a boolean; skeleton-banked matches would abort the deep
+          // walk before its first fetch and lose candidates main's depth-3 walk could still see.
           try {
-            const res = await api.getNodesRaw(parsed.value, [c.node.id], PER_CONTAINER_DEPTH);
+            const res = await walkApi.getNodesRaw(parsed.value, [c.node.id], PER_CONTAINER_DEPTH);
             const doc = res.nodes[c.node.id]?.document;
-            if (!doc) { skip(c.node.name); continue; }
+            if (!doc) { skip(c.node); continue; }
             const found = collectVariantCandidates(doc, queryLower, c.container, PER_CONTAINER_DEPTH);
             addAll(found.candidates);
             depthCut += found.depthCut;
@@ -181,11 +204,12 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
             if (e instanceof FigmaApiError && (e.kind === 'auth' || e.kind === 'forbidden')) throw e;
             if (e instanceof FigmaApiError && e.kind === 'rate_limited') {
               // Keep the partial we already paid for; hammering on under 429 is the antipattern.
+              sawRateLimit = true;
               skipFrom(i);
               break;
             }
             // timeout/network/anything else: this ONE container failed - ledger it, keep going.
-            skip(c.node.name);
+            skip(c.node);
             continue;
           }
         }
@@ -197,22 +221,25 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         const ranked = [...allCandidates.filter((c) => c.nameMatch), ...allCandidates.filter((c) => !c.nameMatch)];
         const capped = ranked.slice(0, MAX_VARIANTS);
 
-        const total = containers.length;
+        // Anchored calls have a one-element population: the anchor itself, searched by its one
+        // scoped fetch - the ledger vocabulary keeps ONE meaning across both paths.
+        const total = anchored ? 1 : containers.length;
+        if (anchored) searched = 1;
         const coverage = {
-          searched, total, skipped: skippedNames, skippedTotal,
+          searched, total, skipped: skippedEntries, skippedTotal,
           ...(depthCut > 0 ? { depth_cut: depthCut } : {}),
         };
         const notes: string[] = [];
         if (allCandidates.length > MAX_VARIANTS) {
           notes.push(
-            `${allCandidates.length} frames matched "${args.query}" — showing ${MAX_VARIANTS} (name matches first, then container matches, document order); ` +
+            `${allCandidates.length} frames matched "${args.query}" — showing ${MAX_VARIANTS} (name matches first, then container matches, walk order within each group); ` +
             'refine query or pass parent_node_id to narrow the walk.',
           );
         }
         if (searched < total) {
           notes.push(
-            `Searched ${searched} of ${total} top-level containers (budget/limit/429) — ${total - searched} unsearched (names in coverage.skipped); ` +
-            'any result below is from the searched slice; pass parent_node_id to search a skipped container.',
+            `Searched ${searched} of ${total} top-level containers (budget/limit/429) — ${total - searched} unsearched (ids in coverage.skipped); ` +
+            'any result below is from the searched slice; pass a skipped entry\'s node_id as parent_node_id to search it.',
           );
         }
         if (depthCut > 0) {
@@ -239,11 +266,17 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         // The content fetch shares the deadline; if the budget is already gone, degrade to the
         // walk-time node data instead of failing a call that holds a useful candidate list.
         let contentNodes: Record<string, { document?: RawSceneNode } | null> = {};
-        try {
-          contentNodes = (await api.getNodesRaw(parsed.value, variantIds, CONTENT_FETCH_DEPTH)).nodes;
-        } catch (e) {
-          if (e instanceof FigmaApiError && (e.kind === 'auth' || e.kind === 'forbidden')) throw e;
-          notes.push('content-frame fetch did not complete (budget/limit) — widths below come from the walk slice and may miss nested content.');
+        if (sawRateLimit) {
+          // The walk just stopped on 429 - firing one more REST call immediately IS the
+          // hammering the stop exists to avoid; widths come from the walk slice.
+          notes.push('content-frame fetch skipped (rate-limited during the walk) — widths below come from the walk slice and may miss nested content.');
+        } else {
+          try {
+            contentNodes = (await api.getNodesRaw(parsed.value, variantIds, CONTENT_FETCH_DEPTH)).nodes;
+          } catch (e) {
+            if (e instanceof FigmaApiError && (e.kind === 'auth' || e.kind === 'forbidden' || e.kind === 'rate_limited')) throw e;
+            notes.push('content-frame fetch did not complete (budget/limit) — widths below come from the walk slice and may miss nested content.');
+          }
         }
 
         let best: { diff: number; nodeId: string; w: number; variantNodeId: string } | undefined;

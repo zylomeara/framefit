@@ -566,7 +566,7 @@ named in `coverage.skipped`.
 | `file` | string, **required** | Figma file URL or raw key |
 | `query` | string, **required** | Substring to match against a breakpoint-variant frame's own name OR its nearest section/page (container) name, case-insensitive. |
 | `render_width` | number, **required** | The width you rendered the DOM at - variants are ranked by how close a CONTENT frame's width is to this. |
-| `parent_node_id` | string | Scope the walk to this node's subtree (e.g. a section or page) instead of the whole document. Use on huge files to avoid a slow/timing-out whole-document walk. |
+| `parent_node_id` | string | Scope the walk to this node's subtree (its direct children become the searched containers). Use on huge files to narrow the walk or to drill one container from `coverage.skipped` (its entries carry the `node_id` to pass). One scoped fetch, one level deeper than the per-container walk. |
 | `figma_token` | string | Override Figma PAT |
 
 **Example**
@@ -594,7 +594,11 @@ Response (abridged):
       ] }
     /* ... then the "Mobile" variant (12:320), frame_w 375 */
   ],
-  "match": { "node_id": "12:340", "w": 320, "variant_node_id": "12:300" }
+  "match": { "node_id": "12:340", "w": 320, "variant_node_id": "12:300" },
+  // the coverage ledger is on EVERY answer: an empty variants list claims absence only when
+  // searched === total and no depth_cut remains; skipped entries carry the node_id to pass
+  // as parent_node_id
+  "coverage": { "searched": 1, "total": 1, "skipped": [], "skippedTotal": 0 }
 }
 ```
 

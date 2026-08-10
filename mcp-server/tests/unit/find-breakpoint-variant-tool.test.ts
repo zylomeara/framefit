@@ -79,9 +79,9 @@ describe('find_breakpoint_variant tool', () => {
     const out = JSON.parse(res.content[0].text);
 
     expect(api.getDocumentRaw).not.toHaveBeenCalled();
-    // v2: the anchor slice (depth 1) makes its children the container population, each then
-    // deep-fetched - the anchored walk reaches nested sub-sections the old depth-3 could not.
-    expect(api.getNodesRaw).toHaveBeenCalledWith('abc', ['s1:1'], 1);
+    // v2 (post-wave): ONE scoped fetch at depth 4 - the drill-down remedy stays the cheapest
+    // path in the tool and reaches one level deeper than main's depth-3 anchored walk.
+    expect(api.getNodesRaw).toHaveBeenCalledWith('abc', ['s1:1'], 4);
     expect(out.match).toEqual({ node_id: 'c2:1', w: 420, variant_node_id: 'v2:1' });
   });
 

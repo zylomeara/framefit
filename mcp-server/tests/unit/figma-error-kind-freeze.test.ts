@@ -662,7 +662,7 @@ describe('the populations this freeze is written against', () => {
       // feedback item 10: the container walk mirrors find_nodes' contract (auth/forbidden
       // rethrow, rate_limited stops the loop keeping the partial), and the content fetch
       // degrades on everything except the dead-token pair.
-      'adapters/driving/tools/find-breakpoint-variant-tool.ts': ['auth', 'forbidden', 'rate_limited', 'auth', 'forbidden'],
+      'adapters/driving/tools/find-breakpoint-variant-tool.ts': ['auth', 'forbidden', 'rate_limited', 'auth', 'forbidden', 'rate_limited'], // wave fix: content-stage 429 rethrows (back-off), never a buried note
       'adapters/driving/tools/find-nodes-tool.ts': ['auth', 'forbidden', 'rate_limited'],
       // token-parity line: the variables fetch + snapshot prefetch mirror compare's contract —
       // rate_limited rethrows (agent backs off), anything else degrades to degraded_stages.
@@ -686,7 +686,7 @@ describe('the populations this freeze is written against', () => {
       'application/node-ancestry.ts': ['auth', 'forbidden'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '48 branch sites across 15 files').toBe(48); // 43 -> 48: find-breakpoint-variant's five (feedback item 10)
+    expect(SITES.branches.length, '49 branch sites across 15 files').toBe(49); // 43 -> 49: find-breakpoint-variant's six (feedback item 10)
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "

@@ -190,3 +190,106 @@ describe('parent_node_id path (panel finding 21)', () => {
     expect(out.coverage.total).toBe(1);
   });
 });
+
+// Wave-confirmed locks (14 CONFIRMED / 0 unclear over the first cut of this branch).
+describe('wave locks', () => {
+  it('a COMPONENT at the walk boundary counts as depth_cut - the strong absence claim must not fire over its unfetched subtree', async () => {
+    const deepComp = { id: 'w:0', name: 'Zone', type: 'SECTION', children: [
+      frame('w:1', 'l1', 500, [frame('w:2', 'l2', 500, [
+        { id: 'w:3', name: 'Card', type: 'COMPONENT', absoluteBoundingBox: bb(500), children: [frame('w:4', 'scroll shelf', 1920)] },
+      ])]),
+    ] };
+    const run = harness(depthApi(doc([deepComp])));
+    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    expect(out.variants).toEqual([]);
+    expect(out.coverage.depth_cut).toBeGreaterThan(0);
+    expect(out.note).not.toMatch(/every container within reach was searched/);
+  });
+  it('no name-match early stop: 12 skeleton-level name matches do not abort the deep walk', async () => {
+    const pageFrames = Array.from({ length: 12 }, (_, i) => frame(`pf:${i}`, `scroll shelf promo ${i}`, 1000));
+    const run = harness(depthApi(doc([...pageFrames, promoSection])));
+    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    // the deep walk ran despite 12 skeleton-banked name matches: the section was deep-fetched
+    // (page-level frames are legitimately part of the container population too - they can hold
+    // deeper candidates - so total counts them all)
+    expect(out.coverage.searched).toBe(out.coverage.total);
+    expect(out.variants.length).toBeLessThanOrEqual(10);
+  });
+  it('leaf TEXT/VECTOR page children are not containers: no fetch spent, no denominator inflation', async () => {
+    const leaves = [
+      { id: 't:1', name: 'loose text', type: 'TEXT', absoluteBoundingBox: bb(100), children: [] },
+      { id: 'v:1', name: 'vector', type: 'VECTOR', absoluteBoundingBox: bb(50), children: [] },
+    ];
+    const api = depthApi(doc([...leaves, promoSection]));
+    const run = harness(api);
+    const out = await run({ file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    expect(out.coverage.total).toBe(1);
+    const fetchedIds = api.getNodesRaw.mock.calls.map((c: any[]) => c[1][0]);
+    expect(fetchedIds).not.toContain('t:1');
+    expect(fetchedIds).not.toContain('v:1');
+  });
+  it('a COMPONENT child inside an ordinary FRAME variant does not enter the width race (unchanged files keep their match)', async () => {
+    const variant = { id: 'vf:1', name: 'shelf desktop', type: 'FRAME', absoluteBoundingBox: bb(1280), children: [
+      { id: 'ic:1', name: 'icon', type: 'COMPONENT', absoluteBoundingBox: bb(360, 24), children: [] },
+      frame('ct:1', 'content', 1180),
+    ] };
+    const run = harness(depthApi(doc([{ id: 'zs:1', name: 'Shelves', type: 'SECTION', children: [variant] }])));
+    const out = await run({ file: 'abc', query: 'shelf', render_width: 360 });
+    const v = out.variants.find((x: any) => x.node_id === 'vf:1');
+    expect(v.content.map((c: any) => c.node_id)).not.toContain('ic:1');
+    expect(out.match?.node_id).not.toBe('ic:1');
+  });
+  it('skipped entries carry node_id beside name - the drill advice is actionable', async () => {
+    const sections = Array.from({ length: 3 }, (_, i) =>
+      ({ id: `sk:${i}`, name: `Area ${i}`, type: 'SECTION', children: [frame(`fk:${i}`, `inner ${i}`, 100)] }));
+    const run = harness(depthApi(doc(sections)), { toolTimeBudgetMs: 0 });
+    const out = await run({ file: 'abc', query: 'zzz', render_width: 360 });
+    expect(out.coverage.skipped.length).toBeGreaterThan(0);
+    expect(out.coverage.skipped[0]).toHaveProperty('node_id');
+    expect(out.coverage.skipped[0]).toHaveProperty('name');
+  });
+  it('anchored path: ONE scoped fetch at depth 4, anchor name is the container context even for a FRAME anchor', async () => {
+    const anchorFrame = { id: 'af:1', name: 'shelf zone', type: 'FRAME', absoluteBoundingBox: bb(1920), children: [
+      frame('in:1', 'plain card', 360),
+    ] };
+    const api = depthApi(doc([anchorFrame]));
+    const run = harness(api);
+    const out = await run({ file: 'abc', query: 'shelf zone', render_width: 1920, parent_node_id: 'af:1' });
+    // one anchored fetch (plus content) - not 1+N
+    const walkCalls = api.getNodesRaw.mock.calls.filter((c: any[]) => c[1][0] === 'af:1' && c[2] === 4);
+    expect(walkCalls).toHaveLength(1);
+    // the FRAME anchor matches by its OWN name and stops at itself (matched-variant early stop)
+    expect(out.variants.map((v: any) => v.node_id)).toEqual(['af:1']);
+    expect(out.coverage).toMatchObject({ searched: 1, total: 1 });
+  });
+  it('content fetch is SKIPPED after a rate-limited walk (no hammering), widths from the walk slice', async () => {
+    const sections = Array.from({ length: 3 }, (_, i) =>
+      ({ id: `rl:${i}`, name: `Zone ${i}`, type: 'SECTION', children: [frame(`rf:${i}`, `shelf ${i}`, 360)] }));
+    const api = depthApi(doc(sections));
+    let calls = 0;
+    const orig = api.getNodesRaw.getMockImplementation()!;
+    api.getNodesRaw.mockImplementation(async (f: string, ids: string[], depth?: number) => {
+      calls += 1;
+      if (calls === 2) throw new FigmaApiError('rate_limited', 429, 'stop');
+      return orig(f, ids, depth);
+    });
+    const run = harness(api);
+    const out = await run({ file: 'abc', query: 'shelf', render_width: 360 });
+    expect(out.isError).toBeUndefined();
+    expect(out.note).toMatch(/rate-limited during the walk/);
+    // exactly 2 getNodesRaw calls: container 0 (ok) + container 1 (429) - NO content fetch after
+    expect(api.getNodesRaw.mock.calls.length).toBe(2);
+  });
+  it('the container loop uses the sub-capped client (a slow container cannot eat the whole budget)', async () => {
+    const timeouts: (number | undefined)[] = [];
+    const api = depthApi(doc([promoSection]));
+    const { server, call } = await import('../helpers/fake-mcp-server.js').then((m) => m.makeFakeMcpServer());
+    const deps: ToolDeps = {
+      buildApi: (_t: string, timeoutMs?: number) => { timeouts.push(timeoutMs); return api as unknown as FigmaApi; },
+      defaultToken: 'figd_x', logger, maxResultChars: 40000,
+    };
+    registerFindBreakpointVariantTool(server, deps);
+    await call('find_breakpoint_variant', { file: 'abc', query: 'scroll shelf', render_width: 1920 });
+    expect(timeouts).toContain(20_000);
+  });
+});
