@@ -649,10 +649,10 @@ describe('colorVerdict C — fail rows carry token + tokenReason color-diverged'
 // authored codeSyntax name of a DIFFERENT, non-alias-related variable). Everything else lands
 // byte-for-byte on the legacy value-based rule.
 describe('colorVerdict D — codeSyntax evidence (positive collision only)', () => {
-  const EV = (over: Partial<{ nameOf: any; idsByName: any; aliasRelated: any }> = {}) => ({
+  const EV = (over: Partial<{ nameOf: any; idsByName: any; aliasRelation: any }> = {}) => ({
     nameOf: (id: string) => (id === 'V:1' ? '--ds-x' : undefined),
     idsByName: (n: string) => (n === '--ds-x' ? ['V:1'] : n === '--ds-other' ? ['V:9'] : []),
-    aliasRelated: (a: string, b: string) => a === b,
+    aliasRelation: (a: string, b: string) => (a === b ? 'related' as const : 'unrelated' as const),
     ...over,
   });
   const evSpec = () => {
@@ -689,7 +689,7 @@ describe('colorVerdict D — codeSyntax evidence (positive collision only)', () 
   });
 
   it('ALIAS-RELATED collision → legacy (a component tier aliasing the bound token is correct wiring)', () => {
-    const f = row(diffPair(evSpec(), evSnap('--ds-other'), { tolerancePx: 1, cssEvidence: EV({ aliasRelated: () => true }) }), 'fill');
+    const f = row(diffPair(evSpec(), evSnap('--ds-other'), { tolerancePx: 1, cssEvidence: EV({ aliasRelation: () => 'related' as const }) }), 'fill');
     expect(f?.tokenReason).toBe('semantic-confirm');
   });
 
@@ -720,7 +720,7 @@ describe('colorVerdict D evidence — wave locks', () => {
   const EV2 = {
     nameOf: (id: string) => (id === 'V:1' ? '--ds-x' : undefined),
     idsByName: (n: string) => (n === '--ds-x' ? ['V:1'] : n === '--ds-other' ? ['V:9'] : []),
-    aliasRelated: (a: string, b: string) => a === b,
+    aliasRelation: (a: string, b: string) => (a === b ? 'related' as const : 'unrelated' as const),
   };
 
   it('ROOT-is-TEXT pair: evidence reaches the root text color row (5th producer — the census miss)', () => {
@@ -787,7 +787,7 @@ describe('colorVerdict D evidence — quantifier gate (delta-wave locks)', () =>
     const EV = {
       nameOf: (id: string) => (id === 'V:F' ? '--other-name' : undefined),
       idsByName: (n: string) => (n === '--ds-x' ? ['key:d', 'key:e', 'key:c'] : []),
-      aliasRelated: (a: string, b: string) => a === b || (new Set([a, b]).has('key:e') && new Set([a, b]).has('V:F')),
+      aliasRelation: (a: string, b: string) => (a === b || (new Set([a, b]).has('key:e') && new Set([a, b]).has('V:F')) ? 'related' as const : 'unrelated' as const),
     };
     const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
     expect(f?.tokenReason).toBe('semantic-confirm'); // related to at least one minter → no gate
@@ -797,7 +797,7 @@ describe('colorVerdict D evidence — quantifier gate (delta-wave locks)', () =>
     const EV = {
       nameOf: (id: string) => (id === 'V:F' ? '--other-name' : undefined),
       idsByName: (n: string) => (n === '--ds-x' ? ['key:d', 'key:e'] : []),
-      aliasRelated: (a: string, b: string) => a === b,
+      aliasRelation: (a: string, b: string) => (a === b ? 'related' as const : 'unrelated' as const),
     };
     const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
     expect(f?.tokenReason).toBe('semantic-diverged');
@@ -807,7 +807,7 @@ describe('colorVerdict D evidence — quantifier gate (delta-wave locks)', () =>
     const EV = {
       nameOf: (id: string) => (id === 'V:F' ? '--ds-x' : undefined),
       idsByName: (n: string) => (n === '--ds-x' ? ['V:F', 'key:twin'] : []),
-      aliasRelated: (a: string, b: string) => a === b || (new Set([a, b]).has('key:twin') && new Set([a, b]).has('V:F')),
+      aliasRelation: (a: string, b: string) => (a === b || (new Set([a, b]).has('key:twin') && new Set([a, b]).has('V:F')) ? 'related' as const : 'unrelated' as const),
     };
     const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
     expect(f?.status).toBe('pass');
@@ -817,10 +817,47 @@ describe('colorVerdict D evidence — quantifier gate (delta-wave locks)', () =>
     const EV = {
       nameOf: (id: string) => (id === 'V:F' ? '--ds-x' : undefined),
       idsByName: (n: string) => (n === '--ds-x' ? ['V:F', 'key:stranger'] : []),
-      aliasRelated: (a: string, b: string) => a === b,
+      aliasRelation: (a: string, b: string) => (a === b ? 'related' as const : 'unrelated' as const),
     };
     const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
     expect(f?.status).toBe('review');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+});
+
+// ── release-verification catch (0.23.0): unknown must not buy a PASS. The boolean facade
+// conflated 'proven related' with 'cannot exclude', and the PASS quantifier turned an
+// UNWALKABLE co-minter into a green. Tri-state at the interface: PASS demands PROVEN
+// relatedness of every co-minter; the gate demands PROVEN unrelatedness of every minter.
+describe('colorVerdict D evidence — tri-state at the interface (no green through unknown)', () => {
+  const spec = () => {
+    const s = baseSpec();
+    s.fillBoundVar = 'V:F';
+    s.fillToken = { token: 'bg/f', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    return s;
+  };
+  const snapWith = (domVar: string) => {
+    const d = baseSnap();
+    (d.styles as Record<string, unknown>).backgroundColorToken = { token: domVar };
+    return d;
+  };
+  it('an UNWALKABLE co-minter (unknown) downgrades PASS to legacy — never green through a hole', () => {
+    const EV = {
+      nameOf: (id: string) => (id === 'V:F' ? '--ds-x' : undefined),
+      idsByName: (n: string) => (n === '--ds-x' ? ['V:F', 'key:behind-hole'] : []),
+      aliasRelation: (a: string, b: string) => (a === b ? 'related' as const : 'unknown' as const),
+    };
+    const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
+    expect(f?.status).toBe('review');
+    expect(f?.tokenReason).toBe('semantic-confirm');
+  });
+  it('the gate still requires PROVEN unrelatedness (unknown minter → legacy, unchanged)', () => {
+    const EV = {
+      nameOf: (id: string) => (id === 'V:F' ? '--other' : undefined),
+      idsByName: (n: string) => (n === '--ds-x' ? ['key:behind-hole'] : []),
+      aliasRelation: () => 'unknown' as const,
+    };
+    const f = row(diffPair(spec(), snapWith('--ds-x'), { tolerancePx: 1, cssEvidence: EV }), 'fill');
     expect(f?.tokenReason).toBe('semantic-confirm');
   });
 });

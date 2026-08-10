@@ -238,6 +238,6 @@ export function buildMergedCssEvidence(idx: VariableIndex, graphView?: GraphCssV
       const merged = [...local.idsByName(cssName), ...(graphView?.idsByCssName(cssName) ?? []).map((k) => 'key:' + k.toLowerCase())];
       return [...new Set(merged)];
     },
-    aliasRelated: (a, b) => biWalk(canonEvidenceId(a), canonEvidenceId(b)) !== 'unrelated',
+    aliasRelation: (a, b) => biWalk(canonEvidenceId(a), canonEvidenceId(b)),
   };
 }

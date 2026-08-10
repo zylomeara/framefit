@@ -359,14 +359,18 @@ export function extractCssName(web: string | undefined): string | undefined {
  * from the local variable index:
  * - nameOf: the BOUND variable's own authored css name (undefined = no evidence);
  * - idsByName: every variable minting that css name (length!==1 = ambiguous = no evidence);
- * - aliasRelated: is either variable reachable from the other through valuesByMode alias chains
- *   (any mode, both directions, depth-capped)? A component tier aliasing the bound token is
- *   CORRECT wiring — a collision only gates when the two variables are genuinely unrelated.
+ * - aliasRelation: TRI-STATE reachability through valuesByMode alias chains (any mode, both
+ *   directions, depth-capped). 'unknown' — a hop target missing from the population or an
+ *   exhausted budget — is NEITHER related NOR unrelated: the PASS quantifier demands PROVEN
+ *   'related' for every co-minter, the gate demands PROVEN 'unrelated' for every minter, and
+ *   unknown always falls to the legacy rule. A boolean here once turned an unwalkable
+ *   co-minter into a green pass (release-verification catch).
  */
+export type AliasRelation = 'related' | 'unrelated' | 'unknown';
 export interface CssTokenEvidence {
   nameOf(variableId: string): string | undefined;
   idsByName(cssName: string): string[];
-  aliasRelated(a: string, b: string): boolean;
+  aliasRelation(a: string, b: string): AliasRelation;
 }
 
 const ALIAS_WALK_CAP = 8;
@@ -379,31 +383,40 @@ export function buildCssEvidence(idx: VariableIndex): CssTokenEvidence {
     nameOf.set(v.id, n);
     byName.set(n, [...(byName.get(n) ?? []), v.id]);
   }
-  const reaches = (from: string, to: string): boolean => {
+  const reaches = (from: string, to: string): AliasRelation => {
     const seen = new Set<string>();
     let frontier = [from];
+    let sawHole = false;
     for (let depth = 0; depth < ALIAS_WALK_CAP && frontier.length; depth++) {
       const next: string[] = [];
       for (const id of frontier) {
         if (seen.has(id)) continue;
         seen.add(id);
         const v = idx.byId.get(id);
-        if (!v) continue;
+        if (!v) { sawHole = true; continue; } // target outside the index (a published id) - cannot exclude
         for (const val of Object.values(v.valuesByMode)) {
           const alias = (val as { type?: string; id?: string });
           if (alias?.type === 'VARIABLE_ALIAS' && typeof alias.id === 'string') {
-            if (alias.id === to) return true;
+            if (alias.id === to) return 'related';
             next.push(alias.id);
           }
         }
       }
       frontier = next;
     }
-    return false;
+    if (frontier.length) sawHole = true;
+    return sawHole ? 'unknown' : 'unrelated';
   };
   return {
     nameOf: (id) => nameOf.get(id),
     idsByName: (n) => byName.get(n) ?? [],
-    aliasRelated: (a, b) => a === b || reaches(a, b) || reaches(b, a),
+    aliasRelation: (a, b) => {
+      if (a === b) return 'related';
+      const fwd = reaches(a, b);
+      if (fwd === 'related') return 'related';
+      const back = reaches(b, a);
+      if (back === 'related') return 'related';
+      return fwd === 'unknown' || back === 'unknown' ? 'unknown' : 'unrelated';
+    },
   };
 }
