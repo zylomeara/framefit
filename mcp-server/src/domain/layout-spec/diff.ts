@@ -1165,8 +1165,52 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
 
   // Recursively over BOTH sides (figKids/d.children) — not only the pair's root level.
   if (spec.childrenTruncated || d.childrenTruncated || anyTruncDeep(figKids) || anyTruncDeep(d.children)) {
+    // batch-2 item 4, two halves computed HERE - the one place holding both trees.
+    // (D) addressability: the advice 'pair the nested node directly' named nothing - the cut
+    // NODE itself is captured on both sides, and re-rooting a pair at it restarts the depth
+    // budget. Up to 3 addresses ride the note (and thus the blocking item's detail).
+    const addrs: string[] = [];
+    const collectFigAddrs = (kids: readonly SpecChild[] | undefined): void => {
+      for (const k of kids ?? []) {
+        if (addrs.length >= 3) return;
+        if (k.childrenTruncated === true) addrs.push(k.id);
+        collectFigAddrs(k.children);
+      }
+    };
+    if (spec.childrenTruncated) addrs.push('(the pair root itself)');
+    collectFigAddrs(figKids);
+    const collectDomAddrs = (kids: readonly DomChild[] | undefined): void => {
+      for (const k of kids ?? []) {
+        if (addrs.length >= 3) return;
+        if (k.childrenTruncated === true) addrs.push(k.path ?? k.tag ?? 'a dom child');
+        collectDomAddrs(k.children);
+      }
+    };
+    if (addrs.length < 3) collectDomAddrs(d.children);
+    // (B) the depth-ceiling-tail flag, positive evidence only: at least ONE fig cut carries
+    // an EXPLICIT 'depth' cause and none carries anything else or nothing (an absent cause is
+    // never 'depth' here - the frame walk's `?? 'depth'` default is FORBIDDEN in this gate);
+    // the DOM side carries no truncation anywhere (its budget and depth cuts are
+    // indistinguishable on the wire - unattributable holds the block); and the pair has no
+    // structure_mismatch (direct children fully zipped at the root level). The flag is a
+    // structural row field; verification consumes it at the blocking call site only.
+    const figCauses: (string | undefined)[] = [];
+    const collectCauses = (kids: readonly SpecChild[] | undefined): void => {
+      for (const k of kids ?? []) {
+        if (k.childrenTruncated === true) figCauses.push(k.truncationCause);
+        collectCauses(k.children);
+      }
+    };
+    if (spec.childrenTruncated) figCauses.push(spec.truncationCause);
+    collectCauses(figKids);
+    const figDepthPure = figCauses.length > 0 && figCauses.every((c) => c === 'depth');
+    const domClean = d.childrenTruncated !== true && !anyTruncDeep(d.children);
+    const noMismatch = !rows.some((r) => r.prop === 'structure_mismatch');
+    const ceilingTail = figDepthPure && domClean && noMismatch;
     rows.push({ prop: 'children_truncated', status: 'warn',
-      note: 'the tail of children beyond the cap/depth was not checked (childrenTruncated at the pair level or deeper)' });
+      ...(ceilingTail ? { depthCeilingTail: true as const } : {}),
+      note: 'the tail of children beyond the cap/depth was not checked (childrenTruncated at the pair level or deeper)'
+        + (addrs.length > 0 ? `; cut at: ${addrs.join(', ')} - pair one directly (re-rooting restarts the depth budget)` : '') });
   }
 
   // Monotonicity of the DOM children along the Figma axis (in DOM document order, BEFORE sorting).

@@ -17,6 +17,12 @@ describe('SERVER_INSTRUCTIONS (initialize contract for skill-less hosts)', () =>
     expect(SERVER_INSTRUCTIONS).toContain('never claim');
   });
 
+  it('states the inherent-only escape hatch (batch-2 item 4: without it, the skill-less channel reads the gate as an unconditional conjunction)', () => {
+    expect(SERVER_INSTRUCTIONS).toContain('EMPTY');
+    expect(SERVER_INSTRUCTIONS).toContain('you may proceed');
+    expect(SERVER_INSTRUCTIONS).toContain('verify those by eye');
+  });
+
   it('names the design-QA tool cycle', () => {
     expect(SERVER_INSTRUCTIONS).toContain('get_layout_spec');
     expect(SERVER_INSTRUCTIONS).toContain('suggest_pairs');

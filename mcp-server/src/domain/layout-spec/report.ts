@@ -368,7 +368,12 @@ function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number):
     if (fullyCleanCount) bits.push(`insets of ${fullyCleanCount} container(s) not verified (between-children gaps clean per audit)`);
     if (cov.enumeration_truncated) bits.push('enumeration truncated');
   }
-  const out = [`Check: INCOMPLETE (${scopeNote}): ${bits.join('; ')} — do NOT say "done" until this is closed.${prov}`, ...exLines, ...auditBlock];
+  // batch-2 item 4 (contract alignment): the 'do NOT say done' imperative belongs ONLY to a
+  // receipt with actionable blocking items - on an empty blocking[] the inherent-only escape
+  // hatch applies (verify by eye, then proceed), and an unconditional imperative here would
+  // contradict the hatch in the very markdown the agent pastes.
+  const doneTail = v.blocking.length === 0 ? '' : ' — do NOT say "done" until this is closed.';
+  const out = [`Check: INCOMPLETE (${scopeNote}): ${bits.join('; ')}${doneTail}${prov}`, ...exLines, ...auditBlock];
   if (v.blocking.length === 0) {
     // budget drop trace: a dropped FAILing pair is neither demoted nor out of reach - claiming
     // "inherent-only" over it was one of the drop shape's three false sentences. The action here
