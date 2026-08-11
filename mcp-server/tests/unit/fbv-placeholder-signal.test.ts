@@ -199,6 +199,26 @@ describe('match ancestry (the wave blockers)', () => {
   });
 });
 
+describe('the set suppression (release claim-verification)', () => {
+  it('a clean DIRECT child of a set that wins is the CORRECT choice - never tainted', async () => {
+    const set = {
+      id: 'set:1', name: 'promo tile', type: 'COMPONENT_SET', absoluteBoundingBox: bb(760),
+      children: [
+        { id: 'cmp:sk', name: 'State=Skeleton', type: 'COMPONENT', absoluteBoundingBox: bb(900),
+          children: [ghost('g:1', 'pillSkeletonBar')] },
+        { id: 'cmp:ld', name: 'State=Loaded', type: 'COMPONENT', absoluteBoundingBox: bb(360), children: [] },
+      ],
+    };
+    const run = harness(depthApi(doc([set])));
+    const out = await run({ file: 'abc', query: 'promo tile', render_width: 360 });
+    expect(out.match?.node_id).toBe('cmp:ld');
+    expect(out.match?.variant_placeholders).toBeUndefined();
+    expect(out.note ?? '').not.toMatch(/sits inside variant/);
+    // the presence note still names the skeleton candidate - visibility without taint
+    expect(out.note ?? '').toMatch(/placeholder \(skeleton\)/);
+  });
+});
+
 describe('honesty at the edges', () => {
   it('match:null (over-tolerance) still names a skeleton-bearing candidate', async () => {
     const sk = frame('f:1', 'tileSkeletonWide', 900, [ghost('g:1', 'pillSkeletonBar')]);

@@ -1,6 +1,6 @@
 {
   "name": "framefit",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "Verification-first headless Figma MCP server for AI agents — deterministic design QA that measures a rendered UI against the frame",
   "type": "module",
   "main": "dist/index.js",

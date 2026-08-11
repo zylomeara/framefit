@@ -57,9 +57,10 @@ Call `get_layout_spec` with the node_ids under check + the frame id, `include_ex
   <render width>}` — returns candidates with CONTENT widths and the best match (a w1280 variant
   whose panel content is w400 matches a 400px render). No node_id needed; on giant files narrow
   the search with `parent_node_id`. If `match` carries `placeholders` or `variant_placeholders` (or the note leads with a
-  placeholder warning), the width race landed on a SKELETON frame — its sizes are conditional;
-  check the named alternative before pairing, unless you are verifying the skeleton render
-  itself.
+  placeholder warning), the width race landed on — or beside — a SKELETON frame
+  (`variant_placeholders` means the matched candidate is clean but its variant carries
+  placeholders); sizes there are conditional. Check the alternative the note names when it
+  names one, unless you are verifying the skeleton render itself.
 - Kill animations and reset scroll with ONE evaluate_script:
 ```js
 () => {

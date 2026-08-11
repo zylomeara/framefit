@@ -561,7 +561,8 @@ named in `coverage.skipped`. Each variant (and its content candidates) may carry
 `placeholders`: the number of visible placeholder (skeleton) layers found in that node's
 fetched slice, the node itself included - a lower bound over that slice, never a proof of a
 loaded frame; `match.placeholders` and a leading note surface it when the width race lands on
-one.
+one; `match.variant_placeholders` marks a clean matched candidate inside a placeholder-bearing
+FRAME variant.
 
 **Parameters**
 

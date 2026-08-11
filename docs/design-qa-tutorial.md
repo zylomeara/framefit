@@ -53,8 +53,8 @@ variants by how close their **content** width is to your render width:
 
 Take the best match — here the content frame `12:340` (`Product card`, 320 wide) inside the
 `Desktop` variant `12:300` — and resize the browser viewport to that width. One check first: if
-`match` carries `placeholders` or `variant_placeholders`, the race landed on or inside a skeleton frame whose sizes are conditional —
-the leading note names the closest alternative; pick deliberately. Passing this id later as
+`match` carries `placeholders` or `variant_placeholders`, the race landed on or beside a skeleton frame whose sizes are conditional —
+the leading note names the closest clean alternative when one exists in the listed set; pick deliberately. Passing this id later as
 `frame_node_id` arms the **viewport guard**: if the window and the frame disagree, every geometry
 row comes back `unchecked` with a `fix_viewport` action instead of producing false reds. Not
 `demoted` — nothing on that axis was measured at all; see the status table in step 4.

@@ -3,6 +3,76 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.26.0
+
+Both lines of one story: a real design-QA run once compared a rendered page against the
+SKELETON design frame and reported false defects - the placeholder frame's sizes were
+conditional, and nothing said so. This release makes the design side say when it is a
+skeleton, at both ends of the cycle: the frame SELECTION (find_breakpoint_variant) and the
+comparison itself (compare_node_to_dom). `find_breakpoint_variant` changed its delivered
+tools/list entry (description); the compare tools' entries are unchanged - responses carry the
+new fields either way, but a client that never re-lists keeps the 0.25.0 description:
+reconnect after upgrading.
+
+### Added
+
+**The placeholder-frame signal in `compare_node_to_dom`.** One walk over each pair's RAW
+design tree (plus one memoized walk of the frame) detects placeholder (skeleton) components - node names carrying the token, and
+componentProperties whose key carries it (an explicit negative value like "no" never fires).
+The signal is frame-scoped when `frame_node_id` is given (the hazard is frame-wide: an
+ordinary DS button inside a skeleton frame is just as conditional as the placeholder
+instances) and pair-scoped with scope-honest wording otherwise. The protection is deliberately
+NOT a gate - the verdict is already held by the fails such a compare produces; the cost of the
+original incident was those fails being TRUSTED and edit-prescribed. Three carriers instead:
+an advisory `placeholder_frame` service row, a caveat on every extent FAIL that does not
+already carry a more specific one (an earlier caveat - a page-gutter or encoding note - is
+never overwritten), travelling into `fix_plan`'s edits so the machine surface stops
+prescribing unqualified edits over placeholder-conditional deltas, and a `verification.notes[]` line that renders in both
+verdict branches and survives the response-budget clamp. An all-pass pair with the signal
+stays `complete:true` WITH the visible note: a skeleton RENDER against a skeleton frame is a
+legitimate, productive flow. The count is a stated lower bound ("at least N ... within the
+fetched slice") - the frame walk and the pair walk see different cuts, and the wording never
+attributes the number to a named tree.
+
+**`find_breakpoint_variant` surfaces skeleton-ness - the selection stops being a coin flip.**
+Insertion order used to break exact width ties between a skeleton variant and its loaded
+sibling, and a skeleton variant could win outright, silently. Now every content candidate
+(and the variant row, as a max) may carry `placeholders`; `match.placeholders` marks a
+matched skeleton candidate, and `match.variant_placeholders` marks a CLEAN matched candidate
+sitting inside a placeholder-bearing FRAME variant - the frame-wide hazard reaches the one
+object a "take the best match" reader touches. A COMPONENT_SET never taints its clean
+children: a set is a grouping, and its clean direct child is the correct choice. One presence-triggered note leads the response
+note and fires in every returning branch, naming at most two nodes: the matched candidate's
+variant and the closest clean alternative when the match is flagged, or the closest
+skeleton-bearing candidate when the match is clean or absent. The alternative never comes
+from inside a flagged FRAME variant (a COMPONENT_SET's direct children stay eligible - a set
+is a grouping, not a composition; a grandchild under the flagged component is never
+offered). The match is never re-ranked and no input was added: a
+consumer verifying the skeleton render legitimately wants the skeleton frame. Hidden wrappers
+neither race widths nor get scanned. Zero extra REST - every scanned tree was already in
+memory at ranking time.
+
+**The shared placeholder detector understands Figma's variant-name assignments.** Figma
+encodes variant property values in node names ("State=Loaded, Breakpoint=Desktop"). The rule
+is negative suppression: a token-bearing name segment counts UNLESS it is a skeleton-KEYED
+assignment with an explicit negative value - so a "Skeleton=False" loaded sibling never
+fires, while the idiomatic value-side "State=Skeleton", key-side "Skeleton=Card" and
+free-text names containing "=" keep firing (unless the token-bearing segment is itself such a
+negative assignment). componentProperties mirror the rule, and the
+value-side channel reads the property's declared type: a VARIANT prop set to "Skeleton"
+counts, a TEXT prop whose copy happens to read "Skeleton" is content and does not.
+
+### For agents
+
+If `match` carries `placeholders` or `variant_placeholders` - or a compare pair shows the
+`placeholder_frame` row - you are measuring against (or beside) a skeleton frame: its sizes
+may be placeholder-conditional, extent fails carry a caveat saying so unless a more specific
+caveat already claimed the row (either way the caveat rides into `fix_plan`), and if a
+loaded-state frame of the same breakpoint exists, it is the geometry reference. To verify a skeleton RENDER, capture both DOM states and use `compare_dom_to_dom`.
+The skill page and the tutorial carry the selection-time half of this rule at the step where
+the frame is chosen; the verdict-time half lives in the row, the caveat and the receipt note
+themselves.
+
 ## 0.25.0
 
 Four merged lines, all born from one live design-QA run's feedback: a rewritten

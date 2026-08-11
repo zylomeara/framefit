@@ -120,7 +120,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
   server.registerTool(
     'find_breakpoint_variant',
     {
-      description: 'Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required - avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame\'s own width (a variant named "desktop" (w1280) whose inner drawer content is w420 matches render_width 420). The walk enumerates top-level containers and searches each to a bounded depth under a time budget; the response always carries a coverage ledger (searched/total/skipped, plus depth_cut for containers deeper than the walk) - an empty variants list claims absence ONLY over the searched slice. Pass parent_node_id (a section or page) to scope the walk, or to drill one container named in coverage.skipped. Each variant (and its content candidates) may carry placeholders: the number of visible placeholder (skeleton) layers found in that node\'s fetched slice, the node itself included - a lower bound over that slice, never a proof of a loaded frame; match.placeholders and a leading note surface it when the width race lands on one.',
+      description: 'Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required - avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame\'s own width (a variant named "desktop" (w1280) whose inner drawer content is w420 matches render_width 420). The walk enumerates top-level containers and searches each to a bounded depth under a time budget; the response always carries a coverage ledger (searched/total/skipped, plus depth_cut for containers deeper than the walk) - an empty variants list claims absence ONLY over the searched slice. Pass parent_node_id (a section or page) to scope the walk, or to drill one container named in coverage.skipped. Each variant (and its content candidates) may carry placeholders: the number of visible placeholder (skeleton) layers found in that node\'s fetched slice, the node itself included - a lower bound over that slice, never a proof of a loaded frame; match.placeholders and a leading note surface it when the width race lands on one; match.variant_placeholders marks a clean matched candidate inside a placeholder-bearing FRAME variant.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -357,10 +357,14 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         let match: { node_id: string; w: number; variant_node_id: string; placeholders?: number; variant_placeholders?: number } | null = null;
         if (best && best.diff <= tolerance) {
           const matchedPh = phByNode.get(best.nodeId) ?? 0;
-          const matchedVariantPh = phByVariant.get(best.variantNodeId) ?? 0;
-          // variant_placeholders: the matched candidate's own slice can be clean while its
-          // VARIANT carries placeholders - the hazard is frame-wide (#51), and the consumer
-          // who reads only `match` must see it there, not in a row they never open.
+          // match.variant_placeholders: the matched candidate's own slice can be clean while
+          // its VARIANT carries placeholders - the hazard is frame-wide (#51), and the
+          // consumer who reads only `match` must see it there, not in a row they never open.
+          // FRAME variants only: a COMPONENT_SET is a grouping, its clean DIRECT child is the
+          // CORRECT choice - tainting it warned the consumer off the loaded component the
+          // note's own escape route would offer (measured by the release claim-verification).
+          const matchedVariantPh = variantType.get(best.variantNodeId) !== 'COMPONENT_SET'
+            ? (phByVariant.get(best.variantNodeId) ?? 0) : 0;
           match = { node_id: best.nodeId, w: best.w, variant_node_id: best.variantNodeId,
             ...(matchedPh > 0 ? { placeholders: matchedPh } : {}),
             ...(matchedPh === 0 && matchedVariantPh > 0 ? { variant_placeholders: matchedVariantPh } : {}) };
@@ -395,7 +399,8 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         if (phCandidates.some((r) => r.count > 0)) {
           if (match !== null) {
             const matchedPh = phByNode.get(match.node_id) ?? 0;
-            const matchedVariantPh = phByVariant.get(match.variant_node_id) ?? 0;
+            const matchedVariantPh = variantType.get(match.variant_node_id) !== 'COMPONENT_SET'
+              ? (phByVariant.get(match.variant_node_id) ?? 0) : 0;
             const vName = variantsOut.find((v) => v.node_id === match.variant_node_id)?.name ?? '';
             if (matchedPh > 0 || matchedVariantPh > 0) {
               const n = matchedPh > 0 ? matchedPh : matchedVariantPh;
@@ -410,7 +415,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
                   ? ' (equal distance to render_width, so the entry listed first in variants[] won — name matches before container matches, then walk order)'
                   : ' (equal distance to render_width)')
                 : '';
-              notes.unshift(`${where} — placeholder sizes are conditional; if you are verifying the LOADED render this is likely the wrong frame${alt !== undefined ? ` — the closest alternative from a variant with no detected placeholders is "${alt.name}" (${alt.nodeId})${tie}` : ''}`);
+              notes.unshift(`${where} — placeholder sizes are conditional; if you are verifying the LOADED render this is likely the wrong frame${alt !== undefined ? ` — the closest alternative candidate with no detected placeholders of its own is "${alt.name}" (${alt.nodeId})${tie}` : ''}`);
             } else {
               // the match's variant scanned clean but a skeleton competitor sits in the listed
               // set - the consumer sees the coin flip; no claim is made about the match itself.
