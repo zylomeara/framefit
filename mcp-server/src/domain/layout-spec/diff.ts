@@ -1761,9 +1761,10 @@ function iconRowsFor(c: SpecChild, domChild: DomChild, i: number, maxDescent: nu
   if (figs.capped || doms.capped) {
     rows.push({ prop: `icon-color[${childLabel(c)}]`, status: 'unchecked',
       figma: `${figs.items.length} icon(s)`, dom: `${doms.items.length} icon(s)`,
-      note: figs.capped
-        ? `the icon inventory hit the per-child scan cap (${maxDescent}) - equal counts under a clamp are a coincidence, not an alignment; ${maxDepth <= 4 ? 'raise max_depth (up to 8) and re-run, or ' : ''}pair the icon nodes directly`
-        : `the DOM icon inventory hit the per-child scan cap (${maxDescent}) - equal counts under a clamp are a coincidence, not an alignment; re-extract a narrower selector or pair the icon nodes directly` });
+      // Under the equal-count precondition a dom-side cap implies the fig side hit the same
+      // cap (both scans stop at maxDescent items) - one wording covers the branch (wave:
+      // the dom-only arm was dead code by construction).
+      note: `the icon inventory hit the per-child scan cap (${maxDescent}) - equal counts under a clamp are a coincidence, not an alignment; ${maxDepth <= 4 ? 'raise max_depth (up to 8) and re-run, or ' : ''}pair the icon nodes directly` });
     return rows;
   }
   // The order-agreement guard: VERIFY, never re-order. Fig item order is a pre-order
@@ -1801,7 +1802,7 @@ function iconRowsFor(c: SpecChild, domChild: DomChild, i: number, maxDescent: nu
     // Carrier visibility: a descent-found DOM carrier is NAMED, so a reader comparing hexes
     // across pairs can see which element each value came from.
     const carrier = doms.items[k].carrier;
-    if (!doms.items[k].self && carrier) row.note = [row.note, `read from <${carrier}>`].filter(Boolean).join('; ');
+    if (!doms.items[k].self && carrier) row.note = [row.note, `read from ${carrier}`].filter(Boolean).join('; ');
     rows.push(row);
   }
   // An equal-count zip under a truncated inventory is aligned only within the slice - more

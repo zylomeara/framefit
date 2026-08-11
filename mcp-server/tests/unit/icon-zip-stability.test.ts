@@ -94,6 +94,9 @@ describe('the cap clamp: equal counts under the cap are a coincidence, never an 
       spec([figWrap([], { childrenTruncated: true })]),
       snap([domWrap([])]), { tolerancePx: 1 });
     expect(iconRows(rows)).toEqual([]);
+    // the gate does NOT leak away with the row: the pair-level truncation warn still holds it
+    expect(rows.some((r) => r.prop === 'children_truncated')).toBe(true);
+    expect(verify(rows).complete).toBe(false);
   });
 
   it('blocking routes by cause and depth: raise at <=4, pairs at >=5, re-extract for the dom side', () => {
