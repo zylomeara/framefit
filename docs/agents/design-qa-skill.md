@@ -465,7 +465,12 @@ terminal `no discrepancies above tolerance` is the green.
   multi-color or unreadable glyph is an ℹ️ verify-visually info; the gate-holding shapes route to
   their fixes - a stale pre-icon snapshot to `re_extract_dom`, a Figma subtree cut before its
   vectors to `raise_max_depth` (at the depth-8 ceiling: `add_pairs_on_children`), unequal icon
-  inventories to `resolve_skip` naming the direct pairing). The diff does NOT cover: icon GLYPHS (icon size/position/color are
+  inventories to `resolve_skip` naming the direct pairing, a CAP-CLAMPED inventory (both scans
+  stopped at the per-child item cap - equal counts there are a coincidence, never an
+  alignment) to `raise_max_depth` at max_depth 4 or `add_pairs_on_children` at 5+ (raising the
+  depth grows the cap only across the 4-to-5 boundary), and an ORDER disagreement between the
+  two inventories to `resolve_skip` - the zip verifies the icon sequence by geometry and
+  refuses to guess when the sides disagree). The diff does NOT cover: icon GLYPHS (icon size/position/color are
   measured — but which glyph is drawn is not; verify by eye / get_screenshot focus crop),
   icon-FONT and mask-image icons (the color is visible but not compared), radial/conic gradient GEOMETRY
   (center/radius/shape — flagged 👁 unchecked), second-and-further background layers (only the

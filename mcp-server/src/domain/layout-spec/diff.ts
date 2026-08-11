@@ -1497,7 +1497,7 @@ interface FigText { snippet: string; typo: SpecTypography; label: string }
 // classListChain (source-hint): the classLists of the text node's ANCESTORS bottom-up (immediate
 // parent first), cap 4 — the tool picks the nearest PARSEABLE one (the parser does NOT leak into diff).
 interface DomText { snippet: string; node: DomChild; classListChain: string[][] }
-interface Collected<T> { items: T[]; truncated: boolean }
+interface Collected<T> { items: T[]; truncated: boolean; capped?: boolean }
 
 // source-hint: the depth cap of the DOM-text ancestor chain for the source hint.
 const CLASS_CHAIN_CAP = 4;
@@ -1640,11 +1640,11 @@ function domIconState(s: { iconColor?: string; iconColorToken?: DomTokenState; i
 // subtree (the extractor and the projector both mark wrapper AND inner svg - descending past the
 // first carrier would double-count the same glyph). childrenTruncated on a visited level =>
 // truncated: icons may hide beyond the slice.
-function collectFigIcons(c: SpecChild, maxDescent: number): Collected<{ state: FigIconState; label: string; self?: true }> {
+function collectFigIcons(c: SpecChild, maxDescent: number): Collected<{ state: FigIconState; label: string; rect?: SpecRect; self?: true }> {
   const self = figIconState(c);
-  if (self) return { items: [{ state: self, label: childLabel(c), self: true }], truncated: false };
-  const items: { state: FigIconState; label: string }[] = [];
-  let truncated = false; let stopped = false;
+  if (self) return { items: [{ state: self, label: childLabel(c), rect: c.rect, self: true }], truncated: false };
+  const items: { state: FigIconState; label: string; rect?: SpecRect }[] = [];
+  let truncated = false; let stopped = false; let capped = false;
   const visit = (node: SpecChild): void => {
     if (stopped) return;
     if (node.childrenTruncated) truncated = true;
@@ -1652,19 +1652,23 @@ function collectFigIcons(c: SpecChild, maxDescent: number): Collected<{ state: F
       if (stopped) return;
       const st = figIconState(kid);
       if (st) {
-        items.push({ state: st, label: childLabel(kid) });
-        if (items.length >= maxDescent) { truncated = true; stopped = true; return; }
+        items.push({ state: st, label: childLabel(kid), rect: kid.rect });
+        // capped is DISTINCT from truncated (batch 2 item 3): truncated says "a subtree was
+        // cut somewhere" (any depth-terminal wrapper raises it - the majority of deep pairs);
+        // capped says "the SCAN ITSELF stopped at the item cap", which is what forces
+        // equal counts by construction and makes the index zip a guess.
+        if (items.length >= maxDescent) { truncated = true; capped = true; stopped = true; return; }
       } else visit(kid);
     }
   };
   visit(c);
-  return { items, truncated };
+  return { items, truncated, capped };
 }
-function collectDomIcons(c: DomChild, maxDescent: number): Collected<{ state: DomIconState; self?: true }> {
+function collectDomIcons(c: DomChild, maxDescent: number): Collected<{ state: DomIconState; rect?: SpecRect; carrier?: string; self?: true }> {
   const self = domIconState(c.styles, c.tag);
-  if (self) return { items: [{ state: self, self: true }], truncated: false };
-  const items: { state: DomIconState }[] = [];
-  let truncated = false; let stopped = false;
+  if (self) return { items: [{ state: self, rect: c.rect, self: true }], truncated: false };
+  const items: { state: DomIconState; rect?: SpecRect; carrier?: string }[] = [];
+  let truncated = false; let stopped = false; let capped = false;
   const visit = (node: DomChild): void => {
     if (stopped) return;
     if (node.childrenTruncated) truncated = true;
@@ -1673,13 +1677,16 @@ function collectDomIcons(c: DomChild, maxDescent: number): Collected<{ state: Do
       if (kid.kind !== 'element') continue;
       const st = domIconState(kid.styles, kid.tag);
       if (st) {
-        items.push({ state: st });
-        if (items.length >= maxDescent) { truncated = true; stopped = true; return; }
+        // carrier: the incident's cost was INVISIBILITY - a reader comparing hexes across
+        // pairs could not tell which element each value came from. tag.class names it.
+        const cls = kid.classList?.[0];
+        items.push({ state: st, rect: kid.rect, carrier: `${kid.tag ?? 'element'}${cls ? `.${cls}` : ''}` });
+        if (items.length >= maxDescent) { truncated = true; capped = true; stopped = true; return; }
       } else visit(kid);
     }
   };
   visit(c);
-  return { items, truncated };
+  return { items, truncated, capped };
 }
 // ONE row for a detected pair. Multi-color / unreadable are info WITH coverageSkipped - an info
 // is NOT a measurement (the multi-shadow precedent); the hex pair goes through colorVerdict, the
@@ -1720,7 +1727,7 @@ function iconColorRow(prop: string, fig: FigIconState, dom: DomIconState, src?: 
 // sides carry the axis and it was not measured, so it must hold the done-gate (the dom-dom
 // fillUnparseable precedent); the cut shapes name their executable action, the structural
 // mismatch routes to a human via resolve_skip.
-function iconRowsFor(c: SpecChild, domChild: DomChild, i: number, maxDescent: number, evidence?: CssTokenEvidence): DiffRow[] {
+function iconRowsFor(c: SpecChild, domChild: DomChild, i: number, maxDescent: number, evidence?: CssTokenEvidence, structTol = 1, maxDepth = 4): DiffRow[] {
   const figs = collectFigIcons(c, maxDescent);
   const doms = collectDomIcons(domChild, maxDescent);
   const rows: DiffRow[] = [];
@@ -1739,6 +1746,49 @@ function iconRowsFor(c: SpecChild, domChild: DomChild, i: number, maxDescent: nu
     // one side found nothing and no cut explains it: genuinely one-sided - no row.
     return rows;
   }
+  // Anti-flood (batch 2 item 3, a pre-existing bug in scope): with ZERO icons on either side
+  // there is no icon claim to make - a nested subtree cut alone must not mint an icon-color
+  // row (measured: zero-icon deep pairs emitted one on every depth-cut wrapper).
+  if (figs.items.length === 0) return rows;
+  // The cap clamp (the incident's mechanism): both scans stopped at the item cap, so equal
+  // counts are FORCED BY CONSTRUCTION and carry zero alignment evidence - a positional zip
+  // attributed a foreign svg's color to a labeled icon and the real defect was dismissed as
+  // an artifact. A cap-clamped inventory never zips. Wording routes by side through the
+  // note-substring router in verification.ts: the fig/cap wording must never contain
+  // 're-extract' (tested first there), and it promises raise_max_depth only where raising
+  // actually grows the cap (15 -> 30 across the 4 -> 5 boundary; at 5-7 the cap stays 30 and
+  // the promise would be unclearable).
+  if (figs.capped || doms.capped) {
+    rows.push({ prop: `icon-color[${childLabel(c)}]`, status: 'unchecked',
+      figma: `${figs.items.length} icon(s)`, dom: `${doms.items.length} icon(s)`,
+      // Under the equal-count precondition a dom-side cap implies the fig side hit the same
+      // cap (both scans stop at maxDescent items) - one wording covers the branch (wave:
+      // the dom-only arm was dead code by construction).
+      note: `the icon inventory hit the per-child scan cap (${maxDescent}) - equal counts under a clamp are a coincidence, not an alignment; ${maxDepth <= 4 ? 'raise max_depth (up to 8) and re-run, or ' : ''}pair the icon nodes directly` });
+    return rows;
+  }
+  // The order-agreement guard: VERIFY, never re-order. Fig item order is a pre-order
+  // flattening of per-level sorts; dom order is document order - they agree for plain
+  // markup and diverge under row-reverse/RTL/CSS order. Where consecutive fig rects give
+  // axis evidence (a dominant delta beyond structTol), the dom deltas must agree in SIGN;
+  // a disagreement means the sequences differ and an index pairing would be a guess. Ties
+  // and axis-less evidence produce NO claim - the zip proceeds as today (the norm for
+  // nested shapes; nothing in the output reads as order-verified).
+  for (let k = 1; k < figs.items.length; k++) {
+    const fa = figs.items[k - 1].rect; const fb = figs.items[k].rect;
+    const da = doms.items[k - 1].rect; const db = doms.items[k].rect;
+    if (!fa || !fb || !da || !db) continue;
+    const fdx = fb.x - fa.x; const fdy = fb.y - fa.y;
+    const useX = Math.abs(fdx) >= Math.abs(fdy);
+    const fd = useX ? fdx : fdy;
+    if (Math.abs(fd) <= structTol) continue;               // no evidence - no claim
+    const dd = useX ? db.x - da.x : db.y - da.y;
+    if ((fd > 0 && dd < -structTol) || (fd < 0 && dd > structTol)) {
+      return [{ prop: `icon-color[${childLabel(c)}]`, status: 'unchecked',
+        figma: `${figs.items.length} icon(s)`, dom: `${doms.items.length} icon(s)`,
+        note: 'the icon inventories disagree on order (the design and the DOM place the icons in different sequences) - an index pairing would be a guess; pair the icon nodes directly' }];
+    }
+  }
   const labelCounts = new Map<string, number>();
   for (const f of figs.items) labelCounts.set(f.label, (labelCounts.get(f.label) ?? 0) + 1);
   const seen = new Map<string, number>();
@@ -1747,8 +1797,13 @@ function iconRowsFor(c: SpecChild, domChild: DomChild, i: number, maxDescent: nu
     const dup = (labelCounts.get(f.label) ?? 0) > 1;
     const idx = seen.get(f.label) ?? 0; seen.set(f.label, idx + 1);
     const label = dup ? `${f.label}#${idx}` : f.label;
-    rows.push(iconColorRow(`icon-color[${label}]`, f.state, doms.items[k].state,
-      doms.items[k].self ? { kind: 'child', i, editKind: 'property' } : undefined, evidence));
+    const row = iconColorRow(`icon-color[${label}]`, f.state, doms.items[k].state,
+      doms.items[k].self ? { kind: 'child', i, editKind: 'property' } : undefined, evidence);
+    // Carrier visibility: a descent-found DOM carrier is NAMED, so a reader comparing hexes
+    // across pairs can see which element each value came from.
+    const carrier = doms.items[k].carrier;
+    if (!doms.items[k].self && carrier) row.note = [row.note, `read from ${carrier}`].filter(Boolean).join('; ');
+    rows.push(row);
   }
   // An equal-count zip under a truncated inventory is aligned only within the slice - more
   // icons may hide beyond either cut, and their absence must not read as measured-complete.
@@ -2101,7 +2156,7 @@ function crossAndPaddingRows(
     // icon fields; the mode's not_covered keeps its own wording - no claim either way). When the
     // pair ROOT is itself an icon, its children are the glyph's internals - the root site owns
     // the row and a per-child pass would emit a second row for the same glyph.
-    if (opts.sides !== 'dom-dom' && !figIconState(spec)) rows.push(...iconRowsFor(c, domKids[i], i, maxDescent, opts.cssEvidence));
+    if (opts.sides !== 'dom-dom' && !figIconState(spec)) rows.push(...iconRowsFor(c, domKids[i], i, maxDescent, opts.cssEvidence, structTol, opts.maxDepth ?? 4));
     if (c.text) {
       // p.7 routing: direct compare ONLY when the DOM child owns its text; a unique nested carrier
       // supplies the styles otherwise, and a missing carrier is a note, never a wrapper compare.
@@ -2506,12 +2561,18 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
       const pseudo: DomChild = { kind: 'element', rect: d.rect,
         children: d.children, ...(d.childrenTruncated ? { childrenTruncated: true } : {}) };
       const nested = collectDomIcons(pseudo, descentFor(opts.maxDepth ?? 4));
-      if (nested.items.length === 1) {
+      if (nested.items.length === 1 && !nested.truncated) {
         // exactly one carrier below the wrapper root - the same glyph, pair it (stale included:
         // iconColorRow routes a stale svg to the re-extract unchecked). NO srcChannel on
         // purpose: the root channel would resolve the edit to the WRAPPER's class (the wrong
         // file) - the descent found the carrier below it, mirroring the typography root branch.
         rows.push(iconColorRow('icon-color', figRootIcon, nested.items[0].state, undefined, opts.cssEvidence));
+      } else if (nested.items.length === 1 && nested.truncated) {
+        // ONE carrier was captured but the subtree was cut - the glyph's true twin may lie
+        // beyond the cut, and a confident compare here is the 1-vs-1-under-a-cut class the
+        // cap guard exists to refuse (wave: this site paired a foreign svg confidently).
+        rows.push({ prop: 'icon-color', status: 'unchecked',
+          note: "a DOM icon was captured but the subtree was cut - the Figma glyph's twin may lie beyond the cut; re-extract deeper or pair the icon node directly" });
       } else if (nested.items.length > 1) {
         rows.push({ prop: 'icon-color', status: 'unchecked',
           figma: '1 icon(s)', dom: `${nested.items.length} icon(s)`,
