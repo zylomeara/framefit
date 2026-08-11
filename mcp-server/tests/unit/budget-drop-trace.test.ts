@@ -105,14 +105,18 @@ describe('compare_node_to_dom: the drop trace', () => {
     expect(out.verification.complete).toBe(false);            // unchanged: receipt over ALL pairs
   });
 
-  it('the serialize closure MEASURES the trace: at budget = L2-1 the mutant would keep 2 and overflow', async () => {
-    // The floorLen probe above cannot catch the measure-direction mutant (trace only in the
-    // final call): at the floor boundary the pair quantum (~835 bytes) exceeds the trace
-    // quantum (~400), so the clamp decision does not move - measured by the wave's mutation
-    // run (M-MEASURE: whole suite stayed green). The discriminator lives in the window
-    // [L2 - trace, L2 - 1]: the mutant measures kept=2 WITHOUT the trace, keeps 2, and
-    // delivers L2 > budget; the correct code keeps 1 and fits. L2 is found by budget
-    // bisection (kept is monotone in budget), never guessed.
+  it('the serialize closure MEASURES the trace: delivery at the kept=2 boundary equals the budget that selected it', async () => {
+    // The robust measure==delivery lock at a NON-floor boundary. lo = the smallest budget at
+    // which the clamp keeps 2 (bisection; kept is monotone in budget, step exactly 1 - swept).
+    // With the closure measuring the trace, that threshold IS the delivered length: l2.len ===
+    // lo, an identity. The measure-direction mutant (M-MEASURE: trace emitted by the final
+    // call, invisible to the closure) shifts lo DOWN by the trace bytes while the delivery
+    // keeps them - l2.len > lo, red (verified live in both comparators). The floorLen probes
+    // above also catch this mutant today, but only because the repaired fixture's trace
+    // quantum (585 bytes) exceeds its pair quantum (482) - a relation a future fixture edit
+    // can silently flip back (the pre-repair fixture had 497 vs 835 and the whole suite
+    // stayed green under the mutant). This identity holds for ANY fixture whose trace is
+    // non-empty, which is what makes it the lock rather than the luck.
     const runAt = async (budget: number) => {
       const res = await figmaHarness(api(), budget)({ file: 'abc', pairs: mixedPairs });
       return { len: res.content[0].text.length, kept: parse(res).pairs.length };
@@ -125,10 +129,7 @@ describe('compare_node_to_dom: the drop trace', () => {
     }
     const l2 = await runAt(lo);
     expect(l2.kept).toBe(2);
-    expect(l2.len).toBeLessThanOrEqual(lo);   // sanity: delivery at the boundary fits its budget
-    const probe = await runAt(l2.len - 1);
-    expect(probe.kept).toBe(1);               // the mutant keeps 2 here (its measurement is trace-blind)
-    expect(probe.len).toBeLessThanOrEqual(l2.len - 1); // and would deliver L2 > budget - the overflow this locks
+    expect(l2.len).toBe(lo);
   });
 
   it('an all-green clamped batch discloses without degrading the verdict (anti-cry-wolf)', async () => {
@@ -215,8 +216,8 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
     expect(out.report_markdown).not.toContain('Only inherent items remain');
   });
 
-  it('dom-dom serialize measures the trace too: at budget = L2-1 the mutant would keep 2 and overflow', async () => {
-    // the dom-dom twin of the M-MEASURE discriminator above - same bisection, same window.
+  it('dom-dom serialize measures the trace too: delivery at the kept=2 boundary equals its selecting budget', async () => {
+    // the dom-dom twin of the M-MEASURE identity above (its quanta: trace 692 vs pair 643).
     const pairs = domDomPairs(9);
     const runAt = async (budget: number) => {
       const res = await domDomHarness(budget)({ pairs });
@@ -230,10 +231,7 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
     }
     const l2 = await runAt(lo);
     expect(l2.kept).toBe(2);
-    expect(l2.len).toBeLessThanOrEqual(lo);
-    const probe = await runAt(l2.len - 1);
-    expect(probe.kept).toBe(1);
-    expect(probe.len).toBeLessThanOrEqual(l2.len - 1);
+    expect(l2.len).toBe(lo);
   });
 
   it('an unclamped dom-dom response carries none of the new surface', async () => {
