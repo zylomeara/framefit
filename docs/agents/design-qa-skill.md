@@ -387,8 +387,9 @@ read ❌ as defects:
   budget: individual pass axes are NOT in rows, take the count from `summary.pass` (signal rows
   fail/warn/info/review/unchecked and meta style_anchor/unwrapped are always complete). Both
   comparators condense before dropping whole pairs; when pairs ARE dropped, `omitted_pairs` counts
-  them, `omitted_pair_ids` names them (`label` or node id), and a `verification.notes` line says
-  whether any dropped pair carried FAILing rows — a dropped fail keeps the verdict at
+  them, `omitted_pair_ids` names them (`label` or node id), and a `verification.notes` line
+  counts the dropped pairs carrying FAILing rows when there are any (a note with no FAIL clause
+  means none were) — a dropped fail keeps the verdict at
   `"discrepancies found"` even though its rows are not in the response.
 2. Known sources of false ❌ (before tool calibration): a wrapper with its own padding/scroll
    chrome vs the "padding-inner" Figma frame; a scrollbar (~11px in size.w); text node vs frame

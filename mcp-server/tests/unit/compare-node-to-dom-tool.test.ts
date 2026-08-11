@@ -1971,7 +1971,7 @@ describe('compare_node_to_dom tool', () => {
 
       // The DELIVERED text must fit the budget — this is what the size-guard promises the caller.
       // The mutant ("serialize → bare preflight") breaks EXACTLY this assert: the under-count gives kept=3
-      // (5760 bytes) > TIGHT_BUDGET(5600) — a delivery overflow, not merely a different kept count.
+      // (6170 bytes) > TIGHT_BUDGET(6000) — a delivery overflow, not merely a different kept count.
       expect(text.length).toBeLessThanOrEqual(TIGHT_BUDGET);
       // kept/omitted must match the WITH-BANNER measurement (verified live under compact: a bare
       // preflight in serialize gives kept=3/omitted=0 here — diverging from what actually fits).

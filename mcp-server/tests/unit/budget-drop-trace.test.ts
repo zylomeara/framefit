@@ -50,9 +50,15 @@ const card: RawSceneNode = {
     { id: '1:3', name: 'list', type: 'FRAME', absoluteBoundingBox: { x: 16, y: 56, width: 311, height: 40 } },
   ],
 };
+// paddings + client*/scrollHeight are load-bearing: without them every pair carries an
+// extractor_outdated blocking item, verification.blocking is never empty, and the
+// blocking-empty branch these tests lock (the replaced inherent-only caveat) is UNREACHABLE -
+// the wave measured the not.toContain asserts as unfalsifiable under the padding-less fixture.
 const cleanDom = {
   schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
+  paddings: { top: 0, right: 0, bottom: 0, left: 0 },
+  clientWidth: 343, clientHeight: 120, scrollHeight: 120,
   scroll: { top: 0, left: 0 }, transformed: false,
   children: [
     { kind: 'element', tag: 'h2', rect: { x: 16, y: 12, w: 200, h: 24 } },
@@ -87,11 +93,42 @@ describe('compare_node_to_dom: the drop trace', () => {
     expect(notes[0]).toMatch(/FAILing/);                      // the dropped red is attributed
     expect(notes[0]).toMatch(/fewer pairs/);                  // the remediation is named
     expect(res.content[0].text.length).toBeLessThanOrEqual(floorLen);
-    // the three false sentences are gone: the verdict is red, nothing claims inherent-only
+    // the three false sentences are gone: the verdict is red, nothing claims inherent-only.
+    // The fixture reaches the EXACT debt shape (complete:false with an EMPTY blocking[]) - the
+    // not.toContain below is falsifiable only because the blocking-empty branch really renders,
+    // so the replacement sentence is asserted POSITIVELY beside it.
+    expect(out.verification.blocking).toHaveLength(0);
     expect(out.report_markdown).toContain('discrepancies found');
+    expect(out.report_markdown).toContain('NOT an inherent-only remainder');
     expect(out.report_markdown).not.toContain('no defects found');
     expect(out.report_markdown).not.toContain('Only inherent items remain');
     expect(out.verification.complete).toBe(false);            // unchanged: receipt over ALL pairs
+  });
+
+  it('the serialize closure MEASURES the trace: at budget = L2-1 the mutant would keep 2 and overflow', async () => {
+    // The floorLen probe above cannot catch the measure-direction mutant (trace only in the
+    // final call): at the floor boundary the pair quantum (~835 bytes) exceeds the trace
+    // quantum (~400), so the clamp decision does not move - measured by the wave's mutation
+    // run (M-MEASURE: whole suite stayed green). The discriminator lives in the window
+    // [L2 - trace, L2 - 1]: the mutant measures kept=2 WITHOUT the trace, keeps 2, and
+    // delivers L2 > budget; the correct code keeps 1 and fits. L2 is found by budget
+    // bisection (kept is monotone in budget), never guessed.
+    const runAt = async (budget: number) => {
+      const res = await figmaHarness(api(), budget)({ file: 'abc', pairs: mixedPairs });
+      return { len: res.content[0].text.length, kept: parse(res).pairs.length };
+    };
+    const full = await runAt(400000);
+    let lo = 1, hi = full.len; // smallest budget with kept >= 2
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if ((await runAt(mid)).kept >= 2) hi = mid; else lo = mid + 1;
+    }
+    const l2 = await runAt(lo);
+    expect(l2.kept).toBe(2);
+    expect(l2.len).toBeLessThanOrEqual(lo);   // sanity: delivery at the boundary fits its budget
+    const probe = await runAt(l2.len - 1);
+    expect(probe.kept).toBe(1);               // the mutant keeps 2 here (its measurement is trace-blind)
+    expect(probe.len).toBeLessThanOrEqual(l2.len - 1); // and would deliver L2 > budget - the overflow this locks
   });
 
   it('an all-green clamped batch discloses without degrading the verdict (anti-cry-wolf)', async () => {
@@ -125,10 +162,13 @@ describe('compare_node_to_dom: the drop trace', () => {
 
 // dom-dom: many matched children -> many note-less pass rows = bulk that condenseBulkPass
 // collapses. reference vs candidate diverge on padding-top for the red pair only.
+// borderColors is load-bearing for the same reason as cleanDom's paddings: 1px borders with
+// no color yield a resolve_skip blocking item PER PAIR, and blocking never empties.
 const bulkyState = (firstCardY: number): DomSnapshotOk => ({
   schema: 6, status: 'ok', selector: '.shelf', innerWidth: 768,
   rect: { x: 0, y: 0, w: 768, h: 4000 },
   borders: { top: 1, right: 1, bottom: 1, left: 1 },
+  borderColors: { top: '#e0e0e0', right: '#e0e0e0', bottom: '#e0e0e0', left: '#e0e0e0' },
   paddings: { top: 24, right: 16, bottom: 24, left: 16 },
   clientWidth: 766, clientHeight: 3998, scrollHeight: 3998,
   scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,
@@ -167,8 +207,33 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatch(/FAILing/);
     expect(res.content[0].text.length).toBeLessThanOrEqual(floorLen);
+    // the same reached-shape locks as the Figma comparator: blocking really empties here
+    // (bulkyState carries borderColors), so the replacement sentence is asserted positively.
+    expect(out.verification.blocking).toHaveLength(0);
     expect(out.report_markdown).toContain('discrepancies found');
+    expect(out.report_markdown).toContain('NOT an inherent-only remainder');
     expect(out.report_markdown).not.toContain('Only inherent items remain');
+  });
+
+  it('dom-dom serialize measures the trace too: at budget = L2-1 the mutant would keep 2 and overflow', async () => {
+    // the dom-dom twin of the M-MEASURE discriminator above - same bisection, same window.
+    const pairs = domDomPairs(9);
+    const runAt = async (budget: number) => {
+      const res = await domDomHarness(budget)({ pairs });
+      return { len: res.content[0].text.length, kept: parse(res).pairs.length };
+    };
+    const full = await runAt(400000);
+    let lo = 1, hi = full.len;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if ((await runAt(mid)).kept >= 2) hi = mid; else lo = mid + 1;
+    }
+    const l2 = await runAt(lo);
+    expect(l2.kept).toBe(2);
+    expect(l2.len).toBeLessThanOrEqual(lo);
+    const probe = await runAt(l2.len - 1);
+    expect(probe.kept).toBe(1);
+    expect(probe.len).toBeLessThanOrEqual(l2.len - 1);
   });
 
   it('an unclamped dom-dom response carries none of the new surface', async () => {
