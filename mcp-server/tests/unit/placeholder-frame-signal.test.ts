@@ -107,11 +107,11 @@ describe('applyPlaceholderSignal (the guard)', () => {
   it('never overwrites an earlier, more specific caveat (the ??= is load-bearing)', async () => {
     const { applyPlaceholderSignal } = await import('../../src/adapters/driving/tools/compare-node-to-dom-tool.js');
     const rows: any[] = [{ prop: 'size.w', figma: 47, dom: 66, status: 'fail', caveat: 'an earlier, more specific caveat' }];
-    applyPlaceholderSignal(rows, 1, false, false);
+    applyPlaceholderSignal(rows, 1, false);
     expect(rows.find((r) => r.prop === 'size.w').caveat).toBe('an earlier, more specific caveat');
     // and a bare fail still receives the placeholder caveat in the same call
     const rows2: any[] = [{ prop: 'size.w', figma: 47, dom: 66, status: 'fail' }];
-    applyPlaceholderSignal(rows2, 1, false, false);
+    applyPlaceholderSignal(rows2, 1, false);
     expect(rows2.find((r) => r.prop === 'size.w').caveat).toMatch(/placeholder-conditional/);
   });
 });
@@ -124,7 +124,8 @@ describe('the signal through the tool', () => {
     const row = out.pairs[0].rows.find((r: any) => r.prop === 'placeholder_frame');
     expect(row?.status).toBe('warn');
     expect(row?.figma).toMatch(/1 placeholder/);
-    expect(row?.note).toMatch(/paired subtree/);
+    expect(row?.note).toMatch(/paired subtrees/);
+    expect(row?.note).toMatch(/at least 1 placeholder/);
     // the pinned bytes: slice honesty, the remediation half, and the loaded-state reference
     // (a wave mutation deleted them all with the suite green - these locks are why it cannot)
     expect(row?.note).toMatch(/within the fetched slice/);
@@ -144,7 +145,12 @@ describe('the signal through the tool', () => {
     const out = JSON.parse((await run({ file: 'F', frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: matchingDom }] })).content[0].text);
     const row = out.pairs[0].rows.find((r: any) => r.prop === 'placeholder_frame');
     expect(row?.status).toBe('warn');
-    expect(row?.note).not.toMatch(/paired subtree/);
+    expect(row?.note).not.toMatch(/paired subtrees/);
+    // the verify-round regression lock: the wording never attributes the count to a named
+    // tree (max(frame, pair) can be entirely pair-derived while the frame slice is empty) -
+    // it is a lower bound over the design side, and it says so
+    expect(row?.note).toMatch(/at least/);
+    expect(row?.note).not.toMatch(/the design frame carries/);
     expect((out.verification.notes ?? []).join(' ')).toMatch(/placeholder/);
   });
   it('an extent FAIL in a detected pair carries the caveat, and fix_plan copies it onto the edit', async () => {

@@ -228,20 +228,23 @@ export function scanPlaceholders(root: RawSceneNode): { count: number; visited: 
 // legitimate, productive flow and must not be blocked.
 const PLACEHOLDER_EXTENT_DIMS = new Set(['size', 'gap', 'padding', 'offset-cross']);
 const PLACEHOLDER_CAVEAT = 'the design side is a placeholder (skeleton) frame — this delta may be placeholder-conditional; verify against the loaded-state frame before editing';
-export function placeholderNote(count: number, frameScoped: boolean, frameRequested = frameScoped): string {
-  // The pair-scoped tail must not advise what the caller already did: frame_node_id can be
-  // GIVEN while the frame node is missing from the file - the frame-not-found warn row covers
-  // that; repeating "pass frame_node_id" there would be false navigation.
+export function placeholderNote(count: number, frameRequested: boolean): string {
+  // The count is a LOWER BOUND and the sentence says so: the frame walk and the pair walk see
+  // different slices of the same design, their hit sets can be disjoint, and the overlap is
+  // unknowable - attributing one number to one named tree produced a measured false claim
+  // ("the design frame carries N" with N entirely pair-derived and the frame slice empty).
+  // "at least N on the design side" is true of every measured shape: max(frame, pair) is a
+  // true lower bound of the union. The pair-scoped tail must not advise what the caller
+  // already did: frame_node_id can be GIVEN while the frame node is missing from the file -
+  // the frame-not-found warn row covers that shape.
   const tail = frameRequested ? '' : ' — checked only the paired subtrees, pass frame_node_id to check the whole frame';
-  const scope = frameScoped
-    ? `the design frame carries ${count} placeholder (skeleton) component(s) within the fetched slice`
-    : `the paired subtree carries ${count} placeholder (skeleton) component(s) within the fetched slice${tail}`;
-  return `${scope} — sizes in a placeholder frame may not match the loaded state; if a loaded-state frame of this breakpoint exists, it is the geometry reference; to verify a skeleton RENDER, capture both DOM states and use compare_dom_to_dom`;
+  return `the design side carries at least ${count} placeholder (skeleton) component(s) within the fetched slice${tail}`
+    + ` — sizes in a placeholder frame may not match the loaded state; if a loaded-state frame of this breakpoint exists, it is the geometry reference; to verify a skeleton RENDER, capture both DOM states and use compare_dom_to_dom`;
 }
-export function applyPlaceholderSignal(rows: DiffRow[], count: number, frameScoped: boolean, frameRequested = frameScoped): void {
+export function applyPlaceholderSignal(rows: DiffRow[], count: number, frameRequested: boolean): void {
   if (count <= 0) return;
-  rows.push({ prop: 'placeholder_frame', figma: `${count} placeholder component(s)`, dom: null,
-    status: 'warn', note: placeholderNote(count, frameScoped, frameRequested) });
+  rows.push({ prop: 'placeholder_frame', figma: `at least ${count} placeholder component(s)`, dom: null,
+    status: 'warn', note: placeholderNote(count, frameRequested) });
   for (const r of rows) {
     if (r.status === 'fail' && PLACEHOLDER_EXTENT_DIMS.has(dimensionOf(r.prop))) r.caveat ??= PLACEHOLDER_CAVEAT;
   }
@@ -465,7 +468,6 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // max detected count feeds ONE receipt-level notes[] line after buildVerification.
         let framePlaceholderScan: { count: number; visited: number } | undefined;
         let placeholdersDetected = 0;
-        let placeholdersFrameScoped = false;
         let placeholdersFrameRequested = false;
 
         // Coverage enumeration. 3 tiers (the store keys are disjoint by id-set,
@@ -784,9 +786,8 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
             : undefined;
           const phCount = Math.max(frScan?.count ?? 0, pairScan.count);
           if (phCount > 0) {
-            applyPlaceholderSignal(rows, phCount, bestFrameRaw !== undefined, frameId !== undefined);
+            applyPlaceholderSignal(rows, phCount, frameId !== undefined);
             placeholdersDetected = Math.max(placeholdersDetected, phCount);
-            placeholdersFrameScoped = bestFrameRaw !== undefined;
             placeholdersFrameRequested = frameId !== undefined;
           }
           // captures AFTER diffPair (rows are ready for geometryUnchecked), BEFORE return — only
@@ -826,7 +827,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // content-free pointer at a row the clamp may have dropped.
         if (placeholdersDetected > 0) {
           (verification.notes ??= []).push(
-            placeholderNote(placeholdersDetected, placeholdersFrameScoped, placeholdersFrameRequested));
+            placeholderNote(placeholdersDetected, placeholdersFrameRequested));
         }
 
         // (c) dominant_blocker REPLACES the generic preflight (the slot :34-36 in report.ts
