@@ -687,7 +687,7 @@ describe('the populations this freeze is written against', () => {
       'application/node-ancestry.ts': ['auth', 'forbidden'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '50 branch sites across 15 files').toBe(50); // 43 -> 49: find-breakpoint-variant's six (feedback item 10)
+    expect(SITES.branches.length, '50 branch sites across 15 files').toBe(50); // 49 -> 50: the too-large soft-expiry gate (evidence-reach line); earlier 43 -> 49: find-breakpoint-variant's six (feedback item 10)
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "

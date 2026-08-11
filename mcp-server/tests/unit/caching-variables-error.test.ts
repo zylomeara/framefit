@@ -559,6 +559,22 @@ describe('too-large 400: soft-expiring marker (the ceiling fix)', () => {
     expect((err as Error).message).toMatch(/retry.*\b\d+s/i);    // the wait is named, not implied
   });
 
+  it('the hint is NEVER promised to a sub-cap reader - it cannot act on it at its budget', async () => {
+    // wave lock: a mutation dropping the `timeoutMs >= capMs` condition on the hint would tell
+    // the 20s compare shape "retry becomes possible in ~Ns" - false at that budget (the marker
+    // keeps denying sub-cap readers for the hard TTL by design).
+    vi.useFakeTimers();
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => { throw tooLarge(); },
+    };
+    const caches = freshCaches();
+    await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).rejects.toThrow('400');
+    const err = await makeApi(inner, { timeoutMs: 20_000 }, caches).getVariablesLocal('F').then(() => null, (e) => e);
+    expect((err as Error).message).toMatch(/^cached: /);
+    expect((err as Error).message).not.toMatch(/retry becomes possible/);
+  });
+
   it('other classes are byte-identical: an elapsed timeout and a 500 get NO soft expiry', async () => {
     vi.useFakeTimers();
     let calls = 0;
