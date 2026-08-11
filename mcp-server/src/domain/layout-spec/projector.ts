@@ -9,6 +9,8 @@ import { rgbaToHex } from '../design-context/color.js';
 import type { DomColorToken, Edges, GradientModel, LayoutSpec, ResolvedColorToken, SpecChild, SpecRect, SpecShadow, SpecTypography, TextLeaf } from './types.js';
 import { SNIPPET_CAP } from './types.js';
 
+const PRIMARY_ALIGN_VALUES = new Set(['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN']);
+
 // VIEW_CAPS: per-view breadth/depth/budget registry. `branch` == the FROZEN consts (three-mirror
 // anchor). Nav views (skeleton/coverage/typography/spacing) widen; sibling-summary keeps skeleton's
 // node count bounded despite the wide breadth cap. Nav numbers are calibration-tunable;
@@ -586,6 +588,17 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
         top: raw.paddingTop ?? 0, right: raw.paddingRight ?? 0,
         bottom: raw.paddingBottom ?? 0, left: raw.paddingLeft ?? 0,
       },
+      // Declared main-axis alignment, ONLY under a FIXED primary axis: on a hug (AUTO, the
+      // REST default) there is no free space and the keyword is inert - reading a
+      // materialized MIN there as anchoring intent would fabricate alignment-mismatch reds
+      // on containers that delegate positioning to their parent. REST omits the field for
+      // the default, so absence under FIXED IS MIN (live-probed) and must be materialized -
+      // otherwise MIN is indistinguishable from "no intent". Membership-gated: an
+      // unenumerated value leaves the field absent (ONE fail-open road - the compat/legacy
+      // demote), never a cast shipped into the response.
+      ...(raw.primaryAxisSizingMode === 'FIXED' && PRIMARY_ALIGN_VALUES.has(raw.primaryAxisAlignItems ?? 'MIN')
+        ? { primaryAlign: (raw.primaryAxisAlignItems ?? 'MIN') as 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN' }
+        : {}),
     };
   }
   // E (hug-vs-fill): a root container with HUG width hugs its content — the diff demotes size.w/

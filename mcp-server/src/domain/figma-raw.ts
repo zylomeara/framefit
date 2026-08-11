@@ -69,6 +69,10 @@ export interface RawSceneNode {
   paddingBottom?: number;
   primaryAxisAlignItems?: string;
   counterAxisAlignItems?: string;
+  /** FIXED | AUTO. AUTO (the REST default) hugs the primary axis - there is no free space and
+   *  the alignment keyword is inert; the layout-spec projector materializes primaryAlign only
+   *  under FIXED for exactly that reason. */
+  primaryAxisSizingMode?: string;
   minWidth?: number | null;
   maxWidth?: number | null;
   minHeight?: number | null;

@@ -1321,7 +1321,14 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     // at 1920: fig 1320 / dom 1309). On axis='col' the gap is vertical and the gutter cannot touch it.
     // A pointer, never an allowance — the gap moves only while the main axis DISTRIBUTES free space,
     // which this capture does not measure, so an 11px gap regression stays an 11px fail (see SCOPE).
-    rows.push(notePageGutter(withNote(numRow(label, figGap, domGap, tol, undefined, SRC_ROOT_LAYOUT), gapNote),
+    // Under a declared SPACE_BETWEEN (present only on FIXED axes) the rendered spacing is the
+    // distributed free space, not the declared itemSpacing - the note keeps the gap row's
+    // number from contradicting the demoted padding row one line below (note-only, no status
+    // change; the >=2-children agreement demote itself is a named ceiling).
+    const sbNote = spec.autoLayout?.primaryAlign === 'SPACE_BETWEEN'
+      ? 'the design distributes the free space between children - the declared itemSpacing is not the rendered spacing'
+      : undefined;
+    rows.push(notePageGutter(withNote(withNote(numRow(label, figGap, domGap, tol, undefined, SRC_ROOT_LAYOUT), gapNote), sbNote),
       axis === 'row' ? pageGutter : undefined));
   }
 
@@ -1870,6 +1877,47 @@ function crossAndPaddingRows(
   const eff = (p: Edges | undefined): Edges | undefined => (contentMode ? p : undefined);
 
   const jc = d.styles?.justifyContent;
+  // Two-sided justify demote (feedback batch 2 item 2, panel + live-probe locked). The design
+  // side's declared main-axis alignment maps to WHICH EDGES CARRY SLACK - the edges whose fig
+  // number is distributed free space rather than intent: MIN packs children at the start and
+  // leaves ALL the slack at the END (a red there would lie about the design); SPACE_BETWEEN's
+  // end:true is CARRIED CONSERVATISM (the 1-child degenerate + the hidden-sibling allowance -
+  // with >=2 children both edges are pinned; a named ceiling). An edge is SLACK only when the
+  // container also HAS measured free space (the live flagship shape is FIXED-width with zero
+  // slack and a declared-but-inert CENTER: content pins both edges, every number is intent -
+  // the panel's "no slack -> legacy demote" belt would have hidden the incident again). A
+  // missing primaryAlign (dom-dom, legacy fixtures, AUTO/hug containers, unknown values) is
+  // the compat road: today's one-sided demote byte-for-byte.
+  const primaryAlign = spec.autoLayout?.primaryAlign;
+  const FIG_SLACK_EDGES: Record<string, { start: boolean; end: boolean }> = {
+    MIN: { start: false, end: true }, CENTER: { start: true, end: true },
+    MAX: { start: true, end: false }, SPACE_BETWEEN: { start: false, end: true },
+  };
+  const figFreeSpace = primaryAlign !== undefined && spec.autoLayout !== undefined
+    ? ((end(rect, axis) - padEnd(eff(spec.autoLayout.padding), axis))
+      - (start(rect, axis) + padStart(eff(spec.autoLayout.padding), axis))
+      - figKids.reduce((sum, k) => sum + (axis === 'row' ? k.rect.w : k.rect.h), 0)
+      - (spec.autoLayout.gap ?? 0) * Math.max(0, figKids.length - 1))
+    : 0;
+  const figEdgeIsSlack = (e: 'start' | 'end'): boolean =>
+    primaryAlign !== undefined && figFreeSpace > structTol && FIG_SLACK_EDGES[primaryAlign][e];
+  // The demote is allowed on edge E when there is no figma intent (compat) or the design's
+  // own number there is slack too (evidence-based agreement).
+  const demoteAllowedFor = (e: 'start' | 'end'): boolean => primaryAlign === undefined || figEdgeIsSlack(e);
+  // The attribution attaches OUTERMOST and note-only: it fires only on a row that is STILL a
+  // fail after every demote had its chance (hug/fill, encoding, text-hug keep their veto and
+  // their own notes - the alignment note never lands on a demoted row), so srcChannel is kept
+  // by never stripping. Both surfaces are set: note (long, markdown) and caveat (short - the
+  // field buildFixPlan copies into the edit; without it fix_plan prescribes "set the padding",
+  // exactly the wrong edit). Wording states DECLARED facts only; the zero-slack branch names
+  // the inert keyword instead of claiming the design "anchors" via it.
+  const noteAlignmentMismatch = (rowIn: DiffRow, e: 'start' | 'end', domDistributes: boolean): DiffRow => {
+    if (rowIn.status !== 'fail' || !domDistributes || demoteAllowedFor(e) || primaryAlign === undefined) return rowIn;
+    const text = figFreeSpace <= structTol
+      ? `the design's content fills this axis (no free space - the declared ${primaryAlign} is inert) while the CSS distributes surplus space onto this edge (justify-content: ${jc}) - check the content/box width first, then the distribution rule`
+      : `the design's declared main-axis alignment is ${primaryAlign} while the CSS sets justify-content: ${jc} - an alignment mismatch; fix the distribution first, then re-measure this padding`;
+    return { ...rowIn, note: [rowIn.note, text].filter(Boolean).join('; '), caveat: rowIn.caveat ?? text };
+  };
   // unwrapBase: GRANDCHILDREN are compared through the wrapper (cardinality-repair) — their distribution is set by
   // the WRAPPER's justify-content, while d.styles carries only the ROOT's (per-child styles = Typo, without
   // justifyContent). We do not know the wrapper's → we do NOT demote (conservatively: the fail stays, we never
@@ -1951,8 +1999,8 @@ function crossAndPaddingRows(
       numRow(startName, (start(figFirst.rect, axis) + figPadStart) - figCStart,
         (start(domExt.first.rect, axis) + domPadStart) - domCStart, tol, undefined, SRC_ROOT_LAYOUT),
       startNote,
-    ), jd.start, jc, startName), hugFillMainAxis);
-    rows.push(foldStart ? startRow : dualDemote(startRow, padStart(eff(d.paddings), axis)));
+    ), jd.start && demoteAllowedFor('start'), jc, startName), hugFillMainAxis);
+    rows.push(noteAlignmentMismatch(foldStart ? startRow : dualDemote(startRow, padStart(eff(d.paddings), axis)), 'start', jd.start));
   }
 
   const lastDom = domExt.last;
@@ -1982,8 +2030,8 @@ function crossAndPaddingRows(
         endNote,
       ), axis === 'row' ? pageGutter : undefined),
       endDemote,
-    ), jd.end, jc, endName), hugFillMainAxis);
-    rows.push(foldEnd ? endRow : dualDemote(endRow, padEnd(eff(d.paddings), axis)));
+    ), jd.end && demoteAllowedFor('end'), jc, endName), hugFillMainAxis);
+    rows.push(noteAlignmentMismatch(foldEnd ? endRow : dualDemote(endRow, padEnd(eff(d.paddings), axis)), 'end', jd.end));
   }
 
   // wrapper base: nested DomChild have no captured borders — we assume border≈0 for wrappers (an approximation)
