@@ -713,8 +713,8 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
 // switches to a border-edge reading (crossAndPaddingRows, spacerFold param).
 // SPACER_TYPES is deliberately NOT verification.ts's DECORATIVE_LEAF: VECTOR/BOOLEAN_OPERATION/
 // STAR are glyph types - converting one would eat the icon-color axis. The name gate is the
-// only lock against an accent bar (SpecChild carries no fill visibility); the live DS layer's
-// typo sits in the SECOND token, so the first-token match still hits it.
+// only lock against an accent bar (SpecChild carries no fill visibility); the match reads the
+// FIRST token only, so a misspelling in a later token still converts.
 const SPACER_TYPES = new Set(['RECTANGLE']);
 const SPACER_NAME_RE = /^[\s\W_]*(padding|spacer|inset|gap)s?\b/i;
 function isSpacerShaped(c: SpecChild): boolean {

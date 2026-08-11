@@ -9,8 +9,8 @@
 // paddings not subtracted - a missing DOM inset is a hard fail, never 0v0), encoding demotes
 // are OFF on folded edges (the fold IS the reconciliation), and ONE spacer_inset service row
 // (COVERAGE_META) is pushed AT the conversion site so it survives every early return.
-// Fixtures use invented names; the live layer name's typo sits in the SECOND token, so the
-// first-token name gate still matches it - locked with a typo-position-faithful name below.
+// Fixtures use invented names; the name gate reads the FIRST token only, so a misspelling in
+// a later token still converts - locked with an invented second-token misspelling below.
 import { describe, it, expect } from 'vitest';
 import { diffPair } from '../../src/domain/layout-spec/diff.js';
 import { renderReport } from '../../src/domain/layout-spec/report.js';
@@ -71,7 +71,7 @@ describe('the predicate: what converts and what must not', () => {
     expect(cov.skipped).not.toContain('spacer_inset');
   });
 
-  it('the typo-position-faithful live name still matches (second token carries the typo)', () => {
+  it('a misspelled SECOND token still matches - the gate reads the first token only', () => {
     const rows = diffPair(tile([spacer({ name: 'Padding horisontal' }), kidA(), kidB()]),
       snap([domKid(16, 90), domText(130, 200)]), opts);
     expect(row(rows, 'spacer_inset')).toBeDefined();
