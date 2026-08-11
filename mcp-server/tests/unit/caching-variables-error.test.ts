@@ -475,7 +475,7 @@ describe('the phrase the adapter throws is the phrase the negative cache arms on
 // process's queue, never about the endpoint - it must never be cacheable.
 describe('too-large 400: soft-expiring marker (the ceiling fix)', () => {
   const tooLarge = () => new FigmaApiError('unknown_4xx', 400, 'Figma returned 400',
-    undefined, 'Request too large. If applicable, filter by query params.');
+    undefined, 'Request too large');
 
   it('at the schema-max cap: served cached within the soft window, re-hits Figma after it', async () => {
     vi.useFakeTimers();
