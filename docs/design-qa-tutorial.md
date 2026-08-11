@@ -467,7 +467,11 @@ including fails.
   wrong without failing any test, because that is a claim about meaning and no cheap check reads
   meaning. If a description below and your own run disagree, the run is right.
 - The receipt is budget-honest: if the blocking list is truncated, `blocking_capped` says how many
-  items were cut and `complete` stays `false` — nothing green is ever produced by truncation.
+  items were cut and `complete` stays `false` — nothing green is ever produced by truncation. The
+  same holds for whole pairs dropped by the response budget: `omitted_pairs` counts them,
+  `omitted_pair_ids` names them, a `verification.notes` line counts those carrying FAILing rows
+  when any do (no FAIL clause in the note means none were), and a dropped fail keeps the verdict
+  red — re-run the named pairs in a smaller call to see their rows.
 
 Work the loop: execute the blocking actions (add pairs, raise depth, fix the viewport…), re-run
 the compare, repeat until `complete: true`.

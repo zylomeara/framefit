@@ -1934,22 +1934,23 @@ describe('compare_node_to_dom tool', () => {
     // approach the boundary — here maxResultChars is TIGHTENED so the banner (~150 chars in JSON:
     // the "preflight" field + again inside the report_markdown ⚠️ line) itself decides how many pairs fit.
     // Re-calibrated on the budget-guard invariant (compare clamp now measures serializeForDelivery = COMPACT, not
-    // pretty): the numbers are measured by a real run on the compact serialization. At N=3 narrow pairs
+    // pretty), and AGAIN after the budget drop trace (the clamped-response bytes now include the
+    // notes[] drop line + omitted_pair_ids — both measured by the closure): at N=3 narrow pairs
     // (banner "3 of 3") the compact boundary kept 2→3 in the CORRECT code (measures effPreflight) is
-    // budget 5760 (serialize(kept=2)=4877, serialize(kept=3)=5760), whereas in the MUTANT (serialize
-    // measures the bare preflight — which is absent/undefined in this scenario, the "preflight" field
-    // drops out of the measurement) the same boundary shifts EARLIER, to budget 5454. The window [5454;5759] makes
-    // 5600 a live discriminator: verified live — the mutation "serialize → bare preflight" at this
-    // budget delivers kept=3 (a real 5760 bytes) — OVERFLOWING the promised budget of 5600 → RED
-    // on the assert text.length<=TIGHT_BUDGET (not only on the pair count).
+    // budget 6170 (serialize(kept=2, +trace)=5665, serialize(kept=3, no trace)=6170), whereas in the
+    // MUTANT (serialize measures the bare preflight — absent/undefined in this scenario, the
+    // "preflight" field drops out of the measurement) the boundary shifts EARLIER, to budget 5842.
+    // The window [5842;6169] makes 6000 a live discriminator: verified live — the mutation
+    // "serialize → bare preflight" at this budget delivers kept=3 (a real 6170 bytes) — OVERFLOWING
+    // the promised budget of 6000 → RED on the assert text.length<=TIGHT_BUDGET (not only on the pair count).
     it('byte-lock: the serialize closure MUST measure effPreflight (the banner), not the bare preflight — a tight budget catches the kept discrepancy', async () => {
       const cardC: RawSceneNode = { id: '1:3', name: 'cardC', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 343, height: 120 } };
       const getNodesRaw = vi.fn(async () => ({
         nodes: { '1:1': { document: cardA }, '1:2': { document: cardB }, '1:3': { document: cardC }, '9:9': { document: wideFrame } },
       }));
-      // budget=5600: measured by a run between the compact boundaries of the correct (5760) and mutant
-      // (5454) code — see the comment above. The constant is fixed AFTER measurement, not guessed.
-      const TIGHT_BUDGET = 5600;
+      // budget=6000: measured by a run between the compact boundaries of the correct (6170) and mutant
+      // (5842) code — see the comment above. The constant is fixed AFTER measurement, not guessed.
+      const TIGHT_BUDGET = 6000;
       const run = harness({ getNodesRaw }, TIGHT_BUDGET);
       const res = await run({
         file: 'abc',
@@ -1970,7 +1971,7 @@ describe('compare_node_to_dom tool', () => {
 
       // The DELIVERED text must fit the budget — this is what the size-guard promises the caller.
       // The mutant ("serialize → bare preflight") breaks EXACTLY this assert: the under-count gives kept=3
-      // (5760 bytes) > TIGHT_BUDGET(5600) — a delivery overflow, not merely a different kept count.
+      // (6170 bytes) > TIGHT_BUDGET(6000) — a delivery overflow, not merely a different kept count.
       expect(text.length).toBeLessThanOrEqual(TIGHT_BUDGET);
       // kept/omitted must match the WITH-BANNER measurement (verified live under compact: a bare
       // preflight in serialize gives kept=3/omitted=0 here — diverging from what actually fits).

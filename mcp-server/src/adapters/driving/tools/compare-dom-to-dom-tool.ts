@@ -9,13 +9,13 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
 import { runTokenlessTool, jsonResult } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
-import { summarize, deriveCoverage } from '../../../domain/layout-spec/diff.js';
+import { summarize, deriveCoverage, condenseBulkPass } from '../../../domain/layout-spec/diff.js';
 import { diffDomPair } from '../../../domain/layout-spec/dom-dom.js';
 import { renderReport } from '../../../domain/layout-spec/report.js';
 import { DomSnapshotSchema, DOM_SNAPSHOT_SCHEMA_VERSION } from './dom-snapshot-schema.js';
 import { clampToBudget } from '../../../application/get-comments.js';
 import { DomRefSchema, resolveDomRef } from './dom-ref.js';
-import { buildVerification } from '../../../domain/layout-spec/verification.js';
+import { buildVerification, budgetDropNote } from '../../../domain/layout-spec/verification.js';
 import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, DiffRow, VerificationReceipt } from '../../../domain/layout-spec/types.js';
 
 // What this comparison structurally does not see: content correctness (two captures of the SAME
@@ -130,30 +130,47 @@ export function registerCompareDomToDomTool(server: McpServer, deps: ToolDeps): 
         const verification: VerificationReceipt = buildVerification(results, { depthLevels, tolerancePx, mode: 'dom-dom' });
 
         const budget = deps.maxResultChars ?? 40000;
-        const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(tolerancePx, kept, results.length - kept.length, depthLevels, verification));
+        const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(tolerancePx, kept, results, depthLevels, verification));
+        // Budget cascade: full -> bulk-pass compression -> omitted_pairs. This tool used to go
+        // straight from full to dropping whole pairs - the FIRST relief valve was the harshest,
+        // and on realistic skeleton-vs-loaded batches (60+ matched rows per pair = bulk pass)
+        // the clamp dropped the one red pair while condensation alone fits the whole batch.
+        // Mirrors the Figma comparator's tier minus fix_plan (dom-dom pairs carry none). On a
+        // fitting response condense is NOT called - byte-for-byte as before.
         let kept = results;
         if (serialize(results).length > budget) {
-          ({ kept } = clampToBudget(results, budget, serialize));
+          const condensed = condenseBulkPass(results);
+          kept = serialize(condensed).length <= budget ? condensed : clampToBudget(condensed, budget, serialize).kept;
         }
         deps.logger.info({ total_ms: Date.now() - t0, pairs: args.pairs.length }, 'compare_dom_to_dom.done');
-        return jsonResult(buildOutput(tolerancePx, kept, results.length - kept.length, depthLevels, verification));
+        return jsonResult(buildOutput(tolerancePx, kept, results, depthLevels, verification));
       }),
   );
 }
 
-function buildOutput(tolerancePx: number, pairs: PairResult[], omitted: number,
+function buildOutput(tolerancePx: number, pairs: PairResult[], allResults: PairResult[],
   depthLevels: number, verification: VerificationReceipt): Record<string, unknown> {
   const summary: PairSummary = { pass: 0, fail: 0, warn: 0, skip: 0, info: 0, demoted: 0, unchecked: 0, review: 0 };
   for (const p of pairs) (Object.keys(summary) as (keyof PairSummary)[]).forEach((k) => { summary[k] += p.summary[k]; });
+  // budget drop trace - the same pure-computation contract as the Figma comparator's
+  // buildOutput (see the comment there): dropped = the prefix complement, receipt decorated
+  // on a COPY only when pairs were dropped, measured by the serialize closure itself.
+  const omitted = allResults.length - pairs.length;
+  const dropped = allResults.slice(pairs.length);
+  const droppedFail = dropped.filter((p) => p.summary.fail > 0).length;
+  const droppedIds = dropped.map((p) => p.label ?? p.node_id);
+  const receipt = omitted > 0
+    ? { ...verification, notes: [...(verification.notes ?? []), budgetDropNote(droppedIds, droppedFail)] }
+    : verification;
   return {
-    tolerance_px: tolerancePx, pairs, summary, verification,
+    tolerance_px: tolerancePx, pairs, summary, verification: receipt,
     not_covered_by_tool: DOM_DOM_NOT_COVERED,
     report_markdown: renderReport({
-      tolerancePx, pairs, depthLevels, verification, notCovered: DOM_DOM_NOT_COVERED,
+      tolerancePx, pairs, depthLevels, verification: receipt, notCovered: DOM_DOM_NOT_COVERED,
       headerLine: `Verified reference vs candidate (tolerance ${tolerancePx}px)`,
       sideLabels: ['reference', 'candidate'],
-      ...(omitted ? { omittedPairs: omitted } : {}),
+      ...(omitted ? { omittedPairs: omitted, omittedFailPairs: droppedFail } : {}),
     }),
-    ...(omitted ? { omitted_pairs: omitted } : {}),
+    ...(omitted ? { omitted_pairs: omitted, omitted_pair_ids: droppedIds } : {}),
   };
 }

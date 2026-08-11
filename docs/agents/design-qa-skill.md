@@ -229,7 +229,10 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
 - `blocking: []` with `complete:false` — only INHERENT items remain: hug/fill demotes, out-of-coverage,
   OR a clean spacing audit (`spacing_audit[].fully_clean` — between-children gaps verified and equal,
   only the container INSETS unverified): there is no automated action — verify those axes BY EYE
-  (or add a container pair for a full green) — then you may proceed.
+  (or add a container pair for a full green) — then you may proceed. EXCEPTION: when the response
+  carries `omitted_pairs`, first check the budget-drop note in `verification.notes` — if it says
+  dropped pairs carry FAILing rows, this is NOT an inherent-only remainder: re-run the pairs listed
+  in `omitted_pair_ids` in a smaller compare call before proceeding.
 - `frame_coverage` carries enumeration provenance: `enumeration_source`/`enumeration_depth`
   (in the report: `"· enumeration: <source>@<depth>"`, e.g. `· enumeration: deep@8`). `deep` = coverage
   was enumerated from depth 8 regardless
@@ -382,7 +385,12 @@ read ❌ as defects:
   and the next one will not retry; `get_variables` with a larger `timeout_ms` is what gets past it.
 - a `passes_condensed` row among a pair's rows — bulk-pass rows were folded for the response
   budget: individual pass axes are NOT in rows, take the count from `summary.pass` (signal rows
-  fail/warn/info/review/unchecked and meta style_anchor/unwrapped are always complete).
+  fail/warn/info/review/unchecked and meta style_anchor/unwrapped are always complete). Both
+  comparators condense before dropping whole pairs; when pairs ARE dropped, `omitted_pairs` counts
+  them, `omitted_pair_ids` names them (`label` or node id), and a `verification.notes` line
+  counts the dropped pairs carrying FAILing rows when there are any (a note with no FAIL clause
+  means none were) — a dropped fail keeps the verdict at
+  `"discrepancies found"` even though its rows are not in the response.
 2. Known sources of false ❌ (before tool calibration): a wrapper with its own padding/scroll
    chrome vs the "padding-inner" Figma frame; a scrollbar (~11px in size.w); text node vs frame
    (false padding-end / offset-cross); an inset "baked" into a child's padding that the gap sees
