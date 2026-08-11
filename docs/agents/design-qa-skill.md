@@ -112,7 +112,7 @@ work with the full inline extractor (everything below stays the same). On stdio 
 Selectors go in the same order as the pairs' node_ids; each must match EXACTLY one element
 (`status:'multiple'` → scope it via `:has(...)`/data attributes).
 **Validate the pairs BEFORE compare:** with an `upload_url` each selector comes back as a summary
-(`rect {w,h}`, `tag.class0`, `childCount`); on stdio you read the same fields off the snapshot
+(`rect {w,h}`, `tag.class0`, `childCount`; a failed capture may add `hint` naming the mangled CSS-module class it found); on stdio you read the same fields off the snapshot
 itself. Is it the right element? (a product-card tile ≈ 360×280, expected 5 tiles — childCount 5).
 Wrong one → fix the selector and re-run the extractor (the page is open — it's cheap).
 `upload_url`, where there is one, is multi-use (30-minute sliding TTL): a multi-screen flow = 1
@@ -431,7 +431,10 @@ terminal `no discrepancies above tolerance` is the green.
 
 ## Failure modes
 - `not_found`/`multiple`/`hidden` in the snapshot → a bad selector, or the UI state is wrong
-  (step 0). Don't invent selectors — take them from the component sources.
+  (step 0). Don't invent selectors — take them from the component sources. A CSS-module miss
+  may carry a `hint` naming the mangled class the page really uses and the
+  two-fragment `class*=` recipe (module stem + `__local`) — the blocking item then routes to
+  `fix_pair`, not a re-extract (re-running the same selector reproduces the same miss).
 - ALL geometry rows 👁 unchecked → almost always viewport ≠ frame width (step 2).
 - `structure_mismatch` on wrapper divs → descend the pair one level (the content node, not the
   wrapper).

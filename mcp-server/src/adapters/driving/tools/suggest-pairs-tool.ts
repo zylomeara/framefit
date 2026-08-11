@@ -100,7 +100,12 @@ export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): voi
         rawSnapshot = args.dom_snapshot;
       }
       const dom = DomSnapshotSchema.parse(rawSnapshot);
-      if (!('children' in dom)) throw new Error(`dom_snapshot: ${dom.status} — first capture the frame-root subtree with the extractor (the selector must match a single visible element)`); // I5
+      if (!('children' in dom)) {
+        // feedback 14: the extractor's CSS-module hint must reach the caller here too - the
+        // frame-root capture is the single most likely place to typo a module selector.
+        const hint = 'hint' in dom && typeof dom.hint === 'string' ? `; ${dom.hint}` : '';
+        throw new Error(`dom_snapshot: ${dom.status} — first capture the frame-root subtree with the extractor (the selector must match a single visible element)${hint}`); // I5
+      }
       // snippet-cap: suggest_pairs is the SECOND matcher input; without a version gate
       // an old extractor (truncates text at 40 WITHOUT a flag) at the server's SNIPPET_CAP=120 threshold
       // is indistinguishable from full text → the canonical mis-anchor (the hidden tail may carry S).

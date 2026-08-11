@@ -21,7 +21,7 @@
 //
 //   1. THE EXTRACTOR. `get_layout_spec {include_extractor:true}` returns the whole script inline on
 //      stdio, because a stdio server has no public base URL for the browser to fetch it from. Pasted
-//      through the agent, that is 65953 characters. `serve-extractor` puts those characters on a
+//      through the agent, that is 68730 characters. `serve-extractor` puts those characters on a
 //      loopback socket instead: they cross THIS process, which is not the agent's context, and what
 //      the agent handles is a ~278-character thunk that fetches them.
 //   2. THE SNAPSHOT. `verdict` reads the capture from a FILE. chrome-devtools' `evaluate_script`
@@ -485,7 +485,8 @@ function readSnapshots(file, pairs) {
   snapshots.forEach((s, i) => {
     if (s?.status !== 'ok') {
       die(`snapshot ${i} for '${pairs[i].selector}' has status '${s?.status}' - the selector matched `
-        + 'nothing, matched several elements, or the element is hidden. Fix the selector and re-capture.');
+        + 'nothing, matched several elements, or the element is hidden. Fix the selector and re-capture.'
+        + (s.hint ? ' Hint: ' + s.hint : ''));
     }
     for (const key of ['rect', 'borders', 'paddings', 'scroll', 'children']) {
       if (s[key] === undefined) {

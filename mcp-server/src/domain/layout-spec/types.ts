@@ -233,6 +233,9 @@ export interface DomSnapshotFailed {
   status: 'not_found' | 'multiple' | 'hidden';
   selector?: string;
   matches?: number;
+  // feedback 14: the extractor's CSS-module probe - the mangled class it found on the page
+  // plus the [class*] recipe. Present only on not_found where the probe hit.
+  hint?: string;
 }
 
 export type DomSnapshot = DomSnapshotOk | DomSnapshotFailed;

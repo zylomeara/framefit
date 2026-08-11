@@ -5,6 +5,7 @@
 import type {
   LayoutSpec, SpecRect, SpecChild, SpecTypography, DomSnapshot, DomSnapshotOk, DomChild, DiffRow, PairSummary,
   PairCoverage, PairResult, Edges, DiffStatus, ResolvedColorToken, PairAttribution, MatchProfile,
+  DomSnapshotFailed,
 } from './types.js';
 import { SNIPPET_CAP } from './types.js';
 import type { CssTokenEvidence } from '../variables.js';
@@ -623,8 +624,11 @@ export function diffPair(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions):
 
 function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): DiffRow[] {
   if (dom.status && dom.status !== 'ok') {
+    // `status !== 'ok'` does not narrow the union (DomSnapshotOk.status is an OPTIONAL
+    // literal) - the explicit failed-side view mirrors the `as DomSnapshotOk` cast below.
+    const failed = dom as DomSnapshotFailed;
     return [{ prop: 'snapshot', figma: null, dom: dom.status, status: 'warn',
-      note: `selector ${dom.selector ?? '?'}: ${dom.status} — check the mapping/UI state` }];
+      note: `selector ${failed.selector ?? '?'}: ${failed.status} — check the mapping/UI state${failed.status === 'not_found' && failed.hint !== undefined ? `; ${failed.hint}` : ''}` }];
   }
   const d = dom as DomSnapshotOk;
   const rows: DiffRow[] = [];

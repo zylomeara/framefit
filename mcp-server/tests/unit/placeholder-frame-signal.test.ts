@@ -116,6 +116,29 @@ describe('applyPlaceholderSignal (the guard)', () => {
   });
 });
 
+describe('the module hint through compare (feedback 14)', () => {
+  it('a hinted not_found rides the snapshot warn note and routes blocking to fix_pair', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardClean } } }));
+    const run = harness({ getNodesRaw });
+    const failedDom = { status: 'not_found', selector: '.panel-header_root',
+      hint: 'selector failed, but a class containing "panel-header" exists ("panel-header-module__Zz__root") - if your build mangles CSS-module names, try [class*="<module>"][class*="__<local>"]' };
+    const out = JSON.parse((await run({ file: 'F', pairs: [{ node_id: '1:1', dom: failedDom }] })).content[0].text);
+    const row = out.pairs[0].rows.find((r: any) => r.prop === 'snapshot');
+    expect(row?.note).toMatch(/check the mapping\/UI state; selector failed/);
+    expect(row?.note).toMatch(/panel-header-module__Zz__root/);
+    const b = out.verification.blocking.find((x: any) => x.kind === 'snapshot');
+    expect(b?.action).toBe('fix_pair');
+    expect(b?.detail).toMatch(/if your build mangles/);
+  });
+  it('a hint-less not_found keeps the re_extract_dom route', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardClean } } }));
+    const run = harness({ getNodesRaw });
+    const out = JSON.parse((await run({ file: 'F', pairs: [{ node_id: '1:1', dom: { status: 'not_found', selector: '.x' } }] })).content[0].text);
+    const b = out.verification.blocking.find((x: any) => x.kind === 'snapshot');
+    expect(b?.action).toBe('re_extract_dom');
+  });
+});
+
 describe('the signal through the tool', () => {
   it('pair-scoped (no frame_node_id): the row fires with the count, all-pass stays complete:true WITH the note', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardWithGhost } } }));
