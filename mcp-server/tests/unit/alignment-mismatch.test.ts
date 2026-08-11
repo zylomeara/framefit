@@ -114,12 +114,44 @@ describe('precedence: stronger demotes keep their veto - the attribution never l
     expect(pl!.note ?? '').not.toMatch(/alignment mismatch/);
   });
   it('the encoding demote wins: reconciled row keeps only the encoding note', () => {
-    // design declares 0 padding, children inset (structural encoding); DOM declares padding 50
+    // design declares 0 padding, children inset (structural encoding); DOM declares padding 50.
+    // primaryAlign MIN makes the start edge INTENT (the justify demote is disallowed), so the
+    // row reaches dualDemote and the encoding reconciliation demotes it - and the outermost
+    // attribution must then keep its hands off the demoted row (wave: the original fixture
+    // omitted primaryAlign, fired the JUSTIFY demote instead, and hid the assert behind an
+    // if-guard - vacuous three times over).
     const rows = diffPair(
-      spec([fk(50, 200, '2:2'), fk(260, 30, '2:3')]),
+      spec([fk(50, 200, '2:2'), fk(260, 30, '2:3')], 'MIN'),
       snap([dk(50, 200), dk(260, 30)], 'center', { paddings: { top: 0, right: 0, bottom: 0, left: 50 } }), opts);
     const pl = row(rows, 'padding-left');
-    if (pl?.status === 'demoted') expect(pl.note ?? '').not.toMatch(/alignment mismatch/);
+    expect(pl!.status).toBe('demoted');
+    expect(pl!.note).toMatch(/encoding artifact/);
+    expect(pl!.note ?? '').not.toMatch(/alignment mismatch/);
+  });
+});
+
+describe('the END-edge half of the gate (wave lock: deleting the end allowance left the suite green)', () => {
+  it('fig MAX (end pinned, slack at the start) + DOM space-between -> padding-end FAILS with the attribution', () => {
+    // MAX packs children to the END: child 60..300, the slack 60 lives at the START. The end
+    // edge is INTENT - a DOM that distributes free space onto it keeps a hard fail.
+    const rows = diffPair(spec([fk(60, 240)], 'MAX'), snap([dk(0, 240)], 'space-between'), opts);
+    const pr = row(rows, 'padding-right');
+    expect(pr).toMatchObject({ figma: 0, dom: 60, status: 'fail' });
+    expect(pr!.note).toMatch(/alignment mismatch/);
+    expect(pr!.caveat).toBeDefined();
+  });
+});
+
+describe('the domDistributes guard: no attribution without DOM distribution evidence', () => {
+  it('a real padding defect under flex-start carries NO alignment note (jd false is not anchoring proof)', () => {
+    // fig MIN with slack, DOM flex-start but inset 30 - a genuine padding defect; the
+    // attribution must not appear (a note naming a justify-content value that distributes
+    // nothing would be a false attribution).
+    const rows = diffPair(spec([fk(0, 200)], 'MIN'), snap([dk(30, 200)], 'flex-start'), opts);
+    const pl = row(rows, 'padding-left');
+    expect(pl!.status).toBe('fail');
+    expect(pl!.note ?? '').not.toMatch(/alignment mismatch/);
+    expect(pl!.caveat).toBeUndefined();
   });
 });
 
