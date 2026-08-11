@@ -12,7 +12,7 @@ import { DomSnapshotSchema, DOM_SNAPSHOT_SCHEMA_VERSION } from './dom-snapshot-s
 import { buildSetNames } from './component-set-names.js';
 import { clampToBudget } from '../../../application/get-comments.js';
 import { DomRefSchema, resolveDomRef } from './dom-ref.js';
-import { buildVerification } from '../../../domain/layout-spec/verification.js';
+import { buildVerification, budgetDropNote } from '../../../domain/layout-spec/verification.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
 import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, LayoutSpec, VerificationReceipt, CaptureInfo, PairAttribution, PairSource, DiffRow, FixPlanGroup, FixPlanEdit, MatchProfile } from '../../../domain/layout-spec/types.js';
 import { hintForNode, type SourceHint } from '../../../domain/layout-spec/class-source.js';
@@ -872,7 +872,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // fix-plan: fixPlanStripped is read by the serialize CLOSURE (declared BEFORE it)
         // — the clamp measurement in the strip tier accounts for both the removed fix_plan and the added response flag.
         let fixPlanStripped = false;
-        const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(parsed.value, tolerancePx, kept, frame, results.length - kept.length, effPreflight, depthLevels, verification, hydration, degradedStages, fixPlanStripped));
+        const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(parsed.value, tolerancePx, kept, frame, results, effPreflight, depthLevels, verification, hydration, degradedStages, fixPlanStripped));
         // Budget cascade: full → bulk-pass compression → [fix-plan strip tier] → omitted_pairs
         // (the last resort). fix_plan is pure duplication of rows: if it doesn't fit after condense, we FIRST
         // strip fix_plan/fix_plan_capped from ALL pairs (+fix_plan_stripped:true, an honest flag), and only
@@ -895,30 +895,50 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // Latency: one log line for the whole call — to measure wall-clock
         // without reconstructing it from fetch logs. Only on the successful main return.
         deps.logger.info({ total_ms: Date.now() - t0, pairs: args.pairs.length }, 'compare.done');
-        return jsonResult(buildOutput(parsed.value, tolerancePx, kept, frame, results.length - kept.length, effPreflight, depthLevels, verification, hydration, degradedStages, fixPlanStripped));
+        return jsonResult(buildOutput(parsed.value, tolerancePx, kept, frame, results, effPreflight, depthLevels, verification, hydration, degradedStages, fixPlanStripped));
       }, deps.noTokenHint),
   );
 }
 
 function buildOutput(file: string, tolerancePx: number, pairs: PairResult[],
-  frame: { node_id: string; width?: number } | undefined, omitted: number, preflight: string | undefined,
+  frame: { node_id: string; width?: number } | undefined, allResults: PairResult[], preflight: string | undefined,
   depthLevels: number, verification: VerificationReceipt, hydration: HydrationReceipt[],
   degradedStages: DegradedStage[] = [], fixPlanStripped = false): Record<string, unknown> {
   const summary: PairSummary = { pass: 0, fail: 0, warn: 0, skip: 0, info: 0, demoted: 0, unchecked: 0, review: 0 };
   for (const p of pairs) (Object.keys(summary) as (keyof PairSummary)[]).forEach((k) => { summary[k] += p.summary[k]; });
   const keptHydration = hydration.filter((h) => pairs.some((p) => p.node_id === h.node_id));
+  // budget drop trace: the trace depends on the clamp result, so it is computed HERE - inside
+  // the serialize closure's measurement AND the final call - as a pure function of
+  // (allResults, pairs). clampToBudget keeps a PREFIX and condense/strip are per-pair
+  // order-preserving transforms, so index identity holds: dropped = allResults.slice(pairs.length).
+  // The receipt is a per-call COPY when pairs were dropped (mutating the shared object would
+  // accumulate one note per binary-search probe and falsify the measurement); with zero dropped
+  // the SAME reference flows through - byte-for-byte with the pre-trace behavior. The note+ids
+  // re-add strictly less than any dropped pair's own serialization (a pair's JSON carries its
+  // own label plus rows), so the clamp's prefix search stays safe.
+  // ponytail: the clamp itself stays signal-blind (prefix drop) - keep-priority ordering was
+  // panel-cut (post-condense greens are nearly free; the sort would drop spacing-audit
+  // evidence pairs by design). The trace + one re-run round-trip is the honest cost.
+  const omitted = allResults.length - pairs.length;
+  const dropped = allResults.slice(pairs.length);
+  const droppedFail = dropped.filter((p) => p.summary.fail > 0).length;
+  const droppedIds = dropped.map((p) => p.label ?? p.node_id);
+  const receipt = omitted > 0
+    ? { ...verification, notes: [...(verification.notes ?? []), budgetDropNote(droppedIds, droppedFail)] }
+    : verification;
   return {
     file, tolerance_px: tolerancePx, ...(frame ? { frame } : {}), ...(preflight ? { preflight } : {}), pairs, summary,
-    verification,
+    verification: receipt,
     ...(keptHydration.length ? { hydration: keptHydration } : {}),
     not_covered_by_tool: NOT_COVERED_BY_TOOL,
     ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
     report_markdown: renderReport({
       file, tolerancePx, pairs, ...(frame ? { frame } : {}),
-      ...(omitted ? { omittedPairs: omitted } : {}), ...(preflight ? { preflight } : {}), depthLevels, verification,
+      ...(omitted ? { omittedPairs: omitted, omittedFailPairs: droppedFail } : {}),
+      ...(preflight ? { preflight } : {}), depthLevels, verification: receipt,
       ...(degradedStages.length ? { degradedStages } : {}),
     }),
-    ...(omitted ? { omitted_pairs: omitted } : {}),
+    ...(omitted ? { omitted_pairs: omitted, omitted_pair_ids: droppedIds } : {}),
     // fix-plan: an honest flag — fix_plan was stripped from ALL pairs by the budget tier (BEFORE dropping
     // whole pairs). Can coexist with omitted_pairs (we stripped the plan AND still trimmed pairs).
     ...(fixPlanStripped ? { fix_plan_stripped: true } : {}),

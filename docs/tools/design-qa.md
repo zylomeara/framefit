@@ -437,6 +437,13 @@ Response (abridged — see the [tutorial](../design-qa-tutorial.md) for a full a
 }
 ```
 
+When the response budget cannot fit every pair even after bulk-pass condensation, whole pairs are
+dropped from `pairs[]`: `omitted_pairs` counts them, `omitted_pair_ids` names them (label or node
+id), and a `verification.notes` line says whether any dropped pair carried FAILing rows — a
+dropped fail keeps the report verdict at "discrepancies found" (the receipt measured it; the rows
+just did not fit). Re-run the named pairs in a smaller call to see their rows. Both comparators
+share this contract.
+
 ---
 
 ### compare_dom_to_dom

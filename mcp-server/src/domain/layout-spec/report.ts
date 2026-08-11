@@ -141,6 +141,11 @@ export function renderReport(input: {
   notCovered?: readonly string[];
   tolerancePx: number; pairs: PairResult[];
   frame?: { node_id: string; width?: number }; omittedPairs?: number;
+  // budget drop trace: how many of the omitted pairs carry FAILing rows. A dropped fail is a
+  // MEASURED defect (the receipt saw it) with no delivered row - the verdict must stay red and
+  // the blocking-empty caveat must not claim "inherent-only". Clean drops deliberately do NOT
+  // degrade anything (the crying-wolf decision at the verdict computation below).
+  omittedFailPairs?: number;
   preflight?: string;
   // max_depth drill-down: the depth-ceiling footer note used to hardcode a fixed
   // capture depth (4). Capture depth is now a per-call parameter (compare_node_to_dom's max_depth) —
@@ -266,14 +271,18 @@ export function renderReport(input: {
   // a separate channel). Mutation lock: a fixture with total.fail===0 across all pairs must still yield
   // "discrepancies found" EXACTLY through this branch — else an audit fail silently sinks into "no defects found".
   const auditFail = (input.verification?.spacing_audit ?? []).some((e) => e.gaps.some((g) => g.status === 'fail'));
+  // budget drop trace: a dropped pair's fail is measured but undelivered - total.fail (kept
+  // pairs only) does not see it, same shape as auditFail. Without this the drop case printed
+  // "no defects found ... see verification.blocking" at an EMPTY blocking list.
+  const droppedFail = (input.omittedFailPairs ?? 0) > 0;
   const verdict =
-    total.fail > 0 || auditFail
+    total.fail > 0 || auditFail || droppedFail
       ? 'discrepancies found'
       : notVerified.length > 0 || receiptIncomplete
         ? `no defects found, but CHECK INCOMPLETE: ${notVerified.join(', ') || 'see verification.blocking'} — do NOT treat as green, verify visually`
         : 'no discrepancies above tolerance';
   lines.push(`Total: ✅${total.pass} ❌${total.fail}${demTotal}${unchTotal}${revTotal} ⚠️${total.warn} ⏭${total.skip} ℹ️${total.info} — ${verdict}`);
-  const vBlock = renderVerification(input.verification);
+  const vBlock = renderVerification(input.verification, input.omittedFailPairs);
   if (vBlock.length) lines.push('', ...vBlock);
   for (const d of input.degradedStages ?? []) {
     // A REPLAYED failure cost this call nothing: the negative cache answered from an earlier attempt,
@@ -318,7 +327,7 @@ function renderSpacingAudit(entries: SpacingAuditEntry[] | undefined): string[] 
 // A1: human-readable "Check" block (R3 hybrid — structured verification.blocking in JSON, prose here).
 // complete=false with an empty blocking = only inherent caveats remain (demoted) → verify visually, no auto
 // actions (anti-cry-wolf: we don't push the AI to "fix" the unfixable).
-function renderVerification(v?: VerificationReceipt): string[] {
+function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number): string[] {
   if (!v) return [];
   const cov = v.frame_coverage;
   const scopeNote = v.scope === 'frame'
@@ -361,6 +370,13 @@ function renderVerification(v?: VerificationReceipt): string[] {
   }
   const out = [`Check: INCOMPLETE (${scopeNote}): ${bits.join('; ')} — do NOT say "done" until this is closed.${prov}`, ...exLines, ...auditBlock];
   if (v.blocking.length === 0) {
+    // budget drop trace: a dropped FAILing pair is neither demoted nor out of reach - claiming
+    // "inherent-only" over it was one of the drop shape's three false sentences. The action here
+    // is a re-run of the omitted pairs, not a visual check.
+    if ((omittedFailPairs ?? 0) > 0) {
+      out.push(`${omittedFailPairs} FAILing pair(s) were dropped by the response budget — NOT an inherent-only remainder: re-run the pairs in omitted_pair_ids (fewer pairs at a time).`);
+      return out;
+    }
     // Final hardening: the generic caveat used to say only "demoted/out of
     // reach", mis-labeling an audit-clean container's insets-only remainder as one of those two — a
     // fully_clean spacing_audit entry names a THIRD honest reason nothing is actionable here.
