@@ -191,8 +191,8 @@
     }
   ],
   "extractor_js": {
-    "length": 65953,
-    "sha256": "f76a8fb7c0098637be4c13d1081d926151e3a5ef99ee7ea33607846af4515d32"
+    "length": 68730,
+    "sha256": "edbc65c08ddb26d7b9d7e82208a55b7e3d61449c21b62b4e70d0936692f32802"
   },
   "extractor_note": "loader unavailable without public base URL — inline returned",
   "extractor_hint": "no upload_url on this server: the extractor hands the snapshots back to you. Paste extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare assignment throws) — then every capture is `async () => await window.__extract([\"<sel>\", …], undefined, 3, 90)` (a reload drops the handle — paste again). Pass include_extractor:false on every later get_layout_spec call. Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom."

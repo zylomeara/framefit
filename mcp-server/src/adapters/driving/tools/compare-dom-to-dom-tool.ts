@@ -68,8 +68,11 @@ function resolveSide(side: Side, role: 'reference' | 'candidate', deps: ToolDeps
 function sideGateRows(snap: DomSnapshot | undefined, note: string | undefined, role: 'reference' | 'candidate'): DiffRow[] {
   if (note) return [{ prop: 'snapshot_ref', status: 'warn', note }];
   if (snap !== undefined && snap.status !== undefined && snap.status !== 'ok') {
+    // feedback 14: the extractor's CSS-module hint rides this note too (this gate
+    // short-circuits before diffPair, so the shared snapshot-warn append never runs here).
+    const hint = 'hint' in snap && typeof snap.hint === 'string' ? `; ${snap.hint}` : '';
     return [{ prop: 'snapshot', status: 'warn',
-      note: `${role}: extractor capture failed (${snap.status}${'matches' in snap && snap.matches !== undefined ? `, ${snap.matches} matches` : ''}) — fix the ${role} selector/state and re-capture` }];
+      note: `${role}: extractor capture failed (${snap.status}${'matches' in snap && snap.matches !== undefined ? `, ${snap.matches} matches` : ''}) — fix the ${role} selector/state and re-capture${hint}` }];
   }
   const ok = snap as DomSnapshotOk | undefined;
   if (ok?.schema !== undefined && ok.schema !== DOM_SNAPSHOT_SCHEMA_VERSION) {

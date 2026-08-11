@@ -144,6 +144,9 @@ export const OkSchema = z.object({
 
 const FailedSchema = z.object({
   status: z.enum(['not_found', 'multiple', 'hidden']),
+  // feedback 14: the extractor's CSS-module probe - names the mangled class it found on the
+  // page and the [class*] recipe. Additive and optional; older captures simply omit it.
+  hint: z.string().optional(),
   selector: z.string().optional(),
   matches: z.number().int().optional(),
 });

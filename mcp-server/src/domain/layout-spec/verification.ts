@@ -278,6 +278,11 @@ function holeToBlocking(r: DiffRow, p: PairResult, depthLevels: number): Blockin
       : { ...base, kind: 'children_truncated', action: 'add_pairs_on_children',
           detail: `${base.detail} - already at the maximum capture depth (8), so a deeper capture is not available: pair the nested node directly` };
     case 'snapshot':
+      // feedback 14: a not_found carrying the CSS-module hint means the SELECTOR is wrong -
+      // re-running the extractor with the same selector reproduces the same not_found
+      // forever; the executable action is fixing the pair, and the hint in detail names how.
+      if ((r.note ?? '').includes('if your build mangles')) return { ...base, kind: 'snapshot', action: 'fix_pair' };
+      return { ...base, kind: 'snapshot', action: 're_extract_dom' };
     case 'snapshot_schema':
     case 'snapshot_ref': return { ...base, kind: 'snapshot', action: 're_extract_dom' };
     case 'extractor_outdated': return { ...base, kind: 'extractor_outdated', action: 'update_extractor' };

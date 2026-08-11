@@ -838,11 +838,53 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   const gutterOk = rawGutter !== undefined && rawGutter - rawLeft <= 20 && rawLeft <= 20;
   const reservedGutter = gutterOk ? rawGutter : undefined;
   const reservedGutterLeft = gutterOk ? rawLeft : undefined;
+  // Feedback 14: a not_found whose selector carries the CSS-module local convention
+  // ('panel-header_root') probes the live page for the module STEM; when a module-mangled
+  // class exists ('panel-header-module-scss-module__Qx7Rp2__root'), the hint names it and the
+  // [class*] recipe - the build-mangled name is one probe away, not a guessing round.
+  // Conservatism is the safety story, each gate load-bearing (review-measured):
+  // - fragments iterate RIGHT-TO-LEFT: in a descendant selector the leaf is the likely miss,
+  //   and reporting the (usually matching) ancestor was measured as 20/20 wrong hints;
+  // - the '_' convention gate: a bare '.card' miss must not surface unrelated classes;
+  // - the stem must be multi-word-ish (>= 8 chars or kebab): 'card' probed everything;
+  // - the found class must LOOK module-mangled ('__'): substring containment alone named
+  //   legacy classes as modules;
+  // - the wording asserts only the held evidence (a class containing the stem exists) - the
+  //   whole selector failed, whether THIS fragment matches alone was never queried;
+  // - page-controlled strings are sliced; probes are memoized per call.
+  const phProbe = {};
+  const moduleHint = (selector) => {
+    const frags = [];
+    for (const m of selector.matchAll(/\\[class\\*=["']?([^"'\\]]+)["']?\\]/g)) frags.push(m[1]);
+    for (const m of selector.matchAll(/\\.([A-Za-z0-9_-]+)/g)) frags.push(m[1]);
+    for (let i = frags.length - 1; i >= 0; i--) {
+      const frag = frags[i];
+      if (frag.indexOf('_') === -1 || /[^A-Za-z0-9_-]/.test(frag)) continue;
+      const stem = frag.split('_')[0];
+      if (stem.length < 4 || (stem.length < 8 && stem.indexOf('-') === -1) || /[^A-Za-z0-9-]/.test(stem)) continue;
+      let el;
+      if (stem in phProbe) el = phProbe[stem];
+      else { try { el = document.querySelector('[class*="' + stem + '"]'); } catch (e) { el = null; } phProbe[stem] = el; }
+      if (!el || !el.classList) continue;
+      const cls = Array.from(el.classList).find((c) => c.indexOf(stem) !== -1 && c !== frag && c.indexOf('__') !== -1);
+      if (cls) return 'selector failed, but a class containing "' + stem.slice(0, 120) + '" exists ("' + cls.slice(0, 120) + '") - if your build mangles CSS-module names, try [class*="<module>"][class*="__<local>"]';
+    }
+    return undefined;
+  };
   const snapshots = selectors.map((selector) => {
     let found;
     try { found = document.querySelectorAll(selector); }
-    catch (e) { return { selector, status: 'not_found' }; }
-    if (found.length === 0) return { selector, status: 'not_found' };
+    catch (e) {
+      // an invalid selector is the one case where module advice is unambiguously apt - the
+      // probe never parses the selector itself (it regex-scrapes fragments and builds its own
+      // sanitized query), so it cannot rethrow here.
+      const hint = moduleHint(selector);
+      return { selector, status: 'not_found', ...(hint ? { hint } : {}) };
+    }
+    if (found.length === 0) {
+      const hint = moduleHint(selector);
+      return { selector, status: 'not_found', ...(hint ? { hint } : {}) };
+    }
     if (found.length > 1) return { selector, status: 'multiple', matches: found.length };
     const el = found[0];
     const cs = getComputedStyle(el);
@@ -900,6 +942,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   // only compact summaries (chat-context-sized), plus the store's ref/expiry
   // or an honest upload_error the caller can surface (see dom-snapshot-routes.ts).
   const summarize = (s) => ({ selector: s.selector, status: s.status || 'ok',
+    ...(s.hint ? { hint: s.hint } : {}),
     rect: s.rect ? { w: s.rect.w, h: s.rect.h } : null,
     tag: (s.componentHints && s.componentHints.tag) || null,
     class0: (s.componentHints && s.componentHints.classList && s.componentHints.classList[0]) || null,
