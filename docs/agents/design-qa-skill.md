@@ -423,7 +423,13 @@ read ❌ as defects:
   `justify-content` spacer distributes free space (the padding edge is informative, not a defect);
   hug-width text (`size.w`/`padding-end` = the text's natural width); fixed-overlay `size.w`.
   NOT a defect on that axis — but not "verified blindly" either. (For FIXED-width text set by the
-  designer, width stays an honest ❌, not demoted.)
+  designer, width stays an honest ❌, not demoted.) The justify demote is TWO-SIDED when the
+  design declares its main-axis alignment (`autoLayout.primaryAlign`, projected on FIXED-axis
+  containers): it fires only when the design's own number on that edge is slack too. A DOM that
+  distributes free space onto an edge the design PINS (content anchored or filling the axis)
+  keeps its ❌ with an alignment-mismatch note and a `fix_plan` caveat pointing at the
+  distribution rule — check whether the design container actually has main-axis free space
+  before touching padding values.
 - 👁 unchecked — there IS something to check but it was NOT REACHED: typography below the capture
   cut (raise `max_depth` to 8 OR add a pair on the nested TEXT) or the environment is not ready
   (viewport≠frame / transform≠none / rotated → fix the window / wait out the animation). NOT

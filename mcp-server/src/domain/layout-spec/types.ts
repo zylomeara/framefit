@@ -98,7 +98,12 @@ export interface LayoutSpec {
   rect?: SpecRect;             // absent — absoluteBoundingBox was null
   rotated?: boolean;           // rotation != 0 → AABB is inflated, geometry is unreliable
   axis?: 'row' | 'col';        // from layoutMode; absent — no auto-layout
-  autoLayout?: { gap?: number; padding: Edges }; // DECLARED values (informational; the diff measures rects)
+  autoLayout?: { gap?: number; padding: Edges;
+    /** Declared main-axis alignment, projected ONLY when the primary axis is FIXED (on a hug
+     *  the keyword is inert) and the value is one of the four REST members - a missing field
+     *  means "no figma intent" and keeps the one-sided justify-demote road byte-for-byte
+     *  (dom-dom's fabricated autoLayout and legacy fixtures live there). */
+    primaryAlign?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN' }; // DECLARED values (informational; the diff measures rects)
   fillHex?: string;
   // dom-dom projection only: the reference HAS a background but in a non-hex color space
   // (oklch()/color()) - distinguishes "skipped, verify visually" from "reference is transparent"
