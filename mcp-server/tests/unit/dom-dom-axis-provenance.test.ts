@@ -9,7 +9,10 @@ import type { DomSnapshotOk, DomChild } from '../../src/domain/layout-spec/types
 const el = (x: number, y: number, w: number, h: number, extra: Partial<DomChild> = {}): DomChild =>
   ({ kind: 'element', tag: 'div', rect: { x, y, w, h }, ...extra });
 const snap = (children: DomChild[], over: Partial<DomSnapshotOk> = {}): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.x', innerWidth: 768,
+  // the selector deliberately carries a skeleton-shaped INVENTED name: the placeholder_frame
+  // signal is fig-only by construction (it lives in the compare tool layer), and this fixture
+  // is the tripwire - if the detection ever leaks into the shared differ, the census below reds.
+  schema: 6, status: 'ok', selector: '.ghost-skeleton-rail', innerWidth: 768,
   rect: { x: 0, y: 0, w: 600, h: 600 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: 0, right: 0, bottom: 0, left: 0 },
@@ -51,7 +54,7 @@ describe('provenance silence (row-prop census)', () => {
     const ALLOW = /^(viewport|size\.[wh]|child-size\.[wh].*|fill|fill-token-drift|corner-radius|opacity|box-shadow|shadow-.*|border.*|gap.*|offset-cross.*|padding-(top|right|bottom|left|start|end).*|typography.*|font-.*|line-height.*|letter-spacing.*|text-color.*|children.*|structure_mismatch|unwrapped|reference_.*|snapshot.*|extractor_outdated|justify.*)$/;
     const outside = rows.map((r) => r.prop).filter((p) => !ALLOW.test(p));
     expect(outside).toEqual([]);
-    const FORBIDDEN = /^(component|style_anchor|hug|token|mode_)/; // unwrapped moved to ALLOW: the overlap unwrap is reachable through the projection and its side field speaks reference/candidate
+    const FORBIDDEN = /^(component|style_anchor|hug|token|mode_|placeholder_frame)/; // unwrapped moved to ALLOW: the overlap unwrap is reachable through the projection and its side field speaks reference/candidate
     expect(rows.map((r) => r.prop).filter((p) => FORBIDDEN.test(p))).toEqual([]);
   });
 });
