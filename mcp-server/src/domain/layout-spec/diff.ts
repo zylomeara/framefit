@@ -154,6 +154,9 @@ const COVERAGE_META = new Set([
   // (never by this differ - the fig-only boundary is structural). NOT in COVERAGE_HOLING_WARN:
   // the metrics WERE measured; the protection is the caveat on the fail rows + the receipt note.
   'placeholder_frame',
+  // spacer_inset: edge spacer children were folded into insets before pairing (feedback batch 2
+  // item 1) - a service trace of the conversion, not a visual axis.
+  'spacer_inset',
 ]);
 
 // prop → coverage axis. prop formats: 'size.w' | 'gap[0] a↔b' | 'padding-left' |
@@ -700,6 +703,76 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
   return rows;
 }
 
+// Edge spacer children fold into insets BEFORE pairing (feedback batch 2 item 1, panel-locked).
+// A DS that parameterizes container insets as literal spacer layers ("Padding horizontal",
+// 16w, full cross-size, flush to the edge; the container's own auto-layout padding is 0)
+// breaks the EQUAL-COUNT index zip: the spacer pairs with a real DOM child and gap[0]/
+// padding/offset go false-red over correct code, with fix_plan prescribing edits against
+// working CSS. Removal IS the fold - the surviving children's absolute rects carry the inset
+// (an arithmetic fold double-counts; measured by the panel); the folded edge's padding row
+// switches to a border-edge reading (crossAndPaddingRows, spacerFold param).
+// SPACER_TYPES is deliberately NOT verification.ts's DECORATIVE_LEAF: VECTOR/BOOLEAN_OPERATION/
+// STAR are glyph types - converting one would eat the icon-color axis. The name gate is the
+// only lock against an accent bar (SpecChild carries no fill visibility); the match reads the
+// FIRST token only, so a misspelling in a later token still converts.
+const SPACER_TYPES = new Set(['RECTANGLE']);
+const SPACER_NAME_RE = /^[\s\W_]*(padding|spacer|inset|gap)s?\b/i;
+function isSpacerShaped(c: SpecChild): boolean {
+  return SPACER_TYPES.has(c.type)
+    && (c.children?.length ?? 0) === 0
+    && c.childrenTruncated !== true            // a depth-cut container reads as an empty leaf
+    && c.imageFill !== true
+    && c.iconHex === undefined && c.iconToken === undefined
+    && c.iconMulti === undefined && c.iconUnknown === undefined
+    && SPACER_NAME_RE.test(c.name);
+}
+// A DOM edge counterpart: the DS renders literal spacer elements too - removing only the fig
+// side would break counts and route a clean pair into salvage or a wrong unwrap. Shape-only
+// (no name available): content-empty box, full cross extent (what separates a 24px spacer div
+// from a 90x90 content leaf), no image content.
+function isDomSpacerShaped(c: DomChild, containerCross: number, structTol: number, axis: 'row' | 'col'): boolean {
+  if (c.kind !== 'element') return false;
+  if ((c.children?.length ?? 0) > 0 || c.text !== undefined) return false;
+  if (c.styles?.bgImage === true) return false;
+  if (c.tag === 'img' || c.tag === 'svg' || c.tag === 'picture' || c.tag === 'video') return false;
+  const cross = axis === 'row' ? c.rect.h : c.rect.w;
+  return Math.abs(cross - containerCross) <= structTol;
+}
+
+export interface SpacerFold { startPx: number; endPx: number; names: string[]; interior: string[]; domRemoved: number }
+
+// The edge scan shared by BOTH conversion sites (the pair root and tryUnwrap's fig branch -
+// a spacer inside an unwrapped wrapper otherwise defeats the cardinality decision and becomes
+// the false figFirst of the padding rows). kids must be main-start sorted; the flush
+// references are the CONTAINER's content edges (declared padding accounted, so a mixed
+// declared+spacer DS still converts).
+function foldEdgeSpacers(kids: SpecChild[], cStart: number, cEnd: number,
+  containerCross: number, containerMain: number, axis: 'row' | 'col', structTol: number):
+  { kids: SpecChild[]; startPx: number; endPx: number; leadCount: number; trailCount: number; names: string[]; interior: string[] } | undefined {
+  const qualifies = (c: SpecChild): boolean => isSpacerShaped(c)
+    && Math.abs((axis === 'row' ? c.rect.h : c.rect.w) - containerCross) <= structTol   // full cross extent
+    && (axis === 'row' ? c.rect.w : c.rect.h) < containerMain - structTol;              // background sanity
+  let lead = 0;
+  let cursor = cStart;
+  while (lead < kids.length && qualifies(kids[lead])
+    && Math.abs(start(kids[lead].rect, axis) - cursor) <= structTol) {
+    cursor = end(kids[lead].rect, axis); lead += 1;
+  }
+  let trail = 0;
+  let endCursor = cEnd;
+  while (trail < kids.length - lead && qualifies(kids[kids.length - 1 - trail])
+    && Math.abs(end(kids[kids.length - 1 - trail].rect, axis) - endCursor) <= structTol) {
+    endCursor = start(kids[kids.length - 1 - trail].rect, axis); trail += 1;
+  }
+  if ((lead === 0 && trail === 0) || kids.length - lead - trail < 1) return undefined;
+  const folded = [...kids.slice(0, lead), ...kids.slice(kids.length - trail)];
+  const startPx = kids.slice(0, lead).reduce((sum, c) => sum + (axis === 'row' ? c.rect.w : c.rect.h), 0);
+  const endPx = kids.slice(kids.length - trail).reduce((sum, c) => sum + (axis === 'row' ? c.rect.w : c.rect.h), 0);
+  const rest = kids.slice(lead, kids.length - trail);
+  return { kids: rest, startPx, endPx, leadCount: lead, trailCount: trail, names: folded.map((c) => c.name),
+    interior: rest.filter((c) => isSpacerShaped(c)).map((c) => c.name) };
+}
+
 function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): DiffRow[] {
   const rows: DiffRow[] = [];
   const rect = spec.rect!;
@@ -732,11 +805,102 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   let unwrapInfo: { side: 'figma' | 'dom'; chain: string[]; overlap?: boolean; figWrapper?: SpecChild; domWrapper?: DomChild } | undefined;
   let rejectedNote: string | undefined;
 
+  let spacerFold: SpacerFold | undefined;
+  let spacerRow: DiffRow | undefined;
+  let figUnwrapConvert: ((kids: SpecChild[], wrapper: SpecChild) => SpecChild[]) | undefined;
+  let insetKids: SpecChild[] = spec.children;
+  // try/finally: the fold<=>emitted-row invariant must hold on EVERY return of this function
+  // (wave-confirmed: the structure_mismatch total skip and layout_axis_mismatch early returns
+  // shipped a 'pass' trace asserting a border-edge measurement that was never made).
+  try {
   if (spec.axis) {
     const axis = spec.axis;
     domKids2 = [...d.children].sort((a, b) => start(a.rect, axis) - start(b.rect, axis));
+    // Spacer-inset conversion - BEFORE the count check, BEFORE tryUnwrap (a spacer sibling
+    // defeats the length==1 unwrap trigger), BEFORE figInsetOn (the spacer IS the structural-
+    // inset evidence). Consecutive edge runs sum; the survivor guard refuses a conversion
+    // that would empty the population; the trace row is pushed AT the site so it survives
+    // every early return (structure_mismatch / empty / axis-mismatch).
+    if (opts.sides !== 'dom-dom') {
+      const contentStart = start(rect, axis) + padStart(eff(spec.autoLayout?.padding), axis);
+      const contentEnd = end(rect, axis) - padEnd(eff(spec.autoLayout?.padding), axis);
+      const containerCross = axis === 'row' ? rect.h : rect.w;
+      const containerMain = axis === 'row' ? rect.w : rect.h;
+      // One recorder for BOTH conversion sites (the root scan below and tryUnwrap's fig
+      // branch): merges extents/names and keeps ONE spacer_inset trace row.
+      const applyFold = (res: { startPx: number; endPx: number; names: string[]; interior: string[] }, domRemoved: number): void => {
+        if (spacerFold) {
+          spacerFold.startPx += res.startPx; spacerFold.endPx += res.endPx;
+          spacerFold.names.push(...res.names); spacerFold.interior = res.interior;
+          spacerFold.domRemoved += domRemoved;
+        } else {
+          spacerFold = { startPx: res.startPx, endPx: res.endPx, names: [...res.names], interior: res.interior, domRemoved };
+        }
+        const f = spacerFold;
+        const sideBits = [f.startPx > 0 ? `leading ${round1(f.startPx)}px` : '', f.endPx > 0 ? `trailing ${round1(f.endPx)}px` : ''].filter(Boolean).join(' + ');
+        const note = `edge spacer layer(s) folded into the ${sideBits} inset before pairing - the padding row reads border-edge and carries the spacer extent`
+          + (f.interior.length > 0 ? `; ${f.interior.length} interior spacer layer(s) NOT folded (${f.interior.join(', ')}): gap rows through them read 0 - pair the neighbours directly` : '');
+        if (spacerRow) {
+          spacerRow.figma = f.names.join(', ');
+          spacerRow.dom = f.domRemoved > 0 ? `${f.domRemoved} matching edge box(es) removed too` : 'no DOM counterpart removed';
+          spacerRow.note = note;
+        } else {
+          spacerRow = { prop: 'spacer_inset', status: 'pass',
+            figma: f.names.join(', '),
+            dom: f.domRemoved > 0 ? `${f.domRemoved} matching edge box(es) removed too` : 'no DOM counterpart removed',
+            note };
+          rows.push(spacerRow);
+        }
+      };
+      const foldRes = foldEdgeSpacers(figKids, contentStart, contentEnd, containerCross, containerMain, axis, structTol);
+      if (foldRes) {
+        figKids = foldRes.kids;
+        // Symmetric DOM removal, scoped to the edges the fig side folded: a rendered spacer
+        // element left behind would break the counts the conversion just repaired.
+        // Bounded by the fig-side fold count per edge (wave blocker): unbounded, the run ate
+        // every content-empty full-cross flush box - including a DOM-rendered accent bar whose
+        // fig twin the name gate deliberately KEPT - and broke the counts on correct code.
+        let domRemoved = 0;
+        if (foldRes.leadCount > 0) {
+          const domEdge = start(d.rect, axis) + (axis === 'row' ? d.borders.left : d.borders.top);
+          let dCursor = domEdge;
+          let quota = foldRes.leadCount;
+          while (quota > 0 && domKids2.length > 1 && isDomSpacerShaped(domKids2[0], axis === 'row' ? d.rect.h : d.rect.w, structTol, axis)
+            && Math.abs(start(domKids2[0].rect, axis) - dCursor) <= structTol) {
+            dCursor = end(domKids2[0].rect, axis); domKids2 = domKids2.slice(1); domRemoved += 1; quota -= 1;
+          }
+        }
+        if (foldRes.trailCount > 0) {
+          const domEdgeEnd = end(d.rect, axis) - (axis === 'row' ? d.borders.right : d.borders.bottom);
+          let dCursor = domEdgeEnd;
+          let quota = foldRes.trailCount;
+          while (quota > 0 && domKids2.length > 1 && isDomSpacerShaped(domKids2[domKids2.length - 1], axis === 'row' ? d.rect.h : d.rect.w, structTol, axis)
+            && Math.abs(end(domKids2[domKids2.length - 1].rect, axis) - dCursor) <= structTol) {
+            dCursor = start(domKids2[domKids2.length - 1].rect, axis); domKids2 = domKids2.slice(0, -1); domRemoved += 1; quota -= 1;
+          }
+        }
+        applyFold(foldRes, domRemoved);
+      }
+      // Site 2: a spacer INSIDE a wrapper tryUnwrap expands - the transform runs on the
+      // sorted substitutes with the WRAPPER's box as the flush reference and merges into the
+      // same trace row.
+      figUnwrapConvert = (kids, wrapper) => {
+        const wStart = start(wrapper.rect, axis) + padStart(eff(wrapper.paddings), axis);
+        const wEnd = end(wrapper.rect, axis) - padEnd(eff(wrapper.paddings), axis);
+        const wCross = axis === 'row' ? wrapper.rect.h : wrapper.rect.w;
+        const wMain = axis === 'row' ? wrapper.rect.w : wrapper.rect.h;
+        const res = foldEdgeSpacers(kids, wStart, wEnd, wCross, wMain, axis, structTol);
+        if (!res || res.kids.length < 1) return kids;
+        applyFold(res, 0);
+        return res.kids;
+      };
+    }
+    // figInsetOn (the PR #48 encoding-demote evidence gate) reads the POST-conversion,
+    // PRE-unwrap population: a flush spacer made lead 0 in the raw array, disarming the
+    // demote exactly where the structural encoding is strongest.
+    insetKids = figKids;
     if (figKids.length !== domKids2.length) {
-      const res = tryUnwrap(figKids, domKids2, axis, structTol); // structural: overlap gate for the substitutes
+      const res = tryUnwrap(figKids, domKids2, axis, structTol, figUnwrapConvert); // structural: overlap gate for the substitutes
       if (res.ok) { figKids = res.fig; domKids2 = res.dom; unwrapInfo = res.info; }
       else rejectedNote = res.rejected;
     }
@@ -808,11 +972,11 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   // from the edge on that axis - a genuinely FLUSH design vs a dom-only padding is a REAL
   // defect whose only witness is this very row, and it must stay red.
   const figInsetOn = (horizontal: boolean): number => {
-    if (spec.children.length === 0) return 0;
-    const lead = Math.min(...spec.children.map((c) => horizontal ? c.rect.x - rect.x : c.rect.y - rect.y));
+    if (insetKids.length === 0) return 0;
+    const lead = Math.min(...insetKids.map((c) => horizontal ? c.rect.x - rect.x : c.rect.y - rect.y));
     const trail = horizontal
-      ? (rect.x + rect.w) - Math.max(...spec.children.map((c) => c.rect.x + c.rect.w))
-      : (rect.y + rect.h) - Math.max(...spec.children.map((c) => c.rect.y + c.rect.h));
+      ? (rect.x + rect.w) - Math.max(...insetKids.map((c) => c.rect.x + c.rect.w))
+      : (rect.y + rect.h) - Math.max(...insetKids.map((c) => c.rect.y + c.rect.h));
     return Math.max(lead, trail);
   };
   const applyEncodingDemote = (row: DiffRow, figBorder: number, domBorder: number, domPadAxis: number, horizontal: boolean): DiffRow => {
@@ -964,7 +1128,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
         : '';
       rows.push({ prop: 'structure_mismatch', status: 'warn',
         figma: `${figKids.length} children: ${figDesc}`, dom: `${domKids2.length} children: ${domDescOf(domKids2)}`,
-        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${figOofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}${ddMode ? '' : "; comparing two STATES of one screen (skeleton vs loaded) is compare_dom_to_dom's job, not this pair's"}` });
+        note: `the count of visible children does not match — pairwise metrics skipped; refine the pair or add pairs on the nested nodes${oofHint}${figOofHint}${drillHint}${rejectedNote ? `; ${rejectedNote}` : ''}${spacerFold ? `; ${spacerFold.names.length} inset spacer(s) folded before pairing - see spacer_inset` : ''}${ddMode ? '' : "; comparing two STATES of one screen (skeleton vs loaded) is compare_dom_to_dom's job, not this pair's"}` });
       // source-hint: unpaired — the MAIN "add pairs" flow (0 high-conf: nothing
       // matched). All DOM children are unpaired; cap 10 AT the collection site. navigation-to-investigate.
       collectUnpaired(opts, domKids2);
@@ -981,7 +1145,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       figma: `${figKids.length} children`, dom: `${domKids2.length} children`,
       note: ddMode
         ? `the child count does not match — ${high.length} matched by ${rankFallback ? 'geometry order (LOW confidence: no text anchors - verify the pairing visually)' : 'content/geometry'} (their metrics below), gaps through unmatched ones skipped; unpaired: reference [${unFig}] / candidate [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}`
-        : `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}` });
+        : `the child count does not match — ${high.length} high-conf matched by content (their metrics below), gaps through unmatched ones skipped; unpaired: figma [${unFig}] / dom [${unDom}] — add pairs for them${oofHint}${figOofHint}${rejectedNote ? `; ${rejectedNote}` : ''}${spacerFold ? `; ${spacerFold.names.length} inset spacer(s) folded before pairing - see spacer_inset` : ''}` });
     const figSub = high.map((m) => figKids[m.figIdx]);
     const domSub = high.map((m) => domKids2[m.domIdx]);
     salvageAdj = high.map((m, k) => k > 0 && m.figIdx === high[k - 1].figIdx + 1 && m.domIdx === high[k - 1].domIdx + 1);
@@ -1161,8 +1325,27 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       axis === 'row' ? pageGutter : undefined));
   }
 
-  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous, unwrapInfo?.overlap === true, encodingMismatch));
+  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous, unwrapInfo?.overlap === true, encodingMismatch, spacerFold));
   return rows;
+  } finally {
+    finalizeSpacerRow(rows, spacerRow, spacerFold, spec.axis);
+  }
+}
+
+// The fold <=> emitted-row invariant (panel): 'pass' is only honest when every folded edge
+// actually produced its padding row - salvage suppresses both rows, a text-last DOM child
+// suppresses the trailing one. On those paths the trace demotes itself to a skip naming the
+// unmeasured edge, so the folded evidence is never silently green.
+function finalizeSpacerRow(rows: DiffRow[], spacerRow: DiffRow | undefined, fold: SpacerFold | undefined, axis?: 'row' | 'col'): void {
+  if (!spacerRow || !fold || !axis) return;
+  const [startName, endName] = axis === 'col' ? ['padding-top', 'padding-bottom'] : ['padding-left', 'padding-right'];
+  const missing: string[] = [];
+  if (fold.startPx > 0 && !rows.some((r) => r.prop === startName)) missing.push(startName);
+  if (fold.endPx > 0 && !rows.some((r) => r.prop === endName)) missing.push(endName);
+  if (missing.length > 0) {
+    spacerRow.status = 'skip';
+    spacerRow.note = `${spacerRow.note}; the folded ${missing.join('/')} evidence was NOT measured on this path (row suppressed) - verify that inset directly`;
+  }
 }
 
 const MAX_UNWRAP_RESULT = 10;
@@ -1172,7 +1355,8 @@ type Unwrappable<T> = { children?: T[]; childrenTruncated?: boolean; kind?: stri
 // Cardinality-repair: unwraps ONE single wrapper (fig OR dom, not both) into its
 // visible children, if that yields a matching child count on the other side. A strict
 // post-check (kind/cut/emptiness/overlaps/cap) — full rollback on any refusal.
-function tryUnwrap(fig: SpecChild[], dom: DomChild[], axis: 'row' | 'col', tol: number):
+function tryUnwrap(fig: SpecChild[], dom: DomChild[], axis: 'row' | 'col', tol: number,
+  figTransform?: (kids: SpecChild[], wrapper: SpecChild) => SpecChild[]):
   { ok: true; fig: SpecChild[]; dom: DomChild[]; info: { side: 'figma' | 'dom'; chain: string[]; overlap: boolean; figWrapper?: SpecChild; domWrapper?: DomChild } }
   | { ok: false; rejected?: string } {
   let f = fig; let dm = dom;
@@ -1209,8 +1393,23 @@ function tryUnwrap(fig: SpecChild[], dom: DomChild[], axis: 'row' | 'col', tol: 
       const r = expand(f[0], f[0].name);
       if (!r.ok) return { ok: false, rejected: r.rejected };
       figWrapper = f[0];
-      overlap = overlap || r.overlap;
-      chain.push(f[0].name); f = r.kids; usedFig = true; side = side ?? 'figma';
+      // Spacer-inset conversion, site 2 (panel blocker): a spacer INSIDE the wrapper defeats
+      // the cardinality decision and becomes the false figFirst of the padding rows. The
+      // transform runs on the SORTED substitutes with the WRAPPER's box as the flush
+      // reference; the overlap flag is re-derived over the converted set (a folded edge
+      // spacer never overlaps a neighbour, so re-checking the survivors is sufficient).
+      let kids = r.kids;
+      if (figTransform) {
+        kids = figTransform(kids, f[0]);
+        if (kids !== r.kids) {
+          let ov = false;
+          for (let i = 1; i < kids.length; i += 1) {
+            if (start(kids[i].rect, axis) < end(kids[i - 1].rect, axis) - tol) { ov = true; break; }
+          }
+          overlap = overlap || ov;
+        } else overlap = overlap || r.overlap;
+      } else overlap = overlap || r.overlap;
+      chain.push(f[0].name); f = kids; usedFig = true; side = side ?? 'figma';
     } else if (dm.length === 1 && f.length > 1 && !usedDom) {
       const label = dm[0].tag ?? 'text';
       const r = expand(dm[0], label);
@@ -1642,7 +1841,7 @@ function matchTexts(figs: FigText[], doms: DomText[], anyTruncated: boolean):
 function crossAndPaddingRows(
   spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions, figKids: SpecChild[], domKids: DomChild[], unwrapBase: boolean,
   hugFillMainAxis: boolean, figWrapper?: SpecChild, domWrapper?: DomChild, salvaged = false, movedIdx?: Set<number>,
-  overlapAmbiguous?: Set<number>, overlapUnwrap = false, encodingMismatch = false,
+  overlapAmbiguous?: Set<number>, overlapUnwrap = false, encodingMismatch = false, spacerFold?: SpacerFold,
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   const axis = spec.axis!;
@@ -1705,10 +1904,17 @@ function crossAndPaddingRows(
   const figFirst = figExt.first;
   const figLast = figExt.last;
 
-  const figCStart = start(rect, axis) + (unwrapBase ? 0 : padStart(eff(spec.autoLayout?.padding), axis));
-  const figCEnd = end(rect, axis) - (unwrapBase ? 0 : padEnd(eff(spec.autoLayout?.padding), axis));
-  const domCStart = start(d.rect, axis) + borderStart + (unwrapBase ? 0 : padStart(eff(d.paddings), axis));
-  const domCEnd = end(d.rect, axis) - borderEnd - (unwrapBase ? 0 : padEnd(eff(d.paddings), axis));
+  // Folded edges (spacer-inset conversion) read BORDER-EDGE on BOTH sides: removal already
+  // re-anchored figFirst to the real child, so the fig number carries the spacer extent with
+  // zero arithmetic - and the dom side must not subtract its declared padding there, or a
+  // missing DOM inset reads 0v0 green (the panel's false-green blocker). Unfolded edges keep
+  // the content-edge convention byte-for-byte.
+  const foldStart = spacerFold !== undefined && spacerFold.startPx > 0;
+  const foldEnd = spacerFold !== undefined && spacerFold.endPx > 0;
+  const figCStart = foldStart ? start(rect, axis) : start(rect, axis) + (unwrapBase ? 0 : padStart(eff(spec.autoLayout?.padding), axis));
+  const figCEnd = foldEnd ? end(rect, axis) : end(rect, axis) - (unwrapBase ? 0 : padEnd(eff(spec.autoLayout?.padding), axis));
+  const domCStart = foldStart ? start(d.rect, axis) + borderStart : start(d.rect, axis) + borderStart + (unwrapBase ? 0 : padStart(eff(d.paddings), axis));
+  const domCEnd = foldEnd ? end(d.rect, axis) - borderEnd : end(d.rect, axis) - borderEnd - (unwrapBase ? 0 : padEnd(eff(d.paddings), axis));
 
   // E: the provenance of a participating child's padding — the magnitude is taken from the fig side (what the designer
   // INTENDED), not from dom (what RESULTED) — otherwise the note would point at the symptom, not the
@@ -1736,11 +1942,17 @@ function crossAndPaddingRows(
   // salvage: figFirst/figLast are not the real first/last (a subset was matched) → padding from the container
   // edge would be a false ❌. We skip padding-start/end; offset-cross/typography per-child — we keep.
   if (!salvaged) {
-    rows.push(dualDemote(applyContainerHugFillDemote(applyJustifyDemote(withNote(
+    // On a folded edge the encoding demote is OFF: the fold IS the encoding reconciliation
+    // (the design declares its inset structurally and the row now carries it), so a residual
+    // delta is a real defect that must stay red WITH its fix_plan edit (panel blocker: the
+    // border-edge dom number already contains the declared padding - dualDemote's re-addition
+    // would double-count and demote a genuine shortfall).
+    const startRow = applyContainerHugFillDemote(applyJustifyDemote(withNote(
       numRow(startName, (start(figFirst.rect, axis) + figPadStart) - figCStart,
         (start(domExt.first.rect, axis) + domPadStart) - domCStart, tol, undefined, SRC_ROOT_LAYOUT),
       startNote,
-    ), jd.start, jc, startName), hugFillMainAxis), padStart(eff(d.paddings), axis)));
+    ), jd.start, jc, startName), hugFillMainAxis);
+    rows.push(foldStart ? startRow : dualDemote(startRow, padStart(eff(d.paddings), axis)));
   }
 
   const lastDom = domExt.last;
@@ -1764,13 +1976,14 @@ function crossAndPaddingRows(
       // structTol (not raw tol): the evidence gate "dom-column edge == its text edge" — robustness
       // of the demotion detector to sub-pixel fractions under strict tol=0 (otherwise a legit text-hug → false red).
       || (figTextsForEnd.items.length > 0 && domHugEndEvidence(lastDom, axis, structTol, maxDescent));
-    rows.push(dualDemote(applyContainerHugFillDemote(applyJustifyDemote(applyTextWidthOverride(
+    const endRow = applyContainerHugFillDemote(applyJustifyDemote(applyTextWidthOverride(
       notePageGutter(withNote(
         numRow(endName, figCEnd - (end(figLast.rect, axis) - figPadEnd), domCEnd - (end(lastDom.rect, axis) - domPadEnd), tol, undefined, SRC_ROOT_LAYOUT),
         endNote,
       ), axis === 'row' ? pageGutter : undefined),
       endDemote,
-    ), jd.end, jc, endName), hugFillMainAxis), padEnd(eff(d.paddings), axis)));
+    ), jd.end, jc, endName), hugFillMainAxis);
+    rows.push(foldEnd ? endRow : dualDemote(endRow, padEnd(eff(d.paddings), axis)));
   }
 
   // wrapper base: nested DomChild have no captured borders — we assume border≈0 for wrappers (an approximation)

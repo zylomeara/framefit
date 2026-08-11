@@ -207,7 +207,7 @@ export function renderReport(input: {
     // 🟰 shortfall with nothing to explain it. Gated on the NOTE, not the prop: without a gutter the
     // row carries none and this stays byte-identical.
     for (const r of p.rows) {
-      const shown = r.status !== 'pass' || r.prop === 'unwrapped' || (r.prop === 'viewport' && r.note !== undefined);
+      const shown = r.status !== 'pass' || r.prop === 'unwrapped' || r.prop === 'spacer_inset' || (r.prop === 'viewport' && r.note !== undefined);
       if (shown && r.profileScoped !== true) lines.push(rowLine(r, input.sideLabels?.[0], input.sideLabels?.[1]));
     }
     lines.push(...renderProfileSkips(p));
