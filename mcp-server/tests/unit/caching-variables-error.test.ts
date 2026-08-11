@@ -462,3 +462,185 @@ describe('the phrase the adapter throws is the phrase the negative cache arms on
     expect(isTimeoutMessage('Figma API 500 Internal Server Error')).toBe(false); // co-lock: it discriminates
   });
 });
+
+// evidence-reach line (panel-locked): the too-large 400 is Figma's LOAD-DEPENDENT ~55s job
+// limit, not permanent evidence - yet the standard marker semantics locked out the tool's own
+// "retry first" advice for the full 10min TTL, and at the schema-max cap (120000) the bypass
+// rule (timeoutMs > capMs) has nowhere to go: the ceiling was unbypassable. The fix
+// discriminates on the ERROR, not the cap: too-large markers carry a soft expiry inside the
+// marker JSON; after it, a reader with a budget >= the marker's cap passes through to Figma;
+// sub-cap readers keep the cached serve for the hard TTL (a 20s compare must not burn 20s on
+// a guaranteed-lost retry of a ~55s job). Old markers without the field decode to today's
+// behavior. Separately: a deadline-exceeded-WHILE-QUEUED bailout is evidence about THIS
+// process's queue, never about the endpoint - it must never be cacheable.
+describe('too-large 400: soft-expiring marker (the ceiling fix)', () => {
+  const tooLarge = () => new FigmaApiError('unknown_4xx', 400, 'Figma returned 400',
+    undefined, 'Request too large. If applicable, filter by query params.');
+
+  it('at the schema-max cap: served cached within the soft window, re-hits Figma after it', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => { calls++; throw tooLarge(); },
+    };
+    const caches = freshCaches();
+    const a120 = makeApi(inner, { timeoutMs: 120_000 }, caches);
+    await expect(a120.getVariablesLocal('F')).rejects.toThrow('400');   // writes marker capMs=120000
+    expect(calls).toBe(1);
+    // within the soft window: same-cap retry is served cached (herd protection intact)
+    const b120 = makeApi(inner, { timeoutMs: 120_000 }, caches);
+    await expect(b120.getVariablesLocal('F')).rejects.toThrow(/^cached: /);
+    expect(calls).toBe(1);
+    // after the soft window: the same-cap retry passes through - a REAL attempt (the ceiling row:
+    // 120000 is the schema max, there is no larger budget to escalate to)
+    vi.advanceTimersByTime(61_000);
+    const c120 = makeApi(inner, { timeoutMs: 120_000 }, caches);
+    await expect(c120.getVariablesLocal('F')).rejects.toThrow('400');
+    expect(calls).toBe(2);
+  });
+
+  it('a FIGMA_TIMEOUT_MS raised ABOVE the schema max still leaves a retry path', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => { calls++; throw tooLarge(); },
+    };
+    const caches = freshCaches();
+    const a = makeApi(inner, { timeoutMs: 150_000 }, caches);           // config has NO schema max
+    await expect(a.getVariablesLocal('F')).rejects.toThrow('400');
+    vi.advanceTimersByTime(61_000);
+    const b = makeApi(inner, { timeoutMs: 150_000 }, caches);
+    await expect(b.getVariablesLocal('F')).rejects.toThrow('400');      // really retried
+    expect(calls).toBe(2);
+  });
+
+  it('herd: a burst of same-cap readers inside the soft window costs exactly one Figma call', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => { calls++; throw tooLarge(); },
+    };
+    const caches = freshCaches();
+    await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).rejects.toThrow('400');
+    for (let i = 0; i < 3; i++) {
+      await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).rejects.toThrow(/^cached: /);
+    }
+    expect(calls).toBe(1);
+  });
+
+  it('a sub-cap reader (the 20s compare shape) keeps the cached serve even after the soft window', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => { calls++; throw tooLarge(); },
+    };
+    const caches = freshCaches();
+    await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).rejects.toThrow('400');
+    vi.advanceTimersByTime(61_000);
+    const compareShaped = makeApi(inner, { timeoutMs: 20_000 }, caches);
+    await expect(compareShaped.getVariablesLocal('F')).rejects.toThrow(/^cached: /);
+    expect(calls).toBe(1);                       // a 20s budget cannot beat a ~55s job - no burn
+  });
+
+  it('the within-window cached error NAMES when retry becomes possible (for a capable reader)', async () => {
+    vi.useFakeTimers();
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => { throw tooLarge(); },
+    };
+    const caches = freshCaches();
+    await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).rejects.toThrow('400');
+    const err = await makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F').then(() => null, (e) => e);
+    expect((err as Error).message).toMatch(/^cached: /);         // the classifier contract stays
+    expect((err as Error).message).toMatch(/retry.*\b\d+s/i);    // the wait is named, not implied
+  });
+
+  it('other classes are byte-identical: an elapsed timeout and a 500 get NO soft expiry', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => { calls++; throw new FigmaApiError('upstream', 500, 'Figma had an internal error'); },
+    };
+    const caches = freshCaches();
+    await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).rejects.toThrow('internal');
+    vi.advanceTimersByTime(61_000);              // past where a soft window WOULD open
+    await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).rejects.toThrow(/^cached: /);
+    expect(calls).toBe(1);                       // still served cached - the 600s semantics
+  });
+
+  it('a success after the window deletes the marker and lands the positive entry for sub-cap readers', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    let fail = true;
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => {
+        calls++;
+        if (fail) throw tooLarge();
+        return { meta: { variables: {}, variableCollections: {} } };
+      },
+    };
+    const caches = freshCaches();
+    await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).rejects.toThrow('400');
+    vi.advanceTimersByTime(61_000);
+    fail = false;                                // the load-dependent job went through this time
+    await expect(makeApi(inner, { timeoutMs: 120_000 }, caches).getVariablesLocal('F')).resolves.toBeTruthy();
+    // the 20s compare now reads the positive entry - the D-branch road is open
+    const compareShaped = makeApi(inner, { timeoutMs: 20_000 }, caches);
+    await expect(compareShaped.getVariablesLocal('F')).resolves.toBeTruthy();
+    expect(calls).toBe(2);
+  });
+});
+
+describe('queued-bailout is never cacheable (evidence about our queue, not the endpoint)', () => {
+  it('a deadline-exceeded-while-queued failure writes NO marker; the next call really tries', async () => {
+    let calls = 0;
+    let queued = true;
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => {
+        calls++;
+        if (queued)
+
+          throw Object.assign(
+            new FigmaApiError('network', 0, timeoutMessage(0, ' (deadline exceeded while queued)')),
+            { queuedBailout: true });
+        return { meta: { variables: {}, variableCollections: {} } };
+      },
+    };
+    const caches = freshCaches();
+    const a = makeApi(inner, { timeoutMs: 25_000 }, caches);
+    await expect(a.getVariablesLocal('F')).rejects.toThrow('timed out');
+    queued = false;
+    const b = makeApi(inner, { timeoutMs: 25_000 }, caches);             // same cap - would be denied by a marker
+    await expect(b.getVariablesLocal('F')).resolves.toBeTruthy();
+    expect(calls).toBe(2);
+  });
+
+  it('the pair: an ELAPSED timeout under the same cap still writes its marker', async () => {
+    let calls = 0;
+    const inner = {
+      getFileVersion: async () => ({ version: 'v1', name: 'F', lastModified: 'X' }),
+      getVariablesLocal: async () => { calls++; throw new FigmaApiError('network', 0, timeoutMessage(25_000)); },
+    };
+    const caches = freshCaches();
+    await expect(makeApi(inner, { timeoutMs: 25_000 }, caches).getVariablesLocal('F')).rejects.toThrow('timed out');
+    await expect(makeApi(inner, { timeoutMs: 25_000 }, caches).getVariablesLocal('F')).rejects.toThrow(/^cached: /);
+    expect(calls).toBe(1);
+  });
+
+  it('the REAL throw site carries the flag: a queued bailout from figma-rest is distinguishable', async () => {
+    // the flag must come from the adapter itself, not only from this test's fixture - import-level lock
+    const { FigmaRestAdapter } = await import('../../src/adapters/driven/figma-rest.js');
+    const rest = new FigmaRestAdapter('figd_x', logger, 4, 1000, undefined, undefined, Date.now() - 1);
+    const err = await rest.getVariablesLocal('F').then(() => null, (e) => e);
+    expect(err).toBeInstanceOf(FigmaApiError);
+    expect((err as { queuedBailout?: boolean }).queuedBailout).toBe(true);
+    expect((err as Error).message).toContain('while queued');
+  });
+});

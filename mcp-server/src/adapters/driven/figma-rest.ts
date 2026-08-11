@@ -350,8 +350,10 @@ export class FigmaRestAdapter implements FigmaApi {
     if (effectiveMs <= 0) {
       // Dequeued (or invoked) past the deadline — bail before issuing the fetch so this runs in ~1ms
       // and frees any semaphore slot immediately. 'timed out' + kind 'network' keep every existing
-      // timeout classifier matching.
-      throw new FigmaApiError('network', 0, timeoutMessage(0, ' (deadline exceeded while queued)'));
+      // timeout classifier matching. queuedBailout marks it as queue evidence, NOT endpoint
+      // evidence — the negative variables cache must never store this shape (a marker meaning
+      // "our queue was full" would be served for 10 minutes as "Figma's endpoint is broken").
+      throw new FigmaApiError('network', 0, timeoutMessage(0, ' (deadline exceeded while queued)'), undefined, undefined, true);
     }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), effectiveMs);

@@ -10,7 +10,7 @@ import type { FileStructure } from '../../domain/file-structure.js';
 import type { FileStructureCache } from '../../infrastructure/file-structure-cache.js';
 import type { TtlCache } from '../../infrastructure/node-cache.js';
 import type { Logger } from '../../infrastructure/logger.js';
-import { FigmaApiError, type FigmaApiErrorKind } from '../../ports/errors.js';
+import { FigmaApiError, TOO_LARGE_REASON_RE, type FigmaApiErrorKind } from '../../ports/errors.js';
 import type {
   RawFileResponse, RawNodesResponse, ImagesResult, ImageOptions, ImageFillsResult,
   RawVariablesResponse, FileVersion,
@@ -55,6 +55,12 @@ export interface ReadCaches {
    *  build ReadCaches without hydration keep working (getFrameRaw falls back to inner.getNodesRaw). */
   frameCache?: FrameHandle;
 }
+
+// Soft expiry for the too-large-400 negative marker (evidence-reach line): Figma's ~55s
+// variables job limit is load-dependent - the same file succeeds on a later attempt - so its
+// marker must not deny the retry its own diagnosis prescribes for the full hard TTL. ~1 real
+// attempt per minute: agent-tolerable spacing, Figma-polite. Read rule in getVariablesLocal.
+export const TOO_LARGE_SOFT_EXPIRY_MS = 60_000;
 
 // Decorator: caches getFileStructure (legacy) + version-keyed node/variables
 // trees. Comments, images, document-raw pass through.
@@ -232,10 +238,29 @@ export class CachingFigmaApiAdapter implements FigmaApi {
       // identical call - the same call diagnosed two different ways, with the wrong one
       // irreproducible on the first try. Markers written before this field existed decode to
       // undefined, which is exactly the old behaviour.
-      const parsed = JSON.parse(knownError) as { kind: FigmaApiErrorKind; status: number; message: string; capMs?: number; upstreamReason?: string };
+      const parsed = JSON.parse(knownError) as { kind: FigmaApiErrorKind; status: number; message: string; capMs?: number; upstreamReason?: string; softExpiresAt?: number };
       if (this.timeoutMs !== undefined && parsed.capMs !== undefined && this.timeoutMs <= parsed.capMs) {
-        this.logger.info({ file_key_prefix: fileKey.slice(0, 8) }, 'cache.hit_vars_error');
-        throw new FigmaApiError(parsed.kind, parsed.status, `cached: ${parsed.message}`, undefined, parsed.upstreamReason);
+        // Soft expiry (the ceiling fix, evidence-reach line): the too-large 400 is Figma's
+        // LOAD-DEPENDENT ~55s job limit — the same file succeeds on a later attempt — so its
+        // marker carries softExpiresAt. After it, a reader whose budget matches or exceeds the
+        // failed cap passes through to a REAL retry (at the 120s schema max there is no larger
+        // budget to escalate to, so without this the marker was unbypassable while the tool's
+        // own error text prescribed retrying). Sub-cap readers (the 20s compare shape) keep the
+        // cached serve for the hard TTL: a 20s budget cannot beat a ~55s job, a retry would only
+        // burn the budget. Markers without the field (every other error class, and any marker
+        // written before the field existed) keep today's semantics byte-for-byte.
+        const softOpen = parsed.softExpiresAt !== undefined
+          && Date.now() >= parsed.softExpiresAt
+          && this.timeoutMs >= parsed.capMs;
+        if (!softOpen) {
+          this.logger.info({ file_key_prefix: fileKey.slice(0, 8) }, 'cache.hit_vars_error');
+          // For a reader that WILL become eligible (budget >= cap), name the wait — "retry
+          // first" advice with no when is unfollowable against a cache.
+          const retryHint = parsed.softExpiresAt !== undefined && this.timeoutMs >= parsed.capMs
+            ? ` (load-dependent; retry becomes possible in ~${Math.max(1, Math.ceil((parsed.softExpiresAt - Date.now()) / 1000))}s)`
+            : '';
+          throw new FigmaApiError(parsed.kind, parsed.status, `cached: ${parsed.message}${retryHint}`, undefined, parsed.upstreamReason);
+        }
       }
     }
     try {
@@ -290,7 +315,11 @@ export class CachingFigmaApiAdapter implements FigmaApi {
       // shorter-cap marker can never deny a longer-cap caller. The genuinely-broken-file case still
       // gets cached via any caller's timeout (whatever cap it ran under) or its fast
       // token-independent 4xx/5xx moods.
-      const isTimeout = e instanceof FigmaApiError && e.kind === 'network' && isTimeoutMessage(e.message);
+      // A queued bailout never waited against Figma (deadline expired in OUR semaphore queue) —
+      // it is queue evidence, not endpoint evidence, and must never be cached (the structural
+      // queuedBailout flag comes from the one throw site in figma-rest.ts request()).
+      const isTimeout = e instanceof FigmaApiError && e.kind === 'network' && isTimeoutMessage(e.message)
+        && e.queuedBailout !== true;
       // Eclipse guard (R8-F1): delete-on-success (above) can be raced — a fast success deletes any
       // existing marker, then a SLOW concurrent failure for the SAME key (a stale request that lost
       // the race) lands here and would write a FRESH marker, resurrecting "broken" for a file a
@@ -306,8 +335,16 @@ export class CachingFigmaApiAdapter implements FigmaApi {
           && (e.kind === 'upstream' || e.kind === 'unknown_4xx' || isTimeout)
           && !eclipsedBySuccess) {
         // capMs stamps the cap under which this failure was observed, so the cap-aware READ above
-        // can let a larger-budget escalation bypass it.
-        const marker = { kind: e.kind, status: e.status, message: e.message, capMs: this.timeoutMs, upstreamReason: e.upstreamReason };
+        // can let a larger-budget escalation bypass it. The too-large 400 additionally carries a
+        // soft expiry (see the READ above): it is a load-dependent condition by Figma's own
+        // behavior, and the standard 600s semantics locked out the retry its own diagnosis
+        // prescribes. TOO_LARGE_SOFT_EXPIRY_MS ~ one retry per minute: agent-tolerable spacing,
+        // Figma-polite, and short enough that a cleared load window is found within a session.
+        const softExpiresAt = e.kind === 'unknown_4xx' && TOO_LARGE_REASON_RE.test(e.upstreamReason ?? '')
+          ? Date.now() + TOO_LARGE_SOFT_EXPIRY_MS
+          : undefined;
+        const marker = { kind: e.kind, status: e.status, message: e.message, capMs: this.timeoutMs, upstreamReason: e.upstreamReason,
+          ...(softExpiresAt !== undefined ? { softExpiresAt } : {}) };
         this.read.variablesErrorCache?.set(key, JSON.stringify(marker));
       }
       throw e;

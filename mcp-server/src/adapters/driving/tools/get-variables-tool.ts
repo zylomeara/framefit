@@ -8,7 +8,7 @@ import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
 import { listTokens, listTokensForIds, collectNodeVariableIds } from '../../../domain/variables.js';
 import { extractLibraryKey } from '../../../domain/variable-snapshot.js';
-import { FigmaApiError } from '../../../ports/errors.js';
+import { FigmaApiError, TOO_LARGE_REASON_RE } from '../../../ports/errors.js';
 import { tokenStatusHint } from '../../../infrastructure/status-hint.js';
 import { summarizeTokens, filterTokens, dedupeTokens, canonicalizeCollections } from '../../../domain/variables-summary.js';
 
@@ -257,7 +257,7 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
             // parameter. mapStatus's fallthrough assigns unknown_4xx to EVERY non-401/403/404/429
             // 4xx, so this branch sees both.
             const reason = err.upstreamReason ?? '';
-            if (/too large|request too large/i.test(reason) || reason === '') {
+            if (TOO_LARGE_REASON_RE.test(reason) || reason === '') {
               // err.message ends with mapStatus's generic 4xx tail ("Retrying this unchanged will
               // get the same answer"), which is FALSE for this endpoint's load-dependent job limit.
               // Forwarding it straight into "retry first" would hand the reader two contradictory
