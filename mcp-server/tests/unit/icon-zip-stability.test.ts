@@ -157,13 +157,13 @@ describe('the criterion: one node, several pairs, ONE value (or an honest refusa
 
 describe('carrier visibility (the incident cost was not seeing WHERE a hex came from)', () => {
   it('a descent-found dom carrier is named in the row note', () => {
-    const carrier = domWrap([domIcon(8, '#101010', { classList: ['brand-mark'] })], { rect: { x: 0, y: 0, w: 32, h: 32 } });
+    const carrier = domWrap([domIcon(8, '#101010', { classList: ['icon-slot'] })], { rect: { x: 0, y: 0, w: 32, h: 32 } });
     const rows = diffPair(
       spec([figWrap([figIcon('6:1', 8, '#909090')], { rect: { x: 0, y: 0, w: 32, h: 32 } })]),
       snap([carrier]), { tolerancePx: 1 });
     const r = values(rows)[0];
     expect(r?.status).toBe('fail');
-    expect(r?.note ?? '').toMatch(/svg|brand-mark/);
+    expect(r?.note ?? '').toMatch(/icon-slot/);            // the carrier CLASS is named, not just the tag
   });
 });
 
