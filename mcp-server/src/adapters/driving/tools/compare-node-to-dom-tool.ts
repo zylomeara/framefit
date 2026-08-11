@@ -203,19 +203,21 @@ export function scanPlaceholders(root: RawSceneNode): { count: number; visited: 
   let count = 0; let visited = 0;
   // Figma encodes variant property VALUES in the node name ('Skeleton=False, Breakpoint=
   // Desktop') - a bare substring test fired on the NEGATIVE assignment, which is exactly the
-  // loaded sibling of the incident's shape. A k=v segment whose key carries the token uses
-  // the SAME positive list as componentProperties; the plain substring rule runs only over
-  // the remainder after stripping every k=v segment.
+  // loaded sibling of the incident's shape. The rule is NEGATIVE SUPPRESSION, not positive
+  // listing (the wave measured the positive-list variant blinding the detector to the
+  // idiomatic value-side assignment 'State=Skeleton' and to any free-text name containing
+  // '='): a token-bearing segment counts UNLESS it is a skeleton-KEYED assignment whose value
+  // is an explicit negative. 'Skeleton=False' -> 0; 'State=Skeleton' -> 1; 'Skeleton=Card'
+  // -> 1; 'skeleton (w=320)' -> 1; 'State=Loaded' -> 0.
+  const NEGATIVE_VALUE = /^(no|false|off|0)$/i;
   const nameSignal = (name: string): boolean => {
-    const rest: string[] = [];
-    let hit = false;
     for (const seg of name.split(',')) {
+      if (!/skeleton/i.test(seg)) continue;
       const m = /^\s*([^=]+)=(.+?)\s*$/.exec(seg);
-      if (m) {
-        if (/skeleton/i.test(m[1]) && /^(yes|true|on|1)$/i.test(m[2].trim())) hit = true;
-      } else rest.push(seg);
+      if (m && /skeleton/i.test(m[1]) && NEGATIVE_VALUE.test(m[2].trim())) continue;
+      return true;
     }
-    return hit || /skeleton/i.test(rest.join(','));
+    return false;
   };
   const walk = (n: RawSceneNode): void => {
     if (n.visible === false) return;
@@ -223,9 +225,15 @@ export function scanPlaceholders(root: RawSceneNode): { count: number; visited: 
     let hit = nameSignal(n.name ?? '');
     if (!hit) {
       for (const [k, v] of Object.entries(n.componentProperties ?? {})) {
-        if (!/skeleton/i.test(k.replace(/#[0-9:]*/g, ''))) continue;
         const val = (v as { value?: unknown }).value;
-        if (val === true || (typeof val === 'string' && /^(yes|true|on|1)$/i.test(val))) { hit = true; break; }
+        const key = k.replace(/#[0-9:]*/g, '');
+        if (/skeleton/i.test(key)) {
+          // skeleton-keyed: anything but an explicit negative counts (mirror of nameSignal)
+          if (val !== false && !(typeof val === 'string' && NEGATIVE_VALUE.test(val.trim()))) { hit = true; break; }
+        } else if (typeof val === 'string' && /skeleton/i.test(val) && !NEGATIVE_VALUE.test(val.trim())) {
+          // value-side assignment (State: 'Skeleton') - the idiomatic variant shape
+          hit = true; break;
+        }
       }
     }
     if (hit) count += 1;

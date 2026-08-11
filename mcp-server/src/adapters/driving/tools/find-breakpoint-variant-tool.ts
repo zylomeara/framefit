@@ -268,6 +268,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         // The content fetch shares the deadline; if the budget is already gone, degrade to the
         // walk-time node data instead of failing a call that holds a useful candidate list.
         let contentNodes: Record<string, { document?: RawSceneNode } | null> = {};
+        let contentFetchSucceeded = false;
         if (sawRateLimit) {
           // The walk just stopped on 429 - firing one more REST call immediately IS the
           // hammering the stop exists to avoid; widths come from the walk slice.
@@ -275,6 +276,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         } else {
           try {
             contentNodes = (await api.getNodesRaw(parsed.value, variantIds, CONTENT_FETCH_DEPTH)).nodes;
+            contentFetchSucceeded = true;
           } catch (e) {
             if (e instanceof FigmaApiError && (e.kind === 'auth' || e.kind === 'forbidden' || e.kind === 'rate_limited')) throw e;
             notes.push('content-frame fetch did not complete (budget/limit) — widths below and the placeholder scan come from the walk slice; a missing placeholders field is not an absence claim.');
@@ -285,13 +287,15 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         // placeholder-signal state: one record per width-race candidate, feeding
         // match.placeholders and the presence note after the race.
         const phByNode = new Map<string, number>();
+        const phByVariant = new Map<string, number>();
+        const variantType = new Map<string, string>();
         const phCandidates: { nodeId: string; name: string; variantNodeId: string; variantName: string; diff: number; count: number }[] = [];
         // the silent third degradation path: the fetch SUCCEEDED but returned no document for
         // some listed id - without a note those variants silently degrade to the walk slice.
         const undelivered: string[] = [];
         const variantsOut = capped.map((c) => {
           const contentDoc = contentNodes[c.node.id]?.document;
-          if (!sawRateLimit && Object.keys(contentNodes).length > 0 && contentDoc === undefined) undelivered.push(c.node.id);
+          if (contentFetchSucceeded && contentDoc === undefined) undelivered.push(c.node.id);
           const fetched = contentDoc ?? c.node;
           const frameW = Math.round(fetched.absoluteBoundingBox?.width ?? 0);
           const content = collectContentCandidates(fetched, args.render_width);
@@ -311,6 +315,8 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
             delete cc.raw;
           }
           if (framePh > 0) phByNode.set(c.node.id, framePh);
+          if (variantPh > 0) phByVariant.set(c.node.id, variantPh);
+          variantType.set(c.node.id, c.node.type);
 
           // The frame's own width competes too - sometimes the frame IS the content.
           const evalCandidates: { nodeId: string; name: string; w: number; count: number }[] = [
@@ -337,11 +343,16 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
           notes.push(`content fetch returned no document for ${undelivered.length} variant(s) (${undelivered.join(', ')}) — their widths and placeholder scan come from the walk slice; a missing placeholders field is not an absence claim.`);
         }
 
-        let match: { node_id: string; w: number; variant_node_id: string; placeholders?: number } | null = null;
+        let match: { node_id: string; w: number; variant_node_id: string; placeholders?: number; variant_placeholders?: number } | null = null;
         if (best && best.diff <= tolerance) {
           const matchedPh = phByNode.get(best.nodeId) ?? 0;
+          const matchedVariantPh = phByVariant.get(best.variantNodeId) ?? 0;
+          // variant_placeholders: the matched candidate's own slice can be clean while its
+          // VARIANT carries placeholders - the hazard is frame-wide (#51), and the consumer
+          // who reads only `match` must see it there, not in a row they never open.
           match = { node_id: best.nodeId, w: best.w, variant_node_id: best.variantNodeId,
-            ...(matchedPh > 0 ? { placeholders: matchedPh } : {}) };
+            ...(matchedPh > 0 ? { placeholders: matchedPh } : {}),
+            ...(matchedPh === 0 && matchedVariantPh > 0 ? { variant_placeholders: matchedVariantPh } : {}) };
           const variant = variantsOut.find((v) => v.node_id === best!.variantNodeId);
           const contentHit = variant?.content.find((cc) => cc.node_id === best!.nodeId);
           if (contentHit) contentHit.isBestMatch = true;
@@ -353,24 +364,44 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
 
         // The presence note - the selection warning the incident lacked. ONE note, at most two
         // named nodes, LEADING the joined string; it fires in every returning branch that
-        // lists candidates, and claims nothing beyond the MAX_VARIANTS capped set.
+        // lists candidates, claims nothing beyond the MAX_VARIANTS capped set, and NEVER
+        // makes an absence claim about anything (a scan is a lower bound, not an all-clear).
+        // The named alternative must come from a variant whose OWN count is zero - the wave
+        // measured the count-only filter steering the consumer into a sibling (or the child)
+        // of the very skeleton frame the note warns about.
+        // A COMPONENT_SET is a GROUPING - its children are independent components, so a clean
+        // child of a set that also holds the skeleton sibling is a legitimate alternative. An
+        // ordinary FRAME variant is a COMPOSITION - the frame-wide hazard (#51) taints every
+        // descendant, so the alternative must come from a variant with no detected placeholders.
+        const cleanAlt = (excludeNodeId: string): typeof phCandidates[number] | undefined =>
+          phCandidates.filter((r) => r.count === 0 && r.nodeId !== excludeNodeId
+            && (variantType.get(r.variantNodeId) === 'COMPONENT_SET'
+              || (phByVariant.get(r.variantNodeId) ?? 0) === 0))
+            .sort((a, b) => a.diff - b.diff)[0];
         if (phCandidates.some((r) => r.count > 0)) {
           if (match !== null) {
             const matchedPh = phByNode.get(match.node_id) ?? 0;
-            if (matchedPh > 0) {
-              const vName = variantsOut.find((v) => v.node_id === match!.variant_node_id)?.name ?? '';
-              // the closest clean alternative in the capped set, if one exists
-              const alt = phCandidates.filter((r) => r.count === 0 && r.nodeId !== match!.node_id)
-                .sort((a, b) => a.diff - b.diff)[0];
+            const matchedVariantPh = phByVariant.get(match.variant_node_id) ?? 0;
+            const vName = variantsOut.find((v) => v.node_id === match.variant_node_id)?.name ?? '';
+            if (matchedPh > 0 || matchedVariantPh > 0) {
+              const n = matchedPh > 0 ? matchedPh : matchedVariantPh;
+              const where = matchedPh > 0
+                ? `matched variant "${vName}" (${match.variant_node_id}) carries at least ${n} placeholder (skeleton) layer(s) within its fetched slice`
+                : `the matched candidate sits inside variant "${vName}" (${match.variant_node_id}), which carries at least ${n} placeholder (skeleton) layer(s) within its fetched slice`;
+              const alt = cleanAlt(match.node_id);
+              // the tie-mechanism clause is only true for a tie ACROSS variants[] entries; an
+              // intra-variant tie was broken by the candidate order inside one entry.
               const tie = alt !== undefined && alt.diff === best!.diff
-                ? ' (equal distance to render_width, so the entry listed first in variants[] won — name matches before container matches, then walk order)'
+                ? (alt.variantNodeId !== match.variant_node_id
+                  ? ' (equal distance to render_width, so the entry listed first in variants[] won — name matches before container matches, then walk order)'
+                  : ' (equal distance to render_width)')
                 : '';
-              notes.unshift(`matched variant "${vName}" (${match.variant_node_id}) carries at least ${matchedPh} placeholder (skeleton) layer(s) within its fetched slice — placeholder sizes are conditional; if you are verifying the LOADED render this is likely the wrong frame${alt !== undefined ? ` — the closest alternative is "${alt.name}" (${alt.nodeId})${tie}` : ''}`);
+              notes.unshift(`${where} — placeholder sizes are conditional; if you are verifying the LOADED render this is likely the wrong frame${alt !== undefined ? ` — the closest alternative from a variant with no detected placeholders is "${alt.name}" (${alt.nodeId})${tie}` : ''}`);
             } else {
-              // the match is clean but a skeleton competitor sits in the listed set - the
-              // consumer sees the coin flip they would otherwise inherit silently.
+              // the match's variant scanned clean but a skeleton competitor sits in the listed
+              // set - the consumer sees the coin flip; no claim is made about the match itself.
               const sk = phCandidates.filter((r) => r.count > 0).sort((a, b) => a.diff - b.diff)[0];
-              notes.unshift(`a listed candidate carries placeholder (skeleton) layers: "${sk.name}" (${sk.nodeId}, at least ${sk.count}) — placeholder sizes are conditional; the match itself is not it`);
+              notes.unshift(`a listed candidate carries placeholder (skeleton) layers: "${sk.name}" (${sk.nodeId}, at least ${sk.count}) — placeholder sizes are conditional`);
             }
           } else {
             const sk = phCandidates.filter((r) => r.count > 0).sort((a, b) => a.diff - b.diff)[0];

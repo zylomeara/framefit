@@ -66,9 +66,28 @@ describe('the shared detector learns negative variant-name assignments', () => {
     expect(scanPlaceholders(named('Skeleton=True, Breakpoint=Desktop')).count).toBe(1);
     expect(scanPlaceholders(named('Skeleton=yes')).count).toBe(1);
   });
-  it('the plain name rule still fires on the stripped remainder', () => {
+  it('the plain name rule still fires on token-bearing segments', () => {
     expect(scanPlaceholders(named('ghostSkeletonRow, State=Loaded')).count).toBe(1);
     expect(scanPlaceholders(named('State=Loaded, plain tile')).count).toBe(0);
+  });
+  it('the wave regression locks: value-side and free-text-with-equals fire; only the explicit negative is suppressed', () => {
+    // the positive-list variant blinded the detector to all of these (each counts 1 on main)
+    expect(scanPlaceholders(named('State=Skeleton')).count).toBe(1);
+    expect(scanPlaceholders(named('State=Skeleton, Breakpoint=Desktop')).count).toBe(1);
+    expect(scanPlaceholders(named('Skeleton=Card')).count).toBe(1);
+    expect(scanPlaceholders(named('skeleton (w=320)')).count).toBe(1);
+    expect(scanPlaceholders(named('skeleton row = ghost')).count).toBe(1);
+    // and the discrimination the fix exists for still holds
+    expect(scanPlaceholders(named('Skeleton=False')).count).toBe(0);
+    expect(scanPlaceholders(named('State=Loaded')).count).toBe(0);
+  });
+  it('componentProperties: value-side assignment fires, negatives do not', () => {
+    const withProp = (key: string, v: unknown): any =>
+      ({ id: '3:1', name: 'tile', type: 'INSTANCE', absoluteBoundingBox: bb(360),
+        componentProperties: { [key]: { value: v } } });
+    expect(scanPlaceholders(withProp('State#1:0', 'Skeleton')).count).toBe(1);
+    expect(scanPlaceholders(withProp('State#1:0', 'Loaded')).count).toBe(0);
+    expect(scanPlaceholders(withProp('skeleton#1:0', 'Card')).count).toBe(1);
   });
 });
 
@@ -119,6 +138,38 @@ describe('the candidate is the unit', () => {
     // equal-distance pick with the existing lexis
     expect(out.match).not.toBeNull();
     expect(out.note).toMatch(/placeholder \(skeleton\)/);
+  });
+});
+
+describe('match ancestry (the wave blockers)', () => {
+  it('a clean matched child inside a placeholder-bearing FRAME variant carries variant_placeholders - never an all-clear', async () => {
+    const cart = frame('f:1', 'Cart drawer', 1280, [
+      frame('f:2', 'Summary', 360, []),
+      frame('f:3', 'Order list', 900, [ghost('g:1', 'rowSkeletonBar')]),
+    ]);
+    const run = harness(depthApi(doc([cart])));
+    const out = await run({ file: 'abc', query: 'Cart', render_width: 360 });
+    expect(out.match?.node_id).toBe('f:2');
+    expect(out.match?.placeholders).toBeUndefined();
+    expect(out.match?.variant_placeholders).toBeGreaterThanOrEqual(1);
+    expect(out.note).toMatch(/sits inside variant/);
+    expect(out.note).not.toMatch(/not it/);
+  });
+  it('the named alternative never comes from inside the same skeleton FRAME (set children stay eligible)', async () => {
+    const cart = frame('f:1', 'Cart', 1280, [
+      { ...frame('f:2', 'panelSkeleton', 360, [frame('f:3', 'rows', 360, [])]) },
+    ]);
+    const run = harness(depthApi(doc([cart])));
+    const out = await run({ file: 'abc', query: 'Cart', render_width: 360 });
+    // f:3 is the flagged frame's own child - it must NOT be offered as the escape route
+    expect(out.note).not.toMatch(/alternative[^—]*"rows"/);
+  });
+  it('a frame-itself match carries match.placeholders (the walk-slice half of the union is live)', async () => {
+    const sk = frame('f:1', 'tileSkeleton', 360, [ghost('g:1', 'pillSkeletonBar')]);
+    const run = harness(depthApi(doc([sk])));
+    const out = await run({ file: 'abc', query: 'tileSkeleton', render_width: 360 });
+    expect(out.match?.node_id).toBe('f:1');
+    expect(out.match?.placeholders).toBeGreaterThanOrEqual(1);
   });
 });
 

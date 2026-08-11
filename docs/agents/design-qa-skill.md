@@ -56,7 +56,7 @@ Call `get_layout_spec` with the node_ids under check + the frame id, `include_ex
   variants)? One call `find_breakpoint_variant {file, query: "<screen name>", render_width:
   <render width>}` — returns candidates with CONTENT widths and the best match (a w1280 variant
   whose panel content is w400 matches a 400px render). No node_id needed; on giant files narrow
-  the search with `parent_node_id`. If `match` carries `placeholders` (or the note leads with a
+  the search with `parent_node_id`. If `match` carries `placeholders` or `variant_placeholders` (or the note leads with a
   placeholder warning), the width race landed on a SKELETON frame — its sizes are conditional;
   check the named alternative before pairing, unless you are verifying the skeleton render
   itself.
