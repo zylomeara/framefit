@@ -83,7 +83,7 @@ function collectVariantCandidates(
   return { candidates: out, depthCut };
 }
 
-interface ContentCandidate { node_id: string; name: string; w: number; raw?: RawSceneNode }
+interface ContentCandidate { node_id: string; name: string; w: number; raw?: RawSceneNode; depth?: 1 | 2 }
 interface ContentOut extends ContentCandidate { isBestMatch?: true; placeholders?: number }
 
 // The variant frame's children + grandchildren (mirrors the depth-2 getNodesRaw fetch anchored
@@ -94,15 +94,23 @@ function collectContentCandidates(frameDoc: RawSceneNode, renderWidth: number): 
   // COMPONENT children enter the width race ONLY under a COMPONENT_SET (its variants ARE the
   // content) - inside an ordinary FRAME they would flip matches on files that did not change.
   const contentTypes = frameDoc.type === 'COMPONENT_SET' ? CONTENT_TYPES : new Set([...CONTENT_TYPES].filter((t) => t !== 'COMPONENT'));
-  const consider = (n: RawSceneNode): void => {
+  const consider = (n: RawSceneNode, depth: 1 | 2): void => {
     if (contentTypes.has(n.type) && n.absoluteBoundingBox) {
-      // raw is INTERNAL (the placeholder scan target); the response builder strips it.
-      out.push({ node_id: n.id, name: n.name, w: Math.round(n.absoluteBoundingBox.width), raw: n });
+      // raw and depth are INTERNAL (the placeholder scan target + the set-exemption bound);
+      // the response builder strips them.
+      out.push({ node_id: n.id, name: n.name, w: Math.round(n.absoluteBoundingBox.width), raw: n, depth });
     }
   };
+  // visible===false subtrees do not render: a candidate under a hidden wrapper must neither
+  // race widths nor be scanned from its own root (the blast round measured fbv warning off a
+  // LOADED frame because the toggled-off skeleton wrapper's child was scanned visible).
   for (const child of frameDoc.children ?? []) {
-    consider(child);
-    for (const grandchild of child.children ?? []) consider(grandchild);
+    if (child.visible === false) continue;
+    consider(child, 1);
+    for (const grandchild of child.children ?? []) {
+      if (grandchild.visible === false) continue;
+      consider(grandchild, 2);
+    }
   }
   out.sort((a, b) => Math.abs(a.w - renderWidth) - Math.abs(b.w - renderWidth));
   return out.slice(0, MAX_CONTENT_PER_VARIANT);
@@ -289,7 +297,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         const phByNode = new Map<string, number>();
         const phByVariant = new Map<string, number>();
         const variantType = new Map<string, string>();
-        const phCandidates: { nodeId: string; name: string; variantNodeId: string; variantName: string; diff: number; count: number }[] = [];
+        const phCandidates: { nodeId: string; name: string; variantNodeId: string; variantName: string; diff: number; count: number; depth?: 1 | 2 }[] = [];
         // the silent third degradation path: the fetch SUCCEEDED but returned no document for
         // some listed id - without a note those variants silently degrade to the walk slice.
         const undelivered: string[] = [];
@@ -308,11 +316,14 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
             scanPlaceholders(fetched).count,
             contentDoc !== undefined ? scanPlaceholders(c.node).count : 0);
           let variantPh = framePh;
+          const depthByNode = new Map<string, 1 | 2>();
           for (const cc of content) {
             const n = cc.raw !== undefined ? scanPlaceholders(cc.raw).count : 0;
             if (n > 0) { cc.placeholders = n; phByNode.set(cc.node_id, n); }
             if (n > variantPh) variantPh = n;
+            if (cc.depth !== undefined) depthByNode.set(cc.node_id, cc.depth);
             delete cc.raw;
+            delete cc.depth;
           }
           if (framePh > 0) phByNode.set(c.node.id, framePh);
           if (variantPh > 0) phByVariant.set(c.node.id, variantPh);
@@ -326,7 +337,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
           for (const cand of evalCandidates) {
             const diff = Math.abs(cand.w - args.render_width);
             if (!best || diff < best.diff) best = { diff, nodeId: cand.nodeId, w: cand.w, variantNodeId: c.node.id };
-            phCandidates.push({ nodeId: cand.nodeId, name: cand.name, variantNodeId: c.node.id, variantName: c.node.name, diff, count: cand.count });
+            phCandidates.push({ nodeId: cand.nodeId, name: cand.name, variantNodeId: c.node.id, variantName: c.node.name, diff, count: cand.count, depth: depthByNode.get(cand.nodeId) });
           }
 
           return {
@@ -373,9 +384,12 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         // child of a set that also holds the skeleton sibling is a legitimate alternative. An
         // ordinary FRAME variant is a COMPOSITION - the frame-wide hazard (#51) taints every
         // descendant, so the alternative must come from a variant with no detected placeholders.
+        // The set exemption is bounded to the set's DIRECT children: a grandchild is a
+        // descendant of one of the competing components and inherits ITS hazard (the blast
+        // round measured the note offering the flagged component's own child as the escape).
         const cleanAlt = (excludeNodeId: string): typeof phCandidates[number] | undefined =>
           phCandidates.filter((r) => r.count === 0 && r.nodeId !== excludeNodeId
-            && (variantType.get(r.variantNodeId) === 'COMPONENT_SET'
+            && ((variantType.get(r.variantNodeId) === 'COMPONENT_SET' && r.depth === 1)
               || (phByVariant.get(r.variantNodeId) ?? 0) === 0))
             .sort((a, b) => a.diff - b.diff)[0];
         if (phCandidates.some((r) => r.count > 0)) {

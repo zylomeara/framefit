@@ -81,13 +81,39 @@ describe('the shared detector learns negative variant-name assignments', () => {
     expect(scanPlaceholders(named('Skeleton=False')).count).toBe(0);
     expect(scanPlaceholders(named('State=Loaded')).count).toBe(0);
   });
-  it('componentProperties: value-side assignment fires, negatives do not', () => {
-    const withProp = (key: string, v: unknown): any =>
+  it('componentProperties: the value-side channel is VARIANT-typed; TEXT copy never counts', () => {
+    const withProp = (key: string, v: unknown, type = 'VARIANT'): any =>
       ({ id: '3:1', name: 'tile', type: 'INSTANCE', absoluteBoundingBox: bb(360),
-        componentProperties: { [key]: { value: v } } });
+        componentProperties: { [key]: { type, value: v } } });
     expect(scanPlaceholders(withProp('State#1:0', 'Skeleton')).count).toBe(1);
     expect(scanPlaceholders(withProp('State#1:0', 'Loaded')).count).toBe(0);
     expect(scanPlaceholders(withProp('skeleton#1:0', 'Card')).count).toBe(1);
+    // a TEXT prop whose COPY reads the token is content, not a state (the blast measured the
+    // caveat excusing a genuine delta over a nav label)
+    expect(scanPlaceholders(withProp('Label#9:0', 'Skeleton', 'TEXT')).count).toBe(0);
+  });
+  it('hidden wrappers exclude their candidates from the race and the scan', async () => {
+    const hiddenWrap = { ...frame('f:2', 'wrap', 360, [frame('f:3', 'rowSkeletonBar', 360, [])]), visible: false };
+    const cart = frame('f:1', 'Cart drawer', 1280, [hiddenWrap, frame('f:9', 'Summary', 900, [])]);
+    const run = harness(depthApi(doc([cart])));
+    const out = await run({ file: 'abc', query: 'Cart', render_width: 360 });
+    const v = out.variants.find((x: any) => x.node_id === 'f:1');
+    expect(v?.placeholders).toBeUndefined();
+    expect((v?.content ?? []).some((c: any) => c.node_id === 'f:3')).toBe(false);
+    expect(out.note ?? '').not.toMatch(/placeholder \(skeleton\)/);
+  });
+  it('a set GRANDCHILD under the flagged component is never the escape route', async () => {
+    const set = {
+      id: 'set:1', name: 'promo tile', type: 'COMPONENT_SET', absoluteBoundingBox: bb(760),
+      children: [
+        { id: 'cmp:sk', name: 'State=Skeleton', type: 'COMPONENT', absoluteBoundingBox: bb(360),
+          children: [frame('g:1', 'ghost rows', 360, [ghost('g:2', 'pillSkeletonBar')])] },
+        { id: 'cmp:ld', name: 'State=Loaded', type: 'COMPONENT', absoluteBoundingBox: bb(900), children: [] },
+      ],
+    };
+    const run = harness(depthApi(doc([set])));
+    const out = await run({ file: 'abc', query: 'promo tile', render_width: 360 });
+    expect(out.note ?? '').not.toMatch(/alternative[^—]*ghost rows/);
   });
 });
 

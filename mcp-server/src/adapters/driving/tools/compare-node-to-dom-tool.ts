@@ -230,8 +230,12 @@ export function scanPlaceholders(root: RawSceneNode): { count: number; visited: 
         if (/skeleton/i.test(key)) {
           // skeleton-keyed: anything but an explicit negative counts (mirror of nameSignal)
           if (val !== false && !(typeof val === 'string' && NEGATIVE_VALUE.test(val.trim()))) { hit = true; break; }
-        } else if (typeof val === 'string' && /skeleton/i.test(val) && !NEGATIVE_VALUE.test(val.trim())) {
-          // value-side assignment (State: 'Skeleton') - the idiomatic variant shape
+        } else if ((v as { type?: string }).type === 'VARIANT'
+          && typeof val === 'string' && /skeleton/i.test(val) && !NEGATIVE_VALUE.test(val.trim())) {
+          // value-side assignment (State: 'Skeleton') - the idiomatic VARIANT shape. Gated on
+          // the declared property TYPE: a TEXT prop whose copy happens to read 'Skeleton' (a
+          // nav label) is content, not a state - counting it inverted #51 (a genuine delta
+          // excused as skeleton-conditional).
           hit = true; break;
         }
       }
