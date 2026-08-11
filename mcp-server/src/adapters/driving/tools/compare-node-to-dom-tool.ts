@@ -187,9 +187,6 @@ export function buildFixPlan(
   return { fix_plan: kept, ...(capped > 0 ? { fix_plan_capped: capped } : {}) };
 }
 
-// fix-plan: budget tier — fix_plan/fix_plan_capped are BOTH dropped together (fix_plan
-// without the capped flag is as honest as it gets; a dangling capped is forbidden). A fresh object (delete on a copy) —
-// the input is not mutated.
 // ── the placeholder-frame signal (feedback item 17) ──
 // A consumer once compared a rendered page against a SKELETON design frame and reported two
 // size deltas as defects - both false: a placeholder frame's sizes are conditional, and the
@@ -231,21 +228,28 @@ export function scanPlaceholders(root: RawSceneNode): { count: number; visited: 
 // legitimate, productive flow and must not be blocked.
 const PLACEHOLDER_EXTENT_DIMS = new Set(['size', 'gap', 'padding', 'offset-cross']);
 const PLACEHOLDER_CAVEAT = 'the design side is a placeholder (skeleton) frame — this delta may be placeholder-conditional; verify against the loaded-state frame before editing';
-export function placeholderNote(count: number, frameScoped: boolean): string {
+export function placeholderNote(count: number, frameScoped: boolean, frameRequested = frameScoped): string {
+  // The pair-scoped tail must not advise what the caller already did: frame_node_id can be
+  // GIVEN while the frame node is missing from the file - the frame-not-found warn row covers
+  // that; repeating "pass frame_node_id" there would be false navigation.
+  const tail = frameRequested ? '' : ' — checked only the paired subtrees, pass frame_node_id to check the whole frame';
   const scope = frameScoped
     ? `the design frame carries ${count} placeholder (skeleton) component(s) within the fetched slice`
-    : `the paired subtree carries ${count} placeholder (skeleton) component(s) within the fetched slice — checked only the paired subtrees, pass frame_node_id to check the whole frame`;
+    : `the paired subtree carries ${count} placeholder (skeleton) component(s) within the fetched slice${tail}`;
   return `${scope} — sizes in a placeholder frame may not match the loaded state; if a loaded-state frame of this breakpoint exists, it is the geometry reference; to verify a skeleton RENDER, capture both DOM states and use compare_dom_to_dom`;
 }
-export function applyPlaceholderSignal(rows: DiffRow[], count: number, frameScoped: boolean): void {
+export function applyPlaceholderSignal(rows: DiffRow[], count: number, frameScoped: boolean, frameRequested = frameScoped): void {
   if (count <= 0) return;
   rows.push({ prop: 'placeholder_frame', figma: `${count} placeholder component(s)`, dom: null,
-    status: 'warn', note: placeholderNote(count, frameScoped) });
+    status: 'warn', note: placeholderNote(count, frameScoped, frameRequested) });
   for (const r of rows) {
     if (r.status === 'fail' && PLACEHOLDER_EXTENT_DIMS.has(dimensionOf(r.prop))) r.caveat ??= PLACEHOLDER_CAVEAT;
   }
 }
 
+// fix-plan: budget tier — fix_plan/fix_plan_capped are BOTH dropped together (fix_plan
+// without the capped flag is as honest as it gets; a dangling capped is forbidden). A fresh object (delete on a copy) —
+// the input is not mutated.
 function stripFixPlan(p: PairResult): PairResult {
   if (p.fix_plan === undefined && p.fix_plan_capped === undefined) return p;
   const out = { ...p };
@@ -461,6 +465,8 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // max detected count feeds ONE receipt-level notes[] line after buildVerification.
         let framePlaceholderScan: { count: number; visited: number } | undefined;
         let placeholdersDetected = 0;
+        let placeholdersFrameScoped = false;
+        let placeholdersFrameRequested = false;
 
         // Coverage enumeration. 3 tiers (the store keys are disjoint by id-set,
         // "sharing with the main fetch" is impossible — we gate the second fetch): (1) effDepth=8 (final
@@ -764,16 +770,24 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
             rows.unshift({ prop: 'frame', figma: frameId, dom: null, status: 'warn' as const,
               note: `frame ${frameId} not found in file — viewport guard disabled` });
           }
-          // placeholder-frame signal: FRAME-scoped when the frame raw is in hand (the hazard is
-          // frame-wide - the incident's second false defect had no placeholder in its own
-          // subtree), pair-scoped with scope-honest wording otherwise. Memoized: one walk per
-          // call. Applied BEFORE buildFixPlan so the caveat travels into the edits.
-          const phScan = bestFrameRaw !== undefined
+          // placeholder-frame signal: the frame walk and the pair walk UNION - one REST call
+          // fetches every id at the SAME depth, so the frame's slice is SHALLOWER at the pair
+          // than the pair's own document slice; replacing the pair walk with the frame walk
+          // made frame_node_id strictly WEAKEN detection (measured by the wave: a placeholder
+          // below the frame's cut but inside the pair's slice vanished silently). Both trees
+          // are already in memory - the union is free. The frame walk is memoized (one scan
+          // per call); the max of the two slice-honest lower bounds is the count. Applied
+          // BEFORE buildFixPlan so the caveat travels into the edits.
+          const pairScan = scanPlaceholders(entry.document);
+          const frScan = bestFrameRaw !== undefined
             ? (framePlaceholderScan ??= scanPlaceholders(bestFrameRaw))
-            : scanPlaceholders(entry.document);
-          if (phScan.count > 0) {
-            applyPlaceholderSignal(rows, phScan.count, bestFrameRaw !== undefined);
-            placeholdersDetected = Math.max(placeholdersDetected, phScan.count);
+            : undefined;
+          const phCount = Math.max(frScan?.count ?? 0, pairScan.count);
+          if (phCount > 0) {
+            applyPlaceholderSignal(rows, phCount, bestFrameRaw !== undefined, frameId !== undefined);
+            placeholdersDetected = Math.max(placeholdersDetected, phCount);
+            placeholdersFrameScoped = bestFrameRaw !== undefined;
+            placeholdersFrameRequested = frameId !== undefined;
           }
           // captures AFTER diffPair (rows are ready for geometryUnchecked), BEFORE return — only
           // the OK path reaches here (the early returns above don't write captures). rect/borders ONLY if
@@ -807,10 +821,12 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         });
         // placeholder-frame signal, the receipt carrier: notes[] renders as a ⚠ line in BOTH
         // the complete and incomplete report branches and survives the response-budget clamp -
-        // the per-pair rows alone can be trimmed by the cascade, the receipt line cannot.
+        // the per-pair rows alone can be trimmed by the cascade, so the receipt line carries
+        // the SAME pinned note as the row (count, slice honesty, remediation) rather than a
+        // content-free pointer at a row the clamp may have dropped.
         if (placeholdersDetected > 0) {
           (verification.notes ??= []).push(
-            `placeholder (skeleton) components detected on the design side — size deltas may be placeholder-conditional (see the placeholder_frame row)`);
+            placeholderNote(placeholdersDetected, placeholdersFrameScoped, placeholdersFrameRequested));
         }
 
         // (c) dominant_blocker REPLACES the generic preflight (the slot :34-36 in report.ts

@@ -25,7 +25,7 @@ function harness(api: Partial<FigmaApi>) {
   const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 };
   registerCompareNodeToDomTool(server, deps);
-  return (a: unknown): Promise<any> => call('compare_node_to_dom', a);
+  return (a: Record<string, unknown>): Promise<any> => call('compare_node_to_dom', a);
 }
 
 const box = (x: number, y: number, w: number, h: number) => ({ x, y, width: w, height: h });
@@ -103,6 +103,19 @@ describe('scanPlaceholders (the raw walk)', () => {
   });
 });
 
+describe('applyPlaceholderSignal (the guard)', () => {
+  it('never overwrites an earlier, more specific caveat (the ??= is load-bearing)', async () => {
+    const { applyPlaceholderSignal } = await import('../../src/adapters/driving/tools/compare-node-to-dom-tool.js');
+    const rows: any[] = [{ prop: 'size.w', figma: 47, dom: 66, status: 'fail', caveat: 'an earlier, more specific caveat' }];
+    applyPlaceholderSignal(rows, 1, false, false);
+    expect(rows.find((r) => r.prop === 'size.w').caveat).toBe('an earlier, more specific caveat');
+    // and a bare fail still receives the placeholder caveat in the same call
+    const rows2: any[] = [{ prop: 'size.w', figma: 47, dom: 66, status: 'fail' }];
+    applyPlaceholderSignal(rows2, 1, false, false);
+    expect(rows2.find((r) => r.prop === 'size.w').caveat).toMatch(/placeholder-conditional/);
+  });
+});
+
 describe('the signal through the tool', () => {
   it('pair-scoped (no frame_node_id): the row fires with the count, all-pass stays complete:true WITH the note', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardWithGhost } } }));
@@ -112,8 +125,16 @@ describe('the signal through the tool', () => {
     expect(row?.status).toBe('warn');
     expect(row?.figma).toMatch(/1 placeholder/);
     expect(row?.note).toMatch(/paired subtree/);
+    // the pinned bytes: slice honesty, the remediation half, and the loaded-state reference
+    // (a wave mutation deleted them all with the suite green - these locks are why it cannot)
+    expect(row?.note).toMatch(/within the fetched slice/);
+    expect(row?.note).toMatch(/loaded state/);
+    expect(row?.note).toMatch(/compare_dom_to_dom/);
     expect(out.verification.complete).toBe(true);
-    expect((out.verification.notes ?? []).join(' ')).toMatch(/placeholder/);
+    // the receipt carrier shares the SAME pinned note - not a pointer at a droppable row
+    const note = (out.verification.notes ?? []).join(' ');
+    expect(note).toMatch(/within the fetched slice/);
+    expect(note).toMatch(/compare_dom_to_dom/);
     expect(out.report_markdown).toMatch(/placeholder/);
   });
   it('frame-scoped: a placeholder OUTSIDE the paired subtree still marks the pair (the button repro)', async () => {
@@ -142,6 +163,50 @@ describe('the signal through the tool', () => {
     const out = JSON.parse((await run({ file: 'F', pairs: [{ node_id: '1:1', dom: matchingDom }] })).content[0].text);
     expect(out.pairs[0].rows.some((r: any) => r.prop === 'placeholder_frame')).toBe(false);
     expect((out.verification.notes ?? []).join(' ')).not.toMatch(/placeholder/);
+  });
+  it('the caveat covers ALL extent families, is byte-pinned, and never overwrites an earlier caveat', async () => {
+    // gap + padding + offset-cross mismatches in one detected pair: the wave measured that
+    // shrinking PLACEHOLDER_EXTENT_DIMS to {'size'} survived the old battery - it cannot now.
+    const shiftedDom = { ...matchingDom,
+      children: [
+        { kind: 'element', tag: 'h2', rect: { x: 24, y: 12, w: 200, h: 24 } },
+        { kind: 'element', tag: 'div', rect: { x: 24, y: 80, w: 100, h: 16 } },
+      ] };
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardWithGhost } } }));
+    const run = harness({ getNodesRaw });
+    const out = JSON.parse((await run({ file: 'F', pairs: [{ node_id: '1:1', dom: shiftedDom }] })).content[0].text);
+    const fails = out.pairs[0].rows.filter((r: any) => r.status === 'fail');
+    expect(fails.length).toBeGreaterThanOrEqual(2);
+    for (const f of fails) {
+      expect(f.caveat, f.prop).toMatch(/placeholder-conditional/);
+      expect(f.caveat, f.prop).toMatch(/before editing/);
+    }
+  });
+  it('frame_node_id must never WEAKEN detection: the union sees a placeholder past the frame slice', async () => {
+    // one REST call fetches every id at the SAME depth, so the frame slice is shallower AT THE
+    // PAIR than the pair's own document slice - the wave measured the frame walk REPLACING the
+    // pair walk (more input, less warning). The union is the lock: the frame doc's copy of the
+    // card is CUT before the ghost; the pair's own doc carries it.
+    const cardCutInFrame: RawSceneNode = { ...cardClean, id: '1:1' };
+    const frameShallow: RawSceneNode = {
+      id: '9:1', name: 'desk', type: 'FRAME', absoluteBoundingBox: box(0, 0, 375, 812),
+      children: [cardCutInFrame],
+    };
+    const getNodesRaw = vi.fn(async () => ({ nodes: {
+      '1:1': { document: cardWithGhost }, '9:1': { document: frameShallow } } }));
+    const run = harness({ getNodesRaw });
+    const out = JSON.parse((await run({ file: 'F', frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: matchingDom }] })).content[0].text);
+    const row = out.pairs[0].rows.find((r: any) => r.prop === 'placeholder_frame');
+    expect(row?.status).toBe('warn');
+    expect((out.verification.notes ?? []).join(' ')).toMatch(/placeholder/);
+  });
+  it('frame_node_id GIVEN but the frame missing: the note never advises passing what was passed', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardWithGhost } } }));
+    const run = harness({ getNodesRaw });
+    const out = JSON.parse((await run({ file: 'F', frame_node_id: '77:1', pairs: [{ node_id: '1:1', dom: matchingDom }] })).content[0].text);
+    const row = out.pairs[0].rows.find((r: any) => r.prop === 'placeholder_frame');
+    expect(row?.status).toBe('warn');
+    expect(row?.note).not.toMatch(/pass frame_node_id/);
   });
   it('the row is COVERAGE_META: coverage.measured is not polluted and the pair can be clean', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardWithGhost } } }));

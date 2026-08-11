@@ -446,8 +446,10 @@ terminal `no discrepancies above tolerance` is the green.
   first layer is compared; a `gradient-layers` info row flags the rest), and multi-shadow stacks
   (>1 shadow → `⚠️ box-shadow` `"the shadow list was not matched (single-shadow-first) — verify visually"`).
 - A `placeholder_frame` ⚠️ (and its receipt note) means the DESIGN side is or contains skeleton
-  placeholders: sizes in such a frame may be placeholder-conditional, and every extent ❌ of the
-  pair carries a caveat repeating that. Do NOT ship edits from those fails without checking the
+  placeholders: sizes in such a frame may be placeholder-conditional, and extent ❌s of the pair
+  carry the caveat `"the design side is a placeholder (skeleton) frame — this delta may be
+  placeholder-conditional; verify against the loaded-state frame before editing"` (an earlier,
+  more specific caveat wins). Do NOT ship edits from those fails without checking the
   loaded-state frame of the same breakpoint; to verify a skeleton RENDER, capture both DOM
   states and use compare_dom_to_dom instead.
 - offset-cross is measured on the child's BOX edges: internal cross-axis alignment of CONTENT

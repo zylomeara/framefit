@@ -1371,7 +1371,7 @@ const QUOTE_SOURCE_DIRS = [
  * marks off the offending line, which fixes the gate and not the page.
  */
 const MARKED_QUOTES: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 14,
+  'docs/agents/design-qa-skill.md': 15, // 14 -> 15: the placeholder-frame caveat quote (measured, resolves against PLACEHOLDER_CAVEAT in compare-node-to-dom-tool.ts)
   'docs/coverage.md': 2,
 };
 /**
