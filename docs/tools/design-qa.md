@@ -557,7 +557,11 @@ enumerates top-level containers and searches each to a bounded depth under a tim
 response always carries a coverage ledger (searched/total/skipped, plus `depth_cut` for
 containers deeper than the walk) - an empty variants list claims absence ONLY over the searched
 slice. Pass `parent_node_id` (a section or page) to scope the walk, or to drill one container
-named in `coverage.skipped`.
+named in `coverage.skipped`. Each variant (and its content candidates) may carry
+`placeholders`: the number of visible placeholder (skeleton) layers found in that node's
+fetched slice, the node itself included - a lower bound over that slice, never a proof of a
+loaded frame; `match.placeholders` and a leading note surface it when the width race lands on
+one.
 
 **Parameters**
 

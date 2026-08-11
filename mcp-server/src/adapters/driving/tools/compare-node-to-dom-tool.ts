@@ -196,19 +196,48 @@ export function buildFixPlan(
 // node: a name carrying the (dictionary-generic) word skeleton, and a componentProperties key
 // carrying it whose value is POSITIVELY on - the live counter-example value "no" is a
 // non-empty (JS-truthy) string and must never fire. Invisible layers do not render and do not
-// count. Emitted at THIS tool layer on purpose: compare_dom_to_dom never executes this file,
-// so the fig-only boundary is structural, not a sentence.
+// count. The detector is SHARED with find_breakpoint_variant (fbv phase 2 of the same
+// feedback item); the fig-only boundary is structural because compare_dom_to_dom imports
+// NEITHER tool file - never a sentence.
 export function scanPlaceholders(root: RawSceneNode): { count: number; visited: number } {
   let count = 0; let visited = 0;
+  // Figma encodes variant property VALUES in the node name ('Skeleton=False, Breakpoint=
+  // Desktop') - a bare substring test fired on the NEGATIVE assignment, which is exactly the
+  // loaded sibling of the incident's shape. The rule is NEGATIVE SUPPRESSION, not positive
+  // listing (the wave measured the positive-list variant blinding the detector to the
+  // idiomatic value-side assignment 'State=Skeleton' and to any free-text name containing
+  // '='): a token-bearing segment counts UNLESS it is a skeleton-KEYED assignment whose value
+  // is an explicit negative. 'Skeleton=False' -> 0; 'State=Skeleton' -> 1; 'Skeleton=Card'
+  // -> 1; 'skeleton (w=320)' -> 1; 'State=Loaded' -> 0.
+  const NEGATIVE_VALUE = /^(no|false|off|0)$/i;
+  const nameSignal = (name: string): boolean => {
+    for (const seg of name.split(',')) {
+      if (!/skeleton/i.test(seg)) continue;
+      const m = /^\s*([^=]+)=(.+?)\s*$/.exec(seg);
+      if (m && /skeleton/i.test(m[1]) && NEGATIVE_VALUE.test(m[2].trim())) continue;
+      return true;
+    }
+    return false;
+  };
   const walk = (n: RawSceneNode): void => {
     if (n.visible === false) return;
     visited += 1;
-    let hit = /skeleton/i.test(n.name ?? '');
+    let hit = nameSignal(n.name ?? '');
     if (!hit) {
       for (const [k, v] of Object.entries(n.componentProperties ?? {})) {
-        if (!/skeleton/i.test(k.replace(/#[0-9:]*/g, ''))) continue;
         const val = (v as { value?: unknown }).value;
-        if (val === true || (typeof val === 'string' && /^(yes|true|on|1)$/i.test(val))) { hit = true; break; }
+        const key = k.replace(/#[0-9:]*/g, '');
+        if (/skeleton/i.test(key)) {
+          // skeleton-keyed: anything but an explicit negative counts (mirror of nameSignal)
+          if (val !== false && !(typeof val === 'string' && NEGATIVE_VALUE.test(val.trim()))) { hit = true; break; }
+        } else if ((v as { type?: string }).type === 'VARIANT'
+          && typeof val === 'string' && /skeleton/i.test(val) && !NEGATIVE_VALUE.test(val.trim())) {
+          // value-side assignment (State: 'Skeleton') - the idiomatic VARIANT shape. Gated on
+          // the declared property TYPE: a TEXT prop whose copy happens to read 'Skeleton' (a
+          // nav label) is content, not a state - counting it inverted #51 (a genuine delta
+          // excused as skeleton-conditional).
+          hit = true; break;
+        }
       }
     }
     if (hit) count += 1;

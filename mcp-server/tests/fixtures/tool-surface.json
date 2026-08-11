@@ -74,7 +74,7 @@
     }
   },
   "find_breakpoint_variant": {
-    "description": "Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required - avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame's own width (a variant named \"desktop\" (w1280) whose inner drawer content is w420 matches render_width 420). The walk enumerates top-level containers and searches each to a bounded depth under a time budget; the response always carries a coverage ledger (searched/total/skipped, plus depth_cut for containers deeper than the walk) - an empty variants list claims absence ONLY over the searched slice. Pass parent_node_id (a section or page) to scope the walk, or to drill one container named in coverage.skipped.",
+    "description": "Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required - avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame's own width (a variant named \"desktop\" (w1280) whose inner drawer content is w420 matches render_width 420). The walk enumerates top-level containers and searches each to a bounded depth under a time budget; the response always carries a coverage ledger (searched/total/skipped, plus depth_cut for containers deeper than the walk) - an empty variants list claims absence ONLY over the searched slice. Pass parent_node_id (a section or page) to scope the walk, or to drill one container named in coverage.skipped. Each variant (and its content candidates) may carry placeholders: the number of visible placeholder (skeleton) layers found in that node's fetched slice, the node itself included - a lower bound over that slice, never a proof of a loaded frame; match.placeholders and a leading note surface it when the width race lands on one.",
     "inputSchemaKeys": [
       "figma_token",
       "file",
@@ -82,7 +82,7 @@
       "query",
       "render_width"
     ],
-    "digest": "da1d14ebdfe4a070028b75b55a817f227e19bd09cf9b55e2c60985f120b812db",
+    "digest": "016f1af7271327118d87ac69f02352b297d8ccd4c22dbcf8bc32464f6adc9f19",
     "annotations": {
       "readOnlyHint": true
     }
