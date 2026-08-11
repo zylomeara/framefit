@@ -394,7 +394,12 @@ read ❌ as defects:
 2. Known sources of false ❌ (before tool calibration): a wrapper with its own padding/scroll
    chrome vs the "padding-inner" Figma frame; a scrollbar (~11px in size.w); text node vs frame
    (false padding-end / offset-cross); an inset "baked" into a child's padding that the gap sees
-   as 0 (border-box) — the diff SKIPS such deltas.
+   as 0 (border-box) — the diff SKIPS such deltas. A DS that encodes insets as literal edge
+   spacer layers (a content-empty RECTANGLE named padding/spacer/inset/gap, flush at full cross
+   extent) is CONVERTED before pairing — the `spacer_inset` service row is the trace, and the
+   folded edge's padding row reads border-edge (a missing DOM inset stays a real ❌). Interior
+   spacers, short spacers, localized or first-token-misspelled layer names do NOT convert —
+   gap rows through those still read 0 and remain false-❌ sources; pair the neighbours directly.
 3. Typography: direct TEXT children are checked as usual, and containers with several texts get
    AUTO-DESCENT — rows like `font-size[chip→"Heading…"]` with a note `"auto-descent: by content"`
    or `"auto-descent: by order"` (content binding is the more reliable). A separate TEXT pair is
