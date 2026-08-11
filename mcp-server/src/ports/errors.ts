@@ -19,6 +19,13 @@ export class FigmaApiError extends Error {
    * whenever the body was not JSON or carried no string reason.
    */
   readonly upstreamReason?: string;
+  /**
+   * True ONLY for the timeout-shaped bailout thrown when a deadline expired while the request
+   * was still QUEUED behind the process-wide Figma semaphore - it never touched the network, so
+   * it is evidence about THIS process's queue, never about the endpoint. The negative variables
+   * cache must never store it (an elapsed timeout, which did wait against Figma, stays cacheable).
+   */
+  readonly queuedBailout?: boolean;
 
   constructor(
     kind: FigmaApiErrorKind,
@@ -26,6 +33,7 @@ export class FigmaApiError extends Error {
     message: string,
     retryAfterSec?: number,
     upstreamReason?: string,
+    queuedBailout?: boolean,
   ) {
     super(message);
     this.name = 'FigmaApiError';
@@ -33,5 +41,14 @@ export class FigmaApiError extends Error {
     this.status = status;
     this.retryAfterSec = retryAfterSec;
     this.upstreamReason = upstreamReason;
+    this.queuedBailout = queuedBailout;
   }
 }
+
+/**
+ * Figma's variables/local "Request too large" body reason - the ~55s server-side job limit,
+ * LOAD-DEPENDENT by Figma's own behavior (the same file succeeds on a later attempt). One
+ * definition shared by get_variables' diagnosis branch and the negative-cache soft-expiry rule,
+ * so the two can never drift apart on what counts as this class.
+ */
+export const TOO_LARGE_REASON_RE = /too large|request too large/i;
