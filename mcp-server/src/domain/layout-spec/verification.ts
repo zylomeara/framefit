@@ -317,6 +317,16 @@ function uncheckedToBlocking(r: DiffRow, p: PairResult, depthLevels: number): Bl
     if ((r.note ?? '').includes('older extractor') || (r.note ?? '').includes('re-extract')) {
       return { ...base, kind: 'snapshot', action: 're_extract_dom' };
     }
+    // The cap-clamp refusal (batch 2 item 3): raising max_depth grows the scan cap only
+    // across the 4 -> 5 boundary (15 -> 30); at 5-7 the cap stays 30 and the promise would
+    // be unclearable - the executable action there is a direct pair. Checked AFTER the
+    // re-extract branch (the dom-side cap wording routes to re_extract_dom above).
+    if ((r.note ?? '').includes('scan cap')) {
+      return depthLevels <= 4
+        ? { ...base, kind: 'children_truncated', action: 'raise_max_depth' }
+        : { ...base, kind: 'children_truncated', action: 'add_pairs_on_children',
+            detail: `${base.detail} - raising max_depth does not grow the scan cap at this depth: pair the icon nodes directly` };
+    }
     if ((r.note ?? '').includes('raise max_depth')) {
       return depthLevels < 8
         ? { ...base, kind: 'children_truncated', action: 'raise_max_depth' }
