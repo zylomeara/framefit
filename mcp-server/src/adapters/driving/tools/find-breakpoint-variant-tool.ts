@@ -6,6 +6,7 @@ import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 import { widthNoiseTolerance } from '../../../domain/layout-spec/diff.js';
+import { scanPlaceholders } from './compare-node-to-dom-tool.js';
 import { FigmaApiError } from '../../../ports/errors.js';
 import { COVERAGE_SKIPPED_NAMES_CAP } from './find-nodes-tool.js';
 
@@ -82,8 +83,8 @@ function collectVariantCandidates(
   return { candidates: out, depthCut };
 }
 
-interface ContentCandidate { node_id: string; name: string; w: number }
-interface ContentOut extends ContentCandidate { isBestMatch?: true }
+interface ContentCandidate { node_id: string; name: string; w: number; raw?: RawSceneNode }
+interface ContentOut extends ContentCandidate { isBestMatch?: true; placeholders?: number }
 
 // The variant frame's children + grandchildren (mirrors the depth-2 getNodesRaw fetch anchored
 // at the frame) typed FRAME/GROUP/INSTANCE/COMPONENT with a bbox - sorted
@@ -95,7 +96,8 @@ function collectContentCandidates(frameDoc: RawSceneNode, renderWidth: number): 
   const contentTypes = frameDoc.type === 'COMPONENT_SET' ? CONTENT_TYPES : new Set([...CONTENT_TYPES].filter((t) => t !== 'COMPONENT'));
   const consider = (n: RawSceneNode): void => {
     if (contentTypes.has(n.type) && n.absoluteBoundingBox) {
-      out.push({ node_id: n.id, name: n.name, w: Math.round(n.absoluteBoundingBox.width) });
+      // raw is INTERNAL (the placeholder scan target); the response builder strips it.
+      out.push({ node_id: n.id, name: n.name, w: Math.round(n.absoluteBoundingBox.width), raw: n });
     }
   };
   for (const child of frameDoc.children ?? []) {
@@ -110,7 +112,7 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
   server.registerTool(
     'find_breakpoint_variant',
     {
-      description: 'Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required - avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame\'s own width (a variant named "desktop" (w1280) whose inner drawer content is w420 matches render_width 420). The walk enumerates top-level containers and searches each to a bounded depth under a time budget; the response always carries a coverage ledger (searched/total/skipped, plus depth_cut for containers deeper than the walk) - an empty variants list claims absence ONLY over the searched slice. Pass parent_node_id (a section or page) to scope the walk, or to drill one container named in coverage.skipped.',
+      description: 'Resolve which breakpoint variant frame matches your rendered width. Works from a bare text query (no node_id required - avoids a whole-file find_nodes on files with many near-duplicate variant frames). Rank is by CONTENT frame width, not the variant frame\'s own width (a variant named "desktop" (w1280) whose inner drawer content is w420 matches render_width 420). The walk enumerates top-level containers and searches each to a bounded depth under a time budget; the response always carries a coverage ledger (searched/total/skipped, plus depth_cut for containers deeper than the walk) - an empty variants list claims absence ONLY over the searched slice. Pass parent_node_id (a section or page) to scope the walk, or to drill one container named in coverage.skipped. Each variant (and its content candidates) may carry placeholders: the number of visible placeholder (skeleton) layers found in that node\'s fetched slice, the node itself included - a lower bound over that slice, never a proof of a loaded frame; match.placeholders and a leading note surface it when the width race lands on one.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -269,44 +271,77 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
         if (sawRateLimit) {
           // The walk just stopped on 429 - firing one more REST call immediately IS the
           // hammering the stop exists to avoid; widths come from the walk slice.
-          notes.push('content-frame fetch skipped (rate-limited during the walk) — widths below come from the walk slice and may miss nested content.');
+          notes.push('content-frame fetch skipped (rate-limited during the walk) — widths below and the placeholder scan come from the walk slice; a missing placeholders field is not an absence claim.');
         } else {
           try {
             contentNodes = (await api.getNodesRaw(parsed.value, variantIds, CONTENT_FETCH_DEPTH)).nodes;
           } catch (e) {
             if (e instanceof FigmaApiError && (e.kind === 'auth' || e.kind === 'forbidden' || e.kind === 'rate_limited')) throw e;
-            notes.push('content-frame fetch did not complete (budget/limit) — widths below come from the walk slice and may miss nested content.');
+            notes.push('content-frame fetch did not complete (budget/limit) — widths below and the placeholder scan come from the walk slice; a missing placeholders field is not an absence claim.');
           }
         }
 
         let best: { diff: number; nodeId: string; w: number; variantNodeId: string } | undefined;
+        // placeholder-signal state: one record per width-race candidate, feeding
+        // match.placeholders and the presence note after the race.
+        const phByNode = new Map<string, number>();
+        const phCandidates: { nodeId: string; name: string; variantNodeId: string; variantName: string; diff: number; count: number }[] = [];
+        // the silent third degradation path: the fetch SUCCEEDED but returned no document for
+        // some listed id - without a note those variants silently degrade to the walk slice.
+        const undelivered: string[] = [];
         const variantsOut = capped.map((c) => {
-          const fetched = contentNodes[c.node.id]?.document ?? c.node;
+          const contentDoc = contentNodes[c.node.id]?.document;
+          if (!sawRateLimit && Object.keys(contentNodes).length > 0 && contentDoc === undefined) undelivered.push(c.node.id);
+          const fetched = contentDoc ?? c.node;
           const frameW = Math.round(fetched.absoluteBoundingBox?.width ?? 0);
           const content = collectContentCandidates(fetched, args.render_width);
 
+          // Placeholder scan, the #51 union convention: the frame-itself candidate unions the
+          // content-fetched document with the walk-slice node (for a top-level container the
+          // walk slice is DEEPER than the content fetch - measured inverted case); each
+          // content candidate scans its fetched subtree, root included.
+          const framePh = Math.max(
+            scanPlaceholders(fetched).count,
+            contentDoc !== undefined ? scanPlaceholders(c.node).count : 0);
+          let variantPh = framePh;
+          for (const cc of content) {
+            const n = cc.raw !== undefined ? scanPlaceholders(cc.raw).count : 0;
+            if (n > 0) { cc.placeholders = n; phByNode.set(cc.node_id, n); }
+            if (n > variantPh) variantPh = n;
+            delete cc.raw;
+          }
+          if (framePh > 0) phByNode.set(c.node.id, framePh);
+
           // The frame's own width competes too - sometimes the frame IS the content.
-          const evalCandidates: { nodeId: string; w: number }[] = [
-            ...content.map((cc) => ({ nodeId: cc.node_id, w: cc.w })),
-            { nodeId: c.node.id, w: frameW },
+          const evalCandidates: { nodeId: string; name: string; w: number; count: number }[] = [
+            ...content.map((cc) => ({ nodeId: cc.node_id, name: cc.name, w: cc.w, count: cc.placeholders ?? 0 })),
+            { nodeId: c.node.id, name: c.node.name, w: frameW, count: framePh },
           ];
           for (const cand of evalCandidates) {
             const diff = Math.abs(cand.w - args.render_width);
             if (!best || diff < best.diff) best = { diff, nodeId: cand.nodeId, w: cand.w, variantNodeId: c.node.id };
+            phCandidates.push({ nodeId: cand.nodeId, name: cand.name, variantNodeId: c.node.id, variantName: c.node.name, diff, count: cand.count });
           }
 
           return {
             node_id: c.node.id,
             name: c.node.name,
+            ...(variantPh > 0 ? { placeholders: variantPh } : {}),
             ...(c.container !== undefined ? { container: c.container } : {}),
             frame_w: frameW,
             content,
           };
         });
 
-        let match: { node_id: string; w: number; variant_node_id: string } | null = null;
+        if (undelivered.length > 0) {
+          notes.push(`content fetch returned no document for ${undelivered.length} variant(s) (${undelivered.join(', ')}) — their widths and placeholder scan come from the walk slice; a missing placeholders field is not an absence claim.`);
+        }
+
+        let match: { node_id: string; w: number; variant_node_id: string; placeholders?: number } | null = null;
         if (best && best.diff <= tolerance) {
-          match = { node_id: best.nodeId, w: best.w, variant_node_id: best.variantNodeId };
+          const matchedPh = phByNode.get(best.nodeId) ?? 0;
+          match = { node_id: best.nodeId, w: best.w, variant_node_id: best.variantNodeId,
+            ...(matchedPh > 0 ? { placeholders: matchedPh } : {}) };
           const variant = variantsOut.find((v) => v.node_id === best!.variantNodeId);
           const contentHit = variant?.content.find((cc) => cc.node_id === best!.nodeId);
           if (contentHit) contentHit.isBestMatch = true;
@@ -314,6 +349,33 @@ export function registerFindBreakpointVariantTool(server: McpServer, deps: ToolD
           notes.push(
             `no content width within ±${Math.round(tolerance)} tolerance — candidates below, verify the breakpoint by hand.`,
           );
+        }
+
+        // The presence note - the selection warning the incident lacked. ONE note, at most two
+        // named nodes, LEADING the joined string; it fires in every returning branch that
+        // lists candidates, and claims nothing beyond the MAX_VARIANTS capped set.
+        if (phCandidates.some((r) => r.count > 0)) {
+          if (match !== null) {
+            const matchedPh = phByNode.get(match.node_id) ?? 0;
+            if (matchedPh > 0) {
+              const vName = variantsOut.find((v) => v.node_id === match!.variant_node_id)?.name ?? '';
+              // the closest clean alternative in the capped set, if one exists
+              const alt = phCandidates.filter((r) => r.count === 0 && r.nodeId !== match!.node_id)
+                .sort((a, b) => a.diff - b.diff)[0];
+              const tie = alt !== undefined && alt.diff === best!.diff
+                ? ' (equal distance to render_width, so the entry listed first in variants[] won — name matches before container matches, then walk order)'
+                : '';
+              notes.unshift(`matched variant "${vName}" (${match.variant_node_id}) carries at least ${matchedPh} placeholder (skeleton) layer(s) within its fetched slice — placeholder sizes are conditional; if you are verifying the LOADED render this is likely the wrong frame${alt !== undefined ? ` — the closest alternative is "${alt.name}" (${alt.nodeId})${tie}` : ''}`);
+            } else {
+              // the match is clean but a skeleton competitor sits in the listed set - the
+              // consumer sees the coin flip they would otherwise inherit silently.
+              const sk = phCandidates.filter((r) => r.count > 0).sort((a, b) => a.diff - b.diff)[0];
+              notes.unshift(`a listed candidate carries placeholder (skeleton) layers: "${sk.name}" (${sk.nodeId}, at least ${sk.count}) — placeholder sizes are conditional; the match itself is not it`);
+            }
+          } else {
+            const sk = phCandidates.filter((r) => r.count > 0).sort((a, b) => a.diff - b.diff)[0];
+            notes.unshift(`the closest candidate(s) carry placeholder (skeleton) layers: "${sk.name}" (${sk.nodeId}, at least ${sk.count}) — placeholder sizes are conditional`);
+          }
         }
 
         return jsonResult({

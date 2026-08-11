@@ -196,14 +196,31 @@ export function buildFixPlan(
 // node: a name carrying the (dictionary-generic) word skeleton, and a componentProperties key
 // carrying it whose value is POSITIVELY on - the live counter-example value "no" is a
 // non-empty (JS-truthy) string and must never fire. Invisible layers do not render and do not
-// count. Emitted at THIS tool layer on purpose: compare_dom_to_dom never executes this file,
-// so the fig-only boundary is structural, not a sentence.
+// count. The detector is SHARED with find_breakpoint_variant (fbv phase 2 of the same
+// feedback item); the fig-only boundary is structural because compare_dom_to_dom imports
+// NEITHER tool file - never a sentence.
 export function scanPlaceholders(root: RawSceneNode): { count: number; visited: number } {
   let count = 0; let visited = 0;
+  // Figma encodes variant property VALUES in the node name ('Skeleton=False, Breakpoint=
+  // Desktop') - a bare substring test fired on the NEGATIVE assignment, which is exactly the
+  // loaded sibling of the incident's shape. A k=v segment whose key carries the token uses
+  // the SAME positive list as componentProperties; the plain substring rule runs only over
+  // the remainder after stripping every k=v segment.
+  const nameSignal = (name: string): boolean => {
+    const rest: string[] = [];
+    let hit = false;
+    for (const seg of name.split(',')) {
+      const m = /^\s*([^=]+)=(.+?)\s*$/.exec(seg);
+      if (m) {
+        if (/skeleton/i.test(m[1]) && /^(yes|true|on|1)$/i.test(m[2].trim())) hit = true;
+      } else rest.push(seg);
+    }
+    return hit || /skeleton/i.test(rest.join(','));
+  };
   const walk = (n: RawSceneNode): void => {
     if (n.visible === false) return;
     visited += 1;
-    let hit = /skeleton/i.test(n.name ?? '');
+    let hit = nameSignal(n.name ?? '');
     if (!hit) {
       for (const [k, v] of Object.entries(n.componentProperties ?? {})) {
         if (!/skeleton/i.test(k.replace(/#[0-9:]*/g, ''))) continue;
