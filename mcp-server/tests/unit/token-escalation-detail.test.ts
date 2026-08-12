@@ -1,12 +1,17 @@
 // Batch 2 item 5 remainder (panel-locked, 3 lenses, 32 findings, 8 blockers - the
-// feedback's collapse ask was REFUTED with measurement). The live incident's real defect:
-// under a dead variables resolve every diverged row lands in ONE rsn:bound-unresolved /
-// rsn:fig-unresolved aggregate (PR #108 already collapsed the flood) whose advice
-// ("confirm the token") is unexecutable AS STATED - but the road exists and is measured:
-// the negative cache is cap-aware, get_variables {timeout_ms: 120000} bypasses it BY
-// DESIGN, warms the positive cache on success, and the next compare resolves everything.
-// The ship is ONE wording change: those aggregates' detail names the escalation road,
-// gated conjunctively (no-token reason key AND variablesDegraded AND not dom-dom).
+// feedback's collapse ask was REFUTED with measurement; the wave then narrowed the first
+// cut twice more). The live incident's real defect: under a dead variables resolve every
+// diverged row lands in ONE rsn:bound-unresolved aggregate (PR #108 already collapsed the
+// flood) whose advice ("confirm the token") is unexecutable AS STATED - but the road
+// exists and is measured: the negative cache is cap-aware, a first get_variables
+// {timeout_ms: 120000} exceeds the 20s marker's cap and can warm the positive cache; the
+// clause HEDGES its own ceiling (a failed 120s call writes an unbypassable schema-max
+// marker for ~10 minutes - the wave's blocker), and it fires only for the escalatable
+// failure classes (capped timeout / too-large; a 403 has no marker to bypass). The ship
+// is ONE wording change: the bound-unresolved aggregates' detail names the road, gated
+// conjunctively (the one no-token dead-resolve key AND variablesDegraded AND not dom-dom;
+// fig-unresolved is OUT - it means the Figma side had no solid hex at all, and no warm
+// index can invent one).
 // Nothing is suppressed: blocking stays non-empty (the suppressed population would have
 // been exactly the diverged-hex rows), the #60 hatch and Gate 5B are untouched, places[]
 // addressability is intact, and tok:<name> groups (mode-unconfirmed - an executable
@@ -57,17 +62,31 @@ describe('the escalation detail (item 5 remainder): a dead-resolve aggregate nam
     expect(b[0].detail).not.toMatch(ESCALATION);
   });
 
-  it('a single-place fig-unresolved group gains the clause too (the firstNote branch)', () => {
-    const b = blockingOf([mk('1:1', [rev('color[a]', undefined, 'fig-unresolved', 'the token cannot be checked')])],
+  it('a single-place bound-unresolved group gains the clause too (the firstNote branch)', () => {
+    const b = blockingOf([mk('1:1', [rev('color[a]', undefined, 'bound-unresolved', 'bound but unresolved')])],
       { variablesDegraded: true });
     expect(b).toHaveLength(1);
-    expect(b[0].detail).toContain('the token cannot be checked');
+    expect(b[0].detail).toContain('bound but unresolved');
     expect(b[0].detail).toMatch(ESCALATION);
+  });
+
+  it('fig-unresolved NEVER gains the clause - the Figma side had no solid hex at all, a warm index cannot invent one (wave)', () => {
+    const b = blockingOf([mk('1:1', [rev('color[a]', undefined, 'fig-unresolved'), rev('color[b]', undefined, 'fig-unresolved')])],
+      { variablesDegraded: true });
+    expect(b).toHaveLength(1);
+    expect(b[0].detail).not.toMatch(ESCALATION);
+  });
+
+  it('the clause hedges its own ceiling - no unconditional bypass promise (wave blocker: a failed 120s call poisons the marker at the schema max)', () => {
+    const b = blockingOf([mk('1:1', [rev('color[a]', undefined, 'bound-unresolved'), rev('color[b]', undefined, 'bound-unresolved')])],
+      { variablesDegraded: true });
+    expect(b[0].detail).toMatch(/if the 120s call also fails/);
+    expect(b[0].detail).not.toMatch(/bypasses/);
   });
 
   it('dom-dom is structurally inert: the no-key road mints byte-identically even with the flag FORCED on', () => {
     // fillTokenDrift-shaped rows carry neither token nor tokenReason - the no-key push.
-    const rows = [rev('fill-token', undefined, undefined, 'the reference is var-bound, the candidate is a literal')];
+    const rows = [rev('fill-token-drift', undefined, undefined, 'the reference is var-bound, the candidate is a literal')];
     const withFlag = blockingOf([mk('card', rows)], { mode: 'dom-dom', variablesDegraded: true });
     const without = blockingOf([mk('card', rows)], { mode: 'dom-dom' });
     expect(withFlag).toEqual(without);

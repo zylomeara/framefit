@@ -445,10 +445,11 @@ export function buildVerification(pairs: PairResult[], opts: {
   // compare reads. Wording only - the item, its action (Gate 5B census) and places[] are
   // untouched, and tok:<name> groups (an executable mode road, unrelated to the fetch)
   // never gain it. dom-dom is structurally excluded (no variables fetch exists there).
+  // rsn:bound-unresolved ONLY: fig-unresolved means the Figma side had no solid hex at
+  // all (gradient/image/invisible fill) - no variables warm-up can invent one (wave).
   const escalation = (key: string): string =>
-    opts.variablesDegraded === true && opts.mode !== 'dom-dom'
-      && (key === 'rsn:bound-unresolved' || key === 'rsn:fig-unresolved')
-      ? ' - the file\'s variables did not resolve this call (see degraded_stages); run get_variables {timeout_ms: 120000} on this file - the larger budget bypasses the capped fetch\'s negative cache and warms it on success - then re-run this compare'
+    opts.variablesDegraded === true && opts.mode !== 'dom-dom' && key === 'rsn:bound-unresolved'
+      ? ' - the file\'s variables did not resolve this call (see degraded_stages); run get_variables {timeout_ms: 120000} on this file (the largest budget the tool allows), then re-run this compare; if the 120s call also fails, the failure is cached for ~10 minutes - wait it out before retrying'
       : '';
   for (const [key, g] of tokenGroups) {
     const first = g.places[0];

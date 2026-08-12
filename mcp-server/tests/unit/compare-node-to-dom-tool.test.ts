@@ -318,8 +318,9 @@ describe('compare_node_to_dom tool', () => {
 
   it('batch-2 item 5 remainder: a degraded fetch + a DIVERGED bound color -> the confirm_token detail names the get_variables escalation road (the threading lock)', async () => {
     // Positive population first (the vacuous-arm lesson): the fetch fails, the row gates.
+    // The message carries the producer's real timeout phrase - the class gate reads it.
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
-    const getVariablesLocal = vi.fn(async () => { throw new Error('Figma API timeout after 90000ms'); });
+    const getVariablesLocal = vi.fn(async () => { throw new Error('Figma request timed out after 20000ms'); });
     const run = harness({ getNodesRaw, getVariablesLocal });
     const divergedDom = { ...domFor(cardBoundFill), styles: { backgroundColor: '#1f1f1f' } };
     const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: divergedDom }] });
@@ -329,6 +330,21 @@ describe('compare_node_to_dom tool', () => {
     expect(tokenItems.length).toBeGreaterThan(0);
     expect(tokenItems[0].detail).toMatch(/run get_variables \{timeout_ms: 120000\}/);
     expect(tokenItems[0].detail).toMatch(/re-run this compare/);
+  });
+
+  it('batch-2 item 5 remainder: a NON-escalatable failure class (403) degrades WITHOUT the clause - no marker exists to bypass and a bigger budget cannot fix it', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
+    const getVariablesLocal = vi.fn(async () => {
+      throw new FigmaApiError('forbidden', 403, 'This token cannot read variables on this file');
+    });
+    const run = harness({ getNodesRaw, getVariablesLocal });
+    const divergedDom = { ...domFor(cardBoundFill), styles: { backgroundColor: '#1f1f1f' } };
+    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: divergedDom }] });
+    const out = JSON.parse(res.content[0].text);
+    expect(out.degraded_stages).toHaveLength(1);          // the degradation is still reported
+    for (const b of out.verification.blocking) {
+      expect(String(b.detail ?? '')).not.toMatch(/run get_variables \{timeout_ms: 120000\}/);
+    }
   });
 
   it('batch-2 item 5 remainder: the SAME diverged pair with a healthy fetch keeps the old detail (no escalation clause)', async () => {
