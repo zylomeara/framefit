@@ -347,6 +347,21 @@ describe('compare_node_to_dom tool', () => {
     }
   });
 
+  it('batch-2 item 5 remainder: a QUEUED BAILOUT with a timeout-shaped message never gains the clause - nothing was cached, there is no marker to bypass (release claim-verification)', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
+    const getVariablesLocal = vi.fn(async () => {
+      throw new FigmaApiError('network', 0, 'Figma request timed out after 20000ms (queued past the deadline)', undefined, undefined, true);
+    });
+    const run = harness({ getNodesRaw, getVariablesLocal });
+    const divergedDom = { ...domFor(cardBoundFill), styles: { backgroundColor: '#1f1f1f' } };
+    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: divergedDom }] });
+    const out = JSON.parse(res.content[0].text);
+    expect(out.degraded_stages).toHaveLength(1);
+    for (const b of out.verification.blocking) {
+      expect(String(b.detail ?? '')).not.toMatch(/run get_variables \{timeout_ms: 120000\}/);
+    }
+  });
+
   it('batch-2 item 5 remainder: the SAME diverged pair with a healthy fetch keeps the old detail (no escalation clause)', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
     const getDocumentRaw = vi.fn(async () => docWithNode(cardBoundFill));
