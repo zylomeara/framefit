@@ -24,7 +24,7 @@ const shelf = (padLR = 0): LayoutSpec => ({
   ],
 } as LayoutSpec);
 const card = (domPad = 16, w = 424): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.card', innerWidth: 1280,
+  schema: 7, status: 'ok', selector: '.card', innerWidth: 1280,
   rect: { x: 0, y: 0, w, h: 140 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: domPad, right: domPad, bottom: domPad, left: domPad },
@@ -72,7 +72,7 @@ describe('item 18: the nested-padding button', () => {
     children: [{ id: '2:2', name: 'content', type: 'FRAME', rect: { x: 8, y: 4, w: 72, h: 20 } } as never],
   } as LayoutSpec;
   const dom: DomSnapshotOk = {
-    schema: 6, status: 'ok', selector: '.btn', innerWidth: 1280,
+    schema: 7, status: 'ok', selector: '.btn', innerWidth: 1280,
     rect: { x: 0, y: 0, w: 87.1, h: 28 },
     borders: { top: 0, right: 0, bottom: 0, left: 0 },
     paddings: { top: 4, right: 6, bottom: 4, left: 6 },
@@ -162,7 +162,7 @@ describe('verify-round locks', () => {
       ],
     } as LayoutSpec;
     const paddedDom: DomSnapshotOk = {
-      schema: 6, status: 'ok', selector: '.row', innerWidth: 1280,
+      schema: 7, status: 'ok', selector: '.row', innerWidth: 1280,
       rect: { x: 0, y: 0, w: 400, h: 200 },
       borders: { top: 0, right: 0, bottom: 0, left: 0 },
       paddings: { top: 0, right: 0, bottom: 0, left: 40 },

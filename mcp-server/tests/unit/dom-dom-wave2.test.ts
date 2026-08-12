@@ -11,7 +11,7 @@ const ZERO: Edges = { top: 0, right: 0, bottom: 0, left: 0 };
 const el = (x: number, y: number, w: number, h: number, extra: Partial<DomChild> = {}): DomChild =>
   ({ kind: 'element', tag: 'div', rect: { x, y, w, h }, ...extra });
 const snap = (over: Partial<DomSnapshotOk> = {}, children: DomChild[] = []): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.x', innerWidth: 768,
+  schema: 7, status: 'ok', selector: '.x', innerWidth: 768,
   rect: { x: 0, y: 0, w: 400, h: 200 },
   borders: ZERO, paddings: ZERO,
   clientWidth: 400, clientHeight: 200, scrollHeight: 200,

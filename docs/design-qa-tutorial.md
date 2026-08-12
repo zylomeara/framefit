@@ -169,7 +169,7 @@ Hand the frame root and the DOM snapshot to the pair proposer:
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "frame_node_id": "12:340",
   "dom_snapshot": {
-    "schema": 6,
+    "schema": 7,
     "status": "ok",
     "selector": ".card",
     "innerWidth": 320,
@@ -212,7 +212,7 @@ verification receipt as uncovered regions if you leave them unpaired.
   "frame_node_id": "12:340",
   "pairs": [
     { "node_id": "12:340", "label": "card root",
-      "dom": { "schema": 6, "status": "ok", "selector": ".card", "innerWidth": 320,
+      "dom": { "schema": 7, "status": "ok", "selector": ".card", "innerWidth": 320,
                "rect": { "x": 0, "y": 0, "w": 320, "h": 420 },
                "borders": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
                "paddings": { "top": 16, "right": 16, "bottom": 16, "left": 16 },
@@ -232,7 +232,7 @@ verification receipt as uncovered regions if you leave them unpaired.
                    "styles": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": 14 } }
                ] } },
     { "node_id": "12:341", "label": "title",
-      "dom": { "schema": 6, "status": "ok", "selector": ".card__title", "innerWidth": 320,
+      "dom": { "schema": 7, "status": "ok", "selector": ".card__title", "innerWidth": 320,
                "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
                "borders": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
                "paddings": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
@@ -242,7 +242,7 @@ verification receipt as uncovered regions if you leave them unpaired.
                "children": [ { "kind": "text", "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },
                               "text": "Product card" } ] } },
     { "node_id": "12:344", "label": "price",
-      "dom": { "schema": 6, "status": "ok", "selector": ".card__price", "innerWidth": 320,
+      "dom": { "schema": 7, "status": "ok", "selector": ".card__price", "innerWidth": 320,
                "rect": { "x": 16, "y": 52, "w": 288, "h": 20 },
                "borders": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
                "paddings": { "top": 0, "right": 0, "bottom": 0, "left": 0 },

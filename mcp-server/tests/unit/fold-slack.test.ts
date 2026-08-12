@@ -26,7 +26,7 @@ const spec = (w: number, kids: SpecChild[], align: string | undefined, gap = 0):
   children: kids,
 });
 const centeringDom = (w: number, childX: number, childW: number, jc = 'center'): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.tile', innerWidth: 1920,
+  schema: 7, status: 'ok', selector: '.tile', innerWidth: 1920,
   rect: R(0, 0, w, 120), borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: 0, right: 0, bottom: 0, left: 0 },
   clientWidth: w, clientHeight: 120, scrollHeight: 120,

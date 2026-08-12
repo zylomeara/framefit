@@ -21,7 +21,7 @@ const parse = (r: { content: { text: string }[] }): any => JSON.parse(r.content[
 
 // The vault shape: a padded list root whose first card sits at `firstCardY`.
 const state = (firstCardY: number): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.shelf', innerWidth: 768,
+  schema: 7, status: 'ok', selector: '.shelf', innerWidth: 768,
   rect: { x: 0, y: 0, w: 768, h: 900 },
   borders: { top: 1, right: 1, bottom: 1, left: 1 },
   borderColors: { top: '#e0e0e0', right: '#e0e0e0', bottom: '#e0e0e0', left: '#e0e0e0' },

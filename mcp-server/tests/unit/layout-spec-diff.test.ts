@@ -2576,7 +2576,7 @@ describe('paint-style tokenization reaches colorVerdict', () => {
 
 describe('review rows carry structural token/tokenReason (confirm_token aggregation)', () => {
   const base = { node: { id: '1', name: 'n', type: 'FRAME' }, rect: { x: 0, y: 0, w: 10, h: 10 }, children: [] };
-  const dom = (styles: any) => ({ schema: 6, innerWidth: 100, rect: { x: 0, y: 0, w: 10, h: 10 },
+  const dom = (styles: any) => ({ schema: 7, innerWidth: 100, rect: { x: 0, y: 0, w: 10, h: 10 },
     borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 }, children: [], styles });
   const fillRow = (spec: any, d: any) => diffPair(spec as any, d as any, { tolerancePx: 1 }).find((r) => r.prop === 'fill')!;
 
@@ -2868,7 +2868,7 @@ describe('style anchor (v5): style axes are read from the carrier through transp
     styles: { borderRadius: 24, gradient: { kind: 'conic', stops: [], whole: { literal: true } } },
     data: { component: 'Banner' }, children: [], ...over });
   const wrapPair = (childOver: any = {}, rootOver: any = {}) => ({
-    schema: 6, innerWidth: 1920, rect: { x: 0, y: 0, w: 1280, h: 148 },
+    schema: 7, innerWidth: 1920, rect: { x: 0, y: 0, w: 1280, h: 148 },
     borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
     children: [bannerChild(childOver)], ...rootOver });
   // rect added to the verbatim brief: without spec.rect the geometry gate (:250 'no bbox') suppresses

@@ -57,7 +57,7 @@ function mtHarness() {
   const deps = { buildApi: () => api as FigmaApi, defaultToken: 'figd_x', logger,
     maxResultChars: 400000, variableGraph: userGraphPort(mtGraph) } as unknown as ToolDeps;
   registerCompareNodeToDomTool(server, deps);
-  const dom = (domVar: string) => ({ schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
+  const dom = (domVar: string) => ({ schema: 7, status: 'ok', selector: '.card', innerWidth: 375,
     rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
     scroll: { top: 0, left: 0 }, transformed: false,
     styles: { backgroundColor: '#ff0000', backgroundColorToken: { token: domVar } }, children: [] });

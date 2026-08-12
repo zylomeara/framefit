@@ -188,7 +188,7 @@ export interface DomChild {
   path?: string;            // `:nth-child` chain from the captured root — the CSS selector for compare; for a text node = the parent element's path
   // v5: the child's styles are extended with a style bundle (compactly: a field is present ONLY when the
   // value is meaningful; absence at schema>=5 = there is no style — the capture guarantee for styleAnchor)
-  styles?: DomTypography & { borderRadius?: number; borderRadiusUncomparable?: true; opacity?: number; gradient?: GradientModel; bgImage?: true }; // for kind:'text' — the parent's computed styles (typography is inherited); borderRadiusUncomparable = the DOM radius is not one comparable px number (corners differ, or a %/elliptical radius), so borderRadius is absent (v6); bgImage = a raster url background (invisible to the gradient detector)
+  styles?: DomTypography & { borderRadius?: number; borderRadiusUncomparable?: true; opacity?: number; gradient?: GradientModel; bgImage?: true; paintUnknown?: true }; // for kind:'text' — the parent's computed styles (typography is inherited); borderRadiusUncomparable = the DOM radius is not one comparable px number (corners differ, or a %/elliptical radius), so borderRadius is absent (v6); bgImage = a raster url background (invisible to the gradient detector); paintUnknown = a declared paint the snapshot cannot classify (v7: CSS Color 4 background, outline, painted pseudo-element, filter) — "no style field = no style" does NOT hold for this box
   shadow?: DomShadow;          // v5
   borders?: Edges;             // v5 (non-zero only)
   borderColors?: { top?: string; right?: string; bottom?: string; left?: string };      // v5
@@ -198,7 +198,9 @@ export interface DomChild {
   children?: DomChild[];       // nested in-flow children (4 levels below the pair root; the field is present on L1/L2/L3, absent on L4 = beyond the cut); [] = leaf WITHIN the capture
   childrenTruncated?: boolean; // this level was cut by a cap
   outOfFlow?: number;          // children skipped as position:absolute/fixed - out of THIS box layout,
-                               // and unreachable by a deeper capture; absent when none were skipped
+                               // and unreachable by a deeper capture; absent when none were skipped.
+                               // v7: counts only VISIBLE absolutes (zero-area ones - sr-only, focus
+                               // rings - are plain skips), mirroring the projector's count
 }
 
 export interface DomShadow {
@@ -229,7 +231,7 @@ export interface DomSnapshotOk {
   scroll: { top: number; left: number };
   transformed?: boolean;    // computed transform !== 'none'
   fontsLoaded?: boolean;    // document.fonts.status === 'loaded'
-  styles?: DomTypography & { display?: string; borderRadius?: number; borderRadiusUncomparable?: true; opacity?: number; justifyContent?: string; gradient?: GradientModel };
+  styles?: DomTypography & { display?: string; borderRadius?: number; borderRadiusUncomparable?: true; opacity?: number; justifyContent?: string; gradient?: GradientModel; paintUnknown?: true }; // paintUnknown: v7, see DomChild
   state?: Record<string, string | boolean>; // checked/disabled/…
   componentHints?: { tag: string; classList: string[]; data: Record<string, string> };
   children: DomChild[];     // visible in-flow (including bare text nodes), in DOM order

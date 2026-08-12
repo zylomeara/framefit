@@ -39,7 +39,7 @@ const domKid = (over: Partial<DomChild> = {}): DomChild => ({
   children: [{ kind: 'element', tag: 'div', rect: R(0, 0, 300, 100) }], ...over,
 });
 const snap = (kids: DomChild[], over: Partial<DomSnapshotOk> = {}): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.card', innerWidth: 1280,
+  schema: 7, status: 'ok', selector: '.card', innerWidth: 1280,
   rect: R(0, 0, 300, 100), borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: 0, right: 0, bottom: 0, left: 0 },
   clientWidth: 300, clientHeight: 100, scrollHeight: 100,

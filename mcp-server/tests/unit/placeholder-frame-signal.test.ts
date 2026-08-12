@@ -59,7 +59,7 @@ const frameWithGhostOutside: RawSceneNode = {
   ],
 };
 const matchingDom = {
-  schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
+  schema: 7, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false, fontsLoaded: true,

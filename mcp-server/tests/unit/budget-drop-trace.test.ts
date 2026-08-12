@@ -55,7 +55,7 @@ const card: RawSceneNode = {
 // blocking-empty branch these tests lock (the replaced inherent-only caveat) is UNREACHABLE -
 // the wave measured the not.toContain asserts as unfalsifiable under the padding-less fixture.
 const cleanDom = {
-  schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
+  schema: 7, status: 'ok', selector: '.card', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: 0, right: 0, bottom: 0, left: 0 },
   clientWidth: 343, clientHeight: 120, scrollHeight: 120,
@@ -166,7 +166,7 @@ describe('compare_node_to_dom: the drop trace', () => {
 // borderColors is load-bearing for the same reason as cleanDom's paddings: 1px borders with
 // no color yield a resolve_skip blocking item PER PAIR, and blocking never empties.
 const bulkyState = (firstCardY: number): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.shelf', innerWidth: 768,
+  schema: 7, status: 'ok', selector: '.shelf', innerWidth: 768,
   rect: { x: 0, y: 0, w: 768, h: 4000 },
   borders: { top: 1, right: 1, bottom: 1, left: 1 },
   borderColors: { top: '#e0e0e0', right: '#e0e0e0', bottom: '#e0e0e0', left: '#e0e0e0' },

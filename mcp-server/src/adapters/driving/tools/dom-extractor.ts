@@ -7,7 +7,7 @@
 // doesn't get raw nodes any deeper — see projector.ts:12). Move all three in sync.
 // The build has no browser types — which is why this is a string, not a function.
 export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget = 90) => {
-  const SCHEMA = 6;
+  const SCHEMA = 7;
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : undefined; };
   const round1 = (n) => Math.round(n * 10) / 10;
   const rectOf = (r) => ({ x: round1(r.x), y: round1(r.y), w: round1(r.width), h: round1(r.height) });
@@ -77,6 +77,29 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
     const h = (x) => (+x).toString(16).padStart(2, '0');
     const base = '#' + h(m[1]) + h(m[2]) + h(m[3]);
     return a >= 1 ? base : base + Math.round(a * 255).toString(16).padStart(2, '0');
+  };
+  // v7: a declared paint the snapshot cannot classify. On the wire, "no style field" means
+  // "no style" (the v5 capture guarantee) — but a CSS Color 4 background (oklch()/lab()/color())
+  // serializes outside toHex's rgb() grammar, an outline is not modeled at all, and ::before/::after
+  // paint is not a DOM node. Without the flag such a box is byte-identical to a transparent one,
+  // and every "this box paints nothing" consumer reads a painted box as inert.
+  const bgUnparsed = (c) => !!c && !/^rgba?\\(/.test(c);
+  const paintsUnknown = (n, cs) => {
+    if (bgUnparsed(cs.backgroundColor)) return true;
+    if (cs.outlineStyle && cs.outlineStyle !== 'none' && (num(cs.outlineWidth) || 0) > 0) return true;
+    if (cs.filter && cs.filter !== 'none') return true;
+    if (cs.backdropFilter && cs.backdropFilter !== 'none') return true;
+    for (const pe of ['::before', '::after']) {
+      const p = getComputedStyle(n, pe);
+      if (!p || !p.content || p.content === 'none' || p.content === 'normal' || p.display === 'none') continue;
+      if (p.content !== '""') return true;
+      if (toHex(p.backgroundColor) !== undefined || bgUnparsed(p.backgroundColor)) return true;
+      if (p.backgroundImage && p.backgroundImage !== 'none') return true;
+      if (p.boxShadow && p.boxShadow !== 'none') return true;
+      if (((num(p.borderTopWidth) || 0) + (num(p.borderRightWidth) || 0)
+        + (num(p.borderBottomWidth) || 0) + (num(p.borderLeftWidth) || 0)) > 0) return true;
+    }
+    return false;
   };
     const toHexLoose = (c) => toHex((c || '').replace(/\\s+/g, ' ').trim());
     // CSS named colors (Color-4 set, minus 'transparent') → #rrggbb, plus a pure-JS hsl()/hsla() → #hex
@@ -218,9 +241,11 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         out.push(...sub);
         continue;
       }
-      if (cs.position === 'absolute' || cs.position === 'fixed') { out.outOfFlow++; continue; }
       const r = n.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
+      // v7: the zero-area test runs FIRST — outOfFlow counts only VISIBLE absolutes (mirrors the
+      // projector's count); an sr-only/focus-ring absolute is a skip, not a dropped interior.
+      if (cs.position === 'absolute' || cs.position === 'fixed') { out.outOfFlow++; continue; }
       const childSel = '> :nth-child(' + (Array.from(el.children).indexOf(n) + 1) + ')';
       const nodePath = (basePath + ' ' + childSel).trim();
       const child = { kind: 'element', tag: n.tagName.toLowerCase(),
@@ -235,6 +260,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         child.styles.backgroundColor = cbg;
         child.styles.backgroundColorToken = classifyColor(n, 'background-color', cbg);
       }
+      if (paintsUnknown(n, cs)) child.styles.paintUnknown = true; // v7 (compact - only when present)
       const crad = radiusOf(cs);
       if (crad.uncomparable) child.styles.borderRadiusUncomparable = true;
       else if (crad.value > 0) child.styles.borderRadius = crad.value;
@@ -923,6 +949,7 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
       fontsLoaded: document.fonts ? document.fonts.status === 'loaded' : undefined,
       styles: Object.assign({ display: cs.display, backgroundColor: toHex(cs.backgroundColor) },
         rrad.uncomparable ? { borderRadiusUncomparable: true } : { borderRadius: rrad.value },
+        paintsUnknown(el, cs) ? { paintUnknown: true } : {}, // v7
         { opacity: num(cs.opacity), justifyContent: cs.justifyContent,
           colorToken: classifyColor(el, 'color', toHex(cs.color)),
           backgroundColorToken: classifyColor(el, 'background-color', toHex(cs.backgroundColor)),

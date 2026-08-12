@@ -12,7 +12,7 @@ import type { DomSnapshot, DomChild } from '../../../domain/layout-spec/types.js
 // - an 'invalid_selector' status (currently conflated with not_found)
 // - the fate of the `state` field (declared, but neither emitted nor compared)
 // - modern colors in toHex (oklch()/color() → currently undefined → a false background warn)
-export const DOM_SNAPSHOT_SCHEMA_VERSION = 6;   // v3: styles.gradient added
+export const DOM_SNAPSHOT_SCHEMA_VERSION = 7;   // v3: styles.gradient added
 // v4 — SNIPPET_CAP 120: old extractors truncate text at 40 WITHOUT a flag; at the server's 120
 // threshold their cuts are indistinguishable from full text → mis-anchor; the version rejects them at both matcher inputs.
 // v5 (style-anchor): a style bundle on children — radius/opacity/gradient in styles, shadow/borders/borderColors/data on the node; compact "no field = no style" semantics
@@ -25,6 +25,16 @@ export const DOM_SNAPSHOT_SCHEMA_VERSION = 6;   // v3: styles.gradient added
 // and 50px — the server cannot tell them apart, and the corner-radius row passes over an unmeasured
 // difference. The field is additive, the MEANING of an existing field is not: without the version, the
 // false green this release removes from the code would survive on every stale capture, silently.
+// v7 (paint honesty): resolves the v3 candidate "modern colors in toHex". styles.paintUnknown marks a
+// box with a DECLARED paint the snapshot cannot classify — a CSS Color 4 background (oklch()/lab()/
+// color()/color-mix() serialize outside toHex's rgb() grammar), a visible outline, painted
+// ::before/::after content, a filter/backdrop-filter. Same bump argument as v4/v6: on a pre-v7 wire an
+// oklch-painted wrapper is byte-identical to a transparent one, and every "this box paints nothing"
+// consumer (the cross-axis encoding demote, transparentChild's style-anchor descent) would read a
+// painted box as inert — a stale capture would GAIN a green over a paint nobody measured. v7 also
+// re-scopes outOfFlow to count only visible absolutes (zero-area sr-only/focus-ring boxes are plain
+// skips), mirroring the projector's count — the cross-axis demote fail-closes on the counter, and the
+// pre-v7 counting would blank it on wrappers whose dropped children paint nothing.
 
 // v2: authored-binding state per captured color — value-anchored token / literal / honest
 // unknown (cross-origin | inherited). Consumed by colorVerdict; never claims literal when a
@@ -80,6 +90,7 @@ const ChildTypo = Typo.extend({
   opacity: z.number().optional(),
   gradient: GradientSchema.optional(),
   bgImage: z.literal(true).optional(),   // raster url background (invisible to the gradient detector) — a transparentChild disqualifier
+  paintUnknown: z.literal(true).optional(), // v7: a declared paint the snapshot cannot classify — "absence = no style" does not hold for this box
 });
 const DomChildSchema: z.ZodType<DomChild> = z.lazy(() => z.object({
   kind: z.enum(['element', 'text']),
@@ -134,7 +145,7 @@ export const OkSchema = z.object({
   scroll: z.object({ top: z.number(), left: z.number() }),
   transformed: z.boolean().optional(),
   fontsLoaded: z.boolean().optional(),
-  styles: Typo.extend({ display: z.string().optional(), borderRadius: z.number().optional(), borderRadiusUncomparable: z.literal(true).optional(), opacity: z.number().optional(), justifyContent: z.string().optional(), gradient: GradientSchema.optional() }).optional(),
+  styles: Typo.extend({ display: z.string().optional(), borderRadius: z.number().optional(), borderRadiusUncomparable: z.literal(true).optional(), opacity: z.number().optional(), justifyContent: z.string().optional(), gradient: GradientSchema.optional(), paintUnknown: z.literal(true).optional() }).optional(),
   state: z.record(z.union([z.string(), z.boolean()])).optional(),
   componentHints: z.object({ tag: z.string(), classList: z.array(z.string()), data: z.record(z.string()) }).optional(),
   children: z.array(DomChildSchema).max(30),
