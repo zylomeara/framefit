@@ -522,7 +522,8 @@ function projectChildren(kids: RawSceneNode[], axisOf: (n: RawSceneNode) => 'row
       ...(td.snippet !== undefined ? { textSnippet: td.snippet } : {}),
       ...(td.fixedWidth ? { textFixedWidth: true } : {}),
       ...(pads ? { paddings: pads } : {}),
-      ...(c.layoutSizingHorizontal === 'HUG' ? { hugWidth: true as const } : {}) };
+      ...(c.layoutSizingHorizontal === 'HUG' ? { hugWidth: true as const } : {}),
+      ...((c.layoutGrow ?? 0) > 0 ? { grow: true as const } : {}) };
     // Counted at EVERY projected level, the depth-terminal one included (raw is one level deeper
     // than the projection by FETCH=projection+1, so the count is real there) — at the boundary a
     // node whose children are ALL out of flow fires neither branch below and used to lose them

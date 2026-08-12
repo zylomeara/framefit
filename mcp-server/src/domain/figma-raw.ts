@@ -57,6 +57,7 @@ export interface RawSceneNode {
   // Auto-layout child mode: 'ABSOLUTE' = out-of-flow (ignore in gap/padding math). Absent = in flow.
   layoutPositioning?: 'AUTO' | 'ABSOLUTE';
   layoutSizingHorizontal?: string; // FIXED | HUG | FILL (auto-layout children)
+  layoutGrow?: number;             // 1 = the child stretches along the parent's MAIN axis (fill)
   // Radians in REST. Non-zero ⇒ absoluteBoundingBox is an AABB inflated by rotation — geometry unreliable.
   rotation?: number;
   children?: RawSceneNode[];

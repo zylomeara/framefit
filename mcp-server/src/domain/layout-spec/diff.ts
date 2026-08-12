@@ -739,7 +739,16 @@ function isDomSpacerShaped(c: DomChild, containerCross: number, structTol: numbe
   return Math.abs(cross - containerCross) <= structTol;
 }
 
-export interface SpacerFold { startPx: number; endPx: number; names: string[]; interior: string[]; domRemoved: number }
+export interface SpacerFold {
+  startPx: number; endPx: number; names: string[]; interior: string[]; domRemoved: number;
+  /** folded spacer COUNT per edge - each folded spacer also removed one itemSpacing from the
+   *  children sum, so the alignment gate's free-space math must restore gap * count too
+   *  (panel blocker: the incident survived the extent-only correction on any gap>0 DS). */
+  leadCount: number; trailCount: number;
+  /** extents of folded spacers with grow (layoutGrow>0) per edge - a grow spacer IS the
+   *  design's distributed free space, never an inset: EXCLUDED from the slack correction. */
+  growStartPx: number; growEndPx: number;
+}
 
 // The edge scan shared by BOTH conversion sites (the pair root and tryUnwrap's fig branch -
 // a spacer inside an unwrapped wrapper otherwise defeats the cardinality decision and becomes
@@ -748,7 +757,8 @@ export interface SpacerFold { startPx: number; endPx: number; names: string[]; i
 // declared+spacer DS still converts).
 function foldEdgeSpacers(kids: SpecChild[], cStart: number, cEnd: number,
   containerCross: number, containerMain: number, axis: 'row' | 'col', structTol: number):
-  { kids: SpecChild[]; startPx: number; endPx: number; leadCount: number; trailCount: number; names: string[]; interior: string[] } | undefined {
+  { kids: SpecChild[]; startPx: number; endPx: number; leadCount: number; trailCount: number;
+    growStartPx: number; growEndPx: number; names: string[]; interior: string[] } | undefined {
   const qualifies = (c: SpecChild): boolean => isSpacerShaped(c)
     && Math.abs((axis === 'row' ? c.rect.h : c.rect.w) - containerCross) <= structTol   // full cross extent
     && (axis === 'row' ? c.rect.w : c.rect.h) < containerMain - structTol;              // background sanity
@@ -769,7 +779,10 @@ function foldEdgeSpacers(kids: SpecChild[], cStart: number, cEnd: number,
   const startPx = kids.slice(0, lead).reduce((sum, c) => sum + (axis === 'row' ? c.rect.w : c.rect.h), 0);
   const endPx = kids.slice(kids.length - trail).reduce((sum, c) => sum + (axis === 'row' ? c.rect.w : c.rect.h), 0);
   const rest = kids.slice(lead, kids.length - trail);
+  const growPx = (cs: SpecChild[]): number =>
+    cs.filter((c) => c.grow === true).reduce((sum, c) => sum + (axis === 'row' ? c.rect.w : c.rect.h), 0);
   return { kids: rest, startPx, endPx, leadCount: lead, trailCount: trail, names: folded.map((c) => c.name),
+    growStartPx: growPx(kids.slice(0, lead)), growEndPx: growPx(kids.slice(kids.length - trail)),
     interior: rest.filter((c) => isSpacerShaped(c)).map((c) => c.name) };
 }
 
@@ -828,13 +841,22 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       const containerMain = axis === 'row' ? rect.w : rect.h;
       // One recorder for BOTH conversion sites (the root scan below and tryUnwrap's fig
       // branch): merges extents/names and keeps ONE spacer_inset trace row.
-      const applyFold = (res: { startPx: number; endPx: number; names: string[]; interior: string[] }, domRemoved: number): void => {
+      const applyFold = (res: { startPx: number; endPx: number; leadCount: number; trailCount: number; growStartPx: number; growEndPx: number; names: string[]; interior: string[] }, domRemoved: number): void => {
         if (spacerFold) {
           spacerFold.startPx += res.startPx; spacerFold.endPx += res.endPx;
-          spacerFold.names.push(...res.names); spacerFold.interior = res.interior;
+          spacerFold.leadCount += res.leadCount; spacerFold.trailCount += res.trailCount;
+          spacerFold.growStartPx += res.growStartPx; spacerFold.growEndPx += res.growEndPx;
+          // concat, not overwrite (defensive: site-1's interior is provably empty when the
+          // unwrap site fires - isSpacerShaped requires a childless node while expand
+          // requires children; no Set - DS interior spacers are routinely identically
+          // named, and a name-dedup under-reports the trace count) (wave)
+          spacerFold.interior = [...spacerFold.interior, ...res.interior];
+          spacerFold.names.push(...res.names);
           spacerFold.domRemoved += domRemoved;
         } else {
-          spacerFold = { startPx: res.startPx, endPx: res.endPx, names: [...res.names], interior: res.interior, domRemoved };
+          spacerFold = { startPx: res.startPx, endPx: res.endPx, leadCount: res.leadCount, trailCount: res.trailCount,
+            growStartPx: res.growStartPx, growEndPx: res.growEndPx,
+            names: [...res.names], interior: res.interior, domRemoved };
         }
         const f = spacerFold;
         const sideBits = [f.startPx > 0 ? `leading ${round1(f.startPx)}px` : '', f.endPx > 0 ? `trailing ${round1(f.endPx)}px` : ''].filter(Boolean).join(' + ');
@@ -2000,14 +2022,34 @@ function crossAndPaddingRows(
     MIN: { start: false, end: true }, CENTER: { start: true, end: true },
     MAX: { start: true, end: false }, SPACE_BETWEEN: { start: false, end: true },
   };
+  // The fold moved inset extents out of BOTH the children sum and the gap population - the
+  // free-space math must see them, or a folded inset reads as slack and reopens the demote
+  // road on a zero-slack container (the reopened batch-2 item 2 incident: #57 x #58
+  // interplay). A folded GROW spacer is the opposite - its extent IS distributed free
+  // space, so it is excluded from the inset terms (its adjacent gap still counts).
+  const foldInsetStart = (spacerFold?.startPx ?? 0) - (spacerFold?.growStartPx ?? 0);
+  const foldInsetEnd = (spacerFold?.endPx ?? 0) - (spacerFold?.growEndPx ?? 0);
+  const foldedGaps = (spacerFold?.leadCount ?? 0) + (spacerFold?.trailCount ?? 0);
   const figFreeSpace = primaryAlign !== undefined && spec.autoLayout !== undefined
-    ? ((end(rect, axis) - padEnd(eff(spec.autoLayout.padding), axis))
-      - (start(rect, axis) + padStart(eff(spec.autoLayout.padding), axis))
+    ? ((end(rect, axis) - padEnd(eff(spec.autoLayout.padding), axis) - foldInsetEnd)
+      - (start(rect, axis) + padStart(eff(spec.autoLayout.padding), axis) + foldInsetStart)
       - figKids.reduce((sum, k) => sum + (axis === 'row' ? k.rect.w : k.rect.h), 0)
-      - (spec.autoLayout.gap ?? 0) * Math.max(0, figKids.length - 1))
+      - (spec.autoLayout.gap ?? 0) * (Math.max(0, figKids.length - 1) + foldedGaps))
     : 0;
-  const figEdgeIsSlack = (e: 'start' | 'end'): boolean =>
-    primaryAlign !== undefined && figFreeSpace > structTol && FIG_SLACK_EDGES[primaryAlign][e];
+  const figEdgeIsSlack = (e: 'start' | 'end'): boolean => {
+    if (primaryAlign === undefined || figFreeSpace <= structTol) return false;
+    // SPACE_BETWEEN's free space lives BETWEEN children and never reaches the edges - the
+    // end allowance was carried for the degenerate single-child case only, and a folded
+    // edge is positive proof the designer pinned it (panel).
+    if (primaryAlign === 'SPACE_BETWEEN' && e === 'end') {
+      // PRE-fold population: a lead-edge fold removes a real child and would re-create the
+      // single-child degenerate on a two-item design (wave). Since any fold adds >= 1, this
+      // collapses to: single child AND no fold anywhere on the pair.
+      return figKids.length + (spacerFold?.leadCount ?? 0) + (spacerFold?.trailCount ?? 0) <= 1
+        && foldInsetEnd <= 0;
+    }
+    return FIG_SLACK_EDGES[primaryAlign][e];
+  };
   // The demote is allowed on edge E when there is no figma intent (compat) or the design's
   // own number there is slack too (evidence-based agreement).
   const demoteAllowedFor = (e: 'start' | 'end'): boolean => primaryAlign === undefined || figEdgeIsSlack(e);
@@ -2020,9 +2062,18 @@ function crossAndPaddingRows(
   // the inert keyword instead of claiming the design "anchors" via it.
   const noteAlignmentMismatch = (rowIn: DiffRow, e: 'start' | 'end', domDistributes: boolean): DiffRow => {
     if (rowIn.status !== 'fail' || !domDistributes || demoteAllowedFor(e) || primaryAlign === undefined) return rowIn;
-    const text = figFreeSpace <= structTol
+    // Fold provenance rides the SAME string that becomes the caveat: without it fix_plan
+    // prescribes a padding edit while the design's number on this row is a folded spacer
+    // layer - invisible provenance (panel).
+    // Keyed off the BORDER-EDGE trigger (startPx/endPx - what switched the padding row to
+    // the spacer extent), not the grow-subtracted inset: on a grow-only fold the row's fig
+    // number IS the folded spacer, and the provenance must say so even though the slack
+    // correction rightly subtracted nothing (wave).
+    const edgeFolded = e === 'start' ? (spacerFold?.startPx ?? 0) > 0 : (spacerFold?.endPx ?? 0) > 0;
+    const foldClause = edgeFolded ? ' - the design\'s inset here is an edge spacer layer folded into this row (see spacer_inset)' : '';
+    const text = (figFreeSpace <= structTol
       ? `the design's content fills this axis (no free space - the declared ${primaryAlign} is inert) while the CSS distributes surplus space onto this edge (justify-content: ${jc}) - check the content/box width first, then the distribution rule`
-      : `the design's declared main-axis alignment is ${primaryAlign} while the CSS sets justify-content: ${jc} - an alignment mismatch; fix the distribution first, then re-measure this padding`;
+      : `the design's declared main-axis alignment is ${primaryAlign} while the CSS sets justify-content: ${jc} - an alignment mismatch; fix the distribution first, then re-measure this padding`) + foldClause;
     return { ...rowIn, note: [rowIn.note, text].filter(Boolean).join('; '), caveat: rowIn.caveat ?? text };
   };
   // unwrapBase: GRANDCHILDREN are compared through the wrapper (cardinality-repair) — their distribution is set by
