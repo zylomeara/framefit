@@ -20,7 +20,7 @@ const TABS_A = 'tabs-module-scss-module__Ta0__root';    // direct child (module 
 const CARRIER_B = 'seg-module-scss-module__Se1__label'; // text carrier (module B)
 
 const baseDom = (over: Partial<DomSnapshotOk>): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.root', innerWidth: 375,
+  schema: 7, status: 'ok', selector: '.root', innerWidth: 375,
   rect: { x: 0, y: 0, w: 343, h: 200 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
   scroll: { top: 0, left: 0 }, transformed: false,
   paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 343, clientHeight: 200, scrollHeight: 200,

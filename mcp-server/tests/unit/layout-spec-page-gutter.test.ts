@@ -58,7 +58,7 @@ const spec = (w: number, axis: 'row' | 'col', kids: SpecChild[]): LayoutSpec => 
 });
 
 const snap = (over: Partial<DomSnapshotOk>): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: 'main', innerWidth: 1920,
+  schema: 7, status: 'ok', selector: 'main', innerWidth: 1920,
   rect: { x: 0, y: 0, w: 1909, h: 720 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
   paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 1909, clientHeight: 720,

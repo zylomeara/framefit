@@ -113,7 +113,7 @@ export function registerSuggestPairsTool(server: McpServer, deps: ToolDeps): voi
       // :338, but a DIFFERENT surface: throw/isError (suggest_pairs has no rows structure for a warn string;
       // don't try to emulate a snapshot_schema row).
       if (dom.schema !== undefined && dom.schema !== DOM_SNAPSHOT_SCHEMA_VERSION) {
-        throw new Error(`dom_snapshot: schema v${dom.schema} is out of date (server expects v${DOM_SNAPSHOT_SCHEMA_VERSION}) — re-call get_layout_spec {include_extractor:true} and re-capture the snapshot with the updated script`);
+        throw new Error(`dom_snapshot: schema v${dom.schema} is out of date (server expects v${DOM_SNAPSHOT_SCHEMA_VERSION}) — re-capture with a FRESH script: get_layout_spec {include_extractor:true, extractor_mode:"inline"} (on the loader path an open page keeps serving its cached old extractor), or reload the page first`);
       }
       const id = normalizeCompoundNodeId(args.frame_node_id);
       const api = deps.buildApi(token);

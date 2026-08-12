@@ -324,10 +324,13 @@ export function countCoverageHoles(rows: DiffRow[]): number {
 // reference to overlay_width — regardless of which of the three branches (unwrapBase /
 // contentMode / plain) built the row.
 // fix-plan: the demotion strips srcChannel — a non-fail row (warn/demoted/info) does not carry a channel
-// (a soft carrier does not carry an edit address).
+// (a soft carrier does not carry an edit address). The caveat goes with it: a caveat is the warning
+// that travels WITH the edit, and a row demoted after a residual pass (page gutter) would otherwise
+// carry a machine field asserting "this delta is real layout" under a status that says it is not.
 function stripSrc(row: DiffRow): DiffRow {
   const out = { ...row };
   delete out.srcChannel;
+  delete out.caveat;
   return out;
 }
 
@@ -2220,6 +2223,59 @@ function crossAndPaddingRows(
       note: `centred in the pair root on both sides (leading gap == trailing gap, measured) — a page scrollbar gutter of ${pageGutter.px}px `
         + `moves a centred offset by exactly half of itself, ${half}px, and that is the whole of what is explained here (see size.w)` };
   };
+  // batch-2 item 1 cross-axis (panel-locked: 16 blockers replaced the draft; the wave over
+  // the first cut then replaced the reconciliation anchor): the design encodes a cross inset
+  // by CENTERING a content-height child; the DOM stretches the box (align-items' DEFAULT -
+  // never evidence by itself) and positions the content one level deeper. The demote fires
+  // ONLY on measured reconciliation, fail-closed on every term: fig side = per-child
+  // symmetry in the design content box (both insets real and equal - a container keyword is
+  // a property the child may override, so no projected field enters); dom side = stretch
+  // shape AND visually inert (a painting box's geometry IS the rendered pixels; paintUnknown
+  // covers the paints the snapshot cannot classify) AND an interior fully present (a leaf, a
+  // cut, or ANY out-of-flow child keeps the fail - the band would be a subset of what
+  // renders) AND the interior band is symmetric in the wrapper. The reconciliation itself is
+  // anchored to the pair-root BOXES on both sides (wave blocker: content-edge anchors
+  // silently absorb DOM root cross padding/border the design does not declare, and the
+  // wrapper's accepted stretch slack was dropped from the sum): the interior's absolute
+  // lead/trail from the DOM root box must equal the child's lead/trail from the design root
+  // box within tol - commensurable anchors, no tolerance stacking. The un-reconciled residue
+  // is exactly the real-defect set (full-bleed, lost or chrome-shifted insets, misplaced
+  // content) - it all stays red, and offset-cross remains its only witness on the col axis.
+  const crossEncodingDemote = (row: DiffRow, c: SpecChild, dk: DomChild, figOff: number): DiffRow => {
+    if (row.status !== 'fail' || opts.sides === 'dom-dom') return row;
+    // unwrapBase <=> a wrapper exists (see 5.4): under repair the cross references mix boxes.
+    if (unwrapBase) return row;
+    const figTrail = figCrossEnd - end(c.rect, cross);
+    if (figOff <= structTol || Math.abs(figOff - figTrail) > structTol) return row;
+    const domLead = crossStart(dk.rect, axis) - domCrossStart;
+    const domTrail = domCrossEnd - end(dk.rect, cross);
+    if (Math.abs(domLead) > structTol || Math.abs(domTrail) > structTol) return row;
+    const st = dk.styles;
+    if (st?.paintUnknown === true) return row;
+    if (st?.backgroundColor !== undefined || st?.gradient !== undefined || st?.bgImage === true
+      || dk.shadow !== undefined || dk.borders !== undefined) return row;
+    // opacity decouples geometry from pixels entirely (transparentChild's precedent): an
+    // opacity:0 wrapper or band member has a true rect and renders nothing.
+    if ((st?.opacity ?? 1) < 1) return row;
+    if (dk.childrenTruncated === true || (dk.outOfFlow ?? 0) > 0
+      || !dk.children || dk.children.length === 0) return row;
+    // the band members themselves must be complete and rendered: a member that dropped an
+    // out-of-flow child (the relative>absolute overlay pattern) or is translucent makes the
+    // band a subset of what renders. One level - the members are what the band reads.
+    if (dk.children.some((k) => (k.outOfFlow ?? 0) > 0 || (k.styles?.opacity ?? 1) < 1)) return row;
+    const bandLead = Math.min(...dk.children.map((k) => crossStart(k.rect, axis))) - crossStart(dk.rect, axis);
+    const bandTrail = end(dk.rect, cross) - Math.max(...dk.children.map((k) => end(k.rect, cross)));
+    if (Math.abs(bandLead - bandTrail) > structTol) return row;
+    const figLeadBox = crossStart(c.rect, axis) - crossStart(rect, axis);
+    const figTrailBox = end(rect, cross) - end(c.rect, cross);
+    const innerLead = crossStart(dk.rect, axis) + bandLead - crossStart(d.rect, axis);
+    const innerTrail = end(d.rect, cross) - (end(dk.rect, cross) - bandTrail);
+    if (Math.abs(innerLead - figLeadBox) > tol || Math.abs(innerTrail - figTrailBox) > tol) return row;
+    // the note replaces (not appends to) any accumulated note: a gutter-residual fragment
+    // asserting "not explained" must not ride a row that now says "not a defect".
+    return { ...stripSrc(row), status: 'demoted',
+      note: `the design places a content-height box (cross inset ${round1(figLeadBox)} from the container edge${Math.abs(figLeadBox - figOff) > 0.05 ? ` - ${round1(figOff)} of it inside the container's cross padding, which is what the row's figma number reads` : ''}) while the DOM stretches an unpainted wrapper whose content sits at the matching inset (measured ${round1(innerLead)} one level down) - a box-encoding difference, not a defect; to verify deeper, pair the design node against the inner DOM element` };
+  };
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the offset is mis-attributed
     if (overlapAmbiguous?.has(i)) {
@@ -2242,7 +2298,8 @@ function crossAndPaddingRows(
     const share = crossGutterShare(c, domKids[i]);
     const out = share !== undefined ? applyPageGutterDemote(row, share) : row;
     const dual = dualDemote(out, padCross(eff(d.paddings), axis));
-    rows.push(dual.status === 'fail' ? notePageGutter(dual, axis === 'col' ? pageGutter : undefined) : dual);
+    const enc = dual.status === 'fail' ? crossEncodingDemote(dual, c, domKids[i], figOff) : dual;
+    rows.push(enc.status === 'fail' ? notePageGutter(enc, axis === 'col' ? pageGutter : undefined) : enc);
   });
 
   figKids.forEach((c, i) => {
@@ -2551,6 +2608,9 @@ function transparentChild(node: AnchorNode, tol: number): DomChild | undefined {
   if (s?.borderRadiusUncomparable === true) return undefined;
   // a raster url background (F2): invisible to the gradient detector, but it is a REAL visible background — the wrapper is opaque.
   if (s?.bgImage === true) return undefined;
+  // v7: a paint the snapshot cannot classify (modern-color background the extractor cannot parse,
+  // a visible outline, painted ::before/::after, a filter) — the wrapper may be visibly painted.
+  if (s?.paintUnknown === true) return undefined;
   if ((s?.opacity ?? 1) < 1) return undefined; // a semi-transparent wrapper actually darkens the render — a carrier
   if (node.shadow !== undefined || node.borders !== undefined) return undefined;
   return c;
@@ -2695,10 +2755,19 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     // Separate from colorVerdict: an undefined bg here means "the background may be on a different element"
     // (a structural signal), NOT "DOM color not recognized" (A1) — a different cause, a different note.
     if (bg === undefined) {
+      // v7: when the read node DECLARES a paint the extractor could not classify (a CSS Color 4
+      // background, generated content, a visible outline), "no background" is provably the wrong
+      // claim and warn is the one status that keeps the done-gate green - REVIEW, the dom-dom
+      // precedent below. The anchor carries the flag when a descent happened; the root when the
+      // paintUnknown veto stopped one.
+      const sPaintU = a ? a.styles?.paintUnknown === true : d.styles?.paintUnknown === true;
       rows.push(opts.sides === 'dom-dom'
         ? { prop: 'fill', figma: spec.fillHex, dom: null, status: 'review',
             note: 'the CANDIDATE declares no background while the REFERENCE paints one — the CANDIDATE either paints none or paints in a color space the extractor cannot read (oklch()/color()); confirm which before treating this as a defect' }
-        : { prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
+        : sPaintU
+          ? { prop: 'fill', figma: spec.fillHex, dom: null, status: 'review',
+              note: 'the DOM element declares a paint the extractor cannot read (a CSS Color 4 background such as oklch()/color(), generated content, or an outline) — color equality was not checked on either side; verify visually before treating this as a match or a defect' }
+          : { prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
     } else {
       const v = colorVerdict(spec.fillToken?.hex ?? spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined, spec.fillBoundVar, opts.cssEvidence);
       rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),

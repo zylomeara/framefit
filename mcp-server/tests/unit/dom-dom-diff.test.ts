@@ -15,7 +15,7 @@ import type { DomSnapshotOk } from '../../src/domain/layout-spec/types.js';
 
 // A padded, bordered list root with card children - the shape that broke the naive projection.
 const state = (firstCardY: number, opts: { bg?: string } = {}): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.shelf', innerWidth: 768,
+  schema: 7, status: 'ok', selector: '.shelf', innerWidth: 768,
   rect: { x: 0, y: 0, w: 768, h: 900 },
   borders: { top: 1, right: 1, bottom: 1, left: 1 },
   paddings: { top: 24, right: 16, bottom: 24, left: 16 },

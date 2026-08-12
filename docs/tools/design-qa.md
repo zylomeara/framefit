@@ -114,7 +114,7 @@ Response (abridged), from the stdio server:
 ```jsonc
 {
   "file": "AbCdEf012345",
-  "snapshot_schema": 6,
+  "snapshot_schema": 7,
   "specs": [
     {
       "node_id": "12:340",
@@ -137,7 +137,7 @@ Response (abridged), from the stdio server:
     { "node_id": "12:340", "held_depth": 5, "hydrated": true, "drill_free_upto": 4,
       "cause_breakdown": { "depth": 0, "breadth": 0, "budget": 0 } }
   ],
-  "extractor_js": "<full inline extractor script, 68730 chars - elided>",
+  "extractor_js": "<full inline extractor script, 72395 chars - elided>",
   "extractor_note": "loader unavailable without public base URL — inline returned",
   "extractor_hint": "no upload_url on this server: the extractor hands the snapshots back to you. Paste extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare assignment throws) — then every capture is `async () => await window.__extract([\"<sel>\", …], undefined, 3, 90)` (a reload drops the handle — paste again). Pass include_extractor:false on every later get_layout_spec call. Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom."
   /* On an HTTP server with a public base URL, extractor_js is the versioned loader thunk instead,
@@ -236,7 +236,7 @@ of trusting the verdict.
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "frame_node_id": "12:340",
   "dom_snapshot": {
-    "schema": 6,
+    "schema": 7,
     "selector": ".card",
     "innerWidth": 320,
     "rect": { "x": 0, "y": 0, "w": 320, "h": 420 },
@@ -366,7 +366,7 @@ something more pairs can fix.
     {
       "node_id": "12:341",
       "dom": {
-        "schema": 6,
+        "schema": 7,
         "selector": ".card__title",
         "innerWidth": 320,
         "rect": { "x": 16, "y": 16, "w": 288, "h": 24 },

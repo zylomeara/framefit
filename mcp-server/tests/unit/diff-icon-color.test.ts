@@ -23,7 +23,7 @@ const domIcon = (styles: DomChild['styles'], over: Partial<DomChild> = {}): DomC
   kind: 'element', tag: 'svg', rect: { x: 8, y: 8, w: 16, h: 16 }, styles, ...over,
 });
 const snap = (kids: DomChild[], over: Partial<DomSnapshotOk> = {}): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.row', innerWidth: 1280,
+  schema: 7, status: 'ok', selector: '.row', innerWidth: 1280,
   rect: { x: 0, y: 0, w: 300, h: 32 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: 0, right: 0, bottom: 0, left: 0 },

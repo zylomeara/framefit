@@ -258,7 +258,7 @@ describe('compare_node_to_dom + env graph: cross-library codeSyntax evidence end
     fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: `VariableID:${LIB_KEY}/10:1` } } }],
   };
   const domFor = (domVar: string) => ({
-    schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
+    schema: 7, status: 'ok', selector: '.card', innerWidth: 375,
     rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
     scroll: { top: 0, left: 0 }, transformed: false,
     styles: { backgroundColor: '#ff0000', backgroundColorToken: { token: domVar } },
@@ -345,7 +345,7 @@ describe('compare_node_to_dom + env graph: alias-twin minters collapse end-to-en
       maxResultChars: 400000, variableGraph: envGraph } as unknown as ToolDeps;
     registerCompareNodeToDomTool(server, deps);
     const res = await call('compare_node_to_dom', { file: 'consumerfile', pairs: [{ node_id: '1:1', dom: {
-      schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
+      schema: 7, status: 'ok', selector: '.card', innerWidth: 375,
       rect: { x: 0, y: 0, w: 343, h: 120 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
       scroll: { top: 0, left: 0 }, transformed: false,
       styles: { backgroundColor: '#ff0000', backgroundColorToken: { token: '--ds-primary' } },

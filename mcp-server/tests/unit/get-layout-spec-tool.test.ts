@@ -108,7 +108,7 @@ describe('get_layout_spec tool', () => {
     const res = await run({ file: 'abc', node_ids: ['1-1'], include_extractor: false });
     expect(getNodesRaw).toHaveBeenCalledWith('abc', ['1:1'], 5);
     const out = JSON.parse(res.content[0].text);
-    expect(out.snapshot_schema).toBe(6);
+    expect(out.snapshot_schema).toBe(7);
     expect(out.specs[0].spec.rect.w).toBe(375);
     expect(out.specs[0].spec.children[0].name).toBe('title');
     expect(out.extractor_js).toBeUndefined();
@@ -117,7 +117,7 @@ describe('get_layout_spec tool', () => {
   it('include_extractor returns the canonical script', async () => {
     const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: doc } } })) });
     const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
-    expect(out.extractor_js).toContain('const SCHEMA = 6;');
+    expect(out.extractor_js).toContain('const SCHEMA = 7;');
   });
 
   it('include_extractor script slices text at SNIPPET_CAP 120, not the old 40', async () => {

@@ -31,7 +31,7 @@ const span = (x: number, y: number, w: number, h: number, text: string | undefin
       children: [{ kind: 'text', text, rect: { x, y, w, h } }] } : { children: [] }) });
 
 const domRow = (children: DomChild[]): DomSnapshotOk => ({
-  schema: 6, status: 'ok', selector: '.row', innerWidth: 1280,
+  schema: 7, status: 'ok', selector: '.row', innerWidth: 1280,
   rect: { x: 0, y: 0, w: 412, h: 70 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: 12, right: 16, bottom: 12, left: 16 },

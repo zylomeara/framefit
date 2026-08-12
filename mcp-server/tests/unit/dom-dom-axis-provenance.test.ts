@@ -12,7 +12,7 @@ const snap = (children: DomChild[], over: Partial<DomSnapshotOk> = {}): DomSnaps
   // the selector deliberately carries a skeleton-shaped INVENTED name: the placeholder_frame
   // signal is fig-only by construction (it lives in the compare tool layer), and this fixture
   // is the tripwire - if the detection ever leaks into the shared differ, the census below reds.
-  schema: 6, status: 'ok', selector: '.ghost-skeleton-rail', innerWidth: 768,
+  schema: 7, status: 'ok', selector: '.ghost-skeleton-rail', innerWidth: 768,
   rect: { x: 0, y: 0, w: 600, h: 600 },
   borders: { top: 0, right: 0, bottom: 0, left: 0 },
   paddings: { top: 0, right: 0, bottom: 0, left: 0 },

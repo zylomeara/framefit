@@ -2576,7 +2576,7 @@ describe('paint-style tokenization reaches colorVerdict', () => {
 
 describe('review rows carry structural token/tokenReason (confirm_token aggregation)', () => {
   const base = { node: { id: '1', name: 'n', type: 'FRAME' }, rect: { x: 0, y: 0, w: 10, h: 10 }, children: [] };
-  const dom = (styles: any) => ({ schema: 6, innerWidth: 100, rect: { x: 0, y: 0, w: 10, h: 10 },
+  const dom = (styles: any) => ({ schema: 7, innerWidth: 100, rect: { x: 0, y: 0, w: 10, h: 10 },
     borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 }, children: [], styles });
   const fillRow = (spec: any, d: any) => diffPair(spec as any, d as any, { tolerancePx: 1 }).find((r) => r.prop === 'fill')!;
 
@@ -2868,7 +2868,7 @@ describe('style anchor (v5): style axes are read from the carrier through transp
     styles: { borderRadius: 24, gradient: { kind: 'conic', stops: [], whole: { literal: true } } },
     data: { component: 'Banner' }, children: [], ...over });
   const wrapPair = (childOver: any = {}, rootOver: any = {}) => ({
-    schema: 6, innerWidth: 1920, rect: { x: 0, y: 0, w: 1280, h: 148 },
+    schema: 7, innerWidth: 1920, rect: { x: 0, y: 0, w: 1280, h: 148 },
     borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
     children: [bannerChild(childOver)], ...rootOver });
   // rect added to the verbatim brief: without spec.rect the geometry gate (:250 'no bbox') suppresses
@@ -2951,6 +2951,26 @@ describe('style anchor (v5): style axes are read from the carrier through transp
     const rows = diffPair(bannerSpec() as any, wrapPair({ classList: ['x'] }) as any, { tolerancePx: 1 });
     expect(row(rows, 'component')?.status).toBe('pass');
     expect(row(rows, 'component')?.note).toContain('"banner"');
+  });
+  it('v7: a root flagged paintUnknown -> NO descent (the wrapper may be visibly painted), and the fill row is an honest REVIEW - the input that used to read the carrier and fail now says "unknown", never "no background"', () => {
+    const rows = diffPair(bannerSpec({ fillHex: '#3366ff' }) as any,
+      wrapPair({ styles: { backgroundColor: '#ff0000' } }, { styles: { paintUnknown: true } }) as any, { tolerancePx: 1 });
+    expect(row(rows, 'style_anchor')).toBeUndefined();          // the descent is refused
+    const fill = row(rows, 'fill');
+    expect(fill?.status).toBe('review');                        // warn is the one status that keeps the done-gate green
+    expect(fill?.note).toMatch(/cannot read/);
+  });
+  it('v7: the CARRIER itself carries paintUnknown -> the anchored fill read is REVIEW too', () => {
+    const rows = diffPair(bannerSpec({ fillHex: '#3366ff' }) as any,
+      wrapPair({ styles: { paintUnknown: true } }) as any, { tolerancePx: 1 });
+    expect(row(rows, 'style_anchor')?.status).toBe('pass');     // the descent happened - the carrier is the flagged node
+    expect(row(rows, 'fill')?.status).toBe('review');
+  });
+  it('v7 control: no flag anywhere -> the fill warn is unchanged (advisory, pre-v7 wording)', () => {
+    const rows = diffPair(bannerSpec({ fillHex: '#3366ff' }) as any, wrapPair() as any, { tolerancePx: 1 });
+    const fill = row(rows, 'fill');
+    expect(fill?.status).toBe('warn');
+    expect(fill?.note).toMatch(/may be on a different element/);
   });
   it('coverage: style_anchor not in measured/skipped', () => {
     const rows = diffPair(bannerSpec() as any, wrapPair() as any, { tolerancePx: 1 });
