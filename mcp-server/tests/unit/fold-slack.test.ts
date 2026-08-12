@@ -96,7 +96,45 @@ describe('the demote survives where the evidence is real', () => {
   });
 });
 
+describe('wave locks: every correction term is load-bearing', () => {
+  it('TRAILING fold + gap: the trailCount half of the folded-gap term is load-bearing', () => {
+    // 368 = 348 child + 8 itemSpacing + 12 trailing fold - zero real slack
+    const rows = diffPair(spec(368, [kid('9:2', 0, 348), spacer('9:1', 356, 12)], 'CENTER', 8),
+      centeringDom(368, 76, 216), { tolerancePx: 1 });
+    const right = padRow(rows, 'padding-right')!;
+    expect(right.status).toBe('fail');
+    expect(right.note).toMatch(/declared CENTER is inert/);
+  });
+
+  it('LEADING grow spacer keeps the demote road - growStartPx is load-bearing', () => {
+    const growSpacer = spacer('9:1', 0, 260, { name: 'Spacer', grow: true as const });
+    const rows = diffPair(spec(360, [growSpacer, kid('9:2', 260, 100)], 'MAX'),
+      centeringDom(360, 200, 100, 'flex-end'), { tolerancePx: 1 });
+    const left = padRow(rows, 'padding-left')!;
+    expect(left.status).toBe('demoted');
+    expect(left.note).toMatch(/justify-content spacer/);
+  });
+
+  it('a GROW-only folded edge routed to the attribution still names the fold provenance (the row reads the spacer extent)', () => {
+    const growSpacer = spacer('9:1', 0, 260, { name: 'Spacer', grow: true as const });
+    const rows = diffPair(spec(360, [growSpacer, kid('9:2', 260, 100)], 'MIN'),
+      centeringDom(360, 200, 100, 'flex-end'), { tolerancePx: 1 });
+    const left = padRow(rows, 'padding-left')!;
+    expect(left.status).toBe('fail');                        // MIN start is never slack
+    expect(left.note).toMatch(/edge spacer layer folded into this row/);
+  });
+});
+
 describe('SPACE_BETWEEN: interior space is not edge evidence', () => {
+  it('single post-fold child + FOLDED end + genuine slack -> the fold conjunct denies the allowance (fail, not demoted)', () => {
+    // 400 = 300 child + 12 trailing fold + 88 genuine slack - the folded edge is pinned proof
+    const rows = diffPair(spec(400, [kid('9:2', 0, 300), spacer('9:1', 388, 12)], 'SPACE_BETWEEN'),
+      centeringDom(400, 0, 340, 'space-between'), { tolerancePx: 1 });
+    const right = padRow(rows, 'padding-right')!;
+    expect(right.status).toBe('fail');
+    expect(right.note).toMatch(/alignment mismatch|distributes surplus space/);
+  });
+
   it('>=2 kids + folded end -> the end edge is NOT slack (fail)', () => {
     const rows = diffPair(
       spec(352, [kid('9:2', 0, 100), { ...kid('9:3', 236, 100) }, spacer('9:1', 336, 16)], 'SPACE_BETWEEN'),

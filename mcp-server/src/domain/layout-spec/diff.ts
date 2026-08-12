@@ -846,7 +846,10 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
           spacerFold.startPx += res.startPx; spacerFold.endPx += res.endPx;
           spacerFold.leadCount += res.leadCount; spacerFold.trailCount += res.trailCount;
           spacerFold.growStartPx += res.growStartPx; spacerFold.growEndPx += res.growEndPx;
-          // merge, not overwrite - the second conversion site used to erase the first's list
+          // merge, not overwrite (defensive: provably unreachable today - when the unwrap
+          // site fires, site-1's rest is exactly [wrapper], and isSpacerShaped requires a
+          // CHILDLESS node while expand requires children, so site-1's interior is always
+          // empty there; the merge guards a future reordering, it cannot be test-locked)
           spacerFold.interior = [...new Set([...spacerFold.interior, ...res.interior])];
           spacerFold.names.push(...res.names);
           spacerFold.domRemoved += domRemoved;
@@ -2058,7 +2061,11 @@ function crossAndPaddingRows(
     // Fold provenance rides the SAME string that becomes the caveat: without it fix_plan
     // prescribes a padding edit while the design's number on this row is a folded spacer
     // layer - invisible provenance (panel).
-    const edgeFolded = e === 'start' ? foldInsetStart > 0 : foldInsetEnd > 0;
+    // Keyed off the BORDER-EDGE trigger (startPx/endPx - what switched the padding row to
+    // the spacer extent), not the grow-subtracted inset: on a grow-only fold the row's fig
+    // number IS the folded spacer, and the provenance must say so even though the slack
+    // correction rightly subtracted nothing (wave).
+    const edgeFolded = e === 'start' ? (spacerFold?.startPx ?? 0) > 0 : (spacerFold?.endPx ?? 0) > 0;
     const foldClause = edgeFolded ? ' - the design\'s inset here is an edge spacer layer folded into this row (see spacer_inset)' : '';
     const text = (figFreeSpace <= structTol
       ? `the design's content fills this axis (no free space - the declared ${primaryAlign} is inert) while the CSS distributes surplus space onto this edge (justify-content: ${jc}) - check the content/box width first, then the distribution rule`
