@@ -659,7 +659,10 @@ describe('the populations this freeze is written against', () => {
       ],
       'adapters/driven/figma-rest.ts': ['network'],
       'adapters/driving/tools/compare-node-to-dom-tool.ts':
-        ['rate_limited', 'rate_limited', 'rate_limited', 'rate_limited', 'rate_limited'],
+        // batch-2 item 5 remainder: the variables catch gained the escalation class gate
+        // (too-large unknown_4xx is one of the two classes the negative cache caches
+        // cap-aware) - it sits INSIDE the first rate_limited catch, hence position 2.
+        ['rate_limited', 'unknown_4xx', 'rate_limited', 'rate_limited', 'rate_limited', 'rate_limited'],
       // feedback item 10: the container walk mirrors find_nodes' contract (auth/forbidden
       // rethrow, rate_limited stops the loop keeping the partial), and the content fetch
       // degrades on everything except the dead-token pair.
@@ -687,7 +690,7 @@ describe('the populations this freeze is written against', () => {
       'application/node-ancestry.ts': ['auth', 'forbidden'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '51 branch sites across 15 files').toBe(51); // 50 -> 51: get_screenshot's transport-ladder trigger (batch-2 item 6); earlier 49 -> 50: the too-large soft-expiry gate (evidence-reach line)
+    expect(SITES.branches.length, '52 branch sites across 15 files').toBe(52); // 51 -> 52: the variables escalation class gate (batch-2 item 5 remainder); earlier 50 -> 51: get_screenshot's transport-ladder trigger (batch-2 item 6)
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "

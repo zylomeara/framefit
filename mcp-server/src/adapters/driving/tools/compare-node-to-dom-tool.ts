@@ -20,7 +20,7 @@ import { buildVariableIndex, type VariableIndex } from '../../../domain/variable
 import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, collectExternalPaintKeys, ancestorChainFromSubtree, buildModeByCollection, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
 import { discoverAncestorModes } from './get-design-context-tool.js';
 import { makeColorTokenResolver, prefetchSnapshotHits, buildMergedCssEvidence, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
-import { FigmaApiError } from '../../../ports/errors.js';
+import { FigmaApiError, isTimeoutMessage, TOO_LARGE_REASON_RE } from '../../../ports/errors.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 
 // Latency: a targeted probe-descent in canvasChainFor (:204-215) — bounded so a pathological
@@ -401,6 +401,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // Enrichment that did not arrive, and how long it cost before it did not arrive. Emitted as
         // `degraded_stages` only when non-empty (see the variables fetch below).
         const degradedStages: DegradedStage[] = [];
+        let variablesEscalatable = false;
 
         // whether a graph/snapshot fallback is even reachable this call — computed ONCE
         // (not per-pair) so gate `needsModes` below stays a pure read. Multi-tenant only (`deps.
@@ -449,6 +450,14 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
               stage: 'variables', reason: 'error', ms: Date.now() - variablesStartedAt,
               detail: (err as Error).message,
             });
+            // The escalation advice (a larger-budget get_variables) is true ONLY for the
+            // classes the negative cache actually caches cap-aware: the capped timeout and
+            // the too-large 400. A 403/not_found/network drop has no marker to bypass and a
+            // bigger budget cannot fix it - those keep the plain wording (wave finding).
+            if (isTimeoutMessage((err as Error).message ?? '')
+              || (err instanceof FigmaApiError && err.kind === 'unknown_4xx' && TOO_LARGE_REASON_RE.test(err.upstreamReason ?? ''))) {
+              variablesEscalatable = true;
+            }
           }
         }
 
@@ -847,6 +856,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           // backoff clamps effDepth below 8, and 'raise max_depth' would then be advice the
           // caller already followed.
           requestedDepth: reqDepth,
+          // batch-2 item 5 remainder: wording-only - the dead-resolve confirm_token
+          // aggregates name the get_variables escalation road when the batch fetch degraded
+          // in an escalatable class (capped timeout / too-large - see the catch above).
+          ...(variablesEscalatable ? { variablesDegraded: true as const } : {}),
           ...(enumMeta ? { enumeration: enumMeta } : {}),
           // The profile from the parsed arg as the SINGLE source (the same `profile` that went
           // into diffPair) → receipt.match_profile in all three modes + a sentinel gate under layout.

@@ -327,7 +327,11 @@ a large file. When it fails or times out, the run degrades honestly - token rows
 and a `confirm_token` blocker appears for every row whose two values did not already match
 byte-for-byte (a matched pair stays a visible `review` row without blocking) - and the codeSyntax
 evidence above dies with the same fetch - and says so in two places a caller sees: a
-`degraded_stages: [{ stage, reason, ms, detail }]` key, and one `ℹ️` line in `report_markdown`. `ms`
+`degraded_stages: [{ stage, reason, ms, detail }]` key, and one `ℹ️` line in `report_markdown`. The
+unresolved-token blockers among them (no token name in the detail) name the escalation road when
+the failure class allows one - run `get_variables {timeout_ms: 120000}` on the file (the largest
+budget the tool allows), then re-run the compare; the detail also names the ceiling (a
+failed 120s call is itself cached for ~10 minutes). `ms`
 is the point. Measured on this transport, that one endpoint took 90 seconds of a 93-second call, and
 without it the caller has a two-minute silence and no way to tell a slow call from a hung one.
 
