@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, jsonResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { toSparseTree, countTruncated, type SparseNode } from '../../../domain/metadata.js';
 import { fitToBudgetPerBranch } from '../../../domain/design-context/auto-degrade.js';
 import { clampToBudget } from '../../../application/get-comments.js';
@@ -11,7 +11,7 @@ import { serializeForDelivery } from './serialize.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
-  node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"').optional()
+  node_id: z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"').optional()
     .describe('Scope the map to this node and its subtree; omit for the whole file'),
   depth: z.number().int().min(1).max(6).default(2)
     .describe('Tree depth (default 2). Higher = bigger map; start shallow then drill in.'),
@@ -33,7 +33,7 @@ export function registerGetMetadataTool(server: McpServer, deps: ToolDeps): void
         const api = deps.buildApi(token);
         let tree;
         if (args.node_id) {
-          const id = normalizeNodeId(args.node_id);
+          const id = normalizeCompoundNodeId(args.node_id);
           const res = await api.getNodesRaw(parsed.value, [id], args.depth);
           const doc = res.nodes[id]?.document;
           if (!doc) throw new Error(`node ${id} not found in file`);

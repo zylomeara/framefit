@@ -3,14 +3,14 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, textResult, jsonResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { downloadRaster, downloadText } from './image-download.js';
 import { DEFAULT_FOCUS_RADIUS, renderFocusCrop } from './focus-crop.js';
-import { FigmaApiError } from '../../../ports/errors.js';
+import { FigmaApiError, isTimeoutMessage } from '../../../ports/errors.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
-  node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"')
+  node_id: z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"')
     .describe('Node (frame/component/instance) to render'),
   format: z.enum(['png', 'svg', 'jpg']).default('png').describe('Image format'),
   scale: z.number().min(0.25).max(4).default(2).describe('Raster scale (png/jpg); ignored for svg. Lower if the image is huge.'),
@@ -45,7 +45,7 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
       runTool('get_screenshot', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);
         if (!parsed.ok) throw new Error(parsed.error);
-        const id = normalizeNodeId(args.node_id);
+        const id = normalizeCompoundNodeId(args.node_id);
         const api = deps.buildApi(token);
         // A cheap /nodes (depth 1) lookup first: turns a missing node into a fast, clear
         // "not found" (Figma's /images endpoint otherwise blocks for the full ~30s timeout
@@ -58,8 +58,47 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
           if (args.format === 'svg') throw new Error('focus crop requires a raster format (png or jpg), not svg.');
           if (!entry.document.absoluteBoundingBox) throw new Error(`node ${id} has no bounding box; focus crop needs a sized node.`);
         }
-        const { images } = await api.getImages(parsed.value, [id], { format: args.format, scale: args.scale });
-        const url = images[id];
+        // batch-2 item 6: a bounded transport ladder for the MAIN render. Step 1 is a
+        // same-parameters retry (the getFileStructure precedent - the live incident's
+        // n=1 cannot attribute the failure to the scale, and a transient drop usually
+        // clears on a re-dial). Step 2 drops to half scale ONCE, only after step 1
+        // failed in the same class AND the mode delivers this render as the image
+        // (focus/preview/tiles compose their own renders from args.scale - excluded).
+        // The trigger is the TRANSIENT slice of kind 'network' only: a timeout would
+        // double a 90s hang, and a queued bailout says nothing about the endpoint.
+        const transient = (e: unknown): boolean =>
+          e instanceof FigmaApiError && e.kind === 'network'
+          && !isTimeoutMessage(e.message) && e.queuedBailout !== true;
+        const rethrowWith = (e: unknown, sentence: string): never => {
+          if (e instanceof Error) e.message = `${e.message} ${sentence}`;
+          throw e;
+        };
+        const scaleDropEligible = args.format !== 'svg' && args.scale > 1
+          && !args.focus && args.return !== 'preview' && !args.tiles;
+        const fallbackScale = Math.max(1, args.scale / 2);
+        let deliveredScale = args.scale;
+        let images: Record<string, string | null>;
+        try {
+          images = (await api.getImages(parsed.value, [id], { format: args.format, scale: args.scale })).images;
+        } catch (e1) {
+          if (!transient(e1)) throw e1;
+          try {
+            images = (await api.getImages(parsed.value, [id], { format: args.format, scale: args.scale })).images;
+          } catch (e2) {
+            if (!transient(e2) || !scaleDropEligible) rethrowWith(e1, 'An immediate retry failed the same way.');
+            try {
+              images = (await api.getImages(parsed.value, [id], { format: args.format, scale: fallbackScale })).images;
+              deliveredScale = fallbackScale;
+            } catch {
+              rethrowWith(e1, `An immediate retry and a scale-${fallbackScale} fallback both failed the same way.`);
+            }
+          }
+        }
+        const scaleDegraded = deliveredScale !== args.scale;
+        const scaleNote = scaleDegraded
+          ? `the render at scale ${args.scale} failed twice on transport drops; a scale-${deliveredScale} render succeeded - re-request with an explicit scale if you need the detail`
+          : undefined;
+        const url = images![id];
         if (!url) throw new Error(`Figma did not render node ${id} (it may be empty or invalid for ${args.format}).`);
 
         if (args.focus) {
@@ -119,7 +158,10 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
         if (args.return !== 'inline') {
           const bbox = entry.document.absoluteBoundingBox;
           const out: Record<string, unknown> = {
-            file: parsed.value, node_id: id, format: args.format, scale: args.scale, url,
+            file: parsed.value, node_id: id, format: args.format, scale: deliveredScale, url,
+            // The degradation is ALWAYS visible: the delivered scale replaces the requested
+            // one in every field that names it, and the pair of extra fields says why.
+            ...(scaleDegraded ? { requested_scale: args.scale, scale_note: scaleNote } : {}),
             note: `Download with: curl -o screenshot.${args.format} "${url}"  — short-lived signed URL, treat it like a secret.`,
           };
           if (bbox) {
@@ -127,8 +169,8 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
             out.original_height = bbox.height;
             // SVG is resolution-independent; scaled raster dimensions only make sense for png/jpg.
             if (args.format !== 'svg') {
-              out.width = Math.round(bbox.width * args.scale);
-              out.height = Math.round(bbox.height * args.scale);
+              out.width = Math.round(bbox.width * deliveredScale);
+              out.height = Math.round(bbox.height * deliveredScale);
             }
           }
           const bigSide = bbox ? Math.max(bbox.width, bbox.height) : 0;
@@ -168,9 +210,16 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
         if (args.format === 'svg') {
           return textResult(await downloadText(url));
         }
-        const buf = await downloadRaster(url, args.scale);
+        const buf = await downloadRaster(url, deliveredScale);
         return {
-          content: [{ type: 'image' as const, data: buf.toString('base64'), mimeType: MIME[args.format] }],
+          content: [
+            { type: 'image' as const, data: buf.toString('base64'), mimeType: MIME[args.format] },
+            // Inline mode has no meta channel - a degraded delivery gains a SECOND (text)
+            // content item; the undegraded shape stays single-item byte-identically.
+            ...(scaleDegraded
+              ? [{ type: 'text' as const, text: JSON.stringify({ scale: deliveredScale, requested_scale: args.scale, scale_note: scaleNote }, null, 2) }]
+              : []),
+          ],
         };
       }, deps.noTokenHint),
   );

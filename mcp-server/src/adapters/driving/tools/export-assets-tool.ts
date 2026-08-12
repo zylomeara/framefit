@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, jsonResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { collectImageRefs } from '../../../domain/image-fills.js';
 
 const InputSchema = {
@@ -35,17 +35,20 @@ export function registerExportAssetsTool(server: McpServer, deps: ToolDeps): voi
         if (!parsed.ok) throw new Error(parsed.error);
 
         // Validate each node id in the tool body (zod schema is not checked by runTool).
+        // batch-2 item 6: compound instance-path ids are accepted - /images renders them
+        // (measured live: an instance child's compound id returned a signed url with the
+        // exact key echoed).
         for (const raw of args.node_ids) {
-          if (!NODE_ID_RE.test(raw)) {
+          if (!COMPOUND_NODE_ID_RE.test(raw)) {
             return {
               isError: true,
-              content: [{ type: 'text' as const, text: `Invalid node id: "${raw}". Expected format "1:42" or "1-42".` }],
+              content: [{ type: 'text' as const, text: `Invalid node id: "${raw}". Expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890".` }],
             };
           }
         }
 
         const api = deps.buildApi(token);
-        const ids = [...new Set(args.node_ids.map(normalizeNodeId))];
+        const ids = [...new Set(args.node_ids.map(normalizeCompoundNodeId))];
         const result = await api.getImages(parsed.value, ids, {
           format: args.format,
           ...(args.scale !== undefined ? { scale: args.scale } : {}),
@@ -75,6 +78,10 @@ export function registerExportAssetsTool(server: McpServer, deps: ToolDeps): voi
         const assets = ids.map((id) => ({
           node_id: id,
           url: result.images[id] ?? null,
+          // A requested id absent from the /images map is indistinguishable from "could
+          // not render" on a bare url:null - name it (silent-null honesty).
+          ...(result.images[id] === undefined
+            ? { note: `Figma's /images response carried no entry for "${id}" - the id did not resolve on the render endpoint.` } : {}),
           ...(rawByNode ? { raw_images: rawByNode.get(id) ?? [] } : {}),
         }));
 

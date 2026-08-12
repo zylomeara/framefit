@@ -314,6 +314,20 @@ describe('discoverAncestorModes (deep-node reach + coverageComplete)', () => {
     expect(logs.some((l) => l.msg === 'design_context.ancestor_coverage_dropped')).toBe(true);
   });
 
+  it('batch-2 item 6 residual: a COMPOUND (nested-instance) id sits below its instance and is not in the walked tree → honest coverageComplete=false, never a crash', async () => {
+    // get_design_context now accepts compound ids; its core /nodes fetch resolves them, but
+    // this whole-file locate walk is depth-bounded and instance INTERNALS are below the
+    // instance node — on real files usually past the ceiling. The contract is the same
+    // honest degradation as any unlocated node (named ceiling, not a defect).
+    const depthsSeen: number[] = [];
+    const api = fakeApi(deepTree, depthsSeen);
+    const { logger, logs } = recordingLogger();
+    const disc = await discoverAncestorModes(api, 'file', 'I999:1;77:5', logger);
+    expect(disc.coverageComplete).toBe(false);
+    expect(disc.stack.size).toBe(0);
+    expect(logs.some((l) => l.msg === 'design_context.ancestor_coverage_dropped')).toBe(true);
+  });
+
   it('stops on oversize (would blow the byte budget) → coverageComplete=false, drop logged, one fetch only', async () => {
     const depthsSeen: number[] = [];
     const api = fakeApi(deepTree, depthsSeen);

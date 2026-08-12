@@ -554,12 +554,12 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
       label: "docs/tools/README.md's compound node-id convention bullet (full walk)",
       codeSide,
       proseSide,
-      expectedCodeSize: 8, // 7 -> 8: compare_node_to_dom.exclude_regions[] accepts the compound form
+      expectedCodeSize: 14, // 8 -> 14: batch-2 item 6 aligned six more node_id params (screenshot/metadata/design-context/find_nodes/text-styles/variables)
     });
   });
 
   it('the payload carries only the two node-id forms, and no third', async () => {
-    // Measured at HEAD: 24 `pattern` sites, 8 compound and 16 strict. A third form appearing would
+    // Measured at HEAD: 24 `pattern` sites, 14 compound and 10 strict. A third form appearing would
     // make "every other node-id parameter is pinned to <one regex>" false without changing a single
     // name in the bullet.
     const nodes = await everySchemaNode();
@@ -583,7 +583,7 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
     const size = nodes.filter((n) => n.node.pattern === COMPOUND_PATTERN).length;
     const words = [
       'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
-      'eight', 'nine', 'ten', 'eleven', 'twelve',
+      'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen',
     ];
     const word = words[size];
     expect(word, `no spelling for a set of ${size}; extend the table deliberately`).toBeDefined();
@@ -612,12 +612,13 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
   it('cites the error code the server really answers a malformed id with', async () => {
     // The bullet names an error code. A code in prose is a claim about runtime behaviour, and only
     // a call can check it -- `pattern` being present does not say what the refusal looks like.
-    // `get_metadata.node_id` is a NAMED REPRESENTATIVE of the strict set, not a proof about all 16:
-    // what it establishes is the code the SDK's schema layer answers with, which is what the
-    // sentence claims.
+    // `get_review_board.node_id` is a NAMED REPRESENTATIVE of the strict set, not a proof about
+    // all of them: what it establishes is the code the SDK's schema layer answers with, which is
+    // what the sentence claims. (Re-pointed from get_metadata when batch-2 item 6 moved it to the
+    // compound set -- the probe id MUST remain compound, or this row stops testing the refusal.)
     const cited = codeSpans(theBulletAbout('compound')).filter((s) => /^-\d+$/.test(s));
     expect(cited, 'the bullet cites no error code, so this row asserted nothing').toHaveLength(1);
-    const refused = await toolCallText('get_metadata', {
+    const refused = await toolCallText('get_review_board', {
       file: 'https://www.figma.com/design/AbCdEf012345/Product-Page',
       node_id: 'I12:345;67:890',
     });

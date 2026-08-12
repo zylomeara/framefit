@@ -30,10 +30,10 @@ type NodesResponse = {
 // budget. Thrower and matcher both read it from here, so a reword cannot silently disarm the cache -
 // which it could, with the entire suite green, when the phrase was a literal on both sides and
 // hand-copied into eight assertions besides.
-export const TIMEOUT_PHRASE = 'timed out';
+export { TIMEOUT_PHRASE, isTimeoutMessage } from '../../ports/errors.js';
+import { TIMEOUT_PHRASE } from '../../ports/errors.js';
 export const timeoutMessage = (ms: number, note = ''): string =>
   `Figma request ${TIMEOUT_PHRASE} after ${ms}ms${note}`;
-export const isTimeoutMessage = (message: string): boolean => message.includes(TIMEOUT_PHRASE);
 
 export class FigmaRestAdapter implements FigmaApi {
   constructor(
