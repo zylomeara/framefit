@@ -2220,6 +2220,36 @@ function crossAndPaddingRows(
       note: `centred in the pair root on both sides (leading gap == trailing gap, measured) — a page scrollbar gutter of ${pageGutter.px}px `
         + `moves a centred offset by exactly half of itself, ${half}px, and that is the whole of what is explained here (see size.w)` };
   };
+  // batch-2 item 1 cross-axis (panel-locked: 16 blockers replaced the draft): the design
+  // encodes a cross inset by CENTERING a content-height child; the DOM stretches the box
+  // (align-items' DEFAULT - never evidence by itself) and positions the content one level
+  // deeper. The demote fires ONLY on measured reconciliation, fail-closed on every term:
+  // fig side = per-child symmetry (both insets real and equal - a container keyword is a
+  // property the child may override, so no projected field enters); dom side = stretch
+  // shape AND visually inert (a painting box's geometry IS the rendered pixels) AND an
+  // interior present (leaf/cut keeps the fail) AND the interior band re-creates the
+  // design inset (symmetric, leading inset == figOff within tol). The un-reconciled
+  // residue is exactly the real-defect set (full-bleed, lost insets, misplaced content) -
+  // it all stays red, and offset-cross remains its only witness on the col axis.
+  const crossEncodingDemote = (row: DiffRow, c: SpecChild, dk: DomChild, figOff: number): DiffRow => {
+    if (row.status !== 'fail' || opts.sides === 'dom-dom') return row;
+    if (figWrapper !== undefined || domWrapper !== undefined || unwrapBase) return row;
+    const figTrail = figCrossEnd - end(c.rect, cross);
+    if (figOff <= structTol || Math.abs(figOff - figTrail) > structTol) return row;
+    const domLead = crossStart(dk.rect, axis) - domCrossStart;
+    const domTrail = domCrossEnd - end(dk.rect, cross);
+    if (Math.abs(domLead) > structTol || Math.abs(domTrail) > structTol) return row;
+    const st = dk.styles;
+    if (st?.backgroundColor !== undefined || st?.gradient !== undefined || st?.bgImage === true
+      || dk.shadow !== undefined || dk.borders !== undefined) return row;
+    if (dk.childrenTruncated === true || !dk.children || dk.children.length === 0) return row;
+    const bandLead = Math.min(...dk.children.map((k) => crossStart(k.rect, axis))) - crossStart(dk.rect, axis);
+    const bandTrail = end(dk.rect, cross) - Math.max(...dk.children.map((k) => end(k.rect, cross)));
+    if (Math.abs(bandLead - bandTrail) > structTol || Math.abs(bandLead - figOff) > tol) return row;
+    return { ...stripSrc(row), status: 'demoted',
+      note: [row.note, `the design centers a content-height box (cross inset ${round1(figOff)}) while the DOM stretches an unpainted wrapper whose content sits at the same inset (measured ${round1(bandLead)} one level down) - a box-encoding difference, not a defect; to verify deeper, pair the design node against the inner DOM element`]
+        .filter(Boolean).join('; ') };
+  };
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the offset is mis-attributed
     if (overlapAmbiguous?.has(i)) {
@@ -2242,7 +2272,8 @@ function crossAndPaddingRows(
     const share = crossGutterShare(c, domKids[i]);
     const out = share !== undefined ? applyPageGutterDemote(row, share) : row;
     const dual = dualDemote(out, padCross(eff(d.paddings), axis));
-    rows.push(dual.status === 'fail' ? notePageGutter(dual, axis === 'col' ? pageGutter : undefined) : dual);
+    const enc = dual.status === 'fail' ? crossEncodingDemote(dual, c, domKids[i], figOff) : dual;
+    rows.push(enc.status === 'fail' ? notePageGutter(enc, axis === 'col' ? pageGutter : undefined) : enc);
   });
 
   figKids.forEach((c, i) => {
