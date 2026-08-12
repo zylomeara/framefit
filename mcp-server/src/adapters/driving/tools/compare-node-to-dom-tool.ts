@@ -843,6 +843,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
 
         const verification = buildVerification(results, {
           ...(frameSpec ? { frame: frameSpec } : {}), frameRequested: frameId !== undefined, depthLevels,
+          // batch-2 item 4: the ceiling test needs the REQUESTED depth too - a too_large
+          // backoff clamps effDepth below 8, and 'raise max_depth' would then be advice the
+          // caller already followed.
+          requestedDepth: reqDepth,
           ...(enumMeta ? { enumeration: enumMeta } : {}),
           // The profile from the parsed arg as the SINGLE source (the same `profile` that went
           // into diffPair) → receipt.match_profile in all three modes + a sentinel gate under layout.

@@ -347,6 +347,10 @@ function uncheckedToBlocking(r: DiffRow, p: PairResult, depthLevels: number): Bl
 
 export function buildVerification(pairs: PairResult[], opts: {
   frame?: LayoutSpec; frameRequested?: boolean; depthLevels: number;
+  /** batch-2 item 4: the REQUESTED capture depth. depthLevels is the CLAMPED effective depth
+   *  (a too_large backoff can lower it below a requested 8), so the ceiling test must see
+   *  both. Optional; legacy callers are byte-identical (defaults to depthLevels). */
+  requestedDepth?: number;
   // At what depth / by what method the FRAME was PROJECTED (not the pairs) — the source of honest
   // provenance and of the advice matrix below. TYPE-optional: calls without a frame (or legacy tests) don't
   // set it — the honest default ("enumeration by pair depth", see enumMeta below) preserves their old behavior.
@@ -375,6 +379,7 @@ export function buildVerification(pairs: PairResult[], opts: {
   let clean = 0;
   let anyFail = false, anyDemoted = false, anyUnchecked = false, anyHole = false, anyReview = false;
   const blocking: BlockingItem[] = [];
+  const ceilingTailPairs: string[] = [];
   // confirm_token aggregation (two-axis, cross-pair — a Map OUTSIDE the pair loop): axis-1 by token name
   // (the "(paint)" sentinel and the empty name are NOT names: merging by them would glue DIFFERENT paints
   // together), axis-2 by reason for token-less rows (the vars-unavailable flood is the main live offender).
@@ -393,7 +398,21 @@ export function buildVerification(pairs: PairResult[], opts: {
     if (p.summary.unchecked > 0) anyUnchecked = true;
     if (holes.length > 0) anyHole = true;
     if (gatingReview) anyReview = true;
-    for (const h of holes) blocking.push(holeToBlocking(h, p, opts.depthLevels));
+    for (const h of holes) {
+      // batch-2 item 4: the fully-evidenced depth-ceiling tail (structural row flag, derived
+      // in diff.ts where both trees are in hand) mints NO blocking item at the capture
+      // ceiling - the follow-up is a NEW verification cycle (re-root the cut node), not a
+      // fix for this receipt. The row, the warn and complete=false all stay; a call-site
+      // guard keeps holeToBlocking a pure mapper and the action census untouched.
+      if (h.prop === 'children_truncated' && h.depthCeilingTail === true
+        && (opts.depthLevels >= 8 || (opts.requestedDepth ?? opts.depthLevels) >= 8)) {
+        // ids are `label ?? node_id` - the budgetDropNote convention: node_ids legally
+        // repeat within one call, and in dom-dom the label IS the id.
+        ceilingTailPairs.push(p.label ?? p.node_id);
+        continue;
+      }
+      blocking.push(holeToBlocking(h, p, opts.depthLevels));
+    }
     for (const r of p.rows) if (r.status === 'unchecked') blocking.push(uncheckedToBlocking(r, p, opts.depthLevels));
     for (const r of p.rows) if (r.status === 'review') {
       if (!gatingReviewRow(r)) continue; // advisory — see anyReview above
@@ -597,6 +616,18 @@ export function buildVerification(pairs: PairResult[], opts: {
     ? { kind: 'viewport' as const, pairs: vpRows.length, window: vpRows[0].dom as number, frame: vpRows[0].figma as number }
     : undefined;
 
+  // batch-2 item 4: ONE aggregated deduped note for the ceiling tails, pushed to the OUTER
+  // notes array AFTER the pair loop (never inside the enumeration block - its inner `notes`
+  // shadows this one). notes[] renders as a warn line in BOTH report branches and survives
+  // the response-budget clamp.
+  if (ceilingTailPairs.length > 0) {
+    const ids = [...new Set(ceilingTailPairs)];
+    const shown = ids.slice(0, 5).join(', ')
+      + (ids.length > 5 ? ` and ${ids.length - 5} more` : '');
+    notes.push(`${ceilingTailPairs.length} pair(s) reached the capture ceiling (max_depth 8 requested) with a depth-only cut: `
+      + 'the design has visible content below the ceiling that was not captured - an unrendered slot or missing content; '
+      + `verify the deep interior visually, or pair the cut node(s) named in the children_truncated row directly (re-rooting restarts the depth budget): ${shown}`);
+  }
   return {
     complete, scope, pairs: { checked: pairs.length, clean },
     // an additive field (verification byte-locks are re-baselined ONLY by it).

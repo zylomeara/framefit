@@ -2070,6 +2070,43 @@ describe('compare_node_to_dom tool', () => {
       expect(out.report_markdown).not.toContain('to 8 nesting levels');
     });
 
+    it('backoff-clamp x ceiling tail: requested 8 clamped to 6 - a depth-pure cut degrades to the receipt note, NOT raise_max_depth (requestedDepth is threaded through the tool)', async () => {
+      // The wave caught the first cut of batch-2 item 4 shipping `requestedDepth` as a dead
+      // parameter: only the unit test set it, so the clamp shape kept minting raise_max_depth
+      // - the advice the caller had already followed. This locks the THREADING, not the guard.
+      let fig: RawSceneNode = { id: '9:9', name: 'leaf', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 100 } };
+      for (let i = 8; i >= 1; i--) {
+        fig = { id: `9:${i}`, name: `w${i}`, type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 100 }, children: [fig] };
+      }
+      const deepRoot: RawSceneNode = {
+        id: '1:1', name: 'card', type: 'FRAME', layoutMode: 'VERTICAL',
+        absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 100 }, children: [fig],
+      };
+      let domNode: Record<string, unknown> = { kind: 'element', tag: 'div', rect: { x: 0, y: 0, w: 300, h: 100 } };
+      for (let i = 0; i < 9; i++) {
+        domNode = { kind: 'element', tag: 'div', rect: { x: 0, y: 0, w: 300, h: 100 }, children: [domNode] };
+      }
+      const domDeepClean = {
+        schema: 6, status: 'ok', selector: '.card', innerWidth: 375,
+        rect: { x: 0, y: 0, w: 300, h: 100 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
+        paddings: { top: 0, right: 0, bottom: 0, left: 0 }, clientWidth: 300, clientHeight: 100, scrollHeight: 100,
+        scroll: { top: 0, left: 0 }, transformed: false, children: [domNode],
+      };
+      const clampedApi = {
+        getFrameRaw: async () => ({
+          raw: { nodes: { '1:1': { document: deepRoot } } }, heldDepth: 7, hydrated: true, effectiveMaxDepth: 6,
+        }),
+      } as unknown as FigmaApi;
+      const { server, call } = makeFakeMcpServer();
+      registerCompareNodeToDomTool(server, { buildApi: () => clampedApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 } as any);
+      const run = (a: any): Promise<any> => call('compare_node_to_dom', a);
+      const out = JSON.parse((await run({ file: 'abc', pairs: [{ node_id: '1:1', dom: domDeepClean }], max_depth: 8 })).content[0].text);
+      const ct = (out.verification.blocking ?? []).filter((b: { kind: string }) => b.kind === 'children_truncated');
+      expect(ct).toEqual([]);
+      expect((out.verification.notes ?? []).some((n: string) => /ceiling/.test(n))).toBe(true);
+      expect(out.verification.complete).toBe(false);
+    });
+
     // B (symmetric fix): buildLayoutSpec for the FIGMA side must receive the SAME max_depth as the
     // DOM-side extractor capture — otherwise the Figma projection stays shallow (default depth 4)
     // even when the caller explicitly asked for a deeper drill-down, and collectFigTexts stops

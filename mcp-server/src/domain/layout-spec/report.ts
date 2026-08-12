@@ -282,7 +282,7 @@ export function renderReport(input: {
         ? `no defects found, but CHECK INCOMPLETE: ${notVerified.join(', ') || 'see verification.blocking'} — do NOT treat as green, verify visually`
         : 'no discrepancies above tolerance';
   lines.push(`Total: ✅${total.pass} ❌${total.fail}${demTotal}${unchTotal}${revTotal} ⚠️${total.warn} ⏭${total.skip} ℹ️${total.info} — ${verdict}`);
-  const vBlock = renderVerification(input.verification, input.omittedFailPairs);
+  const vBlock = renderVerification(input.verification, input.omittedFailPairs, total.fail);
   if (vBlock.length) lines.push('', ...vBlock);
   for (const d of input.degradedStages ?? []) {
     // A REPLAYED failure cost this call nothing: the negative cache answered from an earlier attempt,
@@ -327,7 +327,7 @@ function renderSpacingAudit(entries: SpacingAuditEntry[] | undefined): string[] 
 // A1: human-readable "Check" block (R3 hybrid — structured verification.blocking in JSON, prose here).
 // complete=false with an empty blocking = only inherent caveats remain (demoted) → verify visually, no auto
 // actions (anti-cry-wolf: we don't push the AI to "fix" the unfixable).
-function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number): string[] {
+function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number, totalFail?: number): string[] {
   if (!v) return [];
   const cov = v.frame_coverage;
   const scopeNote = v.scope === 'frame'
@@ -368,7 +368,15 @@ function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number):
     if (fullyCleanCount) bits.push(`insets of ${fullyCleanCount} container(s) not verified (between-children gaps clean per audit)`);
     if (cov.enumeration_truncated) bits.push('enumeration truncated');
   }
-  const out = [`Check: INCOMPLETE (${scopeNote}): ${bits.join('; ')} — do NOT say "done" until this is closed.${prov}`, ...exLines, ...auditBlock];
+  // batch-2 item 4 (contract alignment): the 'do NOT say done' imperative belongs ONLY to a
+  // receipt with an actionable remainder. Blocking emptiness alone is NOT that predicate:
+  // a plain FAIL row mints no blocking item (blocking is coverage, fails are the verdict),
+  // so the hatch needs empty blocking AND zero ❌ rows - delivered (total.fail) or
+  // budget-dropped (omittedFailPairs). Only then would the unconditional imperative
+  // contradict the inherent-only hatch in the very markdown the agent pastes.
+  const openFails = (totalFail ?? 0) > 0 || (omittedFailPairs ?? 0) > 0;
+  const doneTail = v.blocking.length === 0 && !openFails ? '' : ' — do NOT say "done" until this is closed.';
+  const out = [`Check: INCOMPLETE (${scopeNote}): ${bits.join('; ')}${doneTail}${prov}`, ...exLines, ...auditBlock];
   if (v.blocking.length === 0) {
     // budget drop trace: a dropped FAILing pair is neither demoted nor out of reach - claiming
     // "inherent-only" over it was one of the drop shape's three false sentences. The action here
@@ -377,6 +385,9 @@ function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number):
       out.push(`${omittedFailPairs} FAILing pair(s) were dropped by the response budget — NOT an inherent-only remainder: re-run the pairs in omitted_pair_ids (fewer pairs at a time).`);
       return out;
     }
+    // Delivered ❌ rows are the remainder here - not inherent, and not this block's story:
+    // the Total line above already carries the red verdict, and the imperative tail stayed.
+    if ((totalFail ?? 0) > 0) return out;
     // Final hardening: the generic caveat used to say only "demoted/out of
     // reach", mis-labeling an audit-clean container's insets-only remainder as one of those two — a
     // fully_clean spacing_audit entry names a THIRD honest reason nothing is actionable here.

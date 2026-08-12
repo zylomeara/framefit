@@ -226,9 +226,12 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
     keeps `complete` at `false` by construction — finish with `token-aware` or `strict`. See
     "Strictness profiles" below.
   <!-- blocking-actions:end -->
-- `blocking: []` with `complete:false` — only INHERENT items remain: hug/fill demotes, out-of-coverage,
-  OR a clean spacing audit (`spacing_audit[].fully_clean` — between-children gaps verified and equal,
-  only the container INSETS unverified): there is no automated action — verify those axes BY EYE
+- `blocking: []` with `complete:false` and zero ❌ rows — only INHERENT items remain: hug/fill demotes, out-of-coverage,
+  a clean spacing audit (`spacing_audit[].fully_clean` — between-children gaps verified and equal,
+  only the container INSETS unverified), OR a depth-ceiling tail (a `children_truncated` row carrying
+  `depthCeilingTail: true` — the design has visible content below the max_depth-8 ceiling, the DOM is
+  fully captured, and the receipt note names the cut nodes; re-rooting a pair there restarts the depth
+  budget when you want the interior measured): there is no automated action — verify those axes BY EYE
   (or add a container pair for a full green) — then you may proceed. EXCEPTION: when the response
   carries `omitted_pairs`, first check the budget-drop note in `verification.notes` — if it says
   dropped pairs carry FAILing rows, this is NOT an inherent-only remainder: re-run the pairs listed

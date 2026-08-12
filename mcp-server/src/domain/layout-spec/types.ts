@@ -284,6 +284,13 @@ export interface DiffRow {
   // dom-dom: this info row deliberately does NOT gate (the skeleton direction) but the axis was
   // NOT measured - deriveCoverage must file it under skipped, never measured.
   coverageSkipped?: true;
+  /** batch-2 item 4: the children_truncated row's cut is a fully-evidenced depth-ceiling
+   *  tail - every fig-side cut carries an EXPLICIT 'depth' cause (an absent cause never
+   *  counts - default-deny), the DOM side carries no truncation anywhere, and the pair has
+   *  no structure_mismatch. Verification skips ONLY the blocking item for such a row at the
+   *  capture ceiling; the row, the warn and complete=false all stay. Structural (notes are
+   *  never parsed). */
+  depthCeilingTail?: true;
 }
 
 export interface PairSummary { pass: number; fail: number; warn: number; skip: number; info: number; demoted: number; unchecked: number; review: number }

@@ -25,7 +25,10 @@ this list and add detail to it; none of them redefines it.
 
 Then read `verification.complete` — the done-gate. Never claim the UI matches the design while it is
 `false` or `blocking[]` is non-empty: each blocking item names the action that closes it. Work those
-actions, re-capture the pairs they name (step 3), and run step 5 again.
+actions, re-capture the pairs they name (step 3), and run step 5 again. `complete: false` with an
+EMPTY `blocking[]` and ZERO ❌ rows means only inherent caveats remain (demotes, out-of-reach axes,
+a depth-ceiling tail) — verify those by eye, then you may proceed; ❌ rows or `omitted_pair_ids`
+are discrepancies to fix first, whatever `blocking[]` says.
 
 [`get_view`](#get_view) is not a step in that sequence — it is orientation inside a large frame, at
 any point. [`examples/first-verdict.mjs`](../../examples/first-verdict.mjs) is the same five steps
