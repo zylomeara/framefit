@@ -3,6 +3,144 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.27.0
+
+Nine lines from one long feedback pass: a second live design-QA run (three full cycles on a
+large production design system) filed six pain points, and three verdict-honesty debts came
+due alongside them. Every piece of advice in that feedback was re-measured before shipping,
+and twice the measurement overturned the ask itself - the shipped fix was smaller and
+different both times (see the find_nodes and confirm_token notes below). Schemas moved in this release: six node-id parameters widened to the compound form, `find_nodes`
+got a rewritten description (the coverage-ledger rule, and "a page is CANVAS") and the failed-
+snapshot shape gained an optional `hint` field - a client that never re-lists tools keeps reading
+the 0.26.0 entries, so reconnect after upgrading. The new RESPONSE fields - the `find_nodes`
+coverage ledger and `type_note` included - arrive either way.
+
+### Added
+
+**Selector hints for CSS-modules pages.** A `not_found` whose own selector carries the CSS-module
+local convention - a fragment like `panel-header_root`, with a kebab-cased or 8+ char stem - now
+probes the live page for that stem, and when the page carries a `__`-mangled class containing it,
+names it: the failed snapshot carries a `hint` with the REAL mangled class and a two-fragment
+`class*=` recipe (a plain `.card` miss stays a bare `not_found` - the probe fires only on module-
+shaped selectors). The hint rides every surface that shows the failure - the
+snapshot, the extractor `summaries`, the compare warn, the `suggest_pairs` error and the
+`compare_dom_to_dom` gate - and the blocking item for a hint-carrying `not_found` routes to
+`fix_pair`, not `re_extract_dom`: re-running the same selector reproduces the same miss
+forever.
+
+**Spacer layers fold into insets before pairing.** Design systems commonly encode padding as
+literal spacer children (a `Padding horizontal` layer: a full-height RECTANGLE) while the DOM uses
+real padding - the positional pairing then matched a spacer against a real child and shipped false
+`gap`/`padding`/`offset-cross` fails over layouts whose numbers actually agree. Edge-adjacent,
+content-less RECTANGLEs at full cross extent whose name STARTS with
+`Padding`/`spacer`/`inset`/`gap` now fold into the pair's insets before children are paired (a
+keyword in a later token and short, non-full-cross spacers still do not convert - see
+docs/coverage.md); padding rows read the border edge on folded edges; the fold is named in a
+`spacer_inset` service row on the pair. A real shift still goes red with the honest delta.
+
+**Alignment mismatches stop hiding behind the justify demote.** When the design container pins its
+children to an edge (`primaryAxisAlignItems` under FIXED sizing) while the CSS distributes free
+space onto that edge (`justify-content: center`/`space-*`/`flex-end`), the pair used to ship a
+silent demoted row ("justify-content spacer - not a padding defect") over what is the page's main
+layout bug. The demote now survives only when the design's own number on that edge is slack too;
+on an intent edge the row keeps its fail and carries the alignment attribution, and the caveat
+rides `fix_plan` so the machine surface names the alignment, not a padding edit. (The mirror case
+- the design centers, the DOM pins to an edge - distributes nothing on the DOM side, so there is
+no two-sided evidence to attribute; it is unchanged.)
+
+**`children_truncated` blocking items become addressable.** For a cut DESCENDANT, the item's
+detail names up to three cut-node addresses per side - design-side ids are directly pairable (re-
+rooting a pair at the cut node restarts the depth budget; the recipe is in the detail), DOM paths
+are navigation from the pair's selector (a cut at the pair's own root has no address worth
+printing and keeps the generic wording). The narrow fully-evidenced tail - the capture ceiling
+(`max_depth` 8) was requested or reached, every design-side cut carries an explicit depth cause,
+the DOM side is untruncated, the children fully zipped and the pair not unwrap-repaired - trades
+its permanently-unexecutable blocking item for one receipt note naming the pairs (the row stays,
+`complete` stays `false`; the flag is the structural `depthCeilingTail` on the row).
+
+**Scoped `find_nodes` gets the coverage ledger it never had.** A scoped (`node_id`) search
+returned `total: 0` with no coverage at all - an absence claim ("this state does not exist in
+the design") stood on nothing. The scoped response now ships the same ledger shape as the
+file-level one, plus what the fetch did NOT search: `depth_cut` (containers at the fetch
+boundary, counted from the walk depth - never guessed from the wire), `hidden_cut` (hidden
+subtrees are excluded from matching at ANY depth - a hidden root or container is ledgered,
+not silently skipped), `depth_cut_nodes` (up to 20 addresses, so re-scoping names its
+target) and `limit_reached` (`total` is capped by `limit`, not a match count). The
+file-level branch accumulates the same walk. Absence is trustworthy only when the ledger shows
+`searched === total` and no cut (stated in full on the coverage and skill pages; the tool
+description carries the short form - an empty result claims absence only when the ledger shows no
+cut). The feedback's own framing here ("find_nodes cannot find a page by name") was
+refuted by measurement: the skeleton pass finds pages at full score under the same budget
+cut, and the live `total: 0` reproduced exactly with `type: "PAGE"` - Figma pages are type
+CANVAS, and the free-form `type` filter silently matches nothing on an unknown value. An
+unknown `type` now gets a `type_note` naming the mistake (matching stays literal - no
+aliasing).
+
+**`get_screenshot` grows a bounded transport ladder.** A transient socket drop on the render
+no longer surfaces raw: the main render retries once at the same parameters (invisible on
+success), and after a double transient failure - raster formats above scale 1, in `url`/`inline` mode
+(focus, preview and tiles are excluded: their extra renders still read the requested scale) - one
+fallback render at half the requested scale, never below 1, ships with the degradation fully
+visible: `scale` reports the DELIVERED scale, `requested_scale` and a
+factual `scale_note` ride along, inline mode gains a second text content item only when
+degraded. Timeouts and queued bailouts never retry (a ~90s hang must not double); a retry
+failing in a DIFFERENT class (a 429 with its backoff, an upstream render reason) surfaces
+that error, never a false "failed the same way".
+
+**Nested-instance ids stop being second-class.** The `node_id` parameter of
+`get_screenshot`, `get_metadata`, `get_design_context`, `find_nodes`, `get_text_styles`
+and `get_variables` accepts the compound form
+(`I12:345;67:890`), and `export_assets` accepts it in its body validation - a screenshot of
+an instance sub-node was previously impossible to take at all. The images endpoint's acceptance was measured live before shipping. `get_design_context` accepts
+the form too, but its ancestor-mode walk usually cannot locate instance internals, so modes
+resolve at their honest defaults with `coverage_complete: false`. An `export_assets` id absent
+from the render response now carries a note naming it instead of a bare `url: null`.
+
+**The dead-resolve `confirm_token` blocker names the road that closes it.** When the variables
+fetch degrades in a class a larger budget can retry (a timeout-shaped failure or the too-large 400
+- the two the negative cache caches cap-aware), the unresolved-token aggregate's detail names the
+escalation: run `get_variables` with `timeout_ms` 120000 on the file, then re-run the compare -
+and names its own ceiling (a failed 120s call is itself cached: ~60 seconds for the too-large
+class, up to ~10 minutes for a timeout).
+The feedback asked to collapse these blockers into an info-note; measurement refuted that:
+the suppressed rows would have been exactly the ones whose two colors DIFFER - a possible
+real defect released under the inherent-only reading. Blocking stays; only the wording changed. A 403, a queued bailout or a non-timeout transport drop
+keeps the plain wording - no marker exists to bypass there.
+
+### Changed
+
+**A budget-dropped FAILing pair now leaves a trace - superseding the silent half of the 0.24.0
+known limitation.** When the response budget drops whole pairs, a `verification.notes[]` line says
+so and the structural `omitted_pair_ids` sibling names them; a dropped pair carrying fails turns
+the report verdict red instead of reading as clean, and the "only inherent items remain" sentence
+is replaced by the re-run advice on that shape. (The receipt is still built before the drop, so
+`blocking` can still name a label absent from `pairs` - `omitted_pair_ids` is now the key that
+reconciles the two.) `compare_dom_to_dom` gains
+the condense tier before dropping whole pairs, so the drop shape itself became rarer.
+
+**The done-gate contract now states its escape hatch in every channel.** `complete: false`
+with an EMPTY `blocking[]` and ZERO fail rows means only inherent caveats remain (demotes,
+out-of-reach axes, a depth-ceiling tail) - verify those by eye, then proceed; fail rows or
+`omitted_pair_ids` are discrepancies to fix first, whatever `blocking[]` says. The server
+instructions, the tools page, the skill page and the pasted report all say the same thing;
+the report's "do NOT say done" imperative now keys on that predicate instead of firing
+unconditionally.
+
+**Icon-color rows stop guessing under caps.** Two icon inventories clamped to the same scan
+cap are equal by construction, not by alignment - they are never index-zipped anymore (one
+honest unchecked row instead, with the cap named); a zip that does run REFUSES when the geometry contradicts the order - where the
+geometry gives no axis evidence (ties, sub-tolerance spacing) the zip proceeds as before and
+nothing reads as order-verified; the DOM carrier element is named in the row note when the per-
+child scan found it below the paired child; pairs with zero icons on both sides stop minting icon
+rows at all.
+
+**The variables negative cache stops outliving its own advice.** A cached too-large 400 (one whose
+upstream reason names the size limit) now soft-expires after 60 seconds - a retry at the same
+budget as the failed cap becomes real again instead of being served the stale failure for the full
+TTL, which matters most at the 120s schema max where no larger budget exists - and for that reader
+the cached text names the time until the window opens. A request that never reached the network (a
+queued bailout) is never cached as if the endpoint had failed.
+
 ## 0.26.0
 
 Both lines of one story: a real design-QA run once compared a rendered page against the

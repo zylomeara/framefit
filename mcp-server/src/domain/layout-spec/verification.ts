@@ -449,7 +449,7 @@ export function buildVerification(pairs: PairResult[], opts: {
   // all (gradient/image/invisible fill) - no variables warm-up can invent one (wave).
   const escalation = (key: string): string =>
     opts.variablesDegraded === true && opts.mode !== 'dom-dom' && key === 'rsn:bound-unresolved'
-      ? ' - the file\'s variables did not resolve this call (see degraded_stages); run get_variables {timeout_ms: 120000} on this file (the largest budget the tool allows), then re-run this compare; if the 120s call also fails, the failure is cached for ~10 minutes - wait it out before retrying'
+      ? ' - the file\'s variables did not resolve this call (see degraded_stages); run get_variables {timeout_ms: 120000} on this file (the largest budget the tool allows), then re-run this compare; if the 120s call also fails, that failure is itself cached (about a minute for the too-large class, up to ~10 minutes for a timeout) - wait it out before retrying'
       : '';
   for (const [key, g] of tokenGroups) {
     const first = g.places[0];

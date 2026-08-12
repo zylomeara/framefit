@@ -454,8 +454,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
             // classes the negative cache actually caches cap-aware: the capped timeout and
             // the too-large 400. A 403/not_found/network drop has no marker to bypass and a
             // bigger budget cannot fix it - those keep the plain wording (wave finding).
-            if (isTimeoutMessage((err as Error).message ?? '')
-              || (err instanceof FigmaApiError && err.kind === 'unknown_4xx' && TOO_LARGE_REASON_RE.test(err.upstreamReason ?? ''))) {
+            const queuedBailout = err instanceof FigmaApiError && err.queuedBailout === true;
+            if (!queuedBailout
+              && (isTimeoutMessage((err as Error).message ?? '')
+                || (err instanceof FigmaApiError && err.kind === 'unknown_4xx' && TOO_LARGE_REASON_RE.test(err.upstreamReason ?? '')))) {
               variablesEscalatable = true;
             }
           }
