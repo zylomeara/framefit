@@ -61,16 +61,18 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
 ## Conventions
 
 - `file` accepts a full Figma URL (`https://www.figma.com/design/<key>/...`) or the raw file key.
-- Node ids use Figma's `12:345` form. Eight parameters also accept the compound nested-instance
+- Node ids use Figma's `12:345` form. Fourteen parameters also accept the compound nested-instance
   form `I12:345;67:890`: `get_layout_spec.node_ids[]`, `get_view.node_id`,
   `suggest_pairs.frame_node_id`, `compare_node_to_dom.pairs[].node_id`,
   `compare_node_to_dom.frame_node_id`, `compare_node_to_dom.exclude_regions[]`,
-  `get_node_ancestry.node_id` and
-  `get_code_connect_map.node_ids[]`. Every other node-id parameter is pinned to `^\d+[:\-]\d+$`
+  `get_node_ancestry.node_id`, `get_code_connect_map.node_ids[]`,
+  `get_screenshot.node_id`, `get_metadata.node_id`, `get_design_context.node_id`,
+  `find_nodes.node_id`, `get_text_styles.node_id` and
+  `get_variables.node_id`. Every other node-id parameter is pinned to `^\d+[:\-]\d+$`
   and rejects the compound form with MCP error `-32602`.
 - One node-id parameter is exempt from both rules: `export_assets.node_ids[]` declares no pattern
-  at all, so it validates nothing. A malformed id is passed through to the Figma API instead of
-  being refused, and the error you get back is Figma's rather than the server's.
+  at all. The tool body refuses a malformed id with the server's own message (before any Figma
+  call); the nested-instance form is accepted there too.
 - `figma_token` overrides the Figma personal access token for a single call; otherwise the
   server-configured token is used. It is declared by 23 of the 27 tools -- every read tool except
   `compare_dom_to_dom`, which makes zero Figma calls and takes no token at all -- and by none of

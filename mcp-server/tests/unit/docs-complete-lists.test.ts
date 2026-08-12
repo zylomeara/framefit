@@ -554,12 +554,12 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
       label: "docs/tools/README.md's compound node-id convention bullet (full walk)",
       codeSide,
       proseSide,
-      expectedCodeSize: 8, // 7 -> 8: compare_node_to_dom.exclude_regions[] accepts the compound form
+      expectedCodeSize: 14, // 8 -> 14: batch-2 item 6 aligned six more node_id params (screenshot/metadata/design-context/find_nodes/text-styles/variables)
     });
   });
 
   it('the payload carries only the two node-id forms, and no third', async () => {
-    // Measured at HEAD: 24 `pattern` sites, 8 compound and 16 strict. A third form appearing would
+    // Measured at HEAD: 24 `pattern` sites, 14 compound and 10 strict. A third form appearing would
     // make "every other node-id parameter is pinned to <one regex>" false without changing a single
     // name in the bullet.
     const nodes = await everySchemaNode();
@@ -583,7 +583,7 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
     const size = nodes.filter((n) => n.node.pattern === COMPOUND_PATTERN).length;
     const words = [
       'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
-      'eight', 'nine', 'ten', 'eleven', 'twelve',
+      'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen',
     ];
     const word = words[size];
     expect(word, `no spelling for a set of ${size}; extend the table deliberately`).toBeDefined();
@@ -612,12 +612,13 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
   it('cites the error code the server really answers a malformed id with', async () => {
     // The bullet names an error code. A code in prose is a claim about runtime behaviour, and only
     // a call can check it -- `pattern` being present does not say what the refusal looks like.
-    // `get_metadata.node_id` is a NAMED REPRESENTATIVE of the strict set, not a proof about all 16:
-    // what it establishes is the code the SDK's schema layer answers with, which is what the
-    // sentence claims.
+    // `get_review_board.node_id` is a NAMED REPRESENTATIVE of the strict set, not a proof about
+    // all of them: what it establishes is the code the SDK's schema layer answers with, which is
+    // what the sentence claims. (Re-pointed from get_metadata when batch-2 item 6 moved it to the
+    // compound set -- the probe id MUST remain compound, or this row stops testing the refusal.)
     const cited = codeSpans(theBulletAbout('compound')).filter((s) => /^-\d+$/.test(s));
     expect(cited, 'the bullet cites no error code, so this row asserted nothing').toHaveLength(1);
-    const refused = await toolCallText('get_metadata', {
+    const refused = await toolCallText('get_review_board', {
       file: 'https://www.figma.com/design/AbCdEf012345/Product-Page',
       node_id: 'I12:345;67:890',
     });
@@ -680,20 +681,33 @@ describe('Gate 5A2b: every node-id parameter is patterned, or the page names it 
     });
   });
 
-  it('the named exemption really does validate nothing, over the protocol', async () => {
-    // The contrast is the evidence, and it is why both halves are here. The same malformed id is
-    // sent to a patterned parameter and to the exempt one: the first must produce a validation
-    // error, which proves the probe can see one at all, and the second must not.
+  it('the named exemption: the SCHEMA validates nothing, and the BODY refuses with the server message, over the protocol', async () => {
+    // Two contrasts, both live (batch-2 item 6 reworked this row: the old probe ran without a
+    // token, so runTool short-circuited before the body validator and the row compared a schema
+    // refusal against a token refusal - a contrast that proved nothing about the body).
     const FILE = 'https://www.figma.com/design/AbCdEf012345/Product-Page';
     const MALFORMED = 'not-a-node-id-at-all';
+    const COMPOUND = 'I12:340;56:7890';
+    // Control: a patterned parameter refuses the malformed id at the SCHEMA layer.
     const patterned = await toolCallText('get_metadata', { file: FILE, node_id: MALFORMED });
-    expect(patterned, 'the control stopped refusing, so the probe below proves nothing')
+    expect(patterned, 'the control stopped refusing, so the probes below prove nothing')
       .toMatch(/validation/i);
-    const exempt = await toolCallText('export_assets', { file: FILE, node_ids: [MALFORMED] });
-    expect(
-      exempt,
-      'export_assets now validates its node ids -- the exemption bullet is stale, delete it',
-    ).not.toMatch(/validation error/i);
+    // The exempt parameter passes the schema on ANY string - and its BODY refuses the
+    // malformed one with the server's own message (token-bearing deps so the body runs).
+    const server = new McpServer({ name: 'framefit', version: '0.0.0' });
+    registerAllTools(server, {
+      ...minimalDeps(),
+      defaultToken: 'figd_probe',
+      buildApi: () => ({ getImages: async () => ({ images: {} }) }) as never,
+    } as never);
+    const client = new Client({ name: 'complete-lists-body', version: '0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientSide), server.connect(serverSide)]);
+    const bodyRefused = JSON.stringify(await client.callTool({ name: 'export_assets', arguments: { file: FILE, node_ids: [MALFORMED] } }));
+    expect(bodyRefused, 'the body validator stopped refusing malformed ids').toMatch(/Invalid node id/);
+    expect(bodyRefused, 'the refusal became a schema validation error -- the exemption bullet is stale').not.toMatch(/validation error/i);
+    const bodyAccepted = JSON.stringify(await client.callTool({ name: 'export_assets', arguments: { file: FILE, node_ids: [COMPOUND] } }));
+    expect(bodyAccepted, 'the nested-instance form must pass the body validator').not.toMatch(/Invalid node id/);
   });
 });
 

@@ -14,7 +14,7 @@ import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, jsonResult } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { simplify } from '../../../domain/design-context/simplify.js';
 import { buildVariableIndex, resolveBoundVariable, resolveBoundVariableInMode, boundVariableId, type VariableIndex } from '../../../domain/variables.js';
 import { collectSubtreeModes, collectSubtreeChains, buildModeByCollection, effectiveMode, type ModeStack } from '../../../domain/mode-resolve.js';
@@ -35,7 +35,7 @@ const cssVarName = (n: string): string => n.replace(/[(),]/g, '\\$&');
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
-  node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"')
+  node_id: z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"')
     .describe('The node to extract design context for (a frame/component/instance)'),
   depth: z.number().int().min(1).max(8).default(4)
     .describe('Subtree depth to extract (default 4). When the result exceeds the size budget the server auto-reduces depth (down to 1) instead of refusing; check degraded/depth in the response.'),
@@ -299,7 +299,7 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
 
         const parsed = parseFileKey(args.file);
         if (!parsed.ok) throw new Error(parsed.error);
-        const id = normalizeNodeId(args.node_id);
+        const id = normalizeCompoundNodeId(args.node_id);
 
         // Time budget (spec): deadline for the WHOLE call. Enrichment stages check remaining()
         // and skip honestly into degraded_stages; every skip lands on an EXISTING honesty path

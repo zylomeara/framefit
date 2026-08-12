@@ -361,9 +361,11 @@ do NOT hardcode a px literal; `kind:'property'` (color/font/border/…) — set 
    last ancestor's children.
 2. **Search by text/name across the whole file** → `find_nodes` without scope; read
    `coverage`: `skipped ≠ []` means "not found" ≠ "doesn't exist" — follow up with scoped calls
-   on the skipped containers. `searched === total` — coverage is complete, absence can be trusted
-   (within the search depth: nodes deeper than args.depth are unfindable — for very deep trees
-   raise depth or narrow the scope).
+   on the skipped containers. `searched === total` AND no `depth_cut`/`hidden_cut` — coverage is
+   complete, absence can be trusted. A `depth_cut` count means containers at the fetch boundary
+   were never descended into — re-root a scoped call at one of `depth_cut_nodes`; `hidden_cut`
+   means hidden subtrees are excluded from matching at ANY depth. The scoped (node_id) branch
+   ships the same ledger; `limit_reached` marks a limit-capped match list.
 3. Guessing neighboring ids via `get_metadata` is an anti-pattern — no longer needed.
 
 ## Pair quality — BEFORE reading the ❌

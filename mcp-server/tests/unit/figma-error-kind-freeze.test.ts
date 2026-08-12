@@ -675,7 +675,7 @@ describe('the populations this freeze is written against', () => {
       ],
       'adapters/driving/tools/get-pin-detail-tool.ts': ['upstream'],
       'adapters/driving/tools/get-review-board-tool.ts': ['upstream'],
-      'adapters/driving/tools/get-screenshot-tool.ts': ['upstream'],
+      'adapters/driving/tools/get-screenshot-tool.ts': ['network', 'upstream'], // batch-2 item 6: the transport-ladder guard sits ABOVE the tiles catch
       'adapters/driving/tools/get-variables-tool.ts': [
         'rate_limited',            // :83 do not swallow a 429
         'forbidden', 'auth',       // :147 the 403 pair
@@ -687,7 +687,7 @@ describe('the populations this freeze is written against', () => {
       'application/node-ancestry.ts': ['auth', 'forbidden'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '50 branch sites across 15 files').toBe(50); // 49 -> 50: the too-large soft-expiry gate (evidence-reach line); earlier 43 -> 49: find-breakpoint-variant's six (feedback item 10)
+    expect(SITES.branches.length, '51 branch sites across 15 files').toBe(51); // 50 -> 51: get_screenshot's transport-ladder trigger (batch-2 item 6); earlier 49 -> 50: the too-large soft-expiry gate (evidence-reach line)
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "
@@ -697,5 +697,43 @@ describe('the populations this freeze is written against', () => {
         `no consumer branches on '${kind}' any more - the failure messages above would name nobody`)
         .toBeGreaterThan(0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// 4. Consumer-through-producer integration (this file's own rule): the get_screenshot
+// transport ladder must fire on the kind the REAL adapter produces for a socket close -
+// every unit arm in screenshot-retry-ladder.test.ts hand-builds its FigmaApiError, so all
+// of them stay green if figma-rest ever stops classifying a socket close as 'network'.
+// Only fetch is stubbed here; the error under test comes from the real producer.
+// ---------------------------------------------------------------------------------------------
+
+describe('the get_screenshot ladder fires on the ADAPTER-produced transient network kind', () => {
+  it('socket-close from the real request() catch-all -> one same-scale retry, delivered', async () => {
+    const { registerGetScreenshotTool } = await import('../../src/adapters/driving/tools/get-screenshot-tool.js');
+    const { makeFakeMcpServer } = await import('../helpers/fake-mcp-server.js');
+    let imagesCalls = 0;
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/images/')) {
+        imagesCalls += 1;
+        if (imagesCalls === 1) throw new TypeError('The socket connection was closed unexpectedly');
+        return new Response(JSON.stringify({ images: { '1:1': 'https://img.example/real' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ nodes: { '1:1': { document: {
+        id: '1:1', name: 'n', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 50 } } } } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const { server, call } = makeFakeMcpServer();
+    registerGetScreenshotTool(server, {
+      buildApi: () => api(), defaultToken: 'figd_test', logger: pino({ level: 'silent' }),
+    } as never);
+    const res = await call('get_screenshot', { file: 'abc123', node_id: '1:1', scale: 2 });
+    expect(res.isError).not.toBe(true);
+    const out = JSON.parse((res.content[0] as { text: string }).text);
+    expect(out.url).toBe('https://img.example/real');
+    expect(out.scale).toBe(2);                 // step 1 recovered - no degradation fields
+    expect(out.requested_scale).toBeUndefined();
+    expect(imagesCalls).toBe(2);
   });
 });

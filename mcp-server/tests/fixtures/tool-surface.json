@@ -88,7 +88,7 @@
     }
   },
   "find_nodes": {
-    "description": "Find nodes by name OR text content (substring or fuzzy) inside a Figma file or a subtree, without knowing node ids. Use this when node names are master-component placeholders rather than semantics (e.g. the label \"Cart\" lives in a node named \"All genres\") - it also matches the node's text (characters). Returns node_id, name, type, breadcrumb path, size, and matched_on (name|text|property). Component-instance text set as a property override (e.g. a DS section header) matches as 'property'. Feed a node_id into get_design_context or get_text_styles. Scope with node_id to search a single frame; omit it to search the whole file.",
+    "description": "Find nodes by name OR text content (substring or fuzzy) inside a Figma file or a subtree, without knowing node ids. Use this when node names are master-component placeholders rather than semantics (e.g. the label \"Cart\" lives in a node named \"All genres\") - it also matches the node's text (characters). Returns node_id, name, type, breadcrumb path, size, and matched_on (name|text|property). Component-instance text set as a property override (e.g. a DS section header) matches as 'property'. Feed a node_id into get_design_context or get_text_styles. Scope with node_id to search a single frame; omit it to search the whole file. The response always carries a coverage ledger - scoped (node_id) calls included: depth_cut/hidden_cut name what the fetch did NOT search, and an empty result claims absence only when the ledger shows no cut. type takes Figma node types - a page is CANVAS.",
     "inputSchemaKeys": [
       "depth",
       "figma_token",
@@ -99,7 +99,7 @@
       "query",
       "type"
     ],
-    "digest": "b58f812a58e7d84ee002a411727f97ebed770fe28e35673258b6d674d98d8998",
+    "digest": "c448eb8e8cccaa75614fe8b8f7868373e86ca726054f4a68ef7df36a1515c934",
     "annotations": {
       "readOnlyHint": true
     }
@@ -183,7 +183,7 @@
       "node_id",
       "screenshot_scale"
     ],
-    "digest": "0516626fcbd6329bc53bcae73195c58e34bfa5af07906efb3e5f73fa3fe40213",
+    "digest": "edeb43fef5b512705eb6b52d7d615b3a76fab92bf16fcbf39c305256903c72d3",
     "annotations": {
       "readOnlyHint": true
     }
@@ -238,7 +238,7 @@
       "file",
       "node_id"
     ],
-    "digest": "60fdc716f9d21e85a3913228732dd79f8be915dbc4c4638311de9f473463090a",
+    "digest": "9b122b28ed4626962bf90b787a97723828fbde6e27efd7e84a2ddc75e2ab756c",
     "annotations": {
       "readOnlyHint": true
     }
@@ -306,7 +306,7 @@
       "scale",
       "tiles"
     ],
-    "digest": "273a4d317d69bec748b8caad93935825379756fc07e3b9e962207993040a8a01",
+    "digest": "5cd8c322c83f3cc72304bc87c6f1f6203f030365335de56a9ae423c6582dc586",
     "annotations": {
       "readOnlyHint": true
     }
@@ -321,7 +321,7 @@
       "include_color",
       "node_id"
     ],
-    "digest": "5e3d3bbcc35df9756237b8aef4eabe16f057e99338ac8f7dc499250940eaf7d1",
+    "digest": "d3e799e5653610db1038008bf12b30e40d516f4ea34399b8567749563925d189",
     "annotations": {
       "readOnlyHint": true
     }
@@ -341,7 +341,7 @@
       "type",
       "unresolved_only"
     ],
-    "digest": "7d958e7486fcc48ff0886889b6d51e22245342f4a97c9d2a81be0a36b3ae417f",
+    "digest": "c7d7562d5ee32e5a2ad484c0c3ac9dbbeb43cbba2872f63d45900d5f942dd0ef",
     "annotations": {
       "readOnlyHint": true
     }

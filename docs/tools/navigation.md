@@ -47,6 +47,9 @@ the node's text (`characters`). Returns `node_id`, `name`, `type`, breadcrumb `p
 `matched_on` (`name`|`text`|`property`). Component-instance text set as a property override (e.g.
 a DS section header) matches as `'property'`. Feed a `node_id` into `get_design_context` or
 `get_text_styles`. Scope with `node_id` to search a single frame; omit it to search the whole file.
+The response always carries a `coverage` ledger - scoped (`node_id`) calls included:
+`depth_cut`/`hidden_cut` name what the fetch did NOT search, and an empty result claims absence
+only when the ledger shows no cut. `type` takes Figma node types - a page is CANVAS.
 
 **Parameters**
 

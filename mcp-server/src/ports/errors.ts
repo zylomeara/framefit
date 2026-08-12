@@ -8,6 +8,15 @@ export type FigmaApiErrorKind =
   | 'unknown_4xx'
   | 'too_large';
 
+
+// The per-request timeout phrase, shared by the thrower (figma-rest), the negative-cache
+// discriminator (caching-figma-api) and the get_screenshot transport ladder. It lives in
+// ports because kind 'network' is a three-way class (transport drop / timeout / queued
+// bailout) and consumers on BOTH sides of the hexagon must split it the same way without
+// a tool ever importing the driven adapter (the tool-annotations architecture gate).
+export const TIMEOUT_PHRASE = 'timed out';
+export const isTimeoutMessage = (message: string): boolean => message.includes(TIMEOUT_PHRASE);
+
 export class FigmaApiError extends Error {
   readonly kind: FigmaApiErrorKind;
   readonly status: number;

@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, jsonResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { findNodes, overridePreview } from '../../../domain/find-nodes.js';
 import type { NodeMatch } from '../../../domain/find-nodes.js';
 import { clampToBudget } from '../../../application/get-comments.js';
@@ -16,10 +16,78 @@ import { serializeForDelivery } from './serialize.js';
 // budget on a list of names instead of the matches the caller actually asked for.
 export const COVERAGE_SKIPPED_NAMES_CAP = 20;
 
+// batch-2 item 6: the boundary predicate for depth_cut, INVERTED relative to fbv's
+// CONTAINERISH set deliberately - find_nodes matches ANY node type, so a boundary node
+// counts as cut UNLESS its type provably carries no children; unknown and future types
+// count, the safe direction for an absence claim. (BOOLEAN_OPERATION holds children -
+// it is NOT a leaf here, unlike in the diff-side decorative set.)
+const LEAF_TYPES = new Set(['TEXT', 'RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE', 'REGULAR_POLYGON', 'STAR', 'SLICE']);
+
+// The `type` filter is free-form and silently filters EVERYTHING on an unknown value -
+// the live incident passed "PAGE" (the Figma UI word) where the API type is CANVAS.
+// The guard is a note, never aliasing: matching behavior stays literal. The spelling is
+// the REST API's, not the diff-side decorative set's ('POLYGON' is a name Figma never
+// emits - the real type is REGULAR_POLYGON), and the FigJam/Slides types the repo
+// already touches are in.
+const KNOWN_TYPES = new Set([
+  'DOCUMENT', 'CANVAS', 'SECTION', 'FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET',
+  'INSTANCE', 'TEXT', 'RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE', 'REGULAR_POLYGON', 'STAR',
+  'SLICE', 'BOOLEAN_OPERATION', 'STICKY', 'SHAPE_WITH_TEXT', 'CONNECTOR', 'TABLE',
+  'TABLE_CELL', 'WIDGET', 'WASHI_TAPE', 'STAMP', 'CODE_BLOCK', 'EMBED', 'LINK_UNFURL',
+  'MEDIA', 'SLIDE',
+]);
+
+// Cuts are counted BY CONSTRUCTION from the known walk depth (`left <= 0`), never by
+// inspecting the wire shape of a cut node - the REST response at depth N simply omits
+// deeper children, so a childless container ABOVE the boundary is genuinely childless
+// while one AT the boundary is unknowable and must count. Hidden (visible:false)
+// subtrees mirror findNodes' prune: they are never searched at ANY depth, so they are
+// ledgered separately and not descended into.
+function walkCuts(
+  root: RawSceneNode,
+  depth: number,
+  acc: { depthCut: number; hiddenCut: number; cutNodes: { node_id: string; name: string }[] },
+): void {
+  const walk = (n: RawSceneNode, left: number): void => {
+    if (n.visible === false) { acc.hiddenCut += 1; return; }
+    if (left <= 0) {
+      if (!LEAF_TYPES.has(n.type)) {
+        acc.depthCut += 1;
+        if (acc.cutNodes.length < COVERAGE_SKIPPED_NAMES_CAP) acc.cutNodes.push({ node_id: n.id, name: n.name });
+      }
+      return;
+    }
+    for (const c of n.children ?? []) walk(c, left - 1);
+  };
+  // The walk enters at the ROOT, not its children: findNodes prunes a hidden root too
+  // (find-nodes.ts), so a hidden scope/container means ZERO nodes searched - without this
+  // the ledger reported the fully-clean shape over a wholly unsearched subtree (wave
+  // blocker). depth >= 1, so the root itself can never sit on the left<=0 boundary and
+  // the descendant accounting is unchanged.
+  walk(root, depth);
+}
+
+// The absence-licence note: present iff something was NOT searched. Wording split - a
+// depth cut and a hidden prune have different remedies, and the raise-depth clause
+// appears only while it is executable (10 is the schema max).
+function cutNote(depthCut: number, hiddenCut: number, depth: number): string | undefined {
+  if (depthCut > 0) {
+    return `the subtree fetch stopped at depth ${depth} with ${depthCut} container(s) still cut`
+      + (hiddenCut > 0 ? ` and ${hiddenCut} hidden subtree(s) not searched` : '')
+      + ' - an empty result is NOT proof of absence; '
+      + (depth < 10 ? 'raise depth (max 10) or re-root at a cut node from depth_cut_nodes' : 're-root at a cut node from depth_cut_nodes');
+  }
+  if (hiddenCut > 0) {
+    return `${hiddenCut} hidden subtree(s) were not searched (hidden layers are excluded from matching)`
+      + ' - an empty result is NOT proof of absence for them';
+  }
+  return undefined;
+}
+
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
   query: z.string().min(1).optional().describe('Name/text substring(s) to match; space-separated terms are AND-ed, case-insensitive. Omit to search by type alone (requires `type`).'),
-  node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"').optional()
+  node_id: z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"').optional()
     .describe('Scope the search to this node\'s subtree; omit to search the whole file (slower, heavier).'),
   type: z.string().optional().describe('Filter by node type, e.g. FRAME, TEXT, INSTANCE, COMPONENT.'),
   fuzzy: z.boolean().default(false).describe('Typo-tolerant fuzzy matching instead of substring.'),
@@ -32,7 +100,7 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
     'find_nodes',
     {
-      description: 'Find nodes by name OR text content (substring or fuzzy) inside a Figma file or a subtree, without knowing node ids. Use this when node names are master-component placeholders rather than semantics (e.g. the label "Cart" lives in a node named "All genres") - it also matches the node\'s text (characters). Returns node_id, name, type, breadcrumb path, size, and matched_on (name|text|property). Component-instance text set as a property override (e.g. a DS section header) matches as \'property\'. Feed a node_id into get_design_context or get_text_styles. Scope with node_id to search a single frame; omit it to search the whole file.',
+      description: 'Find nodes by name OR text content (substring or fuzzy) inside a Figma file or a subtree, without knowing node ids. Use this when node names are master-component placeholders rather than semantics (e.g. the label "Cart" lives in a node named "All genres") - it also matches the node\'s text (characters). Returns node_id, name, type, breadcrumb path, size, and matched_on (name|text|property). Component-instance text set as a property override (e.g. a DS section header) matches as \'property\'. Feed a node_id into get_design_context or get_text_styles. Scope with node_id to search a single frame; omit it to search the whole file. The response always carries a coverage ledger - scoped (node_id) calls included: depth_cut/hidden_cut name what the fetch did NOT search, and an empty result claims absence only when the ledger shows no cut. type takes Figma node types - a page is CANVAS.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -63,16 +131,34 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
           return row;
         };
 
+        // batch-2 item 6 (D): an unknown `type` value silently filters everything - say so.
+        const typeNote = args.type && !KNOWN_TYPES.has(args.type.toUpperCase())
+          ? `type "${args.type}" is not a known Figma node type on this server - pages are CANVAS; matching proceeded with the literal value, and if the type name is wrong nothing can match it`
+          : undefined;
+
         let root: RawSceneNode | undefined;
         let rows: Record<string, unknown>[] = [];
         let coverage: Record<string, unknown> | undefined;
+        const cuts = { depthCut: 0, hiddenCut: 0, cutNodes: [] as { node_id: string; name: string }[] };
         if (args.node_id) {
           const api = deps.buildApi(token);
-          const id = normalizeNodeId(args.node_id);
+          const id = normalizeCompoundNodeId(args.node_id);
           const res = await api.getNodesRaw(parsed.value, [id], args.depth);
           const doc = res.nodes[id]?.document;
           if (!doc) throw new Error(`node ${id} not found in file`);
           root = doc;
+          // batch-2 item 6 (A): the scoped branch shipped NO coverage - the documented
+          // machine gate (absence trustworthy only when searched === total) evaluated
+          // vacuously true here. The LEDGER SHAPE is kept (fbv anchored-path precedent)
+          // so one rule reads both branches.
+          walkCuts(doc, args.depth, cuts);
+          const note = cutNote(cuts.depthCut, cuts.hiddenCut, args.depth);
+          coverage = {
+            scope: id, depth: args.depth, searched: 1, total: 1, skipped: [], skippedTotal: 0,
+            ...(cuts.depthCut > 0 ? { depth_cut: cuts.depthCut, depth_cut_nodes: cuts.cutNodes } : {}),
+            ...(cuts.hiddenCut > 0 ? { hidden_cut: cuts.hiddenCut } : {}),
+            ...(note ? { note } : {}),
+          };
         } else {
           // Whole-file search: a single getDocumentRaw(file, args.depth) used to pull the ENTIRE
           // document tree at once — on a ~110 MB worst-case file that is exactly what produced the
@@ -133,6 +219,11 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
               // on container B would drop B's 2nd exact match, which belongs in the real top-2).
               const matches = findNodes(doc, { query: args.query, type: args.type, fuzzy: args.fuzzy, limit: args.limit });
               for (const m of matches) byId.set(m.node.id, { m, path: [c.page, ...m.path].join(' › ') });
+              // batch-2 item 6 (A): every container is fetched at the SAME args.depth, so
+              // the ledger's searched===total used to read as complete while each container
+              // was silently depth-cut - accumulate the same walk here (the skeleton pass is
+              // NOT counted, the fbv precedent).
+              walkCuts(doc, args.depth, cuts);
               searched++;
             } catch (e) {
               // Token is dead for every remaining chunk too — fail the whole call honestly instead
@@ -163,13 +254,18 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
           rows = rowsSorted.map(({ m, path }) => buildRow(m, path));
 
           const total = containers.length;
+          const searchedNote = searched < total
+            ? `Searched ${searched} of ${total} top-level containers (budget/limit/429) — narrow scope (node_id) or fetch the rest via skipped.`
+            : undefined;
+          const depthNote = cutNote(cuts.depthCut, cuts.hiddenCut, args.depth);
+          const note = [searchedNote, depthNote].filter(Boolean).join(' ');
           coverage = {
             searched, total,
             skipped: skippedNames,
             skippedTotal,
-            ...(searched < total ? {
-              note: `Searched ${searched} of ${total} top-level containers (budget/limit/429) — narrow scope (node_id) or fetch the rest via skipped.`,
-            } : {}),
+            ...(cuts.depthCut > 0 ? { depth_cut: cuts.depthCut, depth_cut_nodes: cuts.cutNodes } : {}),
+            ...(cuts.hiddenCut > 0 ? { hidden_cut: cuts.hiddenCut } : {}),
+            ...(note ? { note } : {}),
           };
         }
 
@@ -177,6 +273,9 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
           const matches = findNodes(root, { query: args.query, type: args.type, fuzzy: args.fuzzy, limit: args.limit });
           rows = matches.map((m) => buildRow(m, m.path.join(' › ')));
         }
+        // batch-2 item 6 (A): total is min(matches, limit), not a match count - a full-limit
+        // page under a clean ledger read as complete. Both branches.
+        if (coverage && rows.length === args.limit) coverage.limit_reached = true;
 
         const budget = deps.maxResultChars ?? 40000;
         // Measure == delivery: serializeForDelivery is the same function
@@ -184,10 +283,12 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
         // (+~14 chars of fixed headroom — an honest shift upward, not drift).
         const { kept, clamped } = clampToBudget(rows, budget, (xs) =>
           serializeForDelivery({ query: args.query, total: rows.length, returned: xs.length,
-            clamped: true, ...(coverage ? { coverage } : {}), matches: xs }));
+            clamped: true, ...(typeNote ? { type_note: typeNote } : {}),
+            ...(coverage ? { coverage } : {}), matches: xs }));
         return jsonResult({
           query: args.query, total: rows.length, returned: kept.length,
           ...(clamped ? { clamped: true } : {}),
+          ...(typeNote ? { type_note: typeNote } : {}),
           ...(coverage ? { coverage } : {}),
           matches: kept,
         });

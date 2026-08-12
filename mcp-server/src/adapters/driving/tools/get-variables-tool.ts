@@ -5,7 +5,7 @@ import { runTool, jsonResult } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
 import { clampToBudget } from '../../../application/get-comments.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { listTokens, listTokensForIds, collectNodeVariableIds } from '../../../domain/variables.js';
 import { extractLibraryKey } from '../../../domain/variable-snapshot.js';
 import { FigmaApiError, TOO_LARGE_REASON_RE } from '../../../ports/errors.js';
@@ -14,7 +14,7 @@ import { summarizeTokens, filterTokens, dedupeTokens, canonicalizeCollections } 
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
-  node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"').optional().describe('When set, return ONLY the variables referenced by this node subtree (the headless analogue of get_variable_defs). Omit for the whole-file token catalog.'),
+  node_id: z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"').optional().describe('When set, return ONLY the variables referenced by this node subtree (the headless analogue of get_variable_defs). Omit for the whole-file token catalog.'),
   depth: z.number().int().min(1).max(8).default(4).describe('Subtree depth scanned for variable references (node_id mode only).'),
   timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-call Figma request timeout in ms (default 90000). The variables endpoint can be slow on large files - raise toward the 120000 max if you still hit timeouts.'),
   collection: z.string().optional().describe('Filter tokens by collection name (case-insensitive substring match).'),
@@ -87,7 +87,7 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
           // Node-scoped (only variables the node subtree references) or whole-file catalog.
           let allTokens;
           if (args.node_id) {
-            const nid = normalizeNodeId(args.node_id);
+            const nid = normalizeCompoundNodeId(args.node_id);
             const nodes = await api.getNodesRaw(parsed.value, [nid], args.depth ?? 4);
             const entry = nodes.nodes[nid];
             if (!entry) throw new Error(`node ${nid} not found in file`);

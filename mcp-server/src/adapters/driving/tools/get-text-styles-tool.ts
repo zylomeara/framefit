@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, jsonResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { simplify } from '../../../domain/design-context/simplify.js';
 import { collectTextStyles, dedupeTextStyles } from '../../../domain/text-styles.js';
 import { clampToBudget } from '../../../application/get-comments.js';
@@ -11,7 +11,7 @@ import { serializeForDelivery } from './serialize.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
-  node_id: z.string().regex(NODE_ID_RE, 'expected "1:42" or "1-42"')
+  node_id: z.string().regex(COMPOUND_NODE_ID_RE, 'expected "1:42", "1-42", or a nested-instance id like "I12:340;56:7890"')
     .describe('Root node - its text descendants\' typography is returned (no full tree).'),
   include_color: z.boolean().default(true).describe('Join each text node\'s color (fill) - hex or token name. Text color lives on fill, not in textStyle.'),
   dedupe: z.boolean().default(true).describe('Group nodes that share an identical style into one entry.'),
@@ -31,7 +31,7 @@ export function registerGetTextStylesTool(server: McpServer, deps: ToolDeps): vo
       runTool('get_text_styles', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);
         if (!parsed.ok) throw new Error(parsed.error);
-        const id = normalizeNodeId(args.node_id);
+        const id = normalizeCompoundNodeId(args.node_id);
         const api = deps.buildApi(token);
 
         const res = await api.getNodesRaw(parsed.value, [id], args.depth);
