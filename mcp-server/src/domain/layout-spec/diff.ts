@@ -1166,27 +1166,31 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
   // Recursively over BOTH sides (figKids/d.children) — not only the pair's root level.
   if (spec.childrenTruncated || d.childrenTruncated || anyTruncDeep(figKids) || anyTruncDeep(d.children)) {
     // batch-2 item 4, two halves computed HERE - the one place holding both trees.
-    // (D) addressability: the advice 'pair the nested node directly' named nothing - the cut
-    // NODE itself is captured on both sides, and re-rooting a pair at it restarts the depth
-    // budget. Up to 3 addresses ride the note (and thus the blocking item's detail).
-    const addrs: string[] = [];
+    // (D) addressability: the advice 'pair the nested node directly' named nothing - a cut
+    // DESCENDANT is captured itself, and re-rooting a pair at it restarts the depth budget.
+    // Up to 3 addresses per side ride the note (and thus the blocking item's detail), labeled
+    // by side: fig ids are pairable directly; dom paths are navigation FROM the captured root
+    // (types.ts: not standalone selectors), so they get navigation wording, and a pathless
+    // cut has no address worth printing. A ROOT-level cut is NOT an address: re-rooting a
+    // pair at its own root restarts nothing - the root case keeps the generic wording.
+    const figAddrs: string[] = [];
     const collectFigAddrs = (kids: readonly SpecChild[] | undefined): void => {
       for (const k of kids ?? []) {
-        if (addrs.length >= 3) return;
-        if (k.childrenTruncated === true) addrs.push(k.id);
+        if (figAddrs.length >= 3) return;
+        if (k.childrenTruncated === true) figAddrs.push(k.id);
         collectFigAddrs(k.children);
       }
     };
-    if (spec.childrenTruncated) addrs.push('(the pair root itself)');
     collectFigAddrs(figKids);
+    const domAddrs: string[] = [];
     const collectDomAddrs = (kids: readonly DomChild[] | undefined): void => {
       for (const k of kids ?? []) {
-        if (addrs.length >= 3) return;
-        if (k.childrenTruncated === true) addrs.push(k.path ?? k.tag ?? 'a dom child');
+        if (domAddrs.length >= 3) return;
+        if (k.childrenTruncated === true && k.path !== undefined) domAddrs.push(k.path);
         collectDomAddrs(k.children);
       }
     };
-    if (addrs.length < 3) collectDomAddrs(d.children);
+    collectDomAddrs(d.children);
     // (B) the depth-ceiling-tail flag, positive evidence only: at least ONE fig cut carries
     // an EXPLICIT 'depth' cause and none carries anything else or nothing (an absent cause is
     // never 'depth' here - the frame walk's `?? 'depth'` default is FORBIDDEN in this gate);
@@ -1206,11 +1210,15 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     const figDepthPure = figCauses.length > 0 && figCauses.every((c) => c === 'depth');
     const domClean = d.childrenTruncated !== true && !anyTruncDeep(d.children);
     const noMismatch = !rows.some((r) => r.prop === 'structure_mismatch');
-    const ceilingTail = figDepthPure && domClean && noMismatch;
+    // An unwrap-repaired pair never gets the flag: a successful unwrap equalizes the
+    // cardinalities, so noMismatch cannot stand in for root-level zip evidence there -
+    // the equality was manufactured by expanding a wrapper.
+    const ceilingTail = figDepthPure && domClean && noMismatch && unwrapInfo === undefined;
     rows.push({ prop: 'children_truncated', status: 'warn',
       ...(ceilingTail ? { depthCeilingTail: true as const } : {}),
       note: 'the tail of children beyond the cap/depth was not checked (childrenTruncated at the pair level or deeper)'
-        + (addrs.length > 0 ? `; cut at: ${addrs.join(', ')} - pair one directly (re-rooting restarts the depth budget)` : '') });
+        + (figAddrs.length > 0 ? `; cut at: ${figAddrs.join(', ')} - pair one directly (re-rooting restarts the depth budget)` : '')
+        + (domAddrs.length > 0 ? `; DOM-side cut below: ${domAddrs.join(', ')} (navigate from the pair's selector - not a standalone selector)` : '') });
   }
 
   // Monotonicity of the DOM children along the Figma axis (in DOM document order, BEFORE sorting).

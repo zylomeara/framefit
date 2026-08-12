@@ -23,6 +23,12 @@ describe('SERVER_INSTRUCTIONS (initialize contract for skill-less hosts)', () =>
     expect(SERVER_INSTRUCTIONS).toContain('verify those by eye');
   });
 
+  it('the hatch is conditioned on zero fail rows, not blocking emptiness alone (wave: a plain FAIL row mints no blocking item)', () => {
+    expect(SERVER_INSTRUCTIONS).toContain('ZERO ❌ rows');
+    expect(SERVER_INSTRUCTIONS).toContain('omitted_pair_ids');
+    expect(SERVER_INSTRUCTIONS).toContain('discrepancies to fix first');
+  });
+
   it('names the design-QA tool cycle', () => {
     expect(SERVER_INSTRUCTIONS).toContain('get_layout_spec');
     expect(SERVER_INSTRUCTIONS).toContain('suggest_pairs');

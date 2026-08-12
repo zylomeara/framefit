@@ -406,7 +406,9 @@ export function buildVerification(pairs: PairResult[], opts: {
       // guard keeps holeToBlocking a pure mapper and the action census untouched.
       if (h.prop === 'children_truncated' && h.depthCeilingTail === true
         && (opts.depthLevels >= 8 || (opts.requestedDepth ?? opts.depthLevels) >= 8)) {
-        ceilingTailPairs.push(p.node_id);
+        // ids are `label ?? node_id` - the budgetDropNote convention: node_ids legally
+        // repeat within one call, and in dom-dom the label IS the id.
+        ceilingTailPairs.push(p.label ?? p.node_id);
         continue;
       }
       blocking.push(holeToBlocking(h, p, opts.depthLevels));
@@ -619,9 +621,10 @@ export function buildVerification(pairs: PairResult[], opts: {
   // shadows this one). notes[] renders as a warn line in BOTH report branches and survives
   // the response-budget clamp.
   if (ceilingTailPairs.length > 0) {
-    const shown = ceilingTailPairs.slice(0, 5).join(', ')
-      + (ceilingTailPairs.length > 5 ? ` and ${ceilingTailPairs.length - 5} more` : '');
-    notes.push(`${ceilingTailPairs.length} pair(s) reached the capture ceiling (max_depth 8) with a depth-only cut: `
+    const ids = [...new Set(ceilingTailPairs)];
+    const shown = ids.slice(0, 5).join(', ')
+      + (ids.length > 5 ? ` and ${ids.length - 5} more` : '');
+    notes.push(`${ceilingTailPairs.length} pair(s) reached the capture ceiling (max_depth 8 requested) with a depth-only cut: `
       + 'the design has visible content below the ceiling that was not captured - an unrendered slot or missing content; '
       + `verify the deep interior visually, or pair the cut node(s) named in the children_truncated row directly (re-rooting restarts the depth budget): ${shown}`);
   }

@@ -226,7 +226,7 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
     keeps `complete` at `false` by construction — finish with `token-aware` or `strict`. See
     "Strictness profiles" below.
   <!-- blocking-actions:end -->
-- `blocking: []` with `complete:false` — only INHERENT items remain: hug/fill demotes, out-of-coverage,
+- `blocking: []` with `complete:false` and zero ❌ rows — only INHERENT items remain: hug/fill demotes, out-of-coverage,
   a clean spacing audit (`spacing_audit[].fully_clean` — between-children gaps verified and equal,
   only the container INSETS unverified), OR a depth-ceiling tail (a `children_truncated` row carrying
   `depthCeilingTail: true` — the design has visible content below the max_depth-8 ceiling, the DOM is

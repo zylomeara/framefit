@@ -953,6 +953,10 @@ describe('buildVerification — blocking priority order', () => {
 // uncheckedToBlocking swaps to add_text_pair, and the enumeration branch stops emitting a blocker at
 // all. This was the last one, and it could not even see the depth: it was the only *ToBlocking that
 // was called without it.
+// batch-2 item 4 note: the at-8 arm below is now the UNLABELED arm - this fixture's row carries
+// no depthCeilingTail flag (its fig cut is uncaused), so the ceiling-tail gate stays fail-closed
+// and the blocking item still mints. The fully-evidenced flagged row degrades to a receipt note
+// instead - see ceiling-tail.test.ts.
 describe('a blocking item never names an action the caller cannot carry out', () => {
   const truncatedPair = {
     node_id: '1:1', selector: '.card',
