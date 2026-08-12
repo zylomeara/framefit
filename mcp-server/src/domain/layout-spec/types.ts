@@ -61,6 +61,9 @@ export interface SpecChild {
   textUncertain?: boolean;  // exactly one TEXT found, but the path hit a cut — uniqueness only within the cut
   textBeyondCut?: boolean;  // no TEXT found, but some may remain deeper than the cut — honest skip
   hugWidth?: true;          // the container's width hugs its content — layoutSizingHorizontal HUG
+  /** the child FILLS the parent's main axis (raw layoutGrow > 0) — its extent IS distributed
+   *  free space, never an inset; gate for excluding grow spacers from the fold-slack correction */
+  grow?: true;
   imageFill?: true;         // the leaf has an IMAGE/VIDEO fill — this is CONTENT (avatar/preview/photo → DOM <img>), NOT decoration; gate for excluding decorative leaves in verification (otherwise an unpaired image = false green)
   children?: SpecChild[];      // symmetric with DomChild.children
   childrenTruncated?: boolean;
