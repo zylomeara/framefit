@@ -2254,8 +2254,15 @@ function crossAndPaddingRows(
     if (st?.paintUnknown === true) return row;
     if (st?.backgroundColor !== undefined || st?.gradient !== undefined || st?.bgImage === true
       || dk.shadow !== undefined || dk.borders !== undefined) return row;
+    // opacity decouples geometry from pixels entirely (transparentChild's precedent): an
+    // opacity:0 wrapper or band member has a true rect and renders nothing.
+    if ((st?.opacity ?? 1) < 1) return row;
     if (dk.childrenTruncated === true || (dk.outOfFlow ?? 0) > 0
       || !dk.children || dk.children.length === 0) return row;
+    // the band members themselves must be complete and rendered: a member that dropped an
+    // out-of-flow child (the relative>absolute overlay pattern) or is translucent makes the
+    // band a subset of what renders. One level - the members are what the band reads.
+    if (dk.children.some((k) => (k.outOfFlow ?? 0) > 0 || (k.styles?.opacity ?? 1) < 1)) return row;
     const bandLead = Math.min(...dk.children.map((k) => crossStart(k.rect, axis))) - crossStart(dk.rect, axis);
     const bandTrail = end(dk.rect, cross) - Math.max(...dk.children.map((k) => end(k.rect, cross)));
     if (Math.abs(bandLead - bandTrail) > structTol) return row;
@@ -2267,7 +2274,7 @@ function crossAndPaddingRows(
     // the note replaces (not appends to) any accumulated note: a gutter-residual fragment
     // asserting "not explained" must not ride a row that now says "not a defect".
     return { ...stripSrc(row), status: 'demoted',
-      note: `the design places a content-height box (cross inset ${round1(figLeadBox)} from the container edge) while the DOM stretches an unpainted wrapper whose content sits at the matching inset (measured ${round1(innerLead)} one level down) - a box-encoding difference, not a defect; to verify deeper, pair the design node against the inner DOM element` };
+      note: `the design places a content-height box (cross inset ${round1(figLeadBox)} from the container edge${Math.abs(figLeadBox - figOff) > 0.05 ? ` - ${round1(figOff)} of it inside the container's cross padding, which is what the row's figma number reads` : ''}) while the DOM stretches an unpainted wrapper whose content sits at the matching inset (measured ${round1(innerLead)} one level down) - a box-encoding difference, not a defect; to verify deeper, pair the design node against the inner DOM element` };
   };
   figKids.forEach((c, i) => {
     if (movedIdx?.has(i)) return; // children-reorder: a reordered slot — the offset is mis-attributed
@@ -2748,10 +2755,19 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     // Separate from colorVerdict: an undefined bg here means "the background may be on a different element"
     // (a structural signal), NOT "DOM color not recognized" (A1) — a different cause, a different note.
     if (bg === undefined) {
+      // v7: when the read node DECLARES a paint the extractor could not classify (a CSS Color 4
+      // background, generated content, a visible outline), "no background" is provably the wrong
+      // claim and warn is the one status that keeps the done-gate green - REVIEW, the dom-dom
+      // precedent below. The anchor carries the flag when a descent happened; the root when the
+      // paintUnknown veto stopped one.
+      const sPaintU = a ? a.styles?.paintUnknown === true : d.styles?.paintUnknown === true;
       rows.push(opts.sides === 'dom-dom'
         ? { prop: 'fill', figma: spec.fillHex, dom: null, status: 'review',
             note: 'the CANDIDATE declares no background while the REFERENCE paints one — the CANDIDATE either paints none or paints in a color space the extractor cannot read (oklch()/color()); confirm which before treating this as a defect' }
-        : { prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
+        : sPaintU
+          ? { prop: 'fill', figma: spec.fillHex, dom: null, status: 'review',
+              note: 'the DOM element declares a paint the extractor cannot read (a CSS Color 4 background such as oklch()/color(), generated content, or an outline) — color equality was not checked on either side; verify visually before treating this as a match or a defect' }
+          : { prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
     } else {
       const v = colorVerdict(spec.fillToken?.hex ?? spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined, spec.fillBoundVar, opts.cssEvidence);
       rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),

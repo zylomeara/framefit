@@ -325,3 +325,32 @@ describe('the measured reconciliation demote', () => {
     expect(r.note).toMatch(/box-encoding difference/);
   });
 });
+
+describe('the verify-round locks (opacity, member completeness, the two-anchor note)', () => {
+  it('c3: an opacity<1 wrapper is not inert - opacity decouples geometry from pixels', () => {
+    const rows = diffPair(spec(), snap(domChild({ styles: { opacity: 0 } as never })), opts);
+    expect(oc(rows)!.status).toBe('fail');
+  });
+
+  it('c4: an opacity<1 band MEMBER renders nothing - the band is a subset of what renders', () => {
+    const rows = diffPair(spec(),
+      snap(domChild({ children: [{ ...kid(0, 20, 360, 80), styles: { opacity: 0 } } as DomChild] })), opts);
+    expect(oc(rows)!.status).toBe('fail');
+  });
+
+  it('d3: a band MEMBER that dropped an out-of-flow child (the relative>absolute overlay pattern) -> fail-closed', () => {
+    const rows = diffPair(spec(),
+      snap(domChild({ children: [{ ...kid(0, 20, 360, 80), outOfFlow: 1 } as DomChild] })), opts);
+    expect(oc(rows)!.status).toBe('fail');
+  });
+
+  it('a2: with design cross padding the note names BOTH anchors - the box-edge inset and the content-box number the row reads', () => {
+    const s = spec({ rect: R(0, 30, 360, 60) },
+      { autoLayout: { padding: { top: 10, right: 0, bottom: 10, left: 0 } } } as never);
+    const rows = diffPair(s, snap(domChild({ children: [kid(0, 30, 360, 60)] })), opts);
+    const r = oc(rows)!;
+    expect(r.status).toBe('demoted');
+    expect(r.figma).toBe(20);
+    expect(r.note).toMatch(/cross inset 30 from the container edge - 20 of it inside the container's cross padding/);
+  });
+});

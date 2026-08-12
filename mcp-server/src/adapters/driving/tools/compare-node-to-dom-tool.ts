@@ -685,7 +685,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           if (okSnap.schema !== undefined && okSnap.schema !== DOM_SNAPSHOT_SCHEMA_VERSION) {
             const rows = [{ prop: 'snapshot_schema', status: 'warn' as const, figma: DOM_SNAPSHOT_SCHEMA_VERSION,
               dom: okSnap.schema,
-              note: 'snapshot version does not match the server — call get_layout_spec {include_extractor:true} and re-run the extractor' }];
+              note: 'snapshot version does not match the server — re-capture with a FRESH script: get_layout_spec {include_extractor:true, extractor_mode:"inline"} (on the loader path an open page keeps serving its cached old extractor), or reload the page first' }];
             return { ...base, rows, summary: summarize(rows), coverage: deriveCoverage(rows) };
           }
           const setNames = await buildSetNames(api, entry, deps.logger);

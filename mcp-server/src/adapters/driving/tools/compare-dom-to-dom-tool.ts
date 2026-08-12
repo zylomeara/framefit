@@ -77,7 +77,7 @@ function sideGateRows(snap: DomSnapshot | undefined, note: string | undefined, r
   const ok = snap as DomSnapshotOk | undefined;
   if (ok?.schema !== undefined && ok.schema !== DOM_SNAPSHOT_SCHEMA_VERSION) {
     return [{ prop: 'snapshot_schema', status: 'warn', figma: DOM_SNAPSHOT_SCHEMA_VERSION, dom: ok.schema,
-      note: `the ${role.toUpperCase()} snapshot version does not match the server — re-run the current extractor for the ${role} capture` }];
+      note: `the ${role.toUpperCase()} snapshot version does not match the server — re-capture the ${role} with a FRESH script (get_layout_spec {include_extractor:true, extractor_mode:"inline"}, or reload the page first - an open page keeps serving its cached old extractor)` }];
   }
   return [];
 }

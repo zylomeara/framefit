@@ -2952,6 +2952,26 @@ describe('style anchor (v5): style axes are read from the carrier through transp
     expect(row(rows, 'component')?.status).toBe('pass');
     expect(row(rows, 'component')?.note).toContain('"banner"');
   });
+  it('v7: a root flagged paintUnknown -> NO descent (the wrapper may be visibly painted), and the fill row is an honest REVIEW - the input that used to read the carrier and fail now says "unknown", never "no background"', () => {
+    const rows = diffPair(bannerSpec({ fillHex: '#3366ff' }) as any,
+      wrapPair({ styles: { backgroundColor: '#ff0000' } }, { styles: { paintUnknown: true } }) as any, { tolerancePx: 1 });
+    expect(row(rows, 'style_anchor')).toBeUndefined();          // the descent is refused
+    const fill = row(rows, 'fill');
+    expect(fill?.status).toBe('review');                        // warn is the one status that keeps the done-gate green
+    expect(fill?.note).toMatch(/cannot read/);
+  });
+  it('v7: the CARRIER itself carries paintUnknown -> the anchored fill read is REVIEW too', () => {
+    const rows = diffPair(bannerSpec({ fillHex: '#3366ff' }) as any,
+      wrapPair({ styles: { paintUnknown: true } }) as any, { tolerancePx: 1 });
+    expect(row(rows, 'style_anchor')?.status).toBe('pass');     // the descent happened - the carrier is the flagged node
+    expect(row(rows, 'fill')?.status).toBe('review');
+  });
+  it('v7 control: no flag anywhere -> the fill warn is unchanged (advisory, pre-v7 wording)', () => {
+    const rows = diffPair(bannerSpec({ fillHex: '#3366ff' }) as any, wrapPair() as any, { tolerancePx: 1 });
+    const fill = row(rows, 'fill');
+    expect(fill?.status).toBe('warn');
+    expect(fill?.note).toMatch(/may be on a different element/);
+  });
   it('coverage: style_anchor not in measured/skipped', () => {
     const rows = diffPair(bannerSpec() as any, wrapPair() as any, { tolerancePx: 1 });
     const cov = deriveCoverage(rows);

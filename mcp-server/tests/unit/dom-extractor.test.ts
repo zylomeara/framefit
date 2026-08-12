@@ -1825,8 +1825,8 @@ describe('v7 paintUnknown: a declared paint the snapshot cannot classify is flag
   // returns (a real browser resolves pseudo styles; the element-only fakes elsewhere in this file
   // return the element bundle, whose `content` is undefined - the guard must treat that as "none").
   function build(childStyles: Record<string, string>, pseudo?: Record<string, string>,
-    extraKids: any[] = [], rootStyles: Record<string, string> = {}) {
-    const child = makeEl('div', rect(0, 0, 300, 20));
+    extraKids: any[] = [], rootStyles: Record<string, string> = {}, childKids: any[] = []) {
+    const child = makeEl('div', rect(0, 0, 300, 20), childKids);
     const root = makeEl('main', rect(0, 0, 300, 20), [child, ...extraKids]);
     const fakeDoc = {
       querySelectorAll: () => [root],
@@ -1841,7 +1841,7 @@ describe('v7 paintUnknown: a declared paint the snapshot cannot classify is flag
       return { ...base, ...(el.__styles ?? {}) };
     };
     return new Function('document', 'window', 'Node', 'getComputedStyle', `return (${EXTRACTOR_JS})`)(
-      fakeDoc, { innerWidth: 1920 }, { TEXT_NODE: 3, ELEMENT_NODE: 1 }, fakeCS) as (s: string[]) => Promise<any>;
+      fakeDoc, { innerWidth: 1920 }, { TEXT_NODE: 3, ELEMENT_NODE: 1 }, fakeCS) as (s: string[], u?: string, d?: number) => Promise<any>;
   }
 
   it('an oklch background emits paintUnknown (and no backgroundColor) - the door the wave proved live in Chrome 151', async () => {
@@ -1859,18 +1859,24 @@ describe('v7 paintUnknown: a declared paint the snapshot cannot classify is flag
     expect(clear.children[0].styles.paintUnknown).toBeUndefined();
   });
 
-  it('a visible outline flags; outline-style none or zero width does not', async () => {
-    const [on] = await build({ outlineStyle: 'solid', outlineWidth: '2px' })(['main']);
+  it('a visible outline flags; outline-style none, zero width, or a TRANSPARENT color does not (outline: 2px solid transparent is the .outline-none / forced-colors idiom and paints nothing)', async () => {
+    const [on] = await build({ outlineStyle: 'solid', outlineWidth: '2px', outlineColor: 'rgb(255, 0, 0)' })(['main']);
     expect(on.children[0].styles.paintUnknown).toBe(true);
-    const [off] = await build({ outlineStyle: 'none', outlineWidth: '2px' })(['main']);
+    const [unk] = await build({ outlineStyle: 'solid', outlineWidth: '2px', outlineColor: 'oklch(0.7 0.15 250)' })(['main']);
+    expect(unk.children[0].styles.paintUnknown).toBe(true);
+    const [transparent] = await build({ outlineStyle: 'solid', outlineWidth: '2px', outlineColor: 'rgba(0, 0, 0, 0)' })(['main']);
+    expect(transparent.children[0].styles.paintUnknown).toBeUndefined();
+    const [off] = await build({ outlineStyle: 'none', outlineWidth: '2px', outlineColor: 'rgb(255, 0, 0)' })(['main']);
     expect(off.children[0].styles.paintUnknown).toBeUndefined();
-    const [zero] = await build({ outlineStyle: 'solid', outlineWidth: '0px' })(['main']);
+    const [zero] = await build({ outlineStyle: 'solid', outlineWidth: '0px', outlineColor: 'rgb(255, 0, 0)' })(['main']);
     expect(zero.children[0].styles.paintUnknown).toBeUndefined();
   });
 
-  it('a filter flags (drop-shadow/blur paint outside the captured geometry)', async () => {
+  it('a filter flags (drop-shadow/blur paint outside the captured geometry); the no-op blur(0px) does not', async () => {
     const [snap] = await build({ filter: 'blur(4px)' })(['main']);
     expect(snap.children[0].styles.paintUnknown).toBe(true);
+    const [noop] = await build({ filter: 'blur(0px)' })(['main']);
+    expect(noop.children[0].styles.paintUnknown).toBeUndefined();
   });
 
   it('::before with generated text flags; with declared paint flags; an inert clearfix does not', async () => {
@@ -1887,14 +1893,39 @@ describe('v7 paintUnknown: a declared paint the snapshot cannot classify is flag
     expect(snap.styles.paintUnknown).toBe(true);
   });
 
-  it('v7 outOfFlow counts only VISIBLE absolutes: a zero-area sr-only absolute is a skip, a visible one is a dropped interior', async () => {
+  it('v7 outOfFlow: a bare zero-area absolute LEAF is a skip; a visible absolute counts; a ZERO-AREA HOST with content below counts too (gBCR is the host box only - a popover/fixed-header anchor renders through descendants)', async () => {
     const srOnly = makeEl('span', rect(0, 0, 0, 0));
     srOnly.__styles = { position: 'absolute' };
     const visible = makeEl('span', rect(0, 0, 40, 10));
     visible.__styles = { position: 'absolute' };
+    const host = makeEl('span', rect(0, 0, 0, 0), [makeEl('div', rect(0, 0, 1200, 64))]);
+    host.__styles = { position: 'fixed' };
     const [skipped] = await build({}, undefined, [srOnly])(['main']);
     expect(skipped.outOfFlow).toBeUndefined();
     const [counted] = await build({}, undefined, [visible])(['main']);
     expect(counted.outOfFlow).toBe(1);
+    const [hosted] = await build({}, undefined, [host])(['main']);
+    expect(hosted.outOfFlow).toBe(1);
+  });
+
+  it('v7 depth cut: a box whose only content below the cut is OUT-OF-FLOW gets outOfFlow, not a bare-leaf read (hasFlowContent skips absolutes by design)', async () => {
+    const absKid = makeEl('i', rect(0, 0, 40, 10));
+    absKid.__styles = { position: 'absolute' };
+    const [snap] = await build({}, undefined, [], {}, [absKid])(['main'], undefined, 0);
+    const c = snap.children[0];
+    expect(c.children).toBeUndefined();          // beyond the cut
+    expect(c.childrenTruncated).toBeUndefined(); // no flow content below
+    expect(c.outOfFlow).toBe(1);                 // ...but the dropped interior is named
+  });
+
+  it('pseudo paint is COLOR-aware: a transparent-shadow or transparent-border ::before does not flag; a colored one does', async () => {
+    const [tsh] = await build({}, { content: '""', boxShadow: 'rgba(0, 0, 0, 0) 0px 2px 4px' })(['main']);
+    expect(tsh.children[0].styles.paintUnknown).toBeUndefined();
+    const [vsh] = await build({}, { content: '""', boxShadow: 'rgba(0, 0, 0, 0.4) 0px 2px 4px' })(['main']);
+    expect(vsh.children[0].styles.paintUnknown).toBe(true);
+    const [tbr] = await build({}, { content: '""', borderTopWidth: '2px', borderTopColor: 'rgba(0, 0, 0, 0)' })(['main']);
+    expect(tbr.children[0].styles.paintUnknown).toBeUndefined();
+    const [vbr] = await build({}, { content: '""', borderTopWidth: '2px', borderTopColor: 'rgb(1, 2, 3)' })(['main']);
+    expect(vbr.children[0].styles.paintUnknown).toBe(true);
   });
 });

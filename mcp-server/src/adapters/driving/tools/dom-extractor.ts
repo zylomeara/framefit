@@ -84,20 +84,32 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
   // paint is not a DOM node. Without the flag such a box is byte-identical to a transparent one,
   // and every "this box paints nothing" consumer reads a painted box as inert.
   const bgUnparsed = (c) => !!c && !/^rgba?\\(/.test(c);
+  // a color paints when it parses to a visible hex OR is a form toHex cannot read (unknown - flag).
+  // Computed 'transparent' arrives as rgba(0, 0, 0, 0) -> toHex undefined AND parseable -> inert:
+  // 'outline: 2px solid transparent' (the .outline-none / forced-colors idiom) must NOT flag.
+  const visibleColor = (c) => toHex(c) !== undefined || bgUnparsed(c);
+  // every rgba() token alpha-0 -> provably invisible; a color form we cannot read -> unknown, flag.
+  const shadowMaybeVisible = (sh) => {
+    const tokens = sh.match(/rgba?\\([^)]*\\)/g);
+    if (!tokens || tokens.length === 0) return true;
+    return tokens.some((t) => toHex(t) !== undefined);
+  };
   const paintsUnknown = (n, cs) => {
     if (bgUnparsed(cs.backgroundColor)) return true;
-    if (cs.outlineStyle && cs.outlineStyle !== 'none' && (num(cs.outlineWidth) || 0) > 0) return true;
-    if (cs.filter && cs.filter !== 'none') return true;
+    if (cs.outlineStyle && cs.outlineStyle !== 'none' && (num(cs.outlineWidth) || 0) > 0
+      && visibleColor(cs.outlineColor)) return true;
+    if (cs.filter && cs.filter !== 'none' && !/^blur\\(0(px)?\\)$/.test(cs.filter)) return true;
     if (cs.backdropFilter && cs.backdropFilter !== 'none') return true;
     for (const pe of ['::before', '::after']) {
       const p = getComputedStyle(n, pe);
       if (!p || !p.content || p.content === 'none' || p.content === 'normal' || p.display === 'none') continue;
       if (p.content !== '""') return true;
-      if (toHex(p.backgroundColor) !== undefined || bgUnparsed(p.backgroundColor)) return true;
+      if (visibleColor(p.backgroundColor)) return true;
       if (p.backgroundImage && p.backgroundImage !== 'none') return true;
-      if (p.boxShadow && p.boxShadow !== 'none') return true;
-      if (((num(p.borderTopWidth) || 0) + (num(p.borderRightWidth) || 0)
-        + (num(p.borderBottomWidth) || 0) + (num(p.borderLeftWidth) || 0)) > 0) return true;
+      if (p.boxShadow && p.boxShadow !== 'none' && shadowMaybeVisible(p.boxShadow)) return true;
+      if ([['borderTopWidth', 'borderTopColor'], ['borderRightWidth', 'borderRightColor'],
+        ['borderBottomWidth', 'borderBottomColor'], ['borderLeftWidth', 'borderLeftColor']]
+        .some(([w, c]) => (num(p[w]) || 0) > 0 && visibleColor(p[c]))) return true;
     }
     return false;
   };
@@ -242,10 +254,16 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         continue;
       }
       const r = n.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0) continue;
-      // v7: the zero-area test runs FIRST — outOfFlow counts only VISIBLE absolutes (mirrors the
-      // projector's count); an sr-only/focus-ring absolute is a skip, not a dropped interior.
-      if (cs.position === 'absolute' || cs.position === 'fixed') { out.outOfFlow++; continue; }
+      const zeroArea = r.width <= 0 || r.height <= 0;
+      if (cs.position === 'absolute' || cs.position === 'fixed') {
+        // v7: a bare zero-area out-of-flow LEAF (a focus ring, a clipped a11y box) is a plain
+        // skip - but gBCR is the element's OWN border box, so a zero-area HOST still renders
+        // through its descendants (a popover anchor, a fixed header host shrink-wrapped to 0x0:
+        // the incident this counter exists for). Content below keeps the count.
+        if (!zeroArea || n.children.length > 0 || (n.textContent || '').trim() !== '') out.outOfFlow++;
+        continue;
+      }
+      if (zeroArea) continue;
       const childSel = '> :nth-child(' + (Array.from(el.children).indexOf(n) + 1) + ')';
       const nodePath = (basePath + ' ' + childSel).trim();
       const child = { kind: 'element', tag: n.tagName.toLowerCase(),
@@ -298,9 +316,20 @@ export const EXTRACTOR_JS = `async (selectors, uploadUrl, depthLeft = 3, budget 
         child.children = kids.slice(0, 15);
         if (kids.length > 15) child.childrenTruncated = true;
         if (kids.outOfFlow) child.outOfFlow = kids.outOfFlow;
-      } else if (hasFlowContent(n)) {
+      } else {
         // depth budget exhausted, but there IS real flow content below — honest, not a fake leaf.
-        child.childrenTruncated = true;
+        if (hasFlowContent(n)) child.childrenTruncated = true;
+        // v7: hasFlowContent skips absolutes by design, so a box at the cut whose only content
+        // is out-of-flow would read as a bare leaf - the one shape both honesty flags miss.
+        let oof = 0;
+        for (const k of n.children) {
+          const kcs = getComputedStyle(k);
+          if (kcs.display === 'none') continue;
+          if (kcs.position !== 'absolute' && kcs.position !== 'fixed') continue;
+          const kr = k.getBoundingClientRect();
+          if ((kr.width > 0 && kr.height > 0) || k.children.length > 0 || (k.textContent || '').trim() !== '') oof++;
+        }
+        if (oof) child.outOfFlow = oof;
       }
       out.push(child);
     }

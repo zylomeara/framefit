@@ -12,6 +12,7 @@ import type { DomSnapshot, DomChild } from '../../../domain/layout-spec/types.js
 // - an 'invalid_selector' status (currently conflated with not_found)
 // - the fate of the `state` field (declared, but neither emitted nor compared)
 // - modern colors in toHex (oklch()/color() → currently undefined → a false background warn)
+//   (the VERDICT half closed by v7: paintUnknown + the fill review row; toHex itself still reads only rgb())
 export const DOM_SNAPSHOT_SCHEMA_VERSION = 7;   // v3: styles.gradient added
 // v4 — SNIPPET_CAP 120: old extractors truncate text at 40 WITHOUT a flag; at the server's 120
 // threshold their cuts are indistinguishable from full text → mis-anchor; the version rejects them at both matcher inputs.
@@ -25,7 +26,9 @@ export const DOM_SNAPSHOT_SCHEMA_VERSION = 7;   // v3: styles.gradient added
 // and 50px — the server cannot tell them apart, and the corner-radius row passes over an unmeasured
 // difference. The field is additive, the MEANING of an existing field is not: without the version, the
 // false green this release removes from the code would survive on every stale capture, silently.
-// v7 (paint honesty): resolves the v3 candidate "modern colors in toHex". styles.paintUnknown marks a
+// v7 (paint honesty): closes the verdict half of the v3 candidate "modern colors in toHex" (the fill
+// row turns REVIEW instead of asserting "no background" the server now knows to be false; toHex
+// itself is unchanged). styles.paintUnknown marks a
 // box with a DECLARED paint the snapshot cannot classify — a CSS Color 4 background (oklch()/lab()/
 // color()/color-mix() serialize outside toHex's rgb() grammar), a visible outline, painted
 // ::before/::after content, a filter/backdrop-filter. Same bump argument as v4/v6: on a pre-v7 wire an
