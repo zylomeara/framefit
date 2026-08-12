@@ -846,11 +846,11 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
           spacerFold.startPx += res.startPx; spacerFold.endPx += res.endPx;
           spacerFold.leadCount += res.leadCount; spacerFold.trailCount += res.trailCount;
           spacerFold.growStartPx += res.growStartPx; spacerFold.growEndPx += res.growEndPx;
-          // merge, not overwrite (defensive: provably unreachable today - when the unwrap
-          // site fires, site-1's rest is exactly [wrapper], and isSpacerShaped requires a
-          // CHILDLESS node while expand requires children, so site-1's interior is always
-          // empty there; the merge guards a future reordering, it cannot be test-locked)
-          spacerFold.interior = [...new Set([...spacerFold.interior, ...res.interior])];
+          // concat, not overwrite (defensive: site-1's interior is provably empty when the
+          // unwrap site fires - isSpacerShaped requires a childless node while expand
+          // requires children; no Set - DS interior spacers are routinely identically
+          // named, and a name-dedup under-reports the trace count) (wave)
+          spacerFold.interior = [...spacerFold.interior, ...res.interior];
           spacerFold.names.push(...res.names);
           spacerFold.domRemoved += domRemoved;
         } else {
@@ -2042,7 +2042,11 @@ function crossAndPaddingRows(
     // end allowance was carried for the degenerate single-child case only, and a folded
     // edge is positive proof the designer pinned it (panel).
     if (primaryAlign === 'SPACE_BETWEEN' && e === 'end') {
-      return figKids.length <= 1 && foldInsetEnd <= 0;
+      // PRE-fold population: a lead-edge fold removes a real child and would re-create the
+      // single-child degenerate on a two-item design (wave). Since any fold adds >= 1, this
+      // collapses to: single child AND no fold anywhere on the pair.
+      return figKids.length + (spacerFold?.leadCount ?? 0) + (spacerFold?.trailCount ?? 0) <= 1
+        && foldInsetEnd <= 0;
     }
     return FIG_SLACK_EDGES[primaryAlign][e];
   };

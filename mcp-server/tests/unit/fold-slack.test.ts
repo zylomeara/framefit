@@ -74,16 +74,16 @@ describe('the incident: a folded inset never reads as slack', () => {
 });
 
 describe('the demote survives where the evidence is real', () => {
-  it('genuine slack beyond the fold (400 = 12 fold + 348 + 40 real) -> demote survives', () => {
-    const rows = diffPair(spec(400, [spacer('9:1', 0, 12), kid('9:2', 12, 348)], 'CENTER'),
+  it('genuine slack beyond the fold (400 = 12 fold + 348 + 40 real, MIN - reachable geometry: the spacer is flush ONLY under a start-pinned group) -> the slack edge keeps the demote', () => {
+    const rows = diffPair(spec(400, [spacer('9:1', 0, 12), kid('9:2', 12, 348)], 'MIN'),
       centeringDom(400, 92, 216), { tolerancePx: 1 });
-    expect(padRow(rows, 'padding-left')!.status).toBe('demoted');
+    expect(padRow(rows, 'padding-right')!.status).toBe('demoted');
   });
 
-  it('MAGNITUDE boundary: genuine slack (6) SMALLER than the folded extent (12) -> still demoted (kills over-subtraction)', () => {
-    const rows = diffPair(spec(366, [spacer('9:1', 0, 12), kid('9:2', 12, 348)], 'CENTER'),
+  it('MAGNITUDE boundary: genuine slack (6) SMALLER than the folded extent (12), MIN -> still demoted (kills over-subtraction)', () => {
+    const rows = diffPair(spec(366, [spacer('9:1', 0, 12), kid('9:2', 12, 348)], 'MIN'),
       centeringDom(366, 75, 216), { tolerancePx: 1 });
-    expect(padRow(rows, 'padding-left')!.status).toBe('demoted');
+    expect(padRow(rows, 'padding-right')!.status).toBe('demoted');
   });
 
   it('a folded GROW spacer keeps the demote road - its extent IS the free space (panel blocker)', () => {
@@ -126,6 +126,31 @@ describe('wave locks: every correction term is load-bearing', () => {
 });
 
 describe('SPACE_BETWEEN: interior space is not edge evidence', () => {
+  it('a LEAD-edge fold does not re-create the degenerate: two-item design, spacer folded at start -> the end allowance stays denied (wave false-green)', () => {
+    // 400 = 12 lead fold + interior 40 free + 348 content flush at the END - the design pins
+    // the end edge; the DOM distributing 80 onto it is the defect, not an inset artifact.
+    const rows = diffPair(spec(400, [spacer('9:1', 0, 12), kid('9:2', 52, 348)], 'SPACE_BETWEEN'),
+      centeringDom(400, 0, 320, 'space-between'), { tolerancePx: 1 });
+    const right = padRow(rows, 'padding-right')!;
+    expect(right.status).toBe('fail');
+    expect(right.note).toMatch(/alignment mismatch|distributes surplus space/);
+  });
+
+  it('NO spacer at all, >=2 kids -> the end allowance is denied (the intended population-wide narrowing, locked)', () => {
+    const rows = diffPair(spec(400, [kid('9:2', 0, 100), { ...kid('9:3', 260, 100) }], 'SPACE_BETWEEN'),
+      {
+        ...centeringDom(400, 0, 100, 'space-between'),
+        children: [
+          { kind: 'element', tag: 'span', rect: R(0, 20, 100, 80) } as DomChild,
+          { kind: 'element', tag: 'span', rect: R(300, 20, 100, 80) } as DomChild,
+        ],
+      } as never,
+      { tolerancePx: 1 });
+    const right = padRow(rows, 'padding-right')!;
+    expect(right.status).toBe('fail');
+    expect(right.note).toMatch(/alignment mismatch/);
+  });
+
   it('single post-fold child + FOLDED end + genuine slack -> the fold conjunct denies the allowance (fail, not demoted)', () => {
     // 400 = 300 child + 12 trailing fold + 88 genuine slack - the folded edge is pinned proof
     const rows = diffPair(spec(400, [kid('9:2', 0, 300), spacer('9:1', 388, 12)], 'SPACE_BETWEEN'),
