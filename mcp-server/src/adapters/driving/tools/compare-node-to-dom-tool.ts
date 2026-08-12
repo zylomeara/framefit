@@ -847,6 +847,9 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           // backoff clamps effDepth below 8, and 'raise max_depth' would then be advice the
           // caller already followed.
           requestedDepth: reqDepth,
+          // batch-2 item 5 remainder: wording-only - the dead-resolve confirm_token
+          // aggregates name the get_variables escalation road when the batch fetch degraded.
+          ...(degradedStages.some((d) => d.stage === 'variables') ? { variablesDegraded: true as const } : {}),
           ...(enumMeta ? { enumeration: enumMeta } : {}),
           // The profile from the parsed arg as the SINGLE source (the same `profile` that went
           // into diffPair) → receipt.match_profile in all three modes + a sentinel gate under layout.

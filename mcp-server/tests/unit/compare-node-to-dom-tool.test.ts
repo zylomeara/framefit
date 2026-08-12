@@ -316,6 +316,34 @@ describe('compare_node_to_dom tool', () => {
     expect(out.report_markdown).toContain('Figma API timeout after 90000ms');
   });
 
+  it('batch-2 item 5 remainder: a degraded fetch + a DIVERGED bound color -> the confirm_token detail names the get_variables escalation road (the threading lock)', async () => {
+    // Positive population first (the vacuous-arm lesson): the fetch fails, the row gates.
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
+    const getVariablesLocal = vi.fn(async () => { throw new Error('Figma API timeout after 90000ms'); });
+    const run = harness({ getNodesRaw, getVariablesLocal });
+    const divergedDom = { ...domFor(cardBoundFill), styles: { backgroundColor: '#1f1f1f' } };
+    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: divergedDom }] });
+    const out = JSON.parse(res.content[0].text);
+    expect(out.degraded_stages).toHaveLength(1);
+    const tokenItems = out.verification.blocking.filter((b: { kind: string }) => b.kind === 'unconfirmed_token');
+    expect(tokenItems.length).toBeGreaterThan(0);
+    expect(tokenItems[0].detail).toMatch(/run get_variables \{timeout_ms: 120000\}/);
+    expect(tokenItems[0].detail).toMatch(/re-run this compare/);
+  });
+
+  it('batch-2 item 5 remainder: the SAME diverged pair with a healthy fetch keeps the old detail (no escalation clause)', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
+    const getDocumentRaw = vi.fn(async () => docWithNode(cardBoundFill));
+    const run = harness({ getNodesRaw, getVariablesLocal: boundVars, getDocumentRaw });
+    const divergedDom = { ...domFor(cardBoundFill), styles: { backgroundColor: '#1f1f1f' } };
+    const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: divergedDom }] });
+    const out = JSON.parse(res.content[0].text);
+    expect(out.degraded_stages).toBeUndefined();
+    for (const b of out.verification.blocking) {
+      expect(String(b.detail ?? '')).not.toMatch(/run get_variables \{timeout_ms: 120000\}/);
+    }
+  });
+
   it('a variables fetch that SUCCEEDS carries no degraded_stages key at all', async () => {
     // The other direction, because a key that is always present says nothing: an honest flag has to
     // be absent on the healthy path, or every reader learns to ignore it.

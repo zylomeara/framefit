@@ -351,6 +351,13 @@ export function buildVerification(pairs: PairResult[], opts: {
    *  (a too_large backoff can lower it below a requested 8), so the ceiling test must see
    *  both. Optional; legacy callers are byte-identical (defaults to depthLevels). */
   requestedDepth?: number;
+  /** batch-2 item 5 remainder: the batch variables fetch degraded this call (a
+   *  degraded_stages stage 'variables' entry exists). WORDING-ONLY - it never suppresses
+   *  anything: the dead-resolve aggregates (rsn:bound-unresolved / rsn:fig-unresolved -
+   *  no token name by construction) gain the measured escalation road in their detail
+   *  (get_variables at a larger budget bypasses the cap-aware negative cache and warms it).
+   *  Optional; legacy callers byte-identical. */
+  variablesDegraded?: true;
   // At what depth / by what method the FRAME was PROJECTED (not the pairs) — the source of honest
   // provenance and of the advice matrix below. TYPE-optional: calls without a frame (or legacy tests) don't
   // set it — the honest default ("enumeration by pair depth", see enumMeta below) preserves their old behavior.
@@ -431,10 +438,22 @@ export function buildVerification(pairs: PairResult[], opts: {
   // after all pairs); the final POSITION in the list is set by the rankOf sort before the cap,
   // not by the push site. A group of 1 place — a single record of the prior format (detail =
   // note, WITHOUT places): byte-for-byte the same format as the old direct push.
+  // batch-2 item 5 remainder: a dead-resolve group (no token name - the rsn: key IS the
+  // reason, homogeneous by construction) under a degraded variables stage gets its advice
+  // made EXECUTABLE. Measured road: the negative cache is cap-aware, so a larger-budget
+  // get_variables bypasses it by design, and on success warms the positive cache the next
+  // compare reads. Wording only - the item, its action (Gate 5B census) and places[] are
+  // untouched, and tok:<name> groups (an executable mode road, unrelated to the fetch)
+  // never gain it. dom-dom is structurally excluded (no variables fetch exists there).
+  const escalation = (key: string): string =>
+    opts.variablesDegraded === true && opts.mode !== 'dom-dom'
+      && (key === 'rsn:bound-unresolved' || key === 'rsn:fig-unresolved')
+      ? ' - the file\'s variables did not resolve this call (see degraded_stages); run get_variables {timeout_ms: 120000} on this file - the larger budget bypasses the capped fetch\'s negative cache and warms it on success - then re-run this compare'
+      : '';
   for (const [key, g] of tokenGroups) {
     const first = g.places[0];
     if (g.places.length === 1) {
-      blocking.push({ kind: 'unconfirmed_token', node_id: first.node_id, ...(first.selector ? { selector: first.selector } : {}), action: 'confirm_token', detail: g.firstNote });
+      blocking.push({ kind: 'unconfirmed_token', node_id: first.node_id, ...(first.selector ? { selector: first.selector } : {}), action: 'confirm_token', detail: g.firstNote + escalation(key) });
       continue;
     }
     const reasons = [...g.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join(', ');
@@ -449,7 +468,7 @@ export function buildVerification(pairs: PairResult[], opts: {
     blocking.push({ kind: 'unconfirmed_token', node_id: first.node_id, ...(first.selector ? { selector: first.selector } : {}), action: 'confirm_token',
       places: g.places.slice(0, PLACES_CAP).map(({ node_id, prop }) => ({ node_id, prop })),
       ...(g.places.length > PLACES_CAP ? { places_capped: g.places.length - PLACES_CAP } : {}),
-      detail: `${head} — ×${g.places.length} places (${reasons}); places: ${shown}${more}${domClause}` });
+      detail: `${head} — ×${g.places.length} places (${reasons}); places: ${shown}${more}${domClause}${escalation(key)}` });
   }
 
   let frame_coverage: FrameCoverage | undefined;
