@@ -99,6 +99,17 @@ describe('A: scoped coverage - the depth_cut flip (one fixture, one query, two d
     expect(out.coverage.depth_cut_nodes).toEqual([{ node_id: '9:7', name: 'bool' }]);
   });
 
+  it('a HIDDEN ROOT is ledgered too - findNodes prunes at the root, so zero nodes were searched (wave blocker)', async () => {
+    const t: N = { id: '9:0', name: 'archive', type: 'FRAME', visible: false, children: [
+      { id: '9:1', name: 'label', type: 'TEXT', characters: 'needle' },
+    ] };
+    const run = harness(depthApi(t));
+    const out = await run({ file: 'abc', node_id: '9:0', query: 'needle', depth: 6 });
+    expect(out.total).toBe(0);
+    expect(out.coverage.hidden_cut).toBe(1);
+    expect(out.coverage.note).toMatch(/NOT proof of absence/);
+  });
+
   it('hidden subtrees are ledgered, not silently unsearched (the false-absence blocker)', async () => {
     const t: N = { id: '9:0', name: 'root', type: 'FRAME', children: [
       { id: '9:11', name: 'error state', type: 'FRAME', visible: false, children: [
@@ -168,6 +179,21 @@ describe('A: file-level accumulation (the weaker receipt must not read as the st
     expect(out.coverage.note).toMatch(/NOT proof of absence/);
   });
 
+  it('a HIDDEN top-level container is ledgered at file level (its whole subtree went unsearched)', async () => {
+    const container: N = { id: '1:1', name: 'Home', type: 'FRAME', visible: false, children: [
+      { id: '1:2', name: 'label', type: 'TEXT', characters: 'needle' },
+    ] };
+    const run = harness({
+      getDocumentRaw: vi.fn(async () => docOf([pageOf([sliceDepth(container, 1)])]) as never),
+      getNodesRaw: vi.fn(async (_f: string, ids: string[], depth: number) =>
+        ({ nodes: { [ids[0]]: { document: sliceDepth(container, depth) } } })),
+    });
+    const out = await run({ file: 'abc', query: 'needle', depth: 6 });
+    expect(out.total).toBe(0);
+    expect(out.coverage.hidden_cut).toBe(1);
+    expect(out.coverage.note).toMatch(/NOT proof of absence/);
+  });
+
   it('no cuts anywhere -> the file-level coverage keeps exactly the historical shape', async () => {
     const container: N = { id: '1:1', name: 'Home', type: 'FRAME', children: [
       { id: '1:2', name: 'label', type: 'TEXT', characters: 'needle' },
@@ -203,10 +229,19 @@ describe('D: the type-value guard (the live total-0 was a type miss, not a searc
     expect(lower.type_note).toBeUndefined();
   });
 
-  it('an unknown (possibly future) type gets the hedged note', async () => {
+  it('an unknown (possibly future) type gets the hedged note - conditional, never an absolute "can only miss"', async () => {
     const run = harness(depthApi(canvasTree));
     const out = await run({ file: 'abc', node_id: '9:0', query: 'shelf', type: 'FOO', depth: 4 });
     expect(out.type_note).toMatch(/not a known Figma node type/);
+    expect(out.type_note).toMatch(/if the type name is wrong/);
+    expect(out.type_note).not.toMatch(/can only miss/);
+  });
+
+  it('REST-spelled and repo-touched types are known: REGULAR_POLYGON and TABLE_CELL carry no note, POLYGON (a name Figma never emits) does', async () => {
+    const run = harness(depthApi(canvasTree));
+    expect((await run({ file: 'abc', node_id: '9:0', query: 'shelf', type: 'REGULAR_POLYGON', depth: 4 })).type_note).toBeUndefined();
+    expect((await run({ file: 'abc', node_id: '9:0', query: 'shelf', type: 'TABLE_CELL', depth: 4 })).type_note).toBeUndefined();
+    expect((await run({ file: 'abc', node_id: '9:0', query: 'shelf', type: 'POLYGON', depth: 4 })).type_note).toMatch(/not a known/);
   });
 
   it('the file-level branch carries the same note', async () => {

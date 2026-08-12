@@ -130,14 +130,38 @@ describe('step 2: the scale fallback after a double transient failure', () => {
     expect(f.spy).toHaveBeenCalledTimes(2);
   });
 
-  it('preview and tiles modes never reach step 2 (mode exclusion - the main render is not the delivered image there)', async () => {
-    for (const extra of [{ return: 'preview' }, { tiles: true }]) {
+  it('preview, tiles AND focus modes never reach step 2 (mode exclusion - the main render is not the delivered image there)', async () => {
+    for (const extra of [{ return: 'preview' }, { tiles: true }, { focus: { x: 0.5, y: 0.5 } }]) {
       const f = failing([netErr(), netErr()]);
       const res = await harness(f.fn)({ file: 'abc', node_id: '1:1', scale: 2, ...extra });
       expect(res.isError).toBe(true);
       expect(f.spy).toHaveBeenCalledTimes(2);
       expect(res.content[0].text).toMatch(/An immediate retry failed the same way/);
     }
+  });
+
+  it('a retry failing in a DIFFERENT class surfaces THAT error, never a false "failed the same way"', async () => {
+    // 429: the backoff signal must survive.
+    const f429 = failing([netErr(), new FigmaApiError('rate_limited', 429, 'Figma rate limit hit; retry after 30s', 30)]);
+    const r429 = await harness(f429.fn)({ file: 'abc', node_id: '1:1', scale: 2 });
+    expect(r429.isError).toBe(true);
+    expect(r429.content[0].text).toMatch(/rate limit/i);
+    expect(r429.content[0].text).not.toMatch(/failed the same way/);
+    expect(r429.content[0].text).toMatch(/first attempt failed on a transport drop/);
+    // upstream 200-body: the render reason must survive.
+    const fUp = failing([netErr(), new FigmaApiError('upstream', 200, 'Figma returned an error for this render')]);
+    const rUp = await harness(fUp.fn)({ file: 'abc', node_id: '1:1', scale: 2 });
+    expect(rUp.content[0].text).toMatch(/error for this render/);
+    // a timeout on the retry is a different class too (the ~90s hang is not "the same way").
+    const fT = failing([netErr(), timeoutErr()]);
+    const rT = await harness(fT.fn)({ file: 'abc', node_id: '1:1', scale: 2 });
+    expect(rT.content[0].text).toMatch(/timed out/);
+    expect(rT.content[0].text).not.toMatch(/failed the same way/);
+    // step 3 in a different class: e3 surfaces with its own advice.
+    const f3 = failing([netErr(), netErr(), new FigmaApiError('unknown_4xx', 400, 'Figma rejected the render')]);
+    const r3 = await harness(f3.fn)({ file: 'abc', node_id: '1:1', scale: 2 });
+    expect(r3.content[0].text).toMatch(/rejected the render/);
+    expect(r3.content[0].text).toMatch(/two prior attempts failed on transport drops/);
   });
 
   it('inline degraded -> image + a SECOND text content item with the meta; undegraded inline stays single-item', async () => {

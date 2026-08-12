@@ -21,15 +21,20 @@ export const COVERAGE_SKIPPED_NAMES_CAP = 20;
 // counts as cut UNLESS its type provably carries no children; unknown and future types
 // count, the safe direction for an absence claim. (BOOLEAN_OPERATION holds children -
 // it is NOT a leaf here, unlike in the diff-side decorative set.)
-const LEAF_TYPES = new Set(['TEXT', 'RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE', 'POLYGON', 'STAR', 'SLICE']);
+const LEAF_TYPES = new Set(['TEXT', 'RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE', 'REGULAR_POLYGON', 'STAR', 'SLICE']);
 
 // The `type` filter is free-form and silently filters EVERYTHING on an unknown value -
 // the live incident passed "PAGE" (the Figma UI word) where the API type is CANVAS.
-// The guard is a note, never aliasing: matching behavior stays literal.
+// The guard is a note, never aliasing: matching behavior stays literal. The spelling is
+// the REST API's, not the diff-side decorative set's ('POLYGON' is a name Figma never
+// emits - the real type is REGULAR_POLYGON), and the FigJam/Slides types the repo
+// already touches are in.
 const KNOWN_TYPES = new Set([
   'DOCUMENT', 'CANVAS', 'SECTION', 'FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET',
-  'INSTANCE', 'TEXT', 'RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE', 'POLYGON', 'STAR',
-  'SLICE', 'BOOLEAN_OPERATION', 'STICKY', 'SHAPE_WITH_TEXT', 'CONNECTOR', 'TABLE', 'WIDGET',
+  'INSTANCE', 'TEXT', 'RECTANGLE', 'VECTOR', 'ELLIPSE', 'LINE', 'REGULAR_POLYGON', 'STAR',
+  'SLICE', 'BOOLEAN_OPERATION', 'STICKY', 'SHAPE_WITH_TEXT', 'CONNECTOR', 'TABLE',
+  'TABLE_CELL', 'WIDGET', 'WASHI_TAPE', 'STAMP', 'CODE_BLOCK', 'EMBED', 'LINK_UNFURL',
+  'MEDIA', 'SLIDE',
 ]);
 
 // Cuts are counted BY CONSTRUCTION from the known walk depth (`left <= 0`), never by
@@ -39,7 +44,7 @@ const KNOWN_TYPES = new Set([
 // subtrees mirror findNodes' prune: they are never searched at ANY depth, so they are
 // ledgered separately and not descended into.
 function walkCuts(
-  root: { type: string; visible?: boolean; children?: readonly RawSceneNode[] },
+  root: RawSceneNode,
   depth: number,
   acc: { depthCut: number; hiddenCut: number; cutNodes: { node_id: string; name: string }[] },
 ): void {
@@ -54,7 +59,12 @@ function walkCuts(
     }
     for (const c of n.children ?? []) walk(c, left - 1);
   };
-  for (const c of root.children ?? []) walk(c, depth - 1);
+  // The walk enters at the ROOT, not its children: findNodes prunes a hidden root too
+  // (find-nodes.ts), so a hidden scope/container means ZERO nodes searched - without this
+  // the ledger reported the fully-clean shape over a wholly unsearched subtree (wave
+  // blocker). depth >= 1, so the root itself can never sit on the left<=0 boundary and
+  // the descendant accounting is unchanged.
+  walk(root, depth);
 }
 
 // The absence-licence note: present iff something was NOT searched. Wording split - a
@@ -123,7 +133,7 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
 
         // batch-2 item 6 (D): an unknown `type` value silently filters everything - say so.
         const typeNote = args.type && !KNOWN_TYPES.has(args.type.toUpperCase())
-          ? `type "${args.type}" is not a known Figma node type on this server - pages are CANVAS; matching proceeded with the literal value and can only miss`
+          ? `type "${args.type}" is not a known Figma node type on this server - pages are CANVAS; matching proceeded with the literal value, and if the type name is wrong nothing can match it`
           : undefined;
 
         let root: RawSceneNode | undefined;

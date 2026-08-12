@@ -681,20 +681,33 @@ describe('Gate 5A2b: every node-id parameter is patterned, or the page names it 
     });
   });
 
-  it('the named exemption really does validate nothing, over the protocol', async () => {
-    // The contrast is the evidence, and it is why both halves are here. The same malformed id is
-    // sent to a patterned parameter and to the exempt one: the first must produce a validation
-    // error, which proves the probe can see one at all, and the second must not.
+  it('the named exemption: the SCHEMA validates nothing, and the BODY refuses with the server message, over the protocol', async () => {
+    // Two contrasts, both live (batch-2 item 6 reworked this row: the old probe ran without a
+    // token, so runTool short-circuited before the body validator and the row compared a schema
+    // refusal against a token refusal - a contrast that proved nothing about the body).
     const FILE = 'https://www.figma.com/design/AbCdEf012345/Product-Page';
     const MALFORMED = 'not-a-node-id-at-all';
+    const COMPOUND = 'I12:340;56:7890';
+    // Control: a patterned parameter refuses the malformed id at the SCHEMA layer.
     const patterned = await toolCallText('get_metadata', { file: FILE, node_id: MALFORMED });
-    expect(patterned, 'the control stopped refusing, so the probe below proves nothing')
+    expect(patterned, 'the control stopped refusing, so the probes below prove nothing')
       .toMatch(/validation/i);
-    const exempt = await toolCallText('export_assets', { file: FILE, node_ids: [MALFORMED] });
-    expect(
-      exempt,
-      'export_assets now validates its node ids -- the exemption bullet is stale, delete it',
-    ).not.toMatch(/validation error/i);
+    // The exempt parameter passes the schema on ANY string - and its BODY refuses the
+    // malformed one with the server's own message (token-bearing deps so the body runs).
+    const server = new McpServer({ name: 'framefit', version: '0.0.0' });
+    registerAllTools(server, {
+      ...minimalDeps(),
+      defaultToken: 'figd_probe',
+      buildApi: () => ({ getImages: async () => ({ images: {} }) }) as never,
+    } as never);
+    const client = new Client({ name: 'complete-lists-body', version: '0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientSide), server.connect(serverSide)]);
+    const bodyRefused = JSON.stringify(await client.callTool({ name: 'export_assets', arguments: { file: FILE, node_ids: [MALFORMED] } }));
+    expect(bodyRefused, 'the body validator stopped refusing malformed ids').toMatch(/Invalid node id/);
+    expect(bodyRefused, 'the refusal became a schema validation error -- the exemption bullet is stale').not.toMatch(/validation error/i);
+    const bodyAccepted = JSON.stringify(await client.callTool({ name: 'export_assets', arguments: { file: FILE, node_ids: [COMPOUND] } }));
+    expect(bodyAccepted, 'the nested-instance form must pass the body validator').not.toMatch(/Invalid node id/);
   });
 });
 

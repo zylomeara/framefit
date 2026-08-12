@@ -85,11 +85,17 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
           try {
             images = (await api.getImages(parsed.value, [id], { format: args.format, scale: args.scale })).images;
           } catch (e2) {
-            if (!transient(e2) || !scaleDropEligible) rethrowWith(e1, 'An immediate retry failed the same way.');
+            // A retry failing in a DIFFERENT class carries its own diagnosis and advice
+            // (a 429's retryAfterSec, an upstream 200-body reason, a timeout) - it is the
+            // fresher, more actionable error and must never be masked behind e1 with a
+            // false 'failed the same way' (wave finding).
+            if (!transient(e2)) rethrowWith(e2, '(the first attempt failed on a transport drop)');
+            if (!scaleDropEligible) rethrowWith(e1, 'An immediate retry failed the same way.');
             try {
               images = (await api.getImages(parsed.value, [id], { format: args.format, scale: fallbackScale })).images;
               deliveredScale = fallbackScale;
-            } catch {
+            } catch (e3) {
+              if (!transient(e3)) rethrowWith(e3, '(two prior attempts failed on transport drops)');
               rethrowWith(e1, `An immediate retry and a scale-${fallbackScale} fallback both failed the same way.`);
             }
           }
