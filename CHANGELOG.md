@@ -3,6 +3,95 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.28.0
+
+Two threads. First, a live re-check of 0.27.0's alignment work found the one interplay it had
+missed: the justify-content demote's free-space evidence did not see the spacer folds shipped in
+the same release, so a spacer-encoded inset could read as distributable slack and mask a real
+alignment defect behind an encoding demote - fixed, with the fold now carried into the evidence
+and named in the row's caveat. Second, the cross-axis ceiling documented in 0.27.0 ("cross-axis
+alignment is not compared") is replaced by a measured comparison: a design that encodes a cross
+inset by centering a content-height child no longer goes red against a DOM that encodes the same
+inset as a stretched wrapper - and proving that honestly required the DOM snapshot to stop
+conflating "paints nothing" with "paints something the extractor cannot read", which is a wire
+format change.
+
+**Snapshot schema v7 - re-capture required.** A v6 (or older) snapshot is rejected with an
+actionable remedy: the compare tools return a `snapshot_schema` warning row, while `suggest_pairs`
+returns an actionable error. On the loader path an open page keeps serving its cached old extractor,
+so use `get_layout_spec {include_extractor:true, extractor_mode:"inline"}`, or reload the page
+before requesting the loader again. The v7 DOM-snapshot contract enforced by three tools changed
+with it (`compare_node_to_dom`, `compare_dom_to_dom`, `suggest_pairs`); `get_layout_spec` is the
+surface that supplies the extractor. A client that never re-lists tools keeps reading the 0.27.0
+entries; reconnect after upgrading.
+
+### Added
+
+**Cross-axis encoding demote (`offset-cross`).** The design centers a content-height child to
+encode a cross inset; the DOM stretches an unpainted wrapper and places the content one level
+deeper. The boxes genuinely differ, the render matches, and the row was a standing false red on
+real design systems. The fail now demotes ONLY on measured reconciliation, fail-closed on every
+term: the design child symmetric in the design content box; the DOM child stretching the
+container's cross content box; visually inert (no background/gradient/image/borders/shadow, full
+opacity, no `paintUnknown`); a wrapper whose captured children are not truncated and have no
+out-of-flow or translucent band member; and the interior band symmetric AND re-creating the design inset measured BOX EDGE to BOX EDGE - the interior's absolute lead and
+trail from the DOM root box must equal the child's from the design root box, so root cross
+padding/border is part of the measurement and tolerance budgets cannot stack. The demoted row
+keeps both numbers, prints the number it MEASURED one level down, and is excluded from
+`fix_plan`. Everything else stays a hard fail: full-bleed children, lost or chrome-shifted
+insets, pinned or off-inset interiors. A chrome-encoded pixel-perfect render (root padding plus
+interior placement summing to the design position) demotes instead of staying red. The pair's
+own `size.h` stays red by design - a box-height demote would delete the only witness of real
+height defects; the note names the deeper check (pair the design node against the inner DOM
+element). docs/coverage.md carries the exact contract and the remaining ceilings
+(`visibility:hidden` is not on the wire).
+
+**`styles.paintUnknown` (v7): a declared paint the snapshot cannot classify.** CSS Color 4
+backgrounds (`oklch()`/`lab()`/`color()`/`color-mix()` serialize outside the extractor's rgb()
+grammar), a visibly-colored outline, generated `::before`/`::after` content with a classified
+background, image, shadow, or border, or a filter on the element now sets a flag instead of arriving
+byte-identical to transparent. Color tests are alpha-aware end to end: `outline: 2px solid transparent` (the
+`.outline-none` / forced-colors idiom), transparent pseudo-element borders and shadows, and the
+no-op `blur(0px)` do NOT flag. Consumed in three places: the cross-axis demote and the
+style-anchor descent refuse to treat a flagged box as invisible, and the fig-dom `fill` row
+stops asserting "the DOM element has no background" over a paint the server now knows exists -
+that row is a gating `review` ("color equality was not checked on either side; verify
+visually"), the same status the dom-dom side already used for this asymmetry.
+
+**`outOfFlow` preserves heuristic evidence of rendered descendants (v7).** An empty zero-area
+out-of-flow leaf is a plain skip - but a zero-area host whose visible, non-zero-area or
+content-bearing descendants may render keeps the count. At the capture depth cut, a box with a
+direct out-of-flow child now carries the counter instead of reading as a bare leaf.
+
+### Fixed
+
+**Folded spacer insets no longer read as distributable slack.** 0.27.0 shipped two alignment
+features whose interplay had a blind spot: the free-space evidence behind the justify-content
+demote did not subtract folded spacer extents and their item-spacing, so a design edge encoded
+as a spacer could look like slack and let a DOM distributing onto a pinned edge demote. The
+evidence now sees the folds (extents AND gaps); a folded GROW spacer - whose extent IS the
+distributed space - is excluded from the inset side via the projected `grow` field;
+the `justify-content: space-between` end-edge allowance is held to the degenerate
+single-child case measured on the PRE-fold population; and when a demote survives over a folded edge, the fold is named in
+the row's `caveat` with the numbers it explains.
+
+**A demoted row no longer carries an edit warning.** The gutter-residual pass plants a `caveat`
+("this delta is real layout") on a failing row; when a later pass demotes that row as an
+encoding difference, the caveat now leaves with the fix_plan channel - a soft row carries
+neither an edit address nor an edit warning, and its note is built fresh instead of
+concatenating the two contradicting sentences.
+
+**Schema-mismatch remedies name a road that works.** The snapshot-version rows previously said
+"re-run the extractor", which on the loader path re-serves the cached old script forever.
+
+### Changed
+
+- The alignment row in docs/coverage.md replaces its cross-axis ceiling sentence with the
+  demote contract above; the spacer-inset row's slack interaction is restated.
+- The inline extractor script grew with the v7 capture work; the loader thunk is unchanged and
+  stays the recommended path (the live size is stated where it matters: the README cost sentence
+  and the get_layout_spec response fence).
+
 ## 0.27.0
 
 Nine lines from one long feedback pass: a second live design-QA run (three full cycles on a
