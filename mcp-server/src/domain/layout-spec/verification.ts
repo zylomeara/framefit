@@ -39,7 +39,7 @@ export function rankOf(b: BlockingItem): number {
     case 'uncovered_region': return b.count !== undefined ? 7 : 8;
     case 'unchecked_spacing': return 8;
     case 'viewport':
-    case 'truncated_text': return 9; // deliberate residual: N≥2 carries a dominant_blocker; a lone N=1 is only dropped by the cap when >40 higher-priority items precede it
+    case 'truncated_text': return 9; // only a valid viewport aggregate leaves these at 9; non-aggregated viewport rows are promoted contextually below
     case 'skip': return 10;
     default: return 8;
   }
@@ -620,20 +620,35 @@ export function buildVerification(pairs: PairResult[], opts: {
 
   const complete = !anyFail && !anyDemoted && !anyUnchecked && !anyHole && !anyReview && frameComplete && !scopeIncomplete;
 
+  // (c) batch dominant: ≥2 checked pairs silenced by ONE pure viewport cause → one loud aggregate
+  // instead of N quiet lines. Numbers — ONLY from the structural geometry fields; other geometry causes
+  // carry no fields unless they accompany a viewport mismatch, in which case the row is not viewport-only.
+  const viewportEntries = pairs.flatMap((pair) => pair.rows
+    .filter((r) => r.prop === 'geometry' && r.status === 'unchecked'
+      && typeof r.figma === 'number' && typeof r.dom === 'number')
+    .map((row) => ({ pair, row })));
+  const vpRows = viewportEntries.map(({ row }) => row);
+  const firstVp = vpRows[0];
+  const pureViewport = (r: DiffRow): boolean => (r.note ?? '').startsWith('viewport ');
+  const oneViewportCause = firstVp !== undefined && viewportEntries.length >= 2
+    && new Set(viewportEntries.map(({ pair }) => pair)).size === viewportEntries.length
+    && viewportEntries.every(({ pair, row }) => pureViewport(row)
+      && row.figma === firstVp.figma && row.dom === firstVp.dom
+      && pair.summary.fail === 0 && pair.summary.demoted === 0 && pair.summary.unchecked === 1
+      && coverageHoleRows(pair.rows).length === 0 && !pair.rows.some(gatingReviewRow));
+  const promoteViewportRows = vpRows.length > 0 && !oneViewportCause;
+
   // Stable sort (ES2019): equal rank preserves appearance order (per-pair adjacency within a rank). BEFORE
   // the cap — so the least valuable tail is cut, and pretty-slice(15) in report.ts inherits the same priority
-  // without its own logic.
-  blocking.sort((a, b) => rankOf(a) - rankOf(b));
+  // without its own logic. Viewport rows without a valid aggregate share rank 8 with singleton coverage gaps;
+  // their earlier pair insertion keeps remediation visible without displacing extractor and other apparatus gates.
+  blocking.sort((a, b) =>
+    (promoteViewportRows && a.kind === 'viewport' ? 8 : rankOf(a))
+    - (promoteViewportRows && b.kind === 'viewport' ? 8 : rankOf(b)));
   const capped = Math.max(0, blocking.length - BLOCKING_CAP);
 
-  // (c) batch dominant: ≥2 checked pairs silenced by ONE
-  // viewport cause → one loud aggregate instead of N quiet lines. Numbers — ONLY from the structural
-  // fields of the geometry row; other geometry causes carry no fields → they don't count.
-  const vpRows = pairs.flatMap((p) => p.rows.filter((r) =>
-    r.prop === 'geometry' && r.status === 'unchecked'
-    && typeof r.figma === 'number' && typeof r.dom === 'number'));
-  const dominant_blocker = vpRows.length >= 2
-    ? { kind: 'viewport' as const, pairs: vpRows.length, window: vpRows[0].dom as number, frame: vpRows[0].figma as number }
+  const dominant_blocker = oneViewportCause
+    ? { kind: 'viewport' as const, pairs: vpRows.length, window: firstVp.dom as number, frame: firstVp.figma as number }
     : undefined;
 
   // batch-2 item 4: ONE aggregated deduped note for the ceiling tails, pushed to the OUTER

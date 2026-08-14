@@ -1988,6 +1988,30 @@ describe('compare_node_to_dom tool', () => {
       expect(out.preflight).toContain('WINDOW WIDTH: 2 of 2'); // effPreflight replaces the generic preflight slot
     });
 
+    it('mixed window widths keep individual blockers without a false aggregate banner', async () => {
+      const getNodesRaw = vi.fn(async () => ({
+        nodes: { '1:1': { document: cardA }, '1:2': { document: cardB }, '9:9': { document: wideFrame } },
+      }));
+      const run = harness({ getNodesRaw });
+      const out = JSON.parse((await run({
+        file: 'abc',
+        pairs: [
+          { node_id: '1:1', dom: narrowDom('.a'), label: 'A' },
+          { node_id: '1:2', dom: { ...narrowDom('.b'), innerWidth: 1200 }, label: 'B' },
+        ],
+        frame_node_id: '9:9', tolerance_px: 1,
+      })).content[0].text);
+
+      expect(out.verification).not.toHaveProperty('dominant_blocker');
+      expect(out).not.toHaveProperty('preflight');
+      expect(out.report_markdown).not.toContain('WINDOW WIDTH');
+      const geometryRows = out.pairs.flatMap((p: any) => p.rows.filter((r: any) => r.prop === 'geometry'));
+      expect(geometryRows).toHaveLength(2);
+      expect(geometryRows.map((r: any) => r.status)).toEqual(['unchecked', 'unchecked']);
+      expect(out.verification.blocking.filter((b: any) => b.action === 'fix_viewport')).toHaveLength(2);
+      expect(out.verification.complete).toBe(false);
+    });
+
     // A viewport-ergonomics edge case: a byte-lock on the seam between the serialize closure
     // (the clampToBudget measurement, :541) and the actual return (:546) — BOTH must read effPreflight,
     // NOT the old short `preflight`. With 3 narrow pairs at the default budget (40000) the banner doesn't even
