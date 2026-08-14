@@ -437,8 +437,10 @@ export interface VerificationReceipt {
   // (c) batch dominance: ≥2 checked pairs
   // muted by ONE viewport cause → one loud aggregate instead of N quiet unchecked rows.
   // The numbers come ONLY from the structural fields of the geometry row; other geometry causes (scroll/
-  // rotated/transform/rect≈0) carry no fields → are not counted. window/frame are representative of the FIRST
-  // such pair (a shared cause — not an average/maximum). Omitted (not false/[]) when pairs <2.
+  // rotated/transform/rect≈0) do not qualify, even when they accompany a viewport mismatch. Emitted only when
+  // ≥2 viewport-only rows share the exact same window/frame tuple and those pairs have no other gating cause;
+  // non-aggregated viewport rows remain individual blockers and follow the ordinary priority/cap accounting.
+  // Omitted otherwise (not false/[]).
   dominant_blocker?: { kind: 'viewport'; pairs: number; window: number; frame: number };
   // The call's profile (single source — the tool's parsed arg) across all three modes —
   // the after-the-fact audit "the final was non-layout" is checked against this field, not against prose. Omitted only

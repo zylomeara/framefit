@@ -76,7 +76,10 @@ function sideGateRows(snap: DomSnapshot | undefined, note: string | undefined, r
   }
   const ok = snap as DomSnapshotOk | undefined;
   if (ok?.schema !== undefined && ok.schema !== DOM_SNAPSHOT_SCHEMA_VERSION) {
-    return [{ prop: 'snapshot_schema', status: 'warn', figma: DOM_SNAPSHOT_SCHEMA_VERSION, dom: ok.schema,
+    // In dom-dom rows figma/dom are the serialized reference/candidate slots. The server version
+    // is neither side: keep it in the note instead of fabricating an opposite-side measurement.
+    return [{ prop: 'snapshot_schema', status: 'warn',
+      ...(role === 'reference' ? { figma: ok.schema } : { dom: ok.schema }),
       note: `the ${role.toUpperCase()} snapshot version does not match the server — re-capture the ${role} with a FRESH script (get_layout_spec {include_extractor:true, extractor_mode:"inline"}, or reload the page first - an open page keeps serving its cached old extractor)` }];
   }
   return [];
@@ -97,7 +100,8 @@ export function registerCompareDomToDomTool(server: McpServer, deps: ToolDeps): 
       + 'ambiguous the gap/offset rows are honestly skipped with a visible note. verification.complete aggregates '
       + 'ALL pairs and is the done-gate: never claim the states match while it is false or blocking[] is non-empty. '
       + 'Primary uses: skeleton-vs-loaded (content must not jump on swap), before/after an edit, '
-      + 'breakpoint-vs-breakpoint (unequal capture widths become one loud viewport row), hover/default.',
+      + 'breakpoint-vs-breakpoint (one shared pure width mismatch becomes an aggregate; mixed or composite '
+      + 'cases keep individual fix_viewport blockers), hover/default.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -110,18 +114,26 @@ export function registerCompareDomToDomTool(server: McpServer, deps: ToolDeps): 
         const results: PairResult[] = args.pairs.map((p): PairResult => {
           const ref = resolveSide(p.reference, 'reference', deps);
           const cand = resolveSide(p.candidate, 'candidate', deps);
-          const selector = p.candidate.dom_ref?.selector ?? (cand.snap as { selector?: string } | undefined)?.selector;
+          const refSelector = p.reference.dom_ref?.selector ?? (ref.snap as { selector?: string } | undefined)?.selector;
+          const candSelector = p.candidate.dom_ref?.selector ?? (cand.snap as { selector?: string } | undefined)?.selector;
+          // PairResult has one selector slot for two states. It is truthful only when both captures use
+          // the same selector; otherwise the caller-provided label remains the pair's canonical address.
+          const selector = refSelector === candSelector ? refSelector : undefined;
           // Label-based identity: there is no Figma node here - the label IS node_id, so every
           // consumer of PairResult (verification blocking, report, fix-plan-less rows) addresses
           // the pair by the caller's own name.
-          const base = { node_id: p.label, label: p.label, ...(selector ? { selector } : {}) };
-          const gateRows = [...sideGateRows(ref.snap, ref.note, 'reference'), ...sideGateRows(cand.snap, cand.note, 'candidate')];
+          const identity = { node_id: p.label, label: p.label };
+          const refGateRows = sideGateRows(ref.snap, ref.note, 'reference');
+          const candGateRows = sideGateRows(cand.snap, cand.note, 'candidate');
+          const gateRows = [...refGateRows, ...candGateRows];
           if (gateRows.length > 0) {
-            return { ...base, rows: gateRows, summary: summarize(gateRows), coverage: deriveCoverage(gateRows) };
+            return { ...identity, ...(selector ? { selector } : {}), rows: gateRows,
+              summary: summarize(gateRows), coverage: deriveCoverage(gateRows) };
           }
           const rows = diffDomPair(ref.snap as DomSnapshotOk, cand.snap as DomSnapshotOk,
             { tolerancePx, ...(args.max_depth !== undefined ? { maxDepth: args.max_depth } : {}) });
-          return { ...base, rows, summary: summarize(rows), coverage: deriveCoverage(rows) };
+          return { ...identity, ...(selector ? { selector } : {}), rows,
+            summary: summarize(rows), coverage: deriveCoverage(rows) };
         });
 
         // No frame and no frameRequested -> 'pairs' scope: the receipt demands nothing beyond the

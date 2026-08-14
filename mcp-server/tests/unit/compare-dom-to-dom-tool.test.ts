@@ -85,13 +85,81 @@ describe('compare_dom_to_dom tool', () => {
     expect(out.verification.blocking).toEqual([]);
   });
 
-  it('schema mismatch on ONE side -> the row names that side, the other side is not blamed', async () => {
+  it('schema mismatch rows attribute each stale version to its actual side and keep the gate red', async () => {
     const call = harness();
-    const stale = { ...state(366), schema: 5 };
-    const out = parse(await call({ pairs: [{ label: 'p', reference: { dom: state(366) }, candidate: { dom: stale } }] }));
-    const row = out.pairs[0].rows.find((r: any) => r.prop === 'snapshot_schema');
-    expect(row.note).toMatch(/CANDIDATE/);
-    expect(row.note).not.toMatch(/REFERENCE/);
+    const staleReference = { ...state(366), schema: 5 };
+    const staleCandidate = { ...state(366), schema: 6 };
+    const out = parse(await call({ pairs: [{ label: 'p',
+      reference: { dom: staleReference }, candidate: { dom: staleCandidate } }] }));
+    const rows = out.pairs[0].rows.filter((r: any) => r.prop === 'snapshot_schema');
+    const reference = rows.find((r: any) => r.note.includes('REFERENCE'));
+    const candidate = rows.find((r: any) => r.note.includes('CANDIDATE'));
+
+    expect(reference).toMatchObject({ figma: 5, status: 'warn' });
+    expect(reference).not.toHaveProperty('dom');
+    expect(reference).not.toHaveProperty('delta');
+    expect(reference.note).toMatch(/server.*re-capture/s);
+    expect(candidate).toMatchObject({ dom: 6, status: 'warn' });
+    expect(candidate).not.toHaveProperty('figma');
+    expect(candidate).not.toHaveProperty('delta');
+    expect(candidate.note).toMatch(/server.*re-capture/s);
+    expect(out.report_markdown).toContain('reference 5 / candidate —');
+    expect(out.report_markdown).toContain('reference — / candidate 6');
+    expect(out.verification.complete).toBe(false);
+    expect(out.verification.blocking.filter((b: any) => b.action === 're_extract_dom')).toHaveLength(2);
+  });
+
+  it('omits the overloaded pair selector whenever reference and candidate selectors differ', async () => {
+    const call = harness();
+    const reference = { ...state(366), selector: '.reference' };
+    const candidate = { ...state(366), selector: '.candidate' };
+    const expectLabelOnly = (out: any) => {
+      expect(out.pairs[0]).not.toHaveProperty('selector');
+      for (const blocker of out.verification.blocking) expect(blocker).not.toHaveProperty('selector');
+      expect(out.report_markdown).not.toContain('(.reference)');
+      expect(out.report_markdown).not.toContain('(.candidate)');
+    };
+
+    const cases = [
+      parse(await call({ pairs: [{ label: 'schema-reference',
+        reference: { dom: { ...reference, schema: 5 } }, candidate: { dom: candidate } }] })),
+      parse(await call({ pairs: [{ label: 'schema-candidate',
+        reference: { dom: reference }, candidate: { dom: { ...candidate, schema: 5 } } }] })),
+      parse(await call({ pairs: [{ label: 'ref-reference',
+        reference: { dom_ref: { ref: 'missing', selector: '.reference' } }, candidate: { dom: candidate } }] })),
+      parse(await call({ pairs: [{ label: 'preflight-reference',
+        reference: { dom: { ...reference, transformed: true } }, candidate: { dom: candidate } }] })),
+      parse(await call({ pairs: [{ label: 'radius-reference', reference: { dom: { ...reference,
+        styles: { ...reference.styles, borderRadiusUncomparable: true } } }, candidate: { dom: candidate } }] })),
+      parse(await call({ pairs: [{ label: 'border-reference', reference: { dom: { ...reference,
+        borderColors: { ...reference.borderColors, right: '#111111' } } }, candidate: { dom: candidate } }] })),
+      parse(await call({ pairs: [{ label: 'fill-reference', reference: { dom: { ...reference,
+        styles: { ...reference.styles, backgroundColor: 'oklch(0.5 0.1 10)' } } }, candidate: { dom: candidate } }] })),
+      parse(await call({ pairs: [{ label: 'fonts-reference',
+        reference: { dom: { ...reference, fontsLoaded: false } }, candidate: { dom: candidate } }] })),
+    ];
+    for (const out of cases) expectLabelOnly(out);
+
+    const diagonalChildren = reference.children.map((child, i) => ({
+      ...child,
+      rect: { ...child.rect, x: child.rect.x + i * 180, w: 100 },
+    }));
+    const axis = parse(await call({ pairs: [{ label: 'axis-reference',
+      reference: { dom: { ...reference, children: diagonalChildren } },
+      candidate: { dom: { ...candidate, children: diagonalChildren } } }] }));
+    expect(axis.verification.blocking).toContainEqual(expect.objectContaining({ action: 'resolve_skip' }));
+    expectLabelOnly(axis);
+  });
+
+  it('keeps the pair selector when both captures use the same selector', async () => {
+    const call = harness();
+    const reference = { ...state(366), selector: '.shared', schema: 5 };
+    const candidate = { ...state(366), selector: '.shared' };
+    const out = parse(await call({ pairs: [{ label: 'same-selector',
+      reference: { dom: reference }, candidate: { dom: candidate } }] }));
+
+    expect(out.pairs[0].selector).toBe('.shared');
+    expect(out.verification.blocking[0].selector).toBe('.shared');
   });
 
   it('dom_ref without a snapshot store -> per-side honest error naming the side (stdio path)', async () => {

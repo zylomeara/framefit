@@ -327,6 +327,30 @@ describe('(c) dominant_blocker — viewport aggregate of ≥2 pairs', () => {
     expect(v.dominant_blocker).toEqual({ kind: 'viewport', pairs: 3, window: 1429, frame: 1920 });
   });
 
+  it('matching viewport tuples with additional geometry causes do not claim one reason', () => {
+    const viewport = vpRow(1429);
+    const v = buildVerification([
+      pair('A', [{ ...viewport, note: `scroll≠0 — reset the container scroll; ${viewport.note}` }]),
+      pair('B', [{ ...viewport, note: `transform≠none — wait for the animation to finish; ${viewport.note}` }]),
+    ], { depthLevels: 4 });
+    expect(v).not.toHaveProperty('dominant_blocker');
+    expect(v.blocking).toHaveLength(2);
+    expect(v.blocking[0].detail).toContain('scroll≠0');
+    expect(v.blocking[1].detail).toContain('transform≠none');
+    expect(v.complete).toBe(false);
+  });
+
+  it('matching pure viewport rows with secondary blockers do not claim one reason', () => {
+    const secondary: DiffRow = { prop: 'corner-radius', status: 'unchecked', note: 'verify the radius visually' };
+    const v = buildVerification([
+      pair('A', [vpRow(1429), secondary]), pair('B', [vpRow(1429), secondary]),
+    ], { depthLevels: 4 });
+    expect(v).not.toHaveProperty('dominant_blocker');
+    expect(v.blocking).toHaveLength(4);
+    expect(v.blocking.filter((b) => b.action === 'fix_viewport')).toHaveLength(2);
+    expect(v.blocking.filter((b) => b.action === 'resolve_skip')).toHaveLength(2);
+  });
+
   it('1 viewport pair → dominant_blocker ABSENT (serialization lock: the key is not in JSON, not merely undefined)', () => {
     const v = buildVerification([pair('A', [vpRow(1429)])], { depthLevels: 4 });
     expect(v.dominant_blocker).toBeUndefined();
@@ -350,9 +374,64 @@ describe('(c) dominant_blocker — viewport aggregate of ≥2 pairs', () => {
     expect(v.dominant_blocker).toBeUndefined();
   });
 
-  it('mixed-window: 2 pairs with DIFFERENT innerWidth (1429, 1200) → window is taken from the FIRST pair', () => {
+  it('mixed windows suppress the singular aggregate while both viewport blockers remain', () => {
     const v = buildVerification([pair('A', [vpRow(1429)]), pair('B', [vpRow(1200)])], { depthLevels: 4 });
-    expect(v.dominant_blocker).toMatchObject({ kind: 'viewport', pairs: 2, window: 1429, frame: 1920 });
+    expect(v).not.toHaveProperty('dominant_blocker');
+    expect(JSON.stringify(v)).not.toContain('dominant_blocker');
+    expect(v.complete).toBe(false);
+    expect(v.blocking.filter((b) => b.action === 'fix_viewport')).toHaveLength(2);
+  });
+
+  it('mixed frames suppress the singular aggregate even when the window is shared', () => {
+    const v = buildVerification([pair('A', [vpRow(1200, 1920)]), pair('B', [vpRow(1200, 1440)])], { depthLevels: 4 });
+    expect(v).not.toHaveProperty('dominant_blocker');
+    expect(JSON.stringify(v)).not.toContain('dominant_blocker');
+    expect(v.complete).toBe(false);
+    expect(v.blocking.filter((b) => b.action === 'fix_viewport')).toHaveLength(2);
+  });
+
+  it('one outlier suppresses subgroup aggregation instead of selecting the repeated tuple', () => {
+    const v = buildVerification([
+      pair('A', [vpRow(1429)]), pair('B', [vpRow(1429)]), pair('C', [vpRow(1200, 1440)]),
+    ], { depthLevels: 4 });
+    expect(v).not.toHaveProperty('dominant_blocker');
+    expect(JSON.stringify(v)).not.toContain('dominant_blocker');
+    expect(v.complete).toBe(false);
+    expect(v.blocking.filter((b) => b.action === 'fix_viewport')).toHaveLength(3);
+  });
+
+  it('mixed viewport blockers survive equal-rank cap pressure from singleton uncovered regions', () => {
+    const regions = [sc('A'), sc('B'), ...Array.from({ length: 40 }, (_, i) => sc(`U${i}`))];
+    const v = buildVerification([
+      pair('A', [vpRow(1429)]), pair('B', [vpRow(1200)]),
+    ], { frame: frame(regions), depthLevels: 4 });
+    expect(v).not.toHaveProperty('dominant_blocker');
+    expect(v.blocking).toHaveLength(40);
+    expect(v.blocking_capped).toBe(2);
+    expect(v.blocking.filter((b) => b.action === 'fix_viewport')).toHaveLength(2);
+    expect(v.complete).toBe(false);
+  });
+
+  it('a singleton composite viewport blocker survives the receipt cap', () => {
+    const viewport = vpRow(1429);
+    const composite = { ...viewport, note: `scroll≠0 — reset the container scroll; ${viewport.note}` };
+    const regions = [sc('A'), ...Array.from({ length: 40 }, (_, i) => sc(`U${i}`))];
+    const v = buildVerification([pair('A', [composite])], { frame: frame(regions), depthLevels: 4 });
+    expect(v).not.toHaveProperty('dominant_blocker');
+    expect(v.blocking).toHaveLength(40);
+    expect(v.blocking_capped).toBe(1);
+    expect(v.blocking.filter((b) => b.action === 'fix_viewport')).toHaveLength(1);
+  });
+
+  it('mixed viewport cap survival never displaces higher-priority extractor blockers', () => {
+    const extractor: DiffRow = { prop: 'extractor_outdated', status: 'warn', note: 'update the extractor' };
+    const pairs = Array.from({ length: 20 }, (_, i) => pair(`P${i}`, [extractor, vpRow(1200 + i)]));
+    const v = buildVerification(pairs, { depthLevels: 4, matchProfile: 'layout' });
+    expect(v.blocking).toHaveLength(40);
+    expect(v.blocking_capped).toBe(1);
+    expect(v.blocking[0].kind).toBe('scope_incomplete');
+    expect(v.blocking.filter((b) => b.action === 'update_extractor')).toHaveLength(20);
+    expect(v.blocking.filter((b) => b.action === 'fix_viewport')).toHaveLength(19);
   });
 });
 
