@@ -354,7 +354,8 @@ The response to exactly that request, abridged (`/* ... */` marks an elided tail
   ],
   "summary": { "pass": 26, "fail": 2, "warn": 0, "skip": 2, "info": 0, "demoted": 0, "unchecked": 0, "review": 0 },
   "verification": { /* see step 5 */ },
-  /* a "hydration" receipt follows, one entry per pair, in the same shape as get_layout_spec's */
+  /* successful pairs add a "hydration" receipt in get_layout_spec's shape; compare receipts also
+     carry pair_index, the zero-based position in the submitted pairs array */
   "not_covered_by_tool": ["icon-glyph (shape/path geometry - verify visually or by screenshot crop)", "icon-font/mask-image icons (the color is visible but not compared)"],
   "report_markdown": "<verification report markdown, 1934 chars - elided>"
 }
@@ -468,10 +469,15 @@ including fails.
   meaning. If a description below and your own run disagree, the run is right.
 - The receipt is budget-honest: if the blocking list is truncated, `blocking_capped` says how many
   items were cut and `complete` stays `false` — nothing green is ever produced by truncation. The
-  same holds for whole pairs dropped by the response budget: `omitted_pairs` counts them,
-  `omitted_pair_ids` names them, a `verification.notes` line counts those carrying FAILing rows
-  when any do (no FAIL clause in the note means none were), and a dropped fail keeps the verdict
-  red — re-run the named pairs in a smaller call to see their rows.
+  same aggregate-verdict rule holds for whole pairs dropped by the response budget: every pair is
+  processed before response clamping, even when an early gate means no visual metric ran.
+  `omitted_pairs`
+  counts them, `omitted_pair_ids` gives display labels that may repeat, and
+  `omitted_pair_indices` gives positionally aligned zero-based indices into the submitted `pairs`
+  array. A `verification.notes` line counts those carrying FAILing rows when any do (no FAIL clause
+  means none were), and a dropped fail keeps the verdict red — replay exact inputs with
+  `omitted_pair_indices.map(i => originalArgs.pairs[i])` in a smaller call. Clean omitted pairs are
+  already included in the aggregate verdict and may leave `complete:true` intact.
 
 Work the loop: execute the blocking actions (add pairs, raise depth, fix the viewport…), re-run
 the compare, repeat until `complete: true`.

@@ -459,6 +459,7 @@ export interface VerificationReceipt {
 // per-pair slice of the DOM capture needed by the audit (internal — does not go into the pair output).
 export interface CaptureInfo {
   ref?: string;                // the pair's dom_ref.ref; undefined = inline dom (the capture is unprovable — cannot compare)
+  snapshotKey?: string;        // per-call identity of the exact stored dom_ref snapshot
   rect?: SpecRect;             // rect of the snapshot root (getBoundingClientRect, border-box)
   borders?: Edges;             // computed border widths of the root — they widen tolerance on the facing side
   geometryUnchecked: boolean;  // the pair has a geometry:unchecked row (env gate: rotated/scroll/transform)

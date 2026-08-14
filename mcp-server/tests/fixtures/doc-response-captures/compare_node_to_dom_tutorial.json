@@ -426,7 +426,8 @@
         "depth": 0,
         "breadth": 0,
         "budget": 0
-      }
+      },
+      "pair_index": 0
     },
     {
       "node_id": "12:341",
@@ -437,7 +438,8 @@
         "depth": 0,
         "breadth": 0,
         "budget": 0
-      }
+      },
+      "pair_index": 1
     },
     {
       "node_id": "12:344",
@@ -448,7 +450,8 @@
         "depth": 0,
         "breadth": 0,
         "budget": 0
-      }
+      },
+      "pair_index": 2
     }
   ],
   "not_covered_by_tool": [

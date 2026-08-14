@@ -390,13 +390,20 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         const frameRes = await api.getFrameRaw(parsed.value, ids, reqDepth);
         const res = frameRes.raw;
         const effDepth = frameRes.effectiveMaxDepth;
-        const hydration: HydrationReceipt[] = [];
+        const hydration: Array<HydrationReceipt | undefined> = Array(args.pairs.length);
         // The DOM slice of each pair, collected IN PARALLEL with the diff — needed by
         // auditContainer (buildVerification below) for the between-children spacing audit of partial containers,
-        // WITHOUT a pair on the container itself. The key is the pair's normalized node_id (id below, the same key auditContainer looks up
-        // via norm(pairedId)). Pairs that fell BEFORE diffPair (resolveError/node-not-found/schema-mismatch)
-        // do NOT write here — the audit itself rejects a missing entry.
+        // WITHOUT a pair on the container itself. Duplicate Figma ids are ambiguous for this
+        // id-keyed audit when they carry distinct captures; exact repeats of one dom_ref are the same
+        // capture and remain usable. Distinct duplicates delete the capture rather than letting Promise
+        // completion order pick a winner.
         const captures = new Map<string, CaptureInfo>();
+        const duplicateCaptureIds = new Set<string>();
+        // Canonical identity is the stored snapshot object, not the caller's selector/index spelling:
+        // both addressing forms can resolve to the same batch entry. Keep identities per ref so an
+        // artificial store returning one object under two batches cannot merge their evidence.
+        const snapshotKeysByRef = new Map<string, WeakMap<object, string>>();
+        let snapshotKeySequence = 0;
 
         // Enrichment that did not arrive, and how long it cost before it did not arrive. Emitted as
         // `degraded_stages` only when non-empty (see the variables fetch below).
@@ -796,7 +803,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           // when the DOM snapshot was captured deeper, and collectFigTexts stops BEFORE
           // collectDomTexts (a childrenTruncated branch never actually gets "sverified deeper").
           const spec = buildLayoutSpec(entry.document, { components: entry.components, setNames, resolveColorToken, styleNames: (sid: string) => entry.styles?.[sid]?.name }, { maxDepth: effDepth });
-          hydration.push(buildHydrationReceipt(id, spec, frameRes));
+          hydration[i] = { ...buildHydrationReceipt(id, spec, frameRes), pair_index: i };
           // source-hint: a FRESH PairAttribution for EACH pair — cross-pair leakage
           // is impossible (one object across all pairs would give pair-N's source from pair-1's classes).
           const attributionOut: PairAttribution = {};
@@ -834,11 +841,36 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           // the OK path reaches here (the early returns above don't write captures). rect/borders ONLY if
           // domSnap is really ok (a status:'ok' snapshot; a failed union member has no .rect — okSnap.rect is then
           // undefined at runtime despite the DomSnapshotOk type, and the gate below cuts this branch honestly).
-          captures.set(id, {
-            ...(p.dom_ref?.ref ? { ref: p.dom_ref.ref } : {}),
+          let snapshotKey: string | undefined;
+          if (p.dom_ref) {
+            let keys = snapshotKeysByRef.get(p.dom_ref.ref);
+            if (!keys) {
+              keys = new WeakMap<object, string>();
+              snapshotKeysByRef.set(p.dom_ref.ref, keys);
+            }
+            snapshotKey = keys.get(okSnap);
+            if (snapshotKey === undefined) {
+              snapshotKey = JSON.stringify([p.dom_ref.ref, snapshotKeySequence++]);
+              keys.set(okSnap, snapshotKey);
+            }
+          }
+          const capture: CaptureInfo = {
+            ...(p.dom_ref ? { ref: p.dom_ref.ref, snapshotKey } : {}),
             ...(okSnap.rect !== undefined ? { rect: okSnap.rect, borders: okSnap.borders } : {}),
             geometryUnchecked: rows.some((r) => r.prop === 'geometry' && r.status === 'unchecked'),
-          });
+          };
+          const priorCapture = captures.get(id);
+          if (duplicateCaptureIds.has(id)) {
+            // already proved ambiguous by an earlier distinct capture
+          } else if (priorCapture?.snapshotKey !== undefined
+            && priorCapture.snapshotKey === capture.snapshotKey) {
+            // Exact repeats of one uploaded snapshot are one capture, not competing evidence.
+          } else if (priorCapture) {
+            captures.delete(id);
+            duplicateCaptureIds.add(id);
+          } else {
+            captures.set(id, capture);
+          }
           // source-hint: assemble code addresses from the raw material + root from componentHints.
           const source = buildPairSource(attributionOut, okSnap.componentHints?.classList);
           // fix-plan: the edit plan from PRE-condense rows (fail refs intact; condense touches
@@ -921,11 +953,11 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
 
 function buildOutput(file: string, tolerancePx: number, pairs: PairResult[],
   frame: { node_id: string; width?: number } | undefined, allResults: PairResult[], preflight: string | undefined,
-  depthLevels: number, verification: VerificationReceipt, hydration: HydrationReceipt[],
+  depthLevels: number, verification: VerificationReceipt, hydration: Array<HydrationReceipt | undefined>,
   degradedStages: DegradedStage[] = [], fixPlanStripped = false): Record<string, unknown> {
   const summary: PairSummary = { pass: 0, fail: 0, warn: 0, skip: 0, info: 0, demoted: 0, unchecked: 0, review: 0 };
   for (const p of pairs) (Object.keys(summary) as (keyof PairSummary)[]).forEach((k) => { summary[k] += p.summary[k]; });
-  const keptHydration = hydration.filter((h) => pairs.some((p) => p.node_id === h.node_id));
+  const keptHydration = hydration.slice(0, pairs.length).filter((h): h is HydrationReceipt => h !== undefined);
   // budget drop trace: the trace depends on the clamp result, so it is computed HERE - inside
   // the serialize closure's measurement AND the final call - as a pure function of
   // (allResults, pairs). clampToBudget keeps a PREFIX and condense/strip are per-pair
@@ -942,6 +974,7 @@ function buildOutput(file: string, tolerancePx: number, pairs: PairResult[],
   const dropped = allResults.slice(pairs.length);
   const droppedFail = dropped.filter((p) => p.summary.fail > 0).length;
   const droppedIds = dropped.map((p) => p.label ?? p.node_id);
+  const droppedIndices = Array.from({ length: omitted }, (_, i) => pairs.length + i);
   const receipt = omitted > 0
     ? { ...verification, notes: [...(verification.notes ?? []), budgetDropNote(droppedIds, droppedFail)] }
     : verification;
@@ -957,7 +990,7 @@ function buildOutput(file: string, tolerancePx: number, pairs: PairResult[],
       ...(preflight ? { preflight } : {}), depthLevels, verification: receipt,
       ...(degradedStages.length ? { degradedStages } : {}),
     }),
-    ...(omitted ? { omitted_pairs: omitted, omitted_pair_ids: droppedIds } : {}),
+    ...(omitted ? { omitted_pairs: omitted, omitted_pair_ids: droppedIds, omitted_pair_indices: droppedIndices } : {}),
     // fix-plan: an honest flag — fix_plan was stripped from ALL pairs by the budget tier (BEFORE dropping
     // whole pairs). Can coexist with omitted_pairs (we stripped the plan AND still trimmed pairs).
     ...(fixPlanStripped ? { fix_plan_stripped: true } : {}),

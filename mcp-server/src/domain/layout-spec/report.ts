@@ -219,7 +219,7 @@ export function renderReport(input: {
     lines.push('');
   }
   if (input.omittedPairs) {
-    lines.push(`⚠️ ${input.omittedPairs} pairs didn't fit the response budget — call compare again for them`, '');
+    lines.push(`⚠️ ${input.omittedPairs} pairs didn't fit the response budget — they were processed and included in the aggregate verdict; use omitted_pair_indices to replay their detailed rows`, '');
   }
   const demTotal = total.demoted > 0 ? ` 🟰${total.demoted}` : '';
   const unchTotal = total.unchecked > 0 ? ` 👁${total.unchecked}` : '';
@@ -382,7 +382,7 @@ function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number, 
     // "inherent-only" over it was one of the drop shape's three false sentences. The action here
     // is a re-run of the omitted pairs, not a visual check.
     if ((omittedFailPairs ?? 0) > 0) {
-      out.push(`${omittedFailPairs} FAILing pair(s) were dropped by the response budget — NOT an inherent-only remainder: re-run the pairs in omitted_pair_ids (fewer pairs at a time).`);
+      out.push(`${omittedFailPairs} FAILing pair(s) were dropped by the response budget — NOT an inherent-only remainder: replay originalArgs.pairs[i] for each i in omitted_pair_indices.`);
       return out;
     }
     // Delivered ❌ rows are the remainder here - not inherent, and not this block's story:
