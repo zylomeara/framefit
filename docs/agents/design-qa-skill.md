@@ -238,8 +238,10 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
   budget when you want the interior measured): there is no automated action — verify those axes BY EYE
   (or add a container pair for a full green) — then you may proceed. EXCEPTION: when the response
   carries `omitted_pairs`, first check the budget-drop note in `verification.notes` — if it says
-  dropped pairs carry FAILing rows, this is NOT an inherent-only remainder: re-run the pairs listed
-  in `omitted_pair_ids` in a smaller compare call before proceeding.
+  dropped pairs carry FAILing rows, this is NOT an inherent-only remainder: replay
+  `originalArgs.pairs[i]` for each zero-based `i` in `omitted_pair_indices` before proceeding.
+  `omitted_pair_ids` is display-only and may repeat; a clean omission is already included in the
+  aggregate verdict and does not independently make the verdict red.
 - `frame_coverage` carries enumeration provenance: `enumeration_source`/`enumeration_depth`
   (in the report: `"· enumeration: <source>@<depth>"`, e.g. `· enumeration: deep@8`). `deep` = coverage
   was enumerated from depth 8 regardless
@@ -396,10 +398,13 @@ read ❌ as defects:
   budget: individual pass axes are NOT in rows, take the count from `summary.pass` (signal rows
   fail/warn/info/review/unchecked and meta style_anchor/unwrapped are always complete). Both
   comparators condense before dropping whole pairs; when pairs ARE dropped, `omitted_pairs` counts
-  them, `omitted_pair_ids` names them (`label` or node id), and a `verification.notes` line
-  counts the dropped pairs carrying FAILing rows when there are any (a note with no FAIL clause
-  means none were) — a dropped fail keeps the verdict at
-  `"discrepancies found"` even though its rows are not in the response.
+  them, `omitted_pair_ids` supplies display labels that may repeat, and the positionally aligned
+  `omitted_pair_indices` supplies zero-based indices into the exact submitted `pairs` array. A
+  `verification.notes` line counts dropped pairs carrying FAILing rows when there are any (a note
+  with no FAIL clause means none were) — a dropped fail keeps the verdict at
+  `"discrepancies found"` even though its rows are not in the response. Replay exact inputs with
+  `omitted_pair_indices.map(i => originalArgs.pairs[i])`; clean omissions are already included in the
+  aggregate verdict.
 2. Known sources of false ❌ (before tool calibration): a wrapper with its own padding/scroll
    chrome vs the "padding-inner" Figma frame; a scrollbar (~11px in size.w); text node vs frame
    (false padding-end / offset-cross); an inset "baked" into a child's padding that the gap sees

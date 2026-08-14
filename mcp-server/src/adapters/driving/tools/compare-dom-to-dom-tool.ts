@@ -159,6 +159,7 @@ function buildOutput(tolerancePx: number, pairs: PairResult[], allResults: PairR
   const dropped = allResults.slice(pairs.length);
   const droppedFail = dropped.filter((p) => p.summary.fail > 0).length;
   const droppedIds = dropped.map((p) => p.label ?? p.node_id);
+  const droppedIndices = Array.from({ length: omitted }, (_, i) => pairs.length + i);
   const receipt = omitted > 0
     ? { ...verification, notes: [...(verification.notes ?? []), budgetDropNote(droppedIds, droppedFail)] }
     : verification;
@@ -171,6 +172,6 @@ function buildOutput(tolerancePx: number, pairs: PairResult[], allResults: PairR
       sideLabels: ['reference', 'candidate'],
       ...(omitted ? { omittedPairs: omitted, omittedFailPairs: droppedFail } : {}),
     }),
-    ...(omitted ? { omitted_pairs: omitted, omitted_pair_ids: droppedIds } : {}),
+    ...(omitted ? { omitted_pairs: omitted, omitted_pair_ids: droppedIds, omitted_pair_indices: droppedIndices } : {}),
   };
 }

@@ -5,8 +5,8 @@
 // NO keep-priority reorder (post-condense greens are nearly free; the sort would drop
 // spacing-audit evidence by design), NO blocking item (Gate 5B one-module rule; a post-sort
 // append is invisible below the report's 15-slice; no executable action) - the carriers are
-// verification.notes[] (human, renders in both report branches) + the omitted_pair_ids
-// sibling field (machine, the get_layout_spec omitted_node_ids precedent). The trace is a
+// verification.notes[] (human, renders in both report branches) + omitted_pair_indices
+// (machine replay key) and omitted_pair_ids (display-only labels). The trace is a
 // PURE function of (all results, kept) computed inside buildOutput - measured by the
 // serialize closure, never a mutation of the shared receipt. compare_dom_to_dom additionally
 // gains the EXISTING condense tier (it was full -> clamp, the only relief being whole-pair
@@ -87,11 +87,20 @@ describe('compare_node_to_dom: the drop trace', () => {
     const out = parse(res);
     expect(out.omitted_pairs).toBeGreaterThan(0);
     expect(out.omitted_pair_ids).toHaveLength(out.omitted_pairs);
+    expect(out.omitted_pair_indices).toEqual(
+      Array.from({ length: out.omitted_pairs }, (_, i) => out.pairs.length + i),
+    );
+    expect(out.omitted_pair_indices).toHaveLength(out.omitted_pair_ids.length);
     expect(out.omitted_pair_ids).toContain('red-tail');       // labels, not the shared node_id '1:1'
+    expect(out.hydration).toHaveLength(out.pairs.length);     // duplicate node ids cannot leak omitted receipts
+    expect(out.hydration.map((h: any) => h.pair_index)).toEqual(
+      Array.from({ length: out.pairs.length }, (_, i) => i),
+    );
     const notes = dropNotes(out);
     expect(notes).toHaveLength(1);                            // probe purity: no per-probe accumulation
     expect(notes[0]).toMatch(/FAILing/);                      // the dropped red is attributed
-    expect(notes[0]).toMatch(/fewer pairs/);                  // the remediation is named
+    expect(notes[0]).toMatch(/omitted_pair_indices/);            // duplicate-safe remediation is named
+    expect(notes[0]).toMatch(/originalArgs\.pairs\[i\]/);
     expect(res.content[0].text.length).toBeLessThanOrEqual(floorLen);
     // the three false sentences are gone: the verdict is red, nothing claims inherent-only.
     // The fixture reaches the EXACT debt shape (complete:false with an EMPTY blocking[]) - the
@@ -138,6 +147,10 @@ describe('compare_node_to_dom: the drop trace', () => {
     const out = parse(await figmaHarness(api(), floor.content[0].text.length)({ file: 'abc', pairs }));
     expect(out.omitted_pairs).toBeGreaterThan(0);
     expect(out.omitted_pair_ids.length).toBe(out.omitted_pairs);
+    expect(out.omitted_pair_indices).toEqual(
+      Array.from({ length: out.omitted_pairs }, (_, i) => out.pairs.length + i),
+    );
+    expect(out.verification.complete).toBe(true);
     const notes = dropNotes(out);
     expect(notes).toHaveLength(1);
     expect(notes[0]).not.toMatch(/FAILing/);                  // nothing red was dropped - no false alarm
@@ -148,7 +161,24 @@ describe('compare_node_to_dom: the drop trace', () => {
     const out = parse(await figmaHarness(api(), 400000)({ file: 'abc', pairs: mixedPairs }));
     expect(out.omitted_pairs).toBeUndefined();
     expect(out.omitted_pair_ids).toBeUndefined();
+    expect(out.omitted_pair_indices).toBeUndefined();
     expect(dropNotes(out)).toHaveLength(0);
+  });
+
+  it('duplicate display ids replay the exact original positions', async () => {
+    const pairs = [
+      { node_id: '1:1', dom: cleanDom, label: 'duplicate' },
+      { node_id: '1:1', dom: cleanDom, label: 'duplicate' },
+      { node_id: '1:1', dom: redDom, label: 'duplicate' },
+    ];
+    const out = parse(await figmaHarness(api(), 1)({ file: 'abc', pairs }));
+    expect(out.pairs).toHaveLength(1);
+    expect(out.omitted_pair_ids).toEqual(['duplicate', 'duplicate']);
+    expect(out.omitted_pair_indices).toEqual([1, 2]);
+
+    const replay = out.omitted_pair_indices.map((i: number) => pairs[i]);
+    const replayed = parse(await figmaHarness(api(), 400000)({ file: 'abc', pairs: replay }));
+    expect(replayed.pairs.map((p: any) => p.summary.fail)).toEqual([0, 2]);
   });
 
   it('the floor overflow stays honest: budget=1 still names the dropped pairs', async () => {
@@ -204,6 +234,10 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
     const out = parse(res);
     expect(out.omitted_pairs).toBeGreaterThan(0);
     expect(out.omitted_pair_ids).toContain('red-shelf');
+    expect(out.omitted_pair_indices).toEqual(
+      Array.from({ length: out.omitted_pairs }, (_, i) => out.pairs.length + i),
+    );
+    expect(out.omitted_pair_indices).toHaveLength(out.omitted_pair_ids.length);
     const notes = dropNotes(out);
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatch(/FAILing/);
@@ -214,6 +248,25 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
     expect(out.report_markdown).toContain('discrepancies found');
     expect(out.report_markdown).toContain('NOT an inherent-only remainder');
     expect(out.report_markdown).not.toContain('Only inherent items remain');
+  });
+
+  it('duplicate labels replay exact dom-dom positions', async () => {
+    const matching = bulkyState(420);
+    const changed = { ...bulkyState(420), paddings: { top: 31, right: 16, bottom: 24, left: 16 } };
+    const pairs = [
+      { label: 'duplicate', reference: { dom: matching }, candidate: { dom: matching } },
+      { label: 'duplicate', reference: { dom: matching }, candidate: { dom: matching } },
+      { label: 'duplicate', reference: { dom: matching }, candidate: { dom: changed } },
+    ];
+    const out = parse(await domDomHarness(1)({ pairs }));
+    expect(out.pairs).toHaveLength(1);
+    expect(out.omitted_pair_ids).toEqual(['duplicate', 'duplicate']);
+    expect(out.omitted_pair_indices).toEqual([1, 2]);
+
+    const replay = out.omitted_pair_indices.map((i: number) => pairs[i]);
+    const replayed = parse(await domDomHarness(400000)({ pairs: replay }));
+    expect(replayed.pairs[0].summary.fail).toBe(0);
+    expect(replayed.pairs[1].summary.fail).toBeGreaterThan(0);
   });
 
   it('dom-dom serialize measures the trace too: delivery at the kept=2 boundary equals its selecting budget', async () => {
@@ -237,6 +290,7 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
   it('an unclamped dom-dom response carries none of the new surface', async () => {
     const out = parse(await domDomHarness(400000)({ pairs: domDomPairs(2) }));
     expect(out.omitted_pair_ids).toBeUndefined();
+    expect(out.omitted_pair_indices).toBeUndefined();
     expect(dropNotes(out)).toHaveLength(0);
   });
 });
@@ -259,7 +313,7 @@ describe('renderReport: the omittedFailPairs input', () => {
     const md = renderReport({ tolerancePx: 1, pairs: [cleanPair], verification: emptyBlockingReceipt,
       omittedPairs: 4, omittedFailPairs: 1, headerLine: 'x', sideLabels: ['reference', 'candidate'] });
     expect(md).not.toContain('Only inherent items remain');
-    expect(md).toMatch(/omitted_pair_ids/);
+    expect(md).toMatch(/omitted_pair_indices/);
   });
   it('clean drops keep both existing sentences byte-stable (the crying-wolf decision holds)', () => {
     const md = renderReport({ tolerancePx: 1, pairs: [cleanPair], verification: emptyBlockingReceipt,

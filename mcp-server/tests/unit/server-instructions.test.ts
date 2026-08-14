@@ -3,7 +3,7 @@
 // cycle named, and the referenced skill path must actually exist in the repo — a moved or
 // renamed skill file must go RED here, not silently 404 for every adopter.
 import { describe, it, expect } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { SERVER_INSTRUCTIONS } from '../../src/infrastructure/server.js';
@@ -25,8 +25,30 @@ describe('SERVER_INSTRUCTIONS (initialize contract for skill-less hosts)', () =>
 
   it('the hatch is conditioned on zero fail rows, not blocking emptiness alone (wave: a plain FAIL row mints no blocking item)', () => {
     expect(SERVER_INSTRUCTIONS).toContain('ZERO ❌ rows');
-    expect(SERVER_INSTRUCTIONS).toContain('omitted_pair_ids');
-    expect(SERVER_INSTRUCTIONS).toContain('discrepancies to fix first');
+    expect(SERVER_INSTRUCTIONS).toContain('FAILing rows');
+    expect(SERVER_INSTRUCTIONS).toContain('red only');
+  });
+
+  it('distinguishes failing omissions from clean omissions and gives a duplicate-safe replay address', () => {
+    expect(SERVER_INSTRUCTIONS).toContain('omitted_pair_indices');
+    expect(SERVER_INSTRUCTIONS).toContain('originalArgs.pairs[i]');
+    expect(SERVER_INSTRUCTIONS).toContain('FAIL');
+    expect(SERVER_INSTRUCTIONS).toContain('Clean');
+    expect(SERVER_INSTRUCTIONS).toContain('included in the aggregate verdict');
+    expect(SERVER_INSTRUCTIONS).not.toContain('already measured');
+  });
+
+  it('public omission guidance does not call every omitted pair measured', () => {
+    for (const path of [
+      'docs/tools/design-qa.md',
+      'docs/design-qa-tutorial.md',
+      'docs/agents/design-qa-skill.md',
+    ]) {
+      const body = readFileSync(join(repoRoot, path), 'utf8');
+      expect(body).toMatch(/included in the\s+aggregate verdict/);
+      expect(body).not.toMatch(/same\s+measurement rule holds for\s+whole pairs dropped/);
+      expect(body).not.toMatch(/omitted pairs (?:were|are) already measured/);
+    }
   });
 
   it('names the design-QA tool cycle', () => {

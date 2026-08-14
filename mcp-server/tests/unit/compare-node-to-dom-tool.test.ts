@@ -10,6 +10,7 @@ import { withFrameRaw } from './helpers/frame-raw.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import { buildGraph, resolveKeyInMode } from '../../src/domain/variable-graph.js';
 import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { DomSnapshotStore } from '../../src/infrastructure/dom-snapshot-store.js';
 
 const logger = createLogger({ level: 'silent' });
 function harness(api: Partial<FigmaApi>, maxResultChars = 40000, extra: Partial<ToolDeps> = {}) {
@@ -1994,7 +1995,7 @@ describe('compare_node_to_dom tool', () => {
     // the "preflight" field + again inside the report_markdown ⚠️ line) itself decides how many pairs fit.
     // Re-calibrated on the budget-guard invariant (compare clamp now measures serializeForDelivery = COMPACT, not
     // pretty), and AGAIN after the budget drop trace (the clamped-response bytes now include the
-    // notes[] drop line + omitted_pair_ids — both measured by the closure): at N=3 narrow pairs
+    // notes[] drop line + omitted replay fields — all measured by the closure): at N=3 narrow pairs
     // (banner "3 of 3") the compact boundary kept 2→3 in the CORRECT code (measures effPreflight) is
     // budget 6170 (serialize(kept=2, +trace)=5665, serialize(kept=3, no trace)=6170), whereas in the
     // MUTANT (serialize measures the bare preflight — absent/undefined in this scenario, the
@@ -2499,16 +2500,30 @@ describe('compare_node_to_dom hydration receipt (Phase 1, Figma-side only)', () 
     rect: { x: 0, y: 0, w: 100, h: 100 }, borders: { top: 0, right: 0, bottom: 0, left: 0 },
     scroll: { top: 0, left: 0 }, transformed: false, children: [] as unknown[] };
 
-  it('emits a per-pair hydration receipt keyed by node_id', async () => {
+  it('keeps hydration attributable when an earlier duplicate-id pair exits before hydration', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: chain(6) } } }));
-    // self-contained harness (McpServer, registerCompareNodeToDomTool, logger, FigmaApi already
-    // imported at the top of this test file):
+    const snapshotStore = {
+      resolve: vi.fn(() => ({ ok: false as const, reason: 'expired' as const })),
+    } as unknown as ToolDeps['snapshotStore'];
     const { server, call } = makeFakeMcpServer();
-    registerCompareNodeToDomTool(server, { buildApi: () => withFrameRaw({ getNodesRaw }) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 } as any);
-    const run = (a: any): Promise<any> => call('compare_node_to_dom', a);
-    const out = JSON.parse((await run({ file: 'abc', pairs: [{ node_id: '1:1', dom }], max_depth: 4 })).content[0].text);
-    expect(Array.isArray(out.hydration)).toBe(true);
-    expect(out.hydration.find((h: any) => h.node_id === '1:1')).toBeTruthy();
+    registerCompareNodeToDomTool(server, {
+      buildApi: () => withFrameRaw({ getNodesRaw }) as FigmaApi,
+      defaultToken: 'figd_x', logger, maxResultChars: 40000, snapshotStore,
+    } as any);
+
+    const out = JSON.parse((await call('compare_node_to_dom', {
+      file: 'abc',
+      pairs: [
+        { node_id: '1:1', dom_ref: { ref: 'expired', selector: '.card' } },
+        { node_id: '1:1', dom },
+      ],
+      max_depth: 4,
+    })).content[0].text!);
+
+    expect(out.pairs).toHaveLength(2);
+    expect(out.hydration).toEqual([
+      expect.objectContaining({ node_id: '1:1', pair_index: 1 }),
+    ]);
   });
 });
 
@@ -2559,6 +2574,74 @@ describe('compare_node_to_dom spacing_audit wiring', () => {
     expect(entry.gaps[0]).toMatchObject({ status: 'pass', figma: 20, dom: 20, delta: 0 });
     expect(out.verification.blocking.some((b: any) => b.node_id === '1:1')).toBe(false); // suppressed
     expect(out.report_markdown).toContain('⚖ spacing-audit 1:1');
+  });
+
+  it('identical duplicate pair captures remain usable for spacing audit', async () => {
+    const resolve = vi.fn((_ref: string, selector: string) => {
+      if (selector === '.title') return { ok: true as const, snapshot: titleDom };
+      if (selector === '.list') return { ok: true as const, snapshot: listDom };
+      return { ok: false as const, reason: 'unknown_selector' as const, selectors: [] };
+    });
+    const snapshotStore = { resolve } as unknown as ToolDeps['snapshotStore'];
+    const run = harness({ getNodesRaw }, 40000, { snapshotStore });
+
+    const out = JSON.parse((await run({
+      file: 'abc',
+      pairs: [
+        { node_id: '1:2', dom_ref: { ref: 'batch1', selector: '.title' } },
+        { node_id: '1:2', dom_ref: { ref: 'batch1', selector: '.title' } },
+        { node_id: '1:3', dom_ref: { ref: 'batch1', selector: '.list' } },
+      ],
+      frame_node_id: '1:1',
+    })).content[0].text);
+
+    const entry = out.verification.spacing_audit?.find((e: any) => e.container_id === '1:1');
+    expect(entry.gaps[0]).toMatchObject({ status: 'pass', figma: 20, dom: 20, delta: 0 });
+  });
+
+  it('selector and index addresses of the same stored snapshot remain one capture', async () => {
+    const snapshotStore = new DomSnapshotStore();
+    const capToken = snapshotStore.mint('local');
+    const { ref } = snapshotStore.upload(capToken, [titleDom, listDom]);
+    const run = harness({ getNodesRaw }, 40000, { snapshotStore });
+
+    const out = JSON.parse((await run({
+      file: 'abc',
+      pairs: [
+        { node_id: '1:2', dom_ref: { ref, index: 0 } },
+        { node_id: '1:2', dom_ref: { ref, selector: '.title' } },
+        { node_id: '1:3', dom_ref: { ref, index: 1 } },
+      ],
+      frame_node_id: '1:1',
+    })).content[0].text);
+
+    const entry = out.verification.spacing_audit?.find((e: any) => e.container_id === '1:1');
+    expect(entry.gaps[0]).toMatchObject({ status: 'pass', figma: 20, dom: 20, delta: 0 });
+  });
+
+  it('different duplicate pair captures disable attribution instead of choosing by completion order', async () => {
+    const resolve = vi.fn((_ref: string, selector: string) => {
+      if (selector === '.title-b') return { ok: true as const, snapshot: { ...titleDom } };
+      if (selector === '.title-a') return { ok: true as const, snapshot: { ...titleDom } };
+      if (selector === '.list') return { ok: true as const, snapshot: listDom };
+      return { ok: false as const, reason: 'unknown_selector' as const, selectors: [] };
+    });
+    const snapshotStore = { resolve } as unknown as ToolDeps['snapshotStore'];
+    const run = harness({ getNodesRaw }, 40000, { snapshotStore });
+
+    const out = JSON.parse((await run({
+      file: 'abc',
+      pairs: [
+        { node_id: '1:2', dom_ref: { ref: 'batch1', selector: '.title-b' } },
+        { node_id: '1:2', dom_ref: { ref: 'batch1', selector: '.title-a' } },
+        { node_id: '1:3', dom_ref: { ref: 'batch1', selector: '.list' } },
+      ],
+      frame_node_id: '1:1',
+    })).content[0].text);
+
+    const entry = out.verification.spacing_audit?.find((e: any) => e.container_id === '1:1');
+    expect(entry.gaps[0]).toMatchObject({ status: 'unchecked' });
+    expect(entry.gaps[0].note).toContain('different captures');
   });
 
   it('inline pairs (without dom_ref) → spacing_audit gap unchecked (ref unproven), unchecked_spacing on the container remains', async () => {

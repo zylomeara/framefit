@@ -663,17 +663,14 @@ export function buildVerification(pairs: PairResult[], opts: {
 
 // The budget drop trace (clamped fail-pair debt): when the response-budget clamp drops whole
 // pairs, the receipt says so in ONE notes[] line - notes render as warn lines in BOTH report
-// branches and are not parseable by contract, so the machine key is the omitted_pair_ids
-// sibling field the line points at. NOT a blocking item: the action vocabulary has no
-// executable member for "the budget dropped this pair", and an item added after
-// buildVerification's rankOf sort + BLOCKING_CAP slice would land unranked past the report's
-// 15-item slice with a stale blocking_capped. Shared by BOTH comparators (the one place the
-// wording lives). ids are `label ?? node_id` - node_ids legally repeat within one call, and
-// in dom-dom the label IS the id.
+// branches and are not parseable by contract, so the machine replay key is the
+// omitted_pair_indices sibling field. omitted_pair_ids remains display context only: ids may
+// legally repeat within one call, and in dom-dom the label IS the id.
 export function budgetDropNote(ids: string[], failCount: number): string {
   const head = ids.slice(0, 5).join(', ');
   const more = ids.length > 5 ? ` and ${ids.length - 5} more` : '';
   const fails = failCount > 0 ? `; ${failCount} of them carry FAILing rows` : '';
   return `${ids.length} pair(s) did not fit the response budget and are absent from pairs[]: `
-    + `${head}${more}${fails} - re-run them in a separate compare call (fewer pairs at a time); full list in omitted_pair_ids`;
+    + `${head}${more}${fails} - use zero-based omitted_pair_indices to replay the exact submitted `
+    + `pairs as originalArgs.pairs[i] in a separate compare call; omitted_pair_ids is display-only and may repeat`;
 }

@@ -2,6 +2,8 @@ import type { LayoutSpec, SpecChild } from './types.js';
 
 export interface HydrationReceipt {
   node_id: string;
+  /** Submitted pair position when the receipt comes from a compare batch. */
+  pair_index?: number;
   /** Depth the frame raw is held at (shared across all nodes of one getFrameRaw call). */
   held_depth: number;
   /** Whether the frame is actually held (within parse cap). false → every drill re-fetches. */

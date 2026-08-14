@@ -37,6 +37,9 @@ describe('renderReport', () => {
     const md = renderReport({ file: 'AbCdEf012345', tolerancePx: 1, pairs: [clean], omittedPairs: 2 });
     expect(md).toMatch(/no discrepancies above tolerance/);
     expect(md).toContain('2 pairs');
+    expect(md).toContain('included in the aggregate verdict');
+    expect(md).not.toContain('already measured');
+    expect(md).not.toContain('call compare again');
   });
 
   it('surfaces a pass-status unwrapped row even though other pass rows are suppressed (I1)', () => {
