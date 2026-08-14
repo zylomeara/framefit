@@ -437,9 +437,18 @@ describe('dom_selector (capture root + nth-child path, :is()-scoped)', () => {
     // Measured in Chrome: dropping the path guard emits ':is(.a) ' which is 1 match - the capture ROOT
     // itself, i.e. a wrong address answering status ok. `path` is optional in the snapshot schema, so
     // this is reachable input, not a hypothetical.
+    const transparentPath = Array.from({ length: 9 }, () => '> :nth-child(1)').join(' ');
+    const oversizedPath = Array.from({ length: 200 }, () => '> :nth-child(1)').join(' ');
     expect(domSelector(undefined, '> :nth-child(1)')).toBeUndefined();
     expect(domSelector('', '> :nth-child(1)')).toBeUndefined();
+    expect(domSelector('   ', '> :nth-child(1)')).toBeUndefined();
     expect(domSelector('.a', '')).toBeUndefined();
+    expect(domSelector('.a', '   ')).toBeUndefined();
+    expect(domSelector('.a', '> :nth-child(1), body')).toBeUndefined();
+    expect(domSelector('.a', oversizedPath)).toBeUndefined();
+    expect(domSelector(`.${'a'.repeat(3_000)}`, '> :nth-child(1)')).toBeUndefined();
+    expect(domSelector(' .a, .b ', ' > :nth-child(1) ')).toBe(':is(.a, .b) > :nth-child(1)');
+    expect(domSelector('.a', transparentPath)).toBe(`:is(.a) ${transparentPath}`);
     expect(domSelector('.a', '> :nth-child(1)')).toBe(':is(.a) > :nth-child(1)');
     // The trade :is() makes, recorded rather than discovered later: it is a FORGIVING selector list, so
     // a syntactically bad root stops throwing and silently matches nothing - unreachable from a snapshot

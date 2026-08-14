@@ -10,6 +10,9 @@ import { matchPairs, type MatchOpts } from '../../../domain/layout-spec/pair-mat
 import { DomSnapshotSchema, DOM_SNAPSHOT_SCHEMA_VERSION } from './dom-snapshot-schema.js';
 import { DomRefSchema, resolveDomRef } from './dom-ref.js';
 import type { DomChild } from '../../../domain/layout-spec/types.js';
+import { domSelector } from '../../../domain/layout-spec/dom-selector.js';
+
+export { domSelector };
 
 // #4 — the snapshot honestly carries childrenTruncated (extractor, depth-limit/node-count-cap) anywhere
 // in the tree, including the ROOT (dom-extractor.ts:160 sets it at >30 direct visible children). The scan
@@ -18,17 +21,6 @@ import type { DomChild } from '../../../domain/layout-spec/types.js';
 // silently pass as an uncovered hole.
 const anyTruncated = (kids: DomChild[] | undefined): boolean =>
   (kids ?? []).some((k) => k.childrenTruncated === true || anyTruncated(k.children));
-
-// dom_path ('> :nth-child(3) > :nth-child(1)') is NOT a selector — document.querySelector throws on it.
-// We do not GENERATE one either: uniqueness is a property of the document, and the server only ever sees
-// the captured subtree (a class that is unique inside a component-rooted capture is typically not unique
-// in the page). We concatenate the address we already hold: the capture root selector — which the
-// extractor already PROVED unique (>1 match → status 'multiple', it refuses) — plus the nth-child chain,
-// which is unique under a unique root by construction. :is() rather than a bare join because the root may
-// be a selector LIST ('.a, .b'): '.a, .b > :nth-child(3)' parses as '.a' OR '.b > …' and would silently
-// resolve to the wrong element. No root selector in the snapshot → NO field: never synthesize an address.
-export const domSelector = (root: string | undefined, path: string): string | undefined =>
-  root === undefined || root === '' || path === '' ? undefined : `:is(${root}) ${path}`;
 
 export const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),

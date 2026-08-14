@@ -395,6 +395,20 @@ describe('renderReport — "Check" block (A1 verification receipt)', () => {
     expect(md).toContain('[add_pair] node B');
   });
 
+  it('a child blocker renders both the Figma node and the composed DOM selector', () => {
+    const verification: VerificationReceipt = {
+      complete: false, scope: 'pairs', pairs: { checked: 1, clean: 0 },
+      blocking: [{
+        kind: 'likely_misplaced_child', node_id: 'child-A', selector: ':is(.card, .panel) > :nth-child(2)',
+        action: 'add_pair', detail: 'pair the child before editing the parent padding',
+      }],
+    };
+
+    const md = renderReport({ ...base, verification });
+
+    expect(md).toContain('[add_pair] node child-A ↔ :is(.card, .panel) > :nth-child(2)');
+  });
+
   it('frame spacing hole → verdict "container(s) unpaired (spacing between children)"', () => {
     const verification: VerificationReceipt = {
       complete: false, scope: 'frame', pairs: { checked: 2, clean: 2 },
@@ -515,9 +529,10 @@ describe('renderReport — spacing_audit (⚖) block + verdict', () => {
   // between-children gaps (the audit passed entirely) — the old prose still counted L under "unpaired
   // (spacing between children)", mis-attributing ALREADY-verified spacing as unverified. We check BOTH
   // points (the notVerified line in renderReport + the bits line in renderVerification within "Check: INCOMPLETE").
-  it('FIX3: a fully_clean spacing_audit container L — "unpaired (spacing between children)" suppressed, replaced by the honest "insets of N container(s) not verified"', () => {
+  it('a fully_clean spacing audit reports the separate unverified-container debt without calling spacing unchecked', () => {
     const verification: VerificationReceipt = {
       ...baseV,
+      frame_coverage: { ...baseV.frame_coverage!, unverified_containers: ['L'] },
       spacing_audit: [{
         container_id: 'L', axis: 'row',
         gaps: [{ between: ['a', 'b'], figma: 24, dom: 24, delta: 0, status: 'pass' }],
@@ -527,7 +542,34 @@ describe('renderReport — spacing_audit (⚖) block + verdict', () => {
     const md = renderReport({ ...base, verification });
     expect(md).not.toContain('unpaired (spacing between children)');
     expect(md).not.toContain('containers unpaired (spacing)');
-    expect(md).toContain('insets of 1 container(s) not verified (between-children gaps clean per audit)');
+    expect(md).toContain('own layout/insets of 1 container(s) not verified');
+  });
+
+  it('reports a clean frame-spacing audit alongside separate nested own-layout debt', () => {
+    const verification: VerificationReceipt = {
+      ...baseV,
+      frame_coverage: {
+        ...baseV.frame_coverage!,
+        partial: ['F:0', 'L'],
+        unverified_containers: ['L'],
+      },
+      spacing_audit: [{
+        container_id: 'F:0', axis: 'row',
+        gaps: [{ between: ['a', 'b'], figma: 24, dom: 24, delta: 0, status: 'pass' }],
+        insets_unverified: true, fully_clean: true,
+      }],
+    };
+
+    const md = renderReport({
+      ...base,
+      frame: { node_id: 'F:0' },
+      verification,
+    });
+
+    expect(md).toContain('own layout/insets of 1 container(s) not verified');
+    expect(md).toContain(
+      'insets of 1 container(s) not verified (between-children gaps clean per audit)',
+    );
   });
 
   // Counter-fixture (mandatory symmetric lock): WITHOUT fully_clean (an unchecked audit, the gap not verified

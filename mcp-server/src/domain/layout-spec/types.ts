@@ -261,6 +261,17 @@ export interface DiffRow {
   delta?: number;                      // rounded to 0.1 in the report
   status: DiffStatus;
   note?: string;
+  diagnostic?: {
+    kind: 'likely_misplaced_child';
+    edge: 'start' | 'end';
+    direction: 'toward_start' | 'away_from_start' | 'toward_end' | 'away_from_end';
+    child: {
+      figma_node_id: string;
+      figma_index: number;
+      dom_index: number;
+      dom_path: string;
+    };
+  };
   // confirm_token aggregation: structural name of the review row's Figma token (for grouping in
   // blocking; we do NOT parse notes) + an open reason code (dt.unknown / branch-id). review only.
   token?: string;
@@ -380,7 +391,7 @@ export interface PairAttribution {
 // swallows) into a machine structure + a boolean `complete` that the figma-dom-diff skill gates
 // before "done", and into an actionable checklist `blocking` (exactly what is left to do).
 export interface BlockingItem {
-  kind: string;        // structure_mismatch | children_truncated | snapshot | not_found | extractor_outdated | skip | truncated_text | uncovered_region | unchecked_spacing | viewport | frame_missing | unconfirmed_token | scope_incomplete
+  kind: string;        // structure_mismatch | children_truncated | snapshot | not_found | extractor_outdated | skip | truncated_text | uncovered_region | unchecked_spacing | unverified_container | likely_misplaced_child | viewport | frame_missing | unconfirmed_token | scope_incomplete
   node_id?: string;
   selector?: string;
   // machine token of the next step. THIRTEEN values, spelled out for a reader and explicitly NOT a
@@ -406,9 +417,11 @@ export interface FrameCoverage {
   covered: number;                // the region itself is paired OR something in its subtree is paired
   uncovered: string[];            // regions where NOTHING is paired — the layout is not verified (truncated by cap 60, see uncovered_capped)
   partial: string[];              // ≥2 direct worthy children are paired but the container is not: the paddings BETWEEN the children are not verified (inter-pair spacing; truncated by cap 60, see partial_capped)
+  unverified_containers?: string[]; // subtree content is covered, but these worthy container roots have no effective pair on their own unwrap chain (truncated by cap 60)
   enumeration_truncated: boolean; // the frame projection was truncated by a cap → coverage is incomplete
   uncovered_capped?: number;      // how many ids were cut from uncovered by a cap (JSON budget protection)
   partial_capped?: number;        // how many ids were cut from partial by a cap (JSON budget protection)
+  unverified_containers_capped?: number; // how many ids were cut from unverified_containers by a cap
   // enumeration_depth = the projector's DEPTH ALLOWANCE, NOT a coverage guarantee — always read together with
   // enumeration_causes: a narrow but deep frame at depth=8 may be complete, while a
   // wide one at the same depth is cut by budget/breadth. depth by itself proves nothing.

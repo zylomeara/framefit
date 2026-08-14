@@ -161,6 +161,21 @@ describe('the border-edge padding reading on folded edges', () => {
     expect(row(rows, 'padding-left')).toMatchObject({ figma: 12, dom: 0, status: 'fail' });
   });
 
+  it('a folded structural inset is not re-attributed to the surviving child', () => {
+    const anchored = kidA({
+      name: 'Anchor copy', textSnippet: 'Anchor copy', rect: R(12, 20, 10, 80),
+    });
+    const rendered = domKid(0, 10, {
+      text: 'Anchor copy', path: '> :nth-child(1)', rect: R(0, 20, 10, 80),
+    });
+    const rows = diffPair(tile([spacer(), anchored]), snap([rendered]), opts);
+    const leading = row(rows, 'padding-left');
+
+    expect(row(rows, 'spacer_inset')).toBeDefined();
+    expect(leading).toMatchObject({ figma: 12, dom: 0, status: 'fail' });
+    expect(leading?.diagnostic).toBeUndefined();
+  });
+
   it('DOM implements the inset as REAL root padding -> pass, not demoted (demotes off on folded edges)', () => {
     const rows = diffPair(tile([spacer(), kidA(), kidB()]),
       snap([domKid(12, 80), domText(112, 200)], { paddings: { top: 0, right: 0, bottom: 0, left: 12 } }), opts);

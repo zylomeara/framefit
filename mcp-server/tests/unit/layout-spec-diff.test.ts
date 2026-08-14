@@ -2081,7 +2081,8 @@ describe('diffPair — A2 structure_mismatch salvage', () => {
     const crossRows = rows.filter((r) => r.prop.startsWith('offset-cross'));
     expect(crossRows.length).toBe(2); // metrics for the matched ones are recovered
     expect(crossRows.some((r) => r.status === 'fail')).toBe(true); // Gamma x16→x40 = a defect, previously invisible
-    expect(rows.some((r) => r.prop === 'padding-top' || r.prop === 'padding-bottom')).toBe(false); // padding skipped on the subset
+    expect(rows.find((r) => r.prop === 'padding-top')).toMatchObject({ status: 'pass' });
+    expect(rows.find((r) => r.prop === 'padding-bottom')).toMatchObject({ status: 'pass' });
   });
 
   it('a gap through an unmatched child is NOT computed (adjacency guard)', () => {
@@ -2307,6 +2308,295 @@ describe('diffPair — A2 structure_mismatch salvage', () => {
     // mutation `!salvaged` → `true`: the detector would see the bijection fig0↔dom1/fig1↔dom0 (j≠i) → would push
     // a false children_reorder + movedIdx would wipe both offset-cross (crossRows.length would drop to 0) → RED here
   });
+});
+
+describe('diffPair — likely misplaced edge child', () => {
+  const edgeSpecChild = (id: string, text: string, y: number, h = 10): SpecChild => ({
+    id, name: text, type: 'FRAME', rect: { x: 10, y, w: 80, h }, textSnippet: text,
+  });
+  const edgeDomChild = (text: string, y: number, path: string | undefined, h = 10): DomChild => ({
+    kind: 'element', tag: 'div', rect: { x: 10, y, w: 80, h }, text,
+    ...(path ? { path } : {}),
+  });
+  const edgeSpec = (children: SpecChild[]): LayoutSpec => spec({
+    rect: { x: 0, y: 0, w: 100, h: 120 }, axis: 'col',
+    autoLayout: { gap: 0, padding: { top: 0, right: 0, bottom: 0, left: 0 }, primaryAlign: 'MIN' },
+    children,
+  });
+  const edgeDom = (children: DomChild[]): DomSnapshotOk => snap({
+    rect: { x: 0, y: 0, w: 100, h: 120 }, clientWidth: 100, clientHeight: 120, scrollHeight: 120,
+    paddings: { top: 0, right: 0, bottom: 0, left: 0 }, children,
+  });
+
+  it('annotates a unique high-confidence start extreme after a large surviving inset fail', () => {
+    const rows = diffPair(
+      edgeSpec([edgeSpecChild('7:2', 'Primary copy', 80)]),
+      edgeDom([edgeDomChild('Primary copy', 20, ':nth-child(1)')]),
+      { tolerancePx: 1 },
+    );
+
+    expect(rows.find((r) => r.prop === 'padding-top')).toMatchObject({
+      status: 'fail',
+      diagnostic: {
+        kind: 'likely_misplaced_child', edge: 'start', direction: 'away_from_start',
+        child: { figma_node_id: '7:2', figma_index: 0, dom_index: 0, dom_path: ':nth-child(1)' },
+      },
+    });
+  });
+
+  it('annotates a unique high-confidence end extreme after a large surviving inset fail', () => {
+    const rows = diffPair(
+      edgeSpec([edgeSpecChild('7:3', 'Secondary copy', 10)]),
+      edgeDom([edgeDomChild('Secondary copy', 80, ':nth-child(1)')]),
+      { tolerancePx: 1 },
+    );
+
+    expect(rows.find((r) => r.prop === 'padding-bottom')).toMatchObject({
+      status: 'fail',
+      diagnostic: {
+        kind: 'likely_misplaced_child', edge: 'end', direction: 'away_from_end',
+        child: { figma_node_id: '7:3', figma_index: 0, dom_index: 0, dom_path: ':nth-child(1)' },
+      },
+    });
+  });
+
+  it('uses a strict scale threshold: equality is ordinary padding, the smallest tested excess diagnoses', () => {
+    const equal = diffPair(
+      edgeSpec([edgeSpecChild('7:4', 'Threshold copy', 30)]),
+      edgeDom([edgeDomChild('Threshold copy', 20, ':nth-child(1)')]),
+      { tolerancePx: 1 },
+    );
+    const excess = diffPair(
+      edgeSpec([edgeSpecChild('7:4', 'Threshold copy', 30.1)]),
+      edgeDom([edgeDomChild('Threshold copy', 20, ':nth-child(1)')]),
+      { tolerancePx: 1 },
+    );
+
+    expect(rowsDiagnostic(equal, 'padding-top')).toBeUndefined();
+    expect(rowsDiagnostic(excess, 'padding-top')).toMatchObject({ kind: 'likely_misplaced_child' });
+  });
+
+  it('uses the unrounded displacement at the strict scale threshold', () => {
+    const rawExcess = diffPair(
+      edgeSpec([edgeSpecChild('7:4', 'Fractional excess', 30.04)]),
+      edgeDom([edgeDomChild('Fractional excess', 20, ':nth-child(1)')]),
+      { tolerancePx: 1 },
+    );
+    const roundedFalsePositive = diffPair(
+      edgeSpec([edgeSpecChild('7:4', 'Fractional control', 30.051, 10.06)]),
+      edgeDom([edgeDomChild('Fractional control', 20, ':nth-child(1)', 10.06)]),
+      { tolerancePx: 1 },
+    );
+
+    expect(rawExcess.find((r) => r.prop === 'padding-top')).toMatchObject({ delta: 10 });
+    expect(rowsDiagnostic(rawExcess, 'padding-top')).toMatchObject({ kind: 'likely_misplaced_child' });
+    expect(roundedFalsePositive.find((r) => r.prop === 'padding-top')).toMatchObject({ delta: 10.1 });
+    expect(rowsDiagnostic(roundedFalsePositive, 'padding-top')).toBeUndefined();
+  });
+
+  it('does not diagnose unresolved trailing page-gutter slack as a displaced child', () => {
+    const s = spec({
+      rect: { x: 0, y: 0, w: 120, h: 40 }, axis: 'row',
+      autoLayout: { gap: 0, padding: { top: 0, right: 0, bottom: 0, left: 0 }, primaryAlign: 'MIN' },
+      children: [{
+        id: '7:25', name: 'Gutter copy', type: 'FRAME',
+        rect: { x: 0, y: 10, w: 10, h: 20 }, textSnippet: 'Gutter copy',
+      }],
+    });
+    const d = snap({
+      innerWidth: 120, layoutViewportWidth: 109,
+      rect: { x: 0, y: 0, w: 109, h: 40 }, clientWidth: 109, clientHeight: 40, scrollHeight: 40,
+      styles: { display: 'flex', justifyContent: 'flex-start' },
+      children: [{
+        kind: 'element', tag: 'div', text: 'Gutter copy', path: ':nth-child(1)',
+        rect: { x: 0, y: 10, w: 10, h: 20 },
+      }],
+    });
+
+    const trailing = diffPair(s, d, { tolerancePx: 1, frameWidth: 120 })
+      .find((r) => r.prop === 'padding-right');
+    expect(trailing).toMatchObject({ status: 'fail', delta: 11 });
+    expect(trailing?.caveat).toMatch(/page scrollbar gutter/i);
+    expect(trailing?.diagnostic).toBeUndefined();
+  });
+
+  it('preserves an original confident start extreme through structure-mismatch salvage', () => {
+    const rows = diffPair(
+      edgeSpec([
+        edgeSpecChild('7:5', 'Anchor copy', 70),
+        edgeSpecChild('7:6', 'Trailing copy', 100),
+      ]),
+      edgeDom([
+        edgeDomChild('Anchor copy', 10, ':nth-child(1)'),
+        edgeDomChild('Decoration', 60, ':nth-child(2)'),
+        edgeDomChild('Trailing copy', 100, ':nth-child(3)'),
+      ]),
+      { tolerancePx: 1 },
+    );
+
+    expect(rows.find((r) => r.prop === 'structure_mismatch')).toBeDefined();
+    expect(rowsDiagnostic(rows, 'padding-top')).toMatchObject({
+      kind: 'likely_misplaced_child', edge: 'start',
+      child: { figma_node_id: '7:5', figma_index: 0, dom_index: 0, dom_path: ':nth-child(1)' },
+    });
+  });
+
+  it('does not promote an interior match to an edge only because salvage removed siblings', () => {
+    const rows = diffPair(
+      edgeSpec([
+        edgeSpecChild('7:7', 'Unpaired design copy', 0),
+        edgeSpecChild('7:8', 'Interior copy', 70),
+      ]),
+      edgeDom([
+        edgeDomChild('Interior copy', 10, ':nth-child(1)'),
+        edgeDomChild('Unpaired DOM copy', 70, ':nth-child(2)'),
+        edgeDomChild('Decoration', 100, ':nth-child(3)'),
+      ]),
+      { tolerancePx: 1 },
+    );
+
+    expect(rows.find((r) => r.prop === 'structure_mismatch')).toBeDefined();
+    expect(rows.filter((r) => r.diagnostic?.kind === 'likely_misplaced_child')).toEqual([]);
+  });
+
+  it('uses the full original population for salvage edge demotions', () => {
+    const s = edgeSpec([
+      edgeSpecChild('7:10', 'Leading copy', 0, 10),
+      edgeSpecChild('7:11', 'Unmatched fill', 10, 100),
+      edgeSpecChild('7:12', 'Trailing copy', 110, 10),
+    ]);
+    s.autoLayout = { ...s.autoLayout!, primaryAlign: 'CENTER' };
+    const d = edgeDom([
+      edgeDomChild('Leading copy', 70, ':nth-child(1)', 10),
+      edgeDomChild('Trailing copy', 110, ':nth-child(2)', 10),
+    ]);
+    d.styles = { display: 'flex', justifyContent: 'center' };
+
+    const start = diffPair(s, d, { tolerancePx: 1 })
+      .find((r) => r.prop === 'padding-top');
+    expect(start).toMatchObject({ status: 'fail' });
+    expect(start?.diagnostic).toMatchObject({ kind: 'likely_misplaced_child', edge: 'start' });
+  });
+
+  it('rejects medium geometry matches, duplicate text, and snippet-cap text as child identity', () => {
+    const geometryFig = edgeSpecChild('7:13', 'Geometry only', 80);
+    delete geometryFig.textSnippet;
+    const geometryDom = edgeDomChild('Different copy', 20, ':nth-child(1)');
+    delete geometryDom.text;
+
+    const duplicate = diffPair(
+      edgeSpec([
+        edgeSpecChild('7:14', 'Repeated copy', 80),
+        edgeSpecChild('7:15', 'Repeated copy', 100),
+      ]),
+      edgeDom([
+        edgeDomChild('Repeated copy', 20, ':nth-child(1)'),
+        edgeDomChild('Repeated copy', 100, ':nth-child(2)'),
+      ]),
+      { tolerancePx: 1 },
+    );
+    const capped = 'x'.repeat(120);
+
+    for (const rows of [
+      diffPair(edgeSpec([geometryFig]), edgeDom([geometryDom]), { tolerancePx: 1 }),
+      duplicate,
+      diffPair(
+        edgeSpec([edgeSpecChild('7:16', capped, 80)]),
+        edgeDom([edgeDomChild(capped, 20, ':nth-child(1)')]),
+        { tolerancePx: 1 },
+      ),
+    ]) {
+      expect(rows.filter((r) => r.diagnostic?.kind === 'likely_misplaced_child')).toEqual([]);
+    }
+  });
+
+  it('requires the same unique physical extreme on both sides', () => {
+    const reordered = diffPair(
+      edgeSpec([
+        edgeSpecChild('7:17', 'First copy', 80),
+        edgeSpecChild('7:18', 'Second copy', 100),
+      ]),
+      edgeDom([
+        edgeDomChild('Second copy', 10, ':nth-child(1)'),
+        edgeDomChild('First copy', 20, ':nth-child(2)'),
+      ]),
+      { tolerancePx: 1 },
+    );
+    const tied = diffPair(
+      edgeSpec([
+        edgeSpecChild('7:19', 'Tied copy A', 80),
+        edgeSpecChild('7:20', 'Tied copy B', 80),
+      ]),
+      edgeDom([
+        edgeDomChild('Tied copy A', 20, ':nth-child(1)'),
+        edgeDomChild('Tied copy B', 40, ':nth-child(2)'),
+      ]),
+      { tolerancePx: 1 },
+    );
+
+    expect(rowsDiagnostic(reordered, 'padding-top')).toBeUndefined();
+    expect(rowsDiagnostic(tied, 'padding-top')).toBeUndefined();
+  });
+
+  it('requires finite child scale and a surviving final fail', () => {
+    const nonfinite = diffPair(
+      edgeSpec([edgeSpecChild('7:21', 'Unbounded copy', 80, Number.NaN)]),
+      edgeDom([edgeDomChild('Unbounded copy', 20, ':nth-child(1)')]),
+      { tolerancePx: 1 },
+    );
+    const matching = diffPair(
+      edgeSpec([edgeSpecChild('7:22', 'Matching copy', 20)]),
+      edgeDom([edgeDomChild('Matching copy', 20, ':nth-child(1)')]),
+      { tolerancePx: 1 },
+    );
+    const distributedSpec = edgeSpec([edgeSpecChild('7:23', 'Distributed copy', 80)]);
+    distributedSpec.autoLayout = { ...distributedSpec.autoLayout!, primaryAlign: 'MAX' };
+    const distributedDom = edgeDom([edgeDomChild('Distributed copy', 20, ':nth-child(1)')]);
+    distributedDom.styles = { display: 'flex', justifyContent: 'flex-end' };
+    const distributed = diffPair(distributedSpec, distributedDom, { tolerancePx: 1 });
+
+    expect(nonfinite.filter((r) => r.diagnostic?.kind === 'likely_misplaced_child')).toEqual([]);
+    expect(matching.find((r) => r.prop === 'padding-top')).toMatchObject({ status: 'pass' });
+    expect(matching.filter((r) => r.diagnostic?.kind === 'likely_misplaced_child')).toEqual([]);
+    const distributedStart = distributed.find((r) => r.prop === 'padding-top');
+    expect(distributedStart).toMatchObject({ status: 'demoted' });
+    expect(distributedStart?.diagnostic).toBeUndefined();
+  });
+
+  it('never attaches the main-edge diagnosis to offset-cross', () => {
+    const domChild = edgeDomChild('Cross copy', 20, ':nth-child(1)');
+    domChild.rect.x = 50;
+    const rows = diffPair(
+      edgeSpec([edgeSpecChild('7:24', 'Cross copy', 20)]),
+      edgeDom([domChild]),
+      { tolerancePx: 1 },
+    );
+
+    const cross = rows.find((r) => r.prop.startsWith('offset-cross'));
+    expect(cross).toMatchObject({ status: 'fail' });
+    expect(cross?.diagnostic).toBeUndefined();
+    expect(rows.filter((r) => r.diagnostic?.kind === 'likely_misplaced_child')).toEqual([]);
+  });
+
+  it('requires an addressable DOM path and stays off in DOM-to-DOM mode', () => {
+    const withoutPath = diffPair(
+      edgeSpec([edgeSpecChild('7:9', 'Address copy', 80)]),
+      edgeDom([edgeDomChild('Address copy', 20, undefined)]),
+      { tolerancePx: 1 },
+    );
+    const domDom = diffPair(
+      edgeSpec([edgeSpecChild('7:9', 'Address copy', 80)]),
+      edgeDom([edgeDomChild('Address copy', 20, ':nth-child(1)')]),
+      { tolerancePx: 1, sides: 'dom-dom' },
+    );
+
+    expect(withoutPath.filter((r) => r.diagnostic?.kind === 'likely_misplaced_child')).toEqual([]);
+    expect(domDom.filter((r) => r.diagnostic?.kind === 'likely_misplaced_child')).toEqual([]);
+  });
+
+  function rowsDiagnostic(rows: ReturnType<typeof diffPair>, prop: string) {
+    return rows.find((r) => r.prop === prop)?.diagnostic;
+  }
 });
 
 describe('diffPair — children_reorder (equal-count mis-order)', () => {

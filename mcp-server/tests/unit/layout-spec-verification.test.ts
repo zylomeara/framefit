@@ -7,9 +7,9 @@ import type { LayoutSpec, SpecChild, DiffRow, PairResult, PairSummary, SpecRect,
 // Fixtures: frameCoverage reads children/childrenTruncated/node.id/axis/type; SpecChild — id/children.
 // figWorthy = (children.length ?? 0) !== 1 → a leaf (0 children) is worthy; a 1-child wrapper unwraps.
 // axis is set on the CONTAINER so partial spacing is raised (gated on auto-layout); type — for decor leaves.
-type ScOpts = { axis?: 'row' | 'col'; truncated?: boolean; type?: string; imageFill?: boolean; cause?: 'depth' | 'breadth' | 'budget' };
+type ScOpts = { axis?: 'row' | 'col'; truncated?: boolean; type?: string; imageFill?: boolean; cause?: 'depth' | 'breadth' | 'budget'; size?: { w: number; h: number } };
 const sc = (id: string, children?: SpecChild[], opts: ScOpts = {}): SpecChild =>
-  ({ id, name: id, type: opts.type ?? 'FRAME', rect: { x: 0, y: 0, w: 10, h: 10 },
+  ({ id, name: id, type: opts.type ?? 'FRAME', rect: { x: 0, y: 0, w: opts.size?.w ?? 10, h: opts.size?.h ?? 10 },
     ...(opts.axis ? { axis: opts.axis } : {}), ...(opts.imageFill ? { imageFill: true } : {}),
     ...(children ? { children } : {}), ...(opts.truncated ? { childrenTruncated: true } : {}),
     ...(opts.cause ? { truncationCause: opts.cause } : {}) }) as SpecChild;
@@ -45,6 +45,36 @@ describe('frameCoverage — frame-coverage frontier (thread A)', () => {
     expect(fc.covered).toBe(1);
     expect(fc.uncovered).toEqual(['c2']); // the sibling isn't verified — used to be silently "covered"
     expect(fc.partial).toEqual([]); // only 1 child paired — no between-spacing
+  });
+
+  it('a deep pair covers descendant content but leaves the worthy container own layout unverified', () => {
+    const label = sc('label', undefined, { type: 'TEXT', size: { w: 24, h: 8 } });
+    const container = sc('control', [label], { axis: 'col', size: { w: 40, h: 20 } });
+    const fc = frameCoverage(frame([container]), ids('label'), meta());
+
+    expect(fc.covered).toBe(1);
+    expect(fc.uncovered).toEqual([]);
+    expect(fc.partial).toEqual([]);
+    expect(fc.unverified_containers).toEqual(['control']);
+  });
+
+  it('an effective pair on the worthy container clears its own-layout requirement', () => {
+    const label = sc('label', undefined, { type: 'TEXT', size: { w: 24, h: 8 } });
+    const container = sc('control', [label], { axis: 'col', size: { w: 40, h: 20 } });
+    const fc = frameCoverage(frame([container]), ids('control', 'label'), meta());
+
+    expect(fc).not.toHaveProperty('unverified_containers');
+    expect(fc).toMatchObject({ worthy: 1, covered: 1, uncovered: [], partial: [] });
+  });
+
+  it('each nested worthy ancestor needs an effective pair on its own chain', () => {
+    const label = sc('copy', undefined, { type: 'TEXT', size: { w: 20, h: 8 } });
+    const inner = sc('inner', [label], { size: { w: 48, h: 20 } });
+    const outer = sc('outer', [inner], { size: { w: 80, h: 40 } });
+    const fc = frameCoverage(frame([outer]), ids('copy'), meta());
+
+    expect(fc).toMatchObject({ covered: 1, uncovered: [], partial: [] });
+    expect(fc.unverified_containers).toEqual(['inner', 'outer']);
   });
 
   it('#1 RECURSION: a spacing hole on a NESTED container (A,B under W under R) + an uncovered sibling Z', () => {
@@ -93,10 +123,11 @@ describe('frameCoverage — frame-coverage frontier (thread A)', () => {
     expect(fc.enumeration_truncated).toBe(true);
   });
 
-  it('childrenTruncated on a partial region → enumeration_truncated (siblings could have been missed)', () => {
+  it('childrenTruncated on a partial region keeps both enumeration and own-container debt visible', () => {
     const fc = frameCoverage(frame([sc('R', [sc('c1'), sc('c2')], { axis: 'row', truncated: true })]), ids('c1', 'c2'), meta());
     expect(fc.enumeration_truncated).toBe(true);
     expect(fc.partial).toEqual(['R']);
+    expect(fc.unverified_containers).toEqual(['R']);
   });
 
   it('#5/#6/#7 UNWRAP BOUNDARY: a pair on the WRAPPER W (not on the unwrapped X) → region covered, not uncovered', () => {
@@ -165,6 +196,63 @@ describe('buildVerification — receipt assembly + blocking', () => {
     expect(v.complete).toBe(true);
     expect(v.scope).toBe('frame');
     expect(v.frame_coverage).toMatchObject({ worthy: 2, covered: 2 });
+  });
+
+  it('a clean deep pair cannot complete the frame while its worthy container is unpaired', () => {
+    const label = sc('label', undefined, { type: 'TEXT', size: { w: 24, h: 8 } });
+    const container = sc('control', [label], { axis: 'col', size: { w: 40, h: 20 } });
+    const v = buildVerification([pair('label', [pass('size.w')])], {
+      frame: frame([container]), depthLevels: 4, enumeration: { depth: 4, source: 'pair_fetch' },
+    });
+
+    expect(v.frame_coverage).toMatchObject({
+      worthy: 1, covered: 1, uncovered: [], partial: [], unverified_containers: ['control'],
+    });
+    expect(v.complete).toBe(false);
+    expect(v.blocking).toContainEqual(expect.objectContaining({
+      kind: 'unverified_container', action: 'add_container_pair', node_id: 'control',
+    }));
+  });
+
+  it('a clean container pair plus its clean label pair can complete the frame', () => {
+    const label = sc('label', undefined, { type: 'TEXT', size: { w: 24, h: 8 } });
+    const container = sc('control', [label], { axis: 'col', size: { w: 40, h: 20 } });
+    const v = buildVerification([
+      pair('control', [pass('size.w')]), pair('label', [pass('size.w')]),
+    ], {
+      frame: frame([container]), depthLevels: 4, enumeration: { depth: 4, source: 'pair_fetch' },
+    });
+
+    expect(v.frame_coverage).not.toHaveProperty('unverified_containers');
+    expect(v).toMatchObject({ complete: true, blocking: [] });
+  });
+
+  it('an effective pair on an accepted unwrap-chain member verifies the region', () => {
+    const label = sc('wrapped-label', undefined, { type: 'TEXT' });
+    const wrapper = sc('pass-through', [label]);
+    const v = buildVerification([pair('pass-through', [pass('size.w')])], {
+      frame: frame([wrapper]), depthLevels: 4, enumeration: { depth: 4, source: 'pair_fetch' },
+    });
+
+    expect(v.frame_coverage).not.toHaveProperty('unverified_containers');
+    expect(v).toMatchObject({ complete: true, blocking: [] });
+  });
+
+  it('an ineffective ancestor pair does not clear own-container debt', () => {
+    const label = sc('deep-copy', undefined, { type: 'TEXT', size: { w: 20, h: 8 } });
+    const container = sc('panel', [label], { size: { w: 60, h: 24 } });
+    const v = buildVerification([
+      pair('panel', [{ prop: 'node', status: 'warn', note: 'not found' }]),
+      pair('deep-copy', [pass('size.w')]),
+    ], {
+      frame: frame([container]), depthLevels: 4, enumeration: { depth: 4, source: 'pair_fetch' },
+    });
+
+    expect(v.frame_coverage?.unverified_containers).toEqual(['panel']);
+    expect(v.blocking).toContainEqual(expect.objectContaining({
+      kind: 'unverified_container', action: 'add_container_pair', node_id: 'panel',
+    }));
+    expect(v.complete).toBe(false);
   });
 
   it('structure_mismatch → complete=false, blocking add_pairs_on_children', () => {
@@ -236,6 +324,90 @@ describe('buildVerification — receipt assembly + blocking', () => {
     expect(v.pairs.clean).toBe(0);
   });
 
+  it('a diagnosed edge child creates one child-addressed add_pair blocker with a composed selector', () => {
+    const diagnostic: NonNullable<DiffRow['diagnostic']> = {
+      kind: 'likely_misplaced_child', edge: 'start', direction: 'away_from_start',
+      child: { figma_node_id: 'child-A', figma_index: 0, dom_index: 1, dom_path: '> :nth-child(2)' },
+    };
+    const rows: DiffRow[] = [
+      { prop: 'padding-top', figma: 80, dom: 20, delta: 60, status: 'fail', diagnostic },
+      { prop: 'padding-bottom', figma: 70, dom: 10, delta: 60, status: 'fail', diagnostic },
+    ];
+
+    const v = buildVerification([pair('parent', rows, '.card, .panel')], { depthLevels: 4 });
+
+    expect(v.blocking).toEqual([expect.objectContaining({
+      kind: 'likely_misplaced_child', action: 'add_pair', node_id: 'child-A',
+      selector: ':is(.card, .panel) > :nth-child(2)',
+    })]);
+  });
+
+  it('suppresses the child action when that Figma child already has an effective submitted pair', () => {
+    const diagnostic: NonNullable<DiffRow['diagnostic']> = {
+      kind: 'likely_misplaced_child', edge: 'start', direction: 'toward_start',
+      child: { figma_node_id: 'child-B', figma_index: 0, dom_index: 0, dom_path: '> :nth-child(1)' },
+    };
+    const parent = pair('parent', [
+      { prop: 'padding-top', figma: 10, dom: 70, delta: 60, status: 'fail', diagnostic },
+    ], '.card');
+
+    const v = buildVerification([parent, pair('child-B', [pass('size.w')], '.card > :nth-child(1)')], {
+      depthLevels: 4,
+    });
+
+    expect(v.blocking.some((b) => b.kind === 'likely_misplaced_child')).toBe(false);
+  });
+
+  it('does not emit an unsafe child selector from noncanonical or blank address parts', () => {
+    const diagnosticPair = (selector: string, domPath: string): PairResult =>
+      pair('7:2', [{
+        prop: 'padding-top',
+        figma: 20,
+        dom: 0,
+        delta: 20,
+        status: 'fail',
+        diagnostic: {
+          kind: 'likely_misplaced_child',
+          edge: 'start',
+          direction: 'away_from_start',
+          child: {
+            figma_node_id: '7:3',
+            figma_index: 0,
+            dom_index: 0,
+            dom_path: domPath,
+          },
+        },
+      }], selector);
+    const unsafe = [
+      diagnosticPair('   ', '> :nth-child(1)'),
+      diagnosticPair('.root', '   '),
+      diagnosticPair('.root', '> :nth-child(1), body'),
+      diagnosticPair(
+        '.root',
+        Array.from({ length: 200 }, () => '> :nth-child(1)').join(' '),
+      ),
+    ];
+
+    for (const candidate of unsafe) {
+      expect(buildVerification([candidate], { depthLevels: 4 }).blocking)
+        .not.toContainEqual(expect.objectContaining({
+          kind: 'likely_misplaced_child',
+        }));
+    }
+  });
+
+  it('does not mint an add_pair action without the capture-root selector', () => {
+    const diagnostic: NonNullable<DiffRow['diagnostic']> = {
+      kind: 'likely_misplaced_child', edge: 'end', direction: 'toward_end',
+      child: { figma_node_id: 'child-C', figma_index: 0, dom_index: 0, dom_path: '> :nth-child(1)' },
+    };
+    const v = buildVerification([pair('parent', [
+      { prop: 'padding-bottom', figma: 10, dom: 70, delta: 60, status: 'fail', diagnostic },
+    ])], { depthLevels: 4 });
+
+    expect(v.blocking.some((b) => b.kind === 'likely_misplaced_child')).toBe(false);
+  });
+
   it('fail → complete=false, blocking EMPTY (a defect is fixed from the ❌ rows, not through coverage)', () => {
     const v = buildVerification([pair('A', [{ prop: 'gap[0]', figma: 8, dom: 48, delta: 40, status: 'fail' }])],
       { depthLevels: 4 });
@@ -263,11 +435,13 @@ describe('buildVerification — receipt assembly + blocking', () => {
     expect(v.blocking).toContainEqual(expect.objectContaining({ kind: 'uncovered_region', action: 'add_pair', node_id: 'B' }));
   });
 
-  it('a frame spacing hole → blocking unchecked_spacing/add_container_pair', () => {
+  it('a frame spacing hole uses the existing container-pair blocker without duplicating own-layout debt', () => {
     const v = buildVerification([pair('c1', [pass('size.w')]), pair('c2', [pass('size.w')])],
       { frame: frame([sc('R', [sc('c1'), sc('c2')], { axis: 'row' })]), depthLevels: 4, enumeration: { depth: 4, source: 'pair_fetch' } });
     expect(v.complete).toBe(false);
     expect(v.blocking).toContainEqual(expect.objectContaining({ kind: 'unchecked_spacing', action: 'add_container_pair', node_id: 'R' }));
+    expect(v.blocking.filter((b) => b.node_id === 'R' && b.action === 'add_container_pair')).toHaveLength(1);
+    expect(v.blocking.some((b) => b.kind === 'unverified_container' && b.node_id === 'R')).toBe(false);
   });
 
   it('frame enumeration truncated → blocking children_truncated + complete=false EVEN with clean pairs', () => {
@@ -307,6 +481,24 @@ describe('buildVerification — receipt assembly + blocking', () => {
     const v = buildVerification([pair('r0', [pass('size.w')])], { frame: frame(regions), depthLevels: 4, enumeration: { depth: 4, source: 'pair_fetch' } });
     expect(v.blocking.length).toBe(40);      // BLOCKING_CAP
     expect(v.blocking_capped).toBeGreaterThan(0);
+    expect(v.complete).toBe(false);
+  });
+
+  it('unverified-container truth uses uncapped debt while JSON and blockers stay bounded', () => {
+    const regions = Array.from({ length: 65 }, (_, i) => {
+      const label = sc(`label-${i}`, undefined, { type: 'TEXT', size: { w: 20, h: 8 } });
+      return sc(`container-${i}`, [label], { size: { w: 48, h: 20 } });
+    });
+    const pairs = Array.from({ length: 65 }, (_, i) => pair(`label-${i}`, [pass('size.w')]));
+    const v = buildVerification(pairs, {
+      frame: frame(regions), depthLevels: 4, enumeration: { depth: 4, source: 'pair_fetch' },
+    });
+
+    expect(v.frame_coverage?.unverified_containers).toHaveLength(60);
+    expect(v.frame_coverage?.unverified_containers_capped).toBe(5);
+    expect(v.blocking).toHaveLength(40);
+    expect(v.blocking_capped).toBe(25);
+    expect(v.blocking.every((b) => b.kind === 'unverified_container')).toBe(true);
     expect(v.complete).toBe(false);
   });
 });
@@ -731,7 +923,7 @@ describe('buildVerification — spacing_audit wiring', () => {
     ...(ref !== undefined ? { ref } : {}), rect: r, geometryUnchecked: opts.geometryUnchecked ?? false,
   });
 
-  it('T5-1: container L (col), A↔B paired with matching rects → spacing_audit pass, unchecked_spacing NOT emitted for L', () => {
+  it('T5-1: clean spacing is not enough to verify the unpaired container insets', () => {
     const A = scR('A', rect(0, 0));
     const B = scR('B', rect(0, 20));
     const L = sc('L', [A, B], { axis: 'col' });
@@ -751,7 +943,11 @@ describe('buildVerification — spacing_audit wiring', () => {
     expect(v.spacing_audit).toEqual([
       { container_id: 'L', axis: 'col', gaps: [{ between: ['A', 'B'], figma: 10, dom: 10, delta: 0, status: 'pass' }], insets_unverified: true, fully_clean: true },
     ]);
-    expect(v.blocking.some((b) => b.node_id === 'L')).toBe(false); // suppressed — the audit explains itself
+    expect(v.blocking).toContainEqual(expect.objectContaining({
+      kind: 'unverified_container',
+      action: 'add_container_pair',
+      node_id: 'L',
+    }));
     // INSETS-INVARIANT MUTATION LOCK: complete MUST stay false even when the audit of L is fully clean.
     // L's insets (the container's padding) are NOT proven by the audit (insets_unverified:true) — "clearing"
     // complete here (e.g. "since the audit is clean, partial is closed") would be a frame-level false green.
@@ -969,7 +1165,9 @@ describe('buildVerification — blocking priority order', () => {
     expect(iUnchecked).toBeLessThan(iSkip);
   });
 
-  it('rankOf directly: an unknown future kind → mid rank 8 (not silently sunk into the tail)', () => {
+  it('rankOf directly: child diagnosis has explicit rank 7; unknown and unverified container stay at rank 8', () => {
+    expect(rankOf({ kind: 'likely_misplaced_child', action: 'add_pair', detail: '' } as BlockingItem)).toBe(7);
+    expect(rankOf({ kind: 'unverified_container', action: 'add_container_pair', detail: '' } as BlockingItem)).toBe(8);
     expect(rankOf({ kind: 'future_kind_x', action: 'noop', detail: '' } as BlockingItem)).toBe(8);
     expect(rankOf({ kind: 'skip', action: 'resolve_skip', detail: '' } as BlockingItem)).toBe(10);
   });
@@ -1121,6 +1319,10 @@ describe('exclude_regions', () => {
     // P is covered THROUGH the excluded-but-paired child; B2 and D2 keep their demands.
     expect(v.frame_coverage?.uncovered.sort()).toEqual(['B2', 'D2']);
     expect(v.frame_coverage?.covered).toBe(1);
+    expect(v.frame_coverage?.unverified_containers).toEqual(['P']);
+    expect(v.blocking).toContainEqual(expect.objectContaining({
+      kind: 'unverified_container', action: 'add_container_pair', node_id: 'P',
+    }));
   });
 
   it('wrapper chain: excluding the wrapper id excludes the region, excluded[] carries the terminal id', () => {

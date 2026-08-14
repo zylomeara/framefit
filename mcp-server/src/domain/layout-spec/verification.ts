@@ -6,6 +6,7 @@ import type { PairResult, LayoutSpec, SpecChild, DiffRow, BlockingItem, FrameCov
 import { coverageHoleRows, dimensionOf, gatingReviewRow } from './diff.js';
 import { figWorthy } from './pair-matcher.js';
 import { auditContainer } from './spacing-audit.js';
+import { domSelector } from './dom-selector.js';
 import { normalizeCompoundNodeId } from '../node-id.js';
 
 const norm = (id: string): string => normalizeCompoundNodeId(id);
@@ -15,6 +16,9 @@ const BLOCKING_CAP = 40; // response-budget guard: truncate a LONG JSON list (co
 // transport budget (BLOCKING_CAP caps the aggregate's items, but not the places WITHIN one item). places is
 // capped mirroring capList (60) — the detailed tail lives in an honest "×N places" counter, not silently gone.
 const PLACES_CAP = 60;
+// Child selectors are repeated in verification JSON and Markdown before pair clamping. Keep this
+// category to one fifth of the default transport budget; blocking_capped reports every withheld action.
+const DIAGNOSED_SELECTOR_CHARS_CAP = 8_000;
 
 // SURVIVAL priority under the caps (residual of the two tail caps): both tail caps (BLOCKING_CAP=40
 // here, CAP=15 in report.ts) inherit list order — sorting at the source fixes both mirrors at once. Lower =
@@ -35,9 +39,11 @@ export function rankOf(b: BlockingItem): number {
     case 'not_found': return 4;
     case 'structure_mismatch': return 5;
     case 'children_truncated': return 6;
+    case 'likely_misplaced_child': return 7;
     case 'unconfirmed_token': return b.places !== undefined ? 7 : 8;
     case 'uncovered_region': return b.count !== undefined ? 7 : 8;
-    case 'unchecked_spacing': return 8;
+    case 'unchecked_spacing':
+    case 'unverified_container': return 8;
     case 'viewport':
     case 'truncated_text': return 9; // only a valid viewport aggregate leaves these at 9; non-aggregated viewport rows are promoted contextually below
     case 'skip': return 10;
@@ -99,7 +105,7 @@ function worthyRegions(children: SpecChild[] | undefined): Region[] {
 interface UncoveredMeta { id: string; parentId: string; sig: string }
 interface PartialContainerMeta { containerId: string; axis: 'row' | 'col'; kids: Region[] }
 interface Acc {
-  uncovered: string[]; partial: string[]; truncated: boolean;
+  uncovered: string[]; partial: string[]; unverifiedContainers: string[]; truncated: boolean;
   causes: Set<'depth' | 'breadth' | 'budget'>;
   uncoveredMeta: UncoveredMeta[];
   partialContainers: PartialContainerMeta[];
@@ -114,7 +120,7 @@ interface WalkResult { touched: boolean; truncated: boolean }
 // are discarded for excluded branches. collect=false inside an already-excluded subtree: nested
 // matches register as "found" but do not add redundant excluded[] entries under their ancestor.
 interface ExCtx { ids: Set<string>; matched: Set<string>; excluded: string[]; collect: boolean }
-const throwawayAcc = (): Acc => ({ uncovered: [], partial: [], truncated: false,
+const throwawayAcc = (): Acc => ({ uncovered: [], partial: [], unverifiedContainers: [], truncated: false,
   causes: new Set(), uncoveredMeta: [], partialContainers: [] });
 
 // Recursive walk of a region's worthy subtree. touched = some pair landed inside the subtree.
@@ -170,6 +176,7 @@ function walk(region: Region, pairIds: Set<string>, acc: Acc, ex?: ExCtx): WalkR
       acc.uncoveredMeta.push({ id, parentId: norm(region.node.id), sig: `${x.k.node.type}|${x.k.node.name}` });
     }
   }
+  acc.unverifiedContainers.push(norm(region.node.id));
   return { touched: true, truncated: subtreeTrunc };
 }
 
@@ -185,12 +192,16 @@ export function frameCoverageDetailed(frame: LayoutSpec, pairIds: Set<string>, e
   coverage: FrameCoverage;
   uncoveredMeta: Array<{ id: string; parentId: string; sig: string }>;
   partialDetails: Array<{ containerId: string; axis: 'row' | 'col'; kids: Array<{ child: SpecChild; pairedId?: string; pairedNode?: SpecChild }> }>;
+  unverifiedContainers: string[];
 } {
   const regions = worthyRegions(frame.children);
   const causes = new Set<'depth' | 'breadth' | 'budget'>();
   // the frame root — the second (and last) point where childrenTruncated is read on a SPECIFIC node.
   if (frame.childrenTruncated === true) causes.add(frame.truncationCause ?? 'depth');
-  const acc: Acc = { uncovered: [], partial: [], truncated: frame.childrenTruncated === true, causes, uncoveredMeta: [], partialContainers: [] };
+  const acc: Acc = {
+    uncovered: [], partial: [], unverifiedContainers: [],
+    truncated: frame.childrenTruncated === true, causes, uncoveredMeta: [], partialContainers: [],
+  };
   let covered = 0;
   let touchedTop = 0;
   let excludedTop = 0;
@@ -230,15 +241,19 @@ export function frameCoverageDetailed(frame: LayoutSpec, pairIds: Set<string>, e
 
   const uncoveredCap = capList(acc.uncovered);
   const partialCap = capList(acc.partial);
+  const unverifiedContainers = [...new Set(acc.unverifiedContainers)];
+  const unverifiedCap = capList(unverifiedContainers);
   const coverage: FrameCoverage = {
     // worthy counts DEMANDED regions only — an excluded one leaves the denominator honestly,
     // instead of standing in it forever-uncovered. No cap on excluded[]: the input's 50-per-call
     // limit bounds it (a server cap here would be a threshold the population cannot reach).
     worthy: regions.length - excludedTop, covered, uncovered: uncoveredCap.list, partial: partialCap.list,
+    ...(unverifiedCap.list.length ? { unverified_containers: unverifiedCap.list } : {}),
     ...(ex && ex.excluded.length ? { excluded: ex.excluded } : {}),
     enumeration_truncated: acc.truncated,
     ...(uncoveredCap.capped !== undefined ? { uncovered_capped: uncoveredCap.capped } : {}),
     ...(partialCap.capped !== undefined ? { partial_capped: partialCap.capped } : {}),
+    ...(unverifiedCap.capped !== undefined ? { unverified_containers_capped: unverifiedCap.capped } : {}),
     enumeration_depth: enumMeta.depth, enumeration_source: enumMeta.source,
     ...(acc.causes.size > 0 ? { enumeration_causes: [...acc.causes] } : {}),
   };
@@ -251,7 +266,7 @@ export function frameCoverageDetailed(frame: LayoutSpec, pairIds: Set<string>, e
       return { child: k.origChild, ...(idx !== -1 ? { pairedId: k.chainIds[idx], pairedNode: k.chainNodes[idx] } : {}) };
     }),
   }));
-  return { coverage, uncoveredMeta: acc.uncoveredMeta, partialDetails };
+  return { coverage, uncoveredMeta: acc.uncoveredMeta, partialDetails, unverifiedContainers };
 }
 
 // Frame coverage: the frame's worthy regions vs the submitted (effective) pairs. Recursive — it catches
@@ -392,6 +407,10 @@ export function buildVerification(pairs: PairResult[], opts: {
   // together), axis-2 by reason for token-less rows (the vars-unavailable flood is the main live offender).
   // Rows with neither label — the prior direct push (legacy branches lose nothing).
   const tokenGroups = new Map<string, { places: { node_id: string; selector?: string; prop: string }[]; reasons: Map<string, number>; firstNote: string; domTokens: Set<string> }>();
+  const effectivePairIds = new Set(pairs.filter(pairIsEffective).map((p) => norm(p.node_id)));
+  const diagnosedChildren = new Set<string>();
+  let diagnosedSelectorChars = 0;
+  let diagnosedChildrenCapped = 0;
   for (const p of pairs) {
     const holes = coverageHoleRows(p.rows);
     // Matched-value review rows are advisory (gatingReviewRow = rowValuesMatched + the ONE
@@ -421,6 +440,28 @@ export function buildVerification(pairs: PairResult[], opts: {
       blocking.push(holeToBlocking(h, p, opts.depthLevels));
     }
     for (const r of p.rows) if (r.status === 'unchecked') blocking.push(uncheckedToBlocking(r, p, opts.depthLevels));
+    for (const r of p.rows) {
+      const diagnostic = r.diagnostic;
+      if (r.status !== 'fail' || diagnostic?.kind !== 'likely_misplaced_child') continue;
+      const childId = norm(diagnostic.child.figma_node_id);
+      if (effectivePairIds.has(childId)) continue;
+      const selector = domSelector(p.selector, diagnostic.child.dom_path);
+      if (!selector) continue;
+      const key = JSON.stringify([childId, diagnostic.child.dom_path]);
+      if (diagnosedChildren.has(key)) continue;
+      diagnosedChildren.add(key);
+      const selectorChars = JSON.stringify(selector).length;
+      if (diagnosedSelectorChars + selectorChars > DIAGNOSED_SELECTOR_CHARS_CAP) {
+        diagnosedChildrenCapped += 1;
+        continue;
+      }
+      diagnosedSelectorChars += selectorChars;
+      blocking.push({
+        kind: 'likely_misplaced_child', node_id: diagnostic.child.figma_node_id, selector,
+        action: 'add_pair',
+        detail: `${r.prop}: the confidently matched edge child is displaced; ${diagnostic.direction.replaceAll('_', ' ')} - add this child pair before editing the parent padding`,
+      });
+    }
     for (const r of p.rows) if (r.status === 'review') {
       if (!gatingReviewRow(r)) continue; // advisory — see anyReview above
       const key = (r.token && r.token !== '(paint)') ? `tok:${r.token}` : r.tokenReason ? `rsn:${r.tokenReason}` : undefined;
@@ -575,6 +616,16 @@ export function buildVerification(pairs: PairResult[], opts: {
 
       blocking.push({ kind: 'unchecked_spacing', node_id: d.containerId, action: 'add_container_pair', detail: 'children paired, container not — spacing BETWEEN children is not verified; add a pair on the container' });
     }
+    const containerPairBlockers = new Set(blocking
+      .filter((b) => (b.kind === 'spacing_mismatch' || b.kind === 'unchecked_spacing') && b.node_id)
+      .map((b) => norm(b.node_id!)));
+    for (const id of detailed.unverifiedContainers) {
+      if (containerPairBlockers.has(id)) continue;
+      blocking.push({
+        kind: 'unverified_container', node_id: id, action: 'add_container_pair',
+        detail: 'descendant content is paired, but this container\'s own layout and insets are not verified',
+      });
+    }
     // Advice on enumeration_truncated — cause/source-aware (raise_max_depth is valid
     // ONLY when enumeration went by pair-fetch below the cap AND the cause is depth — then raising max_depth
     // really deepens the enumeration. The deep path is fixed at 8 → raise lies; budget/breadth don't depend on
@@ -596,7 +647,10 @@ export function buildVerification(pairs: PairResult[], opts: {
     }
     // The caps (uncovered/partial truncated in .coverage to 60) do NOT affect complete — we compute it from
     // the UNTRUNCATED channels (uncoveredMeta/partialDetails parallel acc.* BEFORE capList).
-    frameComplete = detailed.uncoveredMeta.length === 0 && detailed.partialDetails.length === 0 && !frame_coverage.enumeration_truncated;
+    frameComplete = detailed.uncoveredMeta.length === 0
+      && detailed.partialDetails.length === 0
+      && detailed.unverifiedContainers.length === 0
+      && !frame_coverage.enumeration_truncated;
   } else if (opts.frameRequested) {
     // frame_node_id is given, but the frame wasn't found in the file (#10): do NOT silently downgrade to pairs + green
     blocking.push({ kind: 'frame_missing', action: 'fix_frame_id', detail: 'frame_node_id given, but the frame node was not found in the file — frame coverage not checked; check the id' });
@@ -645,7 +699,7 @@ export function buildVerification(pairs: PairResult[], opts: {
   blocking.sort((a, b) =>
     (promoteViewportRows && a.kind === 'viewport' ? 8 : rankOf(a))
     - (promoteViewportRows && b.kind === 'viewport' ? 8 : rankOf(b)));
-  const capped = Math.max(0, blocking.length - BLOCKING_CAP);
+  const capped = Math.max(0, blocking.length - BLOCKING_CAP) + diagnosedChildrenCapped;
 
   const dominant_blocker = oneViewportCause
     ? { kind: 'viewport' as const, pairs: vpRows.length, window: firstVp.dom as number, frame: firstVp.figma as number }

@@ -128,6 +128,19 @@ function renderProfileSkips(p: PairResult): string[] {
   return [`⏭ outside profile scope: ${dims} — verify with the token-aware/strict profile`];
 }
 
+function cleanAuditInsetOnlyCount(
+  v: VerificationReceipt | undefined,
+  frameNodeId?: string,
+): number {
+  const cov = v?.frame_coverage;
+  const ownDebt = new Set(cov?.unverified_containers ?? []);
+  const ownDebtListCapped = (cov?.unverified_containers_capped ?? 0) > 0;
+  return (v?.spacing_audit ?? []).filter((entry) =>
+    entry.fully_clean === true
+      && !ownDebt.has(entry.container_id)
+      && (!ownDebtListCapped || entry.container_id === frameNodeId)).length;
+}
+
 export function renderReport(input: {
   // dom-dom (#9, compare_dom_to_dom): label-based identity. headerLine replaces the whole
   // "Verified against Figma (file ...)" line (there is no Figma file), sideLabels rename the
@@ -249,15 +262,22 @@ export function renderReport(input: {
     // PROSE was lying about the count).
     const uncoveredTotal = fc.uncovered.length + (fc.uncovered_capped ?? 0);
     const partialTotal = fc.partial.length + (fc.partial_capped ?? 0);
+    const unverifiedContainerTotal = (fc.unverified_containers?.length ?? 0)
+      + (fc.unverified_containers_capped ?? 0);
     // Final hardening: a partial container whose spacing_audit came back
     // fully_clean HAD its between-children gaps verified (and they passed) — counting it under "unpaired
     // (spacing between children)" mis-attributes an insets-only remainder as an unverified spacing
     // question. Subtract fully_clean containers from that line and give them their own honest line.
     const fullyCleanCount = (input.verification?.spacing_audit ?? []).filter((e) => e.fully_clean).length;
+    const insetOnlyCleanCount = cleanAuditInsetOnlyCount(
+      input.verification,
+      input.frame?.node_id,
+    );
     const partialUnverified = partialTotal - fullyCleanCount;
     if (uncoveredTotal > 0) notVerified.push(`${uncoveredTotal} frame region(s) unpaired`);
     if (partialUnverified > 0) notVerified.push(`${partialUnverified} container(s) unpaired (spacing between children)`);
-    if (fullyCleanCount > 0) notVerified.push(`insets of ${fullyCleanCount} container(s) not verified (between-children gaps clean per audit)`);
+    if (unverifiedContainerTotal > 0) notVerified.push(`own layout/insets of ${unverifiedContainerTotal} container(s) not verified`);
+    if (insetOnlyCleanCount > 0) notVerified.push(`insets of ${insetOnlyCleanCount} container(s) not verified (between-children gaps clean per audit)`);
     if (fc.enumeration_truncated) notVerified.push('frame children enumeration truncated');
   }
   // total here — only over kept (shown) pairs, whereas verification is built over ALL results (before the
@@ -282,7 +302,12 @@ export function renderReport(input: {
         ? `no defects found, but CHECK INCOMPLETE: ${notVerified.join(', ') || 'see verification.blocking'} — do NOT treat as green, verify visually`
         : 'no discrepancies above tolerance';
   lines.push(`Total: ✅${total.pass} ❌${total.fail}${demTotal}${unchTotal}${revTotal} ⚠️${total.warn} ⏭${total.skip} ℹ️${total.info} — ${verdict}`);
-  const vBlock = renderVerification(input.verification, input.omittedFailPairs, total.fail);
+  const vBlock = renderVerification(
+    input.verification,
+    input.omittedFailPairs,
+    total.fail,
+    input.frame?.node_id,
+  );
   if (vBlock.length) lines.push('', ...vBlock);
   for (const d of input.degradedStages ?? []) {
     // A REPLAYED failure cost this call nothing: the negative cache answered from an earlier attempt,
@@ -327,7 +352,12 @@ function renderSpacingAudit(entries: SpacingAuditEntry[] | undefined): string[] 
 // A1: human-readable "Check" block (R3 hybrid — structured verification.blocking in JSON, prose here).
 // complete=false with an empty blocking = only inherent caveats remain (demoted) → verify visually, no auto
 // actions (anti-cry-wolf: we don't push the AI to "fix" the unfixable).
-function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number, totalFail?: number): string[] {
+function renderVerification(
+  v?: VerificationReceipt,
+  omittedFailPairs?: number,
+  totalFail?: number,
+  frameNodeId?: string,
+): string[] {
   if (!v) return [];
   const cov = v.frame_coverage;
   const scopeNote = v.scope === 'frame'
@@ -358,14 +388,18 @@ function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number, 
   // treatment as renderReport's notVerified above — this is the SECOND prose point reading the same
   // capped .length / same partial list, and it must stay honest in lockstep with the first.
   const fullyCleanCount = (v.spacing_audit ?? []).filter((e) => e.fully_clean).length;
+  const insetOnlyCleanCount = cleanAuditInsetOnlyCount(v, frameNodeId);
   const bits: string[] = [`pairs ${v.pairs.clean}/${v.pairs.checked} clean`];
   if (cov) {
     const uncoveredTotal = cov.uncovered.length + (cov.uncovered_capped ?? 0);
     const partialTotal = cov.partial.length + (cov.partial_capped ?? 0);
+    const unverifiedContainerTotal = (cov.unverified_containers?.length ?? 0)
+      + (cov.unverified_containers_capped ?? 0);
     const partialUnverified = partialTotal - fullyCleanCount;
     if (uncoveredTotal) bits.push(`regions unpaired ${uncoveredTotal}`);
     if (partialUnverified) bits.push(`containers unpaired (spacing) ${partialUnverified}`);
-    if (fullyCleanCount) bits.push(`insets of ${fullyCleanCount} container(s) not verified (between-children gaps clean per audit)`);
+    if (unverifiedContainerTotal) bits.push(`own layout/insets of ${unverifiedContainerTotal} container(s) not verified`);
+    if (insetOnlyCleanCount) bits.push(`insets of ${insetOnlyCleanCount} container(s) not verified (between-children gaps clean per audit)`);
     if (cov.enumeration_truncated) bits.push('enumeration truncated');
   }
   // batch-2 item 4 (contract alignment): the 'do NOT say done' imperative belongs ONLY to a
@@ -400,7 +434,9 @@ function renderVerification(v?: VerificationReceipt, omittedFailPairs?: number, 
   out.push(`Remaining (blocking, ${totalBlocking}):`);
   const CAP = 15;
   for (const b of v.blocking.slice(0, CAP)) {
-    const addr = b.node_id ? ` node ${b.node_id}` : b.selector ? ` ${b.selector}` : '';
+    const addr = b.node_id && b.selector
+      ? ` node ${b.node_id} ↔ ${b.selector}`
+      : b.node_id ? ` node ${b.node_id}` : b.selector ? ` ${b.selector}` : '';
     out.push(`- [${b.action}]${addr} — ${b.detail}`);
   }
   const hidden = totalBlocking - Math.min(CAP, v.blocking.length);

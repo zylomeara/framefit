@@ -97,6 +97,81 @@ function childLabel(c: { name?: string; tag?: string; kind?: string; type?: stri
   return c.name ?? c.tag ?? (c.kind === 'text' ? 'text' : 'node');
 }
 
+interface EdgeChildMatch {
+  edge: 'start' | 'end';
+  fig: SpecChild;
+  dom: DomChild;
+  figIdx: number;
+  domIdx: number;
+  figMainExtent: number;
+  domMainExtent: number;
+}
+
+type EdgeChildMatches = Partial<Record<'start' | 'end', EdgeChildMatch>>;
+
+function confidentEdgeChildMatches(
+  figKids: SpecChild[],
+  domKids: DomChild[],
+  matched: Array<{ figIdx: number; domIdx: number; confidence: string }>,
+  axis: 'row' | 'col',
+  structTol: number,
+): EdgeChildMatches {
+  const uniqueExtreme = <T extends { rect: SpecRect }>(kids: T[], edge: 'start' | 'end'): number | undefined => {
+    if (kids.length === 0) return undefined;
+    const values = kids.map((k) => edge === 'start' ? start(k.rect, axis) : end(k.rect, axis));
+    if (values.some((v) => !Number.isFinite(v))) return undefined;
+    const target = edge === 'start' ? Math.min(...values) : Math.max(...values);
+    const atEdge = values.map((v, i) => ({ v, i }))
+      .filter(({ v }) => Math.abs(v - target) <= structTol);
+    return atEdge.length === 1 ? atEdge[0].i : undefined;
+  };
+  const out: EdgeChildMatches = {};
+  for (const edge of ['start', 'end'] as const) {
+    const figIdx = uniqueExtreme(figKids, edge);
+    const domIdx = uniqueExtreme(domKids, edge);
+    if (figIdx === undefined || domIdx === undefined) continue;
+    if (!matched.some((m) => m.confidence === 'high' && m.figIdx === figIdx && m.domIdx === domIdx)) continue;
+    const figMainExtent = axis === 'row' ? figKids[figIdx].rect.w : figKids[figIdx].rect.h;
+    const domMainExtent = axis === 'row' ? domKids[domIdx].rect.w : domKids[domIdx].rect.h;
+    if (!Number.isFinite(figMainExtent) || figMainExtent < 0
+      || !Number.isFinite(domMainExtent) || domMainExtent < 0) continue;
+    out[edge] = { edge, fig: figKids[figIdx], dom: domKids[domIdx], figIdx, domIdx,
+      figMainExtent, domMainExtent };
+  }
+  return out;
+}
+
+function annotateMisplacedEdgeChild(
+  row: DiffRow,
+  match: EdgeChildMatch | undefined,
+  structTol: number,
+  rawDelta: number,
+  suppressed = false,
+): DiffRow {
+  if (suppressed || row.status !== 'fail' || match === undefined || !match.dom.path?.trim()) return row;
+  if (typeof row.figma !== 'number' || typeof row.dom !== 'number' || row.delta === undefined) return row;
+  if (rawDelta <= Math.max(structTol, match.figMainExtent, match.domMainExtent)) return row;
+  const direction = match.edge === 'start'
+    ? (row.dom < row.figma ? 'away_from_start' : 'toward_start')
+    : (row.dom < row.figma ? 'away_from_end' : 'toward_end');
+  const action = direction.replaceAll('_', ' ');
+  const detail = `likely misplaced child ${match.fig.id} at the ${match.edge} edge - ${action}; pair the child before changing the container padding`;
+  return {
+    ...row,
+    note: [row.note, detail].filter(Boolean).join('; '),
+    caveat: [row.caveat, `pair child ${match.fig.id} before prescribing a root-padding edit`].filter(Boolean).join('; '),
+    diagnostic: {
+      kind: 'likely_misplaced_child', edge: match.edge, direction,
+      child: {
+        figma_node_id: match.fig.id,
+        figma_index: match.figIdx,
+        dom_index: match.domIdx,
+        dom_path: match.dom.path,
+      },
+    },
+  };
+}
+
 // source-hint: cap on the number of unpaired DOM children in attributionOut.unpaired —
 // budget protection (navigation-to-investigate, not an address-to-fix). The cap is applied AT the collection site.
 const UNPAIRED_CAP = 10;
@@ -1081,17 +1156,28 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
     return rows;
   }
   const axis = spec.axis;
+  const originalEdgeFigKids = figKids;
+  const originalChildMatch = matchChildrenOneLevel(
+    figKids,
+    domKids2,
+    { w: rect.w, h: rect.h },
+    { w: d.rect.w, h: d.rect.h },
+  );
+  const edgeChildMatches = opts.sides === 'dom-dom'
+    ? undefined
+    : confidentEdgeChildMatches(figKids, domKids2, originalChildMatch.matched, axis, structTol);
 
   // (4) structure_mismatch — over figKids/domKids2 (after the unwrap attempt). A2 SALVAGE: instead of totally
   // skipping ALL child metrics — match the children by content (matchChildrenOneLevel) and diff ONLY the
   // high-conf subset (text anchor / strong size+order). medium/low → unmatched (zero confident-wrong
   // on a wrong match). Gaps — only between matches ADJACENT-in-both (otherwise a gap through an unmatched one);
-  // padding-start/end are skipped under salvage (the full set of children is needed — see crossAndPaddingRows).
+  // padding-start/end need the full set of children, except when the original populations proved the same
+  // high-confidence physical edge child on both sides (see crossAndPaddingRows).
   let salvaged = false;
   let salvageAdj: boolean[] = [];
   if (figKids.length !== domKids2.length) {
     const domDescOf = (ks: DomChild[]): string => ks.map((c) => (c.tag ? `${c.tag}${c.classList?.length ? '.' + c.classList[0] : ''}` : `text:"${c.text ?? ''}"`)).join(', ');
-    const sal = matchChildrenOneLevel(figKids, domKids2, { w: rect.w, h: rect.h }, { w: d.rect.w, h: d.rect.h });
+    const sal = originalChildMatch;
     // The extractor drops position:absolute/fixed children on purpose - they are not in this box's
     // layout - but a box whose children are ALL out of flow then reads as a leaf, and the depth hint
     // below sends the reader after something a deeper capture can never return. Measured on a live
@@ -1409,7 +1495,7 @@ function geometryRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions): Di
       axis === 'row' ? pageGutter : undefined));
   }
 
-  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous, unwrapInfo?.overlap === true, encodingMismatch, spacerFold));
+  rows.push(...crossAndPaddingRows(spec, d, opts, figKids, domKids2, unwrapBase, hugFillMainAxis, unwrapInfo?.figWrapper, unwrapInfo?.domWrapper, salvaged, movedIdx, overlapAmbiguous, unwrapInfo?.overlap === true, encodingMismatch, spacerFold, edgeChildMatches, originalEdgeFigKids));
   return rows;
   } finally {
     finalizeSpacerRow(rows, spacerRow, spacerFold, spec.axis);
@@ -1981,6 +2067,7 @@ function crossAndPaddingRows(
   spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions, figKids: SpecChild[], domKids: DomChild[], unwrapBase: boolean,
   hugFillMainAxis: boolean, figWrapper?: SpecChild, domWrapper?: DomChild, salvaged = false, movedIdx?: Set<number>,
   overlapAmbiguous?: Set<number>, overlapUnwrap = false, encodingMismatch = false, spacerFold?: SpacerFold,
+  edgeChildMatches?: EdgeChildMatches, originalEdgeFigKids?: SpecChild[],
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   const axis = spec.axis!;
@@ -2033,11 +2120,12 @@ function crossAndPaddingRows(
   const foldInsetStart = (spacerFold?.startPx ?? 0) - (spacerFold?.growStartPx ?? 0);
   const foldInsetEnd = (spacerFold?.endPx ?? 0) - (spacerFold?.growEndPx ?? 0);
   const foldedGaps = (spacerFold?.leadCount ?? 0) + (spacerFold?.trailCount ?? 0);
+  const edgeFigKids = salvaged ? (originalEdgeFigKids ?? figKids) : figKids;
   const figFreeSpace = primaryAlign !== undefined && spec.autoLayout !== undefined
     ? ((end(rect, axis) - padEnd(eff(spec.autoLayout.padding), axis) - foldInsetEnd)
       - (start(rect, axis) + padStart(eff(spec.autoLayout.padding), axis) + foldInsetStart)
-      - figKids.reduce((sum, k) => sum + (axis === 'row' ? k.rect.w : k.rect.h), 0)
-      - (spec.autoLayout.gap ?? 0) * (Math.max(0, figKids.length - 1) + foldedGaps))
+      - edgeFigKids.reduce((sum, k) => sum + (axis === 'row' ? k.rect.w : k.rect.h), 0)
+      - (spec.autoLayout.gap ?? 0) * (Math.max(0, edgeFigKids.length - 1) + foldedGaps))
     : 0;
   const figEdgeIsSlack = (e: 'start' | 'end'): boolean => {
     if (primaryAlign === undefined || figFreeSpace <= structTol) return false;
@@ -2048,7 +2136,7 @@ function crossAndPaddingRows(
       // PRE-fold population: a lead-edge fold removes a real child and would re-create the
       // single-child degenerate on a two-item design (wave). Since any fold adds >= 1, this
       // collapses to: single child AND no fold anywhere on the pair.
-      return figKids.length + (spacerFold?.leadCount ?? 0) + (spacerFold?.trailCount ?? 0) <= 1
+      return edgeFigKids.length + (spacerFold?.leadCount ?? 0) + (spacerFold?.trailCount ?? 0) <= 1
         && foldInsetEnd <= 0;
     }
     return FIG_SLACK_EDGES[primaryAlign][e];
@@ -2110,8 +2198,12 @@ function crossAndPaddingRows(
   };
   const figExt = overlapUnwrap ? byPhysical(figKids) : { first: figKids[0], last: figKids[figKids.length - 1] };
   const domExt = overlapUnwrap ? byPhysical(domKids) : { first: domKids[0], last: domKids[domKids.length - 1] };
-  const figFirst = figExt.first;
-  const figLast = figExt.last;
+  const startEdgeMatch = edgeChildMatches?.start;
+  const endEdgeMatch = edgeChildMatches?.end;
+  const figFirst = salvaged && startEdgeMatch ? startEdgeMatch.fig : figExt.first;
+  const domFirst = salvaged && startEdgeMatch ? startEdgeMatch.dom : domExt.first;
+  const figLast = salvaged && endEdgeMatch ? endEdgeMatch.fig : figExt.last;
+  const domLast = salvaged && endEdgeMatch ? endEdgeMatch.dom : domExt.last;
 
   // Folded edges (spacer-inset conversion) read BORDER-EDGE on BOTH sides: removal already
   // re-anchored figFirst to the real child, so the fig number carries the spacer extent with
@@ -2129,7 +2221,7 @@ function crossAndPaddingRows(
   // INTENDED), not from dom (what RESULTED) — otherwise the note would point at the symptom, not the
   // cause. Only the note (join), the padding row's numbers do not change.
   const figPadStart = padStart(eff(figFirst.paddings), axis);
-  const domPadStart = padStart(eff(domExt.first.paddings), axis);
+  const domPadStart = padStart(eff(domFirst.paddings), axis);
   const startNote = paddingProvenanceNote(figPadStart, domPadStart, childLabel(figFirst));
   // Dual-convention check (items 3+18, verify round): under the encoding-mismatch predicate the
   // fig side's declared content edge IS the border edge, while the dom anchors add the declared
@@ -2148,24 +2240,37 @@ function crossAndPaddingRows(
       note: [row.note, `encoding artifact: the design has no declared padding (the inset is structural) while the DOM declares ${rootPadForEdge} — read from the border edge both sides agree (${round1(row.figma)} vs ${round1(borderEdgeDom)})`]
         .filter(Boolean).join('; ') };
   };
-  // salvage: figFirst/figLast are not the real first/last (a subset was matched) → padding from the container
-  // edge would be a false ❌. We skip padding-start/end; offset-cross/typography per-child — we keep.
-  if (!salvaged) {
+  // salvage: a matched subset does not establish the real first/last, so container-edge padding is skipped
+  // unless an original-population high-confidence match proved that same physical edge child. Per-child
+  // offset-cross/typography stay available for every salvaged match.
+  if (!salvaged || startEdgeMatch !== undefined) {
     // On a folded edge the encoding demote is OFF: the fold IS the encoding reconciliation
     // (the design declares its inset structurally and the row now carries it), so a residual
     // delta is a real defect that must stay red WITH its fix_plan edit (panel blocker: the
     // border-edge dom number already contains the declared padding - dualDemote's re-addition
     // would double-count and demote a genuine shortfall).
+    const figStartMeasure = (start(figFirst.rect, axis) + figPadStart) - figCStart;
+    const domStartMeasure = (start(domFirst.rect, axis) + domPadStart) - domCStart;
     const startRow = applyContainerHugFillDemote(applyJustifyDemote(withNote(
-      numRow(startName, (start(figFirst.rect, axis) + figPadStart) - figCStart,
-        (start(domExt.first.rect, axis) + domPadStart) - domCStart, tol, undefined, SRC_ROOT_LAYOUT),
+      numRow(startName, figStartMeasure, domStartMeasure, tol, undefined, SRC_ROOT_LAYOUT),
       startNote,
     ), jd.start && demoteAllowedFor('start'), jc, startName), hugFillMainAxis);
-    rows.push(noteAlignmentMismatch(foldStart ? startRow : dualDemote(startRow, padStart(eff(d.paddings), axis)), 'start', jd.start));
+    const finalStart = noteAlignmentMismatch(
+      foldStart ? startRow : dualDemote(startRow, padStart(eff(d.paddings), axis)),
+      'start',
+      jd.start,
+    );
+    rows.push(annotateMisplacedEdgeChild(
+      finalStart,
+      startEdgeMatch,
+      structTol,
+      Math.abs(figStartMeasure - domStartMeasure),
+      foldStart,
+    ));
   }
 
-  const lastDom = domExt.last;
-  if (!salvaged && lastDom.kind !== 'text') {
+  const lastDom = domLast;
+  if ((!salvaged || endEdgeMatch !== undefined) && lastDom.kind !== 'text') {
     const figPadEnd = padEnd(eff(figLast.paddings), axis);
     const domPadEnd = padEnd(eff(lastDom.paddings), axis);
     const endNote = paddingProvenanceNote(figPadEnd, domPadEnd, childLabel(figLast));
@@ -2185,14 +2290,27 @@ function crossAndPaddingRows(
       // structTol (not raw tol): the evidence gate "dom-column edge == its text edge" — robustness
       // of the demotion detector to sub-pixel fractions under strict tol=0 (otherwise a legit text-hug → false red).
       || (figTextsForEnd.items.length > 0 && domHugEndEvidence(lastDom, axis, structTol, maxDescent));
+    const figEndMeasure = figCEnd - (end(figLast.rect, axis) - figPadEnd);
+    const domEndMeasure = domCEnd - (end(lastDom.rect, axis) - domPadEnd);
     const endRow = applyContainerHugFillDemote(applyJustifyDemote(applyTextWidthOverride(
       notePageGutter(withNote(
-        numRow(endName, figCEnd - (end(figLast.rect, axis) - figPadEnd), domCEnd - (end(lastDom.rect, axis) - domPadEnd), tol, undefined, SRC_ROOT_LAYOUT),
+        numRow(endName, figEndMeasure, domEndMeasure, tol, undefined, SRC_ROOT_LAYOUT),
         endNote,
       ), axis === 'row' ? pageGutter : undefined),
       endDemote,
     ), jd.end && demoteAllowedFor('end'), jc, endName), hugFillMainAxis);
-    rows.push(noteAlignmentMismatch(foldEnd ? endRow : dualDemote(endRow, padEnd(eff(d.paddings), axis)), 'end', jd.end));
+    const finalEnd = noteAlignmentMismatch(
+      foldEnd ? endRow : dualDemote(endRow, padEnd(eff(d.paddings), axis)),
+      'end',
+      jd.end,
+    );
+    rows.push(annotateMisplacedEdgeChild(
+      finalEnd,
+      endEdgeMatch,
+      structTol,
+      Math.abs(figEndMeasure - domEndMeasure),
+      foldEnd || (axis === 'row' && pageGutter !== undefined),
+    ));
   }
 
   // wrapper base: nested DomChild have no captured borders — we assume border≈0 for wrappers (an approximation)
