@@ -39,6 +39,70 @@ const card: RawSceneNode = {
 };
 const frameNode: RawSceneNode = { id: '9:1', name: 'mobile', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 375, height: 812 } };
 
+const coverageLeaf: RawSceneNode = {
+  id: '2:2', name: 'copy', type: 'FRAME', layoutMode: 'VERTICAL',
+  absoluteBoundingBox: { x: 8, y: 6, width: 24, height: 8 },
+  fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 1, b: 1, a: 1 } }],
+};
+const coverageContainer: RawSceneNode = {
+  id: '2:1', name: 'control', type: 'FRAME',
+  absoluteBoundingBox: { x: 0, y: 0, width: 40, height: 20 },
+  layoutMode: 'VERTICAL', paddingTop: 6, paddingRight: 8, paddingBottom: 6, paddingLeft: 8,
+  fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 1, b: 1, a: 1 } }],
+  children: [coverageLeaf],
+};
+const coverageFrame: RawSceneNode = {
+  id: '9:2', name: 'screen', type: 'FRAME',
+  absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 },
+  children: [coverageContainer],
+};
+const coverageLeafDom: DomSnapshotOk = {
+  schema: 7, status: 'ok', selector: '.copy', innerWidth: 100,
+  rect: { x: 8, y: 6, w: 24, h: 8 },
+  borders: { top: 0, right: 0, bottom: 0, left: 0 },
+  paddings: { top: 0, right: 0, bottom: 0, left: 0 },
+  scroll: { top: 0, left: 0 }, transformed: false,
+  clientWidth: 24, clientHeight: 8, scrollHeight: 8,
+  styles: { backgroundColor: '#ffffff' }, children: [],
+};
+const coverageContainerDom: DomSnapshotOk = {
+  schema: 7, status: 'ok', selector: '.control', innerWidth: 100,
+  rect: { x: 0, y: 0, w: 40, h: 20 },
+  borders: { top: 0, right: 0, bottom: 0, left: 0 },
+  paddings: { top: 6, right: 8, bottom: 6, left: 8 },
+  scroll: { top: 0, left: 0 }, transformed: false,
+  clientWidth: 40, clientHeight: 20, scrollHeight: 20,
+  styles: { backgroundColor: '#ffffff' },
+  children: [{
+    kind: 'element', tag: 'span', rect: { x: 8, y: 6, w: 24, h: 8 },
+    styles: { backgroundColor: '#ffffff' },
+  }],
+};
+
+const displacedEdgeContainer: RawSceneNode = {
+  id: '3:1', name: 'panel', type: 'FRAME', layoutMode: 'VERTICAL',
+  paddingTop: 0, paddingBottom: 0,
+  absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 120 },
+  fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 1, b: 1, a: 1 } }],
+  children: [{
+    id: '3:2', name: 'edge item', type: 'TEXT', characters: 'Edge item',
+    absoluteBoundingBox: { x: 10, y: 80, width: 80, height: 10 },
+  }],
+};
+const displacedEdgeDom: DomSnapshotOk = {
+  schema: 7, status: 'ok', selector: '.card, .panel', innerWidth: 100,
+  rect: { x: 0, y: 0, w: 100, h: 120 },
+  borders: { top: 0, right: 0, bottom: 0, left: 0 },
+  paddings: { top: 0, right: 0, bottom: 0, left: 0 },
+  scroll: { top: 0, left: 0 }, transformed: false,
+  clientWidth: 100, clientHeight: 120, scrollHeight: 120,
+  styles: { backgroundColor: '#ffffff' },
+  children: [{
+    kind: 'element', tag: 'span', text: 'Edge item',
+    path: '> :nth-child(1)', rect: { x: 10, y: 20, w: 80, h: 10 },
+  }],
+};
+
 // "coverage manifest": the same card, but the title carries real typography
 // (characters+style on the Figma side, styles on the DOM side) — font-size is actually measured.
 const cardWithText: RawSceneNode = {
@@ -1463,6 +1527,221 @@ describe('compare_node_to_dom tool', () => {
     // tier 2: frameNode is projected without truncation (a leaf, no children) → no deep-fetch needed, honest source pair_fetch@effDepth
     expect(out.verification.frame_coverage.enumeration_source).toBe('pair_fetch');
     expect(out.verification.frame_coverage.enumeration_depth).toBe(4);
+  });
+
+  it('a clean deep pair cannot serialize a green frame while its worthy ancestor is unpaired', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: {
+      '2:2': { document: coverageLeaf },
+      '9:2': { document: coverageFrame },
+    } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({
+      file: 'abc', frame_node_id: '9:2',
+      pairs: [{ node_id: '2:2', dom: coverageLeafDom }],
+    });
+    const out = JSON.parse(res.content[0].text);
+
+    expect(out.verification.frame_coverage.unverified_containers).toEqual(['2:1']);
+    expect(out.verification.complete).toBe(false);
+    expect(out.verification.blocking).toContainEqual(expect.objectContaining({
+      kind: 'unverified_container', action: 'add_container_pair', node_id: '2:1',
+    }));
+    expect(out.report_markdown).toContain('own layout/insets of 1 container(s) not verified');
+    expect(out.report_markdown).not.toContain('Check: COMPLETE');
+  });
+
+  it('clean ancestor and deep pairs can serialize a complete frame receipt', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: {
+      '2:1': { document: coverageContainer },
+      '2:2': { document: coverageLeaf },
+      '9:2': { document: coverageFrame },
+    } }));
+    const run = harness({ getNodesRaw });
+    const res = await run({
+      file: 'abc', frame_node_id: '9:2',
+      pairs: [
+        { node_id: '2:1', dom: coverageContainerDom },
+        { node_id: '2:2', dom: coverageLeafDom },
+      ],
+    });
+    const out = JSON.parse(res.content[0].text);
+
+    expect(out.verification.frame_coverage.unverified_containers).toBeUndefined();
+    expect(out.verification).toMatchObject({ complete: true, blocking: [] });
+    expect(out.report_markdown).toContain('Check: COMPLETE');
+  });
+
+  it('delivers a child-addressed blocker for a confidently matched displaced edge child', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: {
+      '3:1': { document: displacedEdgeContainer },
+    } }));
+    const run = harness({ getNodesRaw });
+    const out = JSON.parse((await run({
+      file: 'abc', tolerance_px: 1,
+      pairs: [{ node_id: '3:1', dom: displacedEdgeDom }],
+    })).content[0].text);
+
+    const diagnosed = out.pairs[0].rows.filter(
+      (r: any) => r.diagnostic?.kind === 'likely_misplaced_child',
+    );
+    expect(diagnosed).toHaveLength(1);
+    expect(diagnosed[0].diagnostic.child).toMatchObject({
+      figma_node_id: '3:2', dom_path: '> :nth-child(1)',
+    });
+    expect(out.verification.blocking).toContainEqual(expect.objectContaining({
+      kind: 'likely_misplaced_child', action: 'add_pair', node_id: '3:2',
+      selector: ':is(.card, .panel) > :nth-child(1)',
+    }));
+    expect(out.verification.blocking.filter(
+      (b: any) => b.kind === 'likely_misplaced_child',
+    )).toHaveLength(1);
+    expect(out.report_markdown).toContain(
+      '[add_pair] node 3:2 ↔ :is(.card, .panel) > :nth-child(1)',
+    );
+  });
+
+  it('keeps diagnosed fail metadata when bulk pass rows are condensed', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: {
+      '3:1': { document: displacedEdgeContainer },
+    } }));
+    const pairs = Array.from({ length: 4 }, (_, i) => ({
+      node_id: '3:1', dom: displacedEdgeDom, label: `edge-${i}`,
+    }));
+    const full = await harness({ getNodesRaw }, 400000)({
+      file: 'abc', tolerance_px: 1, pairs,
+    });
+    const budget = full.content[0].text.length - 1;
+    const out = JSON.parse((await harness({ getNodesRaw: vi.fn(getNodesRaw) }, budget)({
+      file: 'abc', tolerance_px: 1, pairs,
+    })).content[0].text);
+
+    expect(out.omitted_pairs).toBeUndefined();
+    expect(out.pairs).toHaveLength(4);
+    expect(out.pairs[0].rows).toContainEqual(expect.objectContaining({ prop: 'passes_condensed' }));
+    expect(out.pairs[0].rows).toContainEqual(expect.objectContaining({
+      prop: 'padding-top', status: 'fail',
+      diagnostic: expect.objectContaining({ kind: 'likely_misplaced_child' }),
+    }));
+  });
+
+  it('keeps the child blocker and omitted-pair trace when the diagnosed pair is clamped out', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: {
+      '2:2': { document: coverageLeaf },
+      '3:1': { document: displacedEdgeContainer },
+    } }));
+    const pairs = [
+      ...Array.from({ length: 4 }, (_, i) => ({
+        node_id: '2:2', dom: coverageLeafDom, label: `clean-${i}`,
+      })),
+      { node_id: '3:1', dom: displacedEdgeDom, label: 'edge-tail' },
+    ];
+    const floor = await harness({ getNodesRaw }, 1)({
+      file: 'abc', tolerance_px: 1, pairs,
+    });
+    const budget = floor.content[0].text.length;
+    const res = await harness({ getNodesRaw: vi.fn(getNodesRaw) }, budget)({
+      file: 'abc', tolerance_px: 1, pairs,
+    });
+    const out = JSON.parse(res.content[0].text);
+
+    expect(out.pairs).toHaveLength(1);
+    expect(out.omitted_pair_ids).toContain('edge-tail');
+    expect(out.omitted_pair_indices).toContain(4);
+    expect(out.verification.notes).toContainEqual(expect.stringMatching(/response budget.*FAILing/));
+    expect(out.verification.blocking).toContainEqual(expect.objectContaining({
+      kind: 'likely_misplaced_child', node_id: '3:2',
+      selector: ':is(.card, .panel) > :nth-child(1)',
+    }));
+    expect(out.report_markdown).toContain(
+      '[add_pair] node 3:2 ↔ :is(.card, .panel) > :nth-child(1)',
+    );
+    expect(res.content[0].text.length).toBeLessThanOrEqual(budget);
+  });
+
+  it('drops an unsafe omitted child action before it can exceed the response budget', async () => {
+    const deepPath = Array.from(
+      { length: 1_000 },
+      () => '> :nth-child(1)',
+    ).join(' ');
+    const unsafeDom: DomSnapshotOk = {
+      ...displacedEdgeDom,
+      children: displacedEdgeDom.children.map((child) => ({
+        ...child,
+        path: deepPath,
+      })),
+    };
+    const getNodesRaw = vi.fn(async () => ({ nodes: {
+      '2:2': { document: coverageLeaf },
+      '3:1': { document: displacedEdgeContainer },
+    } }));
+    const pairsFor = (tail: DomSnapshotOk) => [
+      ...Array.from({ length: 4 }, (_, i) => ({
+        node_id: '2:2', dom: coverageLeafDom, label: `clean-${i}`,
+      })),
+      { node_id: '3:1', dom: tail, label: 'edge-tail' },
+    ];
+    const floor = await harness({ getNodesRaw }, 1)({
+      file: 'abc', tolerance_px: 1, pairs: pairsFor(displacedEdgeDom),
+    });
+    const budget = floor.content[0].text.length;
+    const res = await harness({ getNodesRaw: vi.fn(getNodesRaw) }, budget)({
+      file: 'abc', tolerance_px: 1, pairs: pairsFor(unsafeDom),
+    });
+    const out = JSON.parse(res.content[0].text);
+
+    expect(out.omitted_pair_ids).toContain('edge-tail');
+    expect(out.omitted_pair_indices).toContain(4);
+    expect(out.verification.blocking).not.toContainEqual(expect.objectContaining({
+      kind: 'likely_misplaced_child',
+    }));
+    expect(res.content[0].text.length).toBeLessThanOrEqual(budget);
+  });
+
+  it('keeps many valid child addresses inside the default response budget', async () => {
+    const longRoot = `.${'a'.repeat(1_800)}`;
+    const cases = Array.from({ length: 20 }, (_, i) => {
+      const parentId = `8:${i + 1}`;
+      const childId = `9:${i + 1}`;
+      const text = `Edge item ${i + 1}`;
+      const document: RawSceneNode = {
+        ...displacedEdgeContainer,
+        id: parentId,
+        children: [{
+          ...displacedEdgeContainer.children![0],
+          id: childId,
+          characters: text,
+        }],
+      };
+      const dom: DomSnapshotOk = {
+        ...displacedEdgeDom,
+        selector: longRoot,
+        children: [{
+          ...displacedEdgeDom.children[0],
+          text,
+        }],
+      };
+      return { parentId, document, dom };
+    });
+    const getNodesRaw = vi.fn(async () => ({
+      nodes: Object.fromEntries(cases.map(({ parentId, document }) => [
+        parentId,
+        { document },
+      ])),
+    }));
+    const res = await harness({ getNodesRaw })({
+      file: 'abc',
+      tolerance_px: 1,
+      pairs: cases.map(({ parentId, dom }) => ({ node_id: parentId, dom })),
+    });
+    const out = JSON.parse(res.content[0].text);
+    const childBlockers = out.verification.blocking.filter(
+      (b: { kind: string }) => b.kind === 'likely_misplaced_child',
+    );
+
+    expect(childBlockers.length).toBeGreaterThan(0);
+    expect(childBlockers.length).toBeLessThan(cases.length);
+    expect(out.verification.blocking_capped).toBeGreaterThan(0);
+    expect(res.content[0].text.length).toBeLessThanOrEqual(40_000);
   });
 
   // A byte-lock on compare's output WITHOUT frame_node_id. opts.frame/opts.frameRequested are both

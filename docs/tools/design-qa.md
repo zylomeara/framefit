@@ -443,7 +443,7 @@ Response (abridged — see the [tutorial](../design-qa-tutorial.md) for a full a
   /* successful pairs add a "hydration" receipt in get_layout_spec's shape; each also carries
      pair_index, the zero-based position in the submitted pairs array */
   "not_covered_by_tool": ["icon-glyph (shape/path geometry - verify visually or by screenshot crop)", "icon-font/mask-image icons (the color is visible but not compared)"],
-  "report_markdown": "<verification report markdown, 1416 chars - elided>"
+  "report_markdown": "<verification report markdown, 1431 chars - elided>"
 }
 ```
 
