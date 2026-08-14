@@ -100,7 +100,8 @@ export function registerCompareDomToDomTool(server: McpServer, deps: ToolDeps): 
       + 'ambiguous the gap/offset rows are honestly skipped with a visible note. verification.complete aggregates '
       + 'ALL pairs and is the done-gate: never claim the states match while it is false or blocking[] is non-empty. '
       + 'Primary uses: skeleton-vs-loaded (content must not jump on swap), before/after an edit, '
-      + 'breakpoint-vs-breakpoint (unequal capture widths become one loud viewport row), hover/default.',
+      + 'breakpoint-vs-breakpoint (one shared pure width mismatch becomes an aggregate; mixed or composite '
+      + 'cases keep individual fix_viewport blockers), hover/default.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

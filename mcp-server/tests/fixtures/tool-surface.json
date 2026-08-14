@@ -16,13 +16,13 @@
     }
   },
   "compare_dom_to_dom": {
-    "description": "Deterministic metric diff between TWO DOM states of one screen: reference (what geometry should hold - e.g. the loaded page) vs candidate (what is checked - e.g. its skeleton). Same row machinery as the Figma comparator - sizes, inter-child gaps, effective paddings, cross-axis offsets, typography, colors - plus symmetric presence checks (a background or text present on exactly one side is named, never silent) and a fill token-provenance drift row (var()-anchored on one side, literal on the other = review). Makes ZERO Figma calls: no file and no figma_token parameter. Both captures come from the canonical extractor (get_layout_spec include_extractor:true), inline or via dom_ref. The layout axis is INFERRED from the reference children geometry (snapshots do not declare flex direction); when ambiguous the gap/offset rows are honestly skipped with a visible note. verification.complete aggregates ALL pairs and is the done-gate: never claim the states match while it is false or blocking[] is non-empty. Primary uses: skeleton-vs-loaded (content must not jump on swap), before/after an edit, breakpoint-vs-breakpoint (unequal capture widths become one loud viewport row), hover/default.",
+    "description": "Deterministic metric diff between TWO DOM states of one screen: reference (what geometry should hold - e.g. the loaded page) vs candidate (what is checked - e.g. its skeleton). Same row machinery as the Figma comparator - sizes, inter-child gaps, effective paddings, cross-axis offsets, typography, colors - plus symmetric presence checks (a background or text present on exactly one side is named, never silent) and a fill token-provenance drift row (var()-anchored on one side, literal on the other = review). Makes ZERO Figma calls: no file and no figma_token parameter. Both captures come from the canonical extractor (get_layout_spec include_extractor:true), inline or via dom_ref. The layout axis is INFERRED from the reference children geometry (snapshots do not declare flex direction); when ambiguous the gap/offset rows are honestly skipped with a visible note. verification.complete aggregates ALL pairs and is the done-gate: never claim the states match while it is false or blocking[] is non-empty. Primary uses: skeleton-vs-loaded (content must not jump on swap), before/after an edit, breakpoint-vs-breakpoint (one shared pure width mismatch becomes an aggregate; mixed or composite cases keep individual fix_viewport blockers), hover/default.",
     "inputSchemaKeys": [
       "max_depth",
       "pairs",
       "tolerance_px"
     ],
-    "digest": "42bf57cce52c94e82720672e630ae423e4ee62c84d373854be233f68db4b62a1",
+    "digest": "0da3da0bcf620c514f4bded737caee32bcecd039cffe6f639ad2c938c3277aad",
     "annotations": {
       "readOnlyHint": true
     }
