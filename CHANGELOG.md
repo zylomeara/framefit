@@ -3,6 +3,70 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.29.0
+
+Three comparison-contract improvements. Response-budget omissions now carry an exact positional replay
+key even when display labels or node ids repeat. DOM-to-DOM results attribute stale snapshots,
+selectors and viewport remedies only to the side or pair whose evidence supports them. Figma-to-DOM
+verification now separates descendant coverage from an unpaired nested container's own unchecked
+layout and can name a likely displaced physical edge child before suggesting a parent-padding edit.
+
+**Output compatibility.** Request schemas and DOM snapshot schema v7 are unchanged, so this release
+does not require re-capture. Responses add optional `omitted_pair_indices`, `diagnostic`,
+`unverified_containers` and `unverified_containers_capped` fields. Successful retained
+`compare_node_to_dom` pair hydration receipts add `pair_index`, the original submitted-pair
+position. A DOM-to-DOM pair's optional `selector` is omitted when its reference and candidate
+snapshots name different selectors. Clients that cache tool descriptions should reconnect to read
+the updated replay and coverage guidance; the response fields arrive independently of that cache.
+
+### Added
+
+**Exact positional replay for response-budget omissions.** The compare tools still compute aggregate
+verification from the complete result set when detailed pairs do not all fit the response. They now
+return `omitted_pair_indices`, the zero-based positions in the original input that can be resubmitted
+without guessing. `omitted_pair_ids` remains display context and may repeat. Successful retained
+`compare_node_to_dom` hydration receipts add `pair_index`, so repeated node ids and snapshots retain
+their original submitted-pair attribution.
+
+**Conservative displaced-edge-child diagnosis.** `compare_node_to_dom` can attach a
+`likely_misplaced_child` diagnostic to a failed start or end inset when the first or last in-flow
+child is uniquely and confidently matched on both sides and its displacement exceeds both child
+extents and the structural tolerance. The diagnostic stays off for ambiguous, interior or reordered
+children, folded structural insets, unresolved page gutters, and rows already downgraded by existing
+comparison rules. When a bounded selector can be composed and the child is not already effectively
+paired, verification can add an `add_pair` action for that child before any parent-padding edit.
+
+**Container-own-layout coverage.** Frame coverage can add `unverified_containers` for nested layout
+containers reached through descendant pairs but not covered by a pair on that container or a
+recognized transparent wrapper. The field applies below still-unpaired ancestors; it does not
+replace the outer frame's existing `partial` spacing coverage or reopen a region already covered by
+an ancestor pair. Entries beyond the field's response cap are counted in
+`unverified_containers_capped`. Existing `covered`, wholly untouched `uncovered`, and spacing-only
+`partial` meanings are unchanged.
+
+### Fixed
+
+**DOM-to-DOM attribution follows the applicable side.** A stale snapshot-schema row now places the stale
+version on the reference or candidate side that supplied it. The pair-level selector is retained only
+when both snapshots use the same selector. `verification.dominant_blocker` is added when at least two
+distinct pairs are otherwise clean, each has exactly one unchecked viewport geometry row, and all use
+the same frame and window widths. The summary does not replace their per-pair `fix_viewport` blockers.
+Without that shared cause, each viewport blocker remains and moves one priority rank earlier so it is
+less likely to be removed by the blocker cap; higher-priority blockers still precede it.
+
+**Descendant evidence no longer closes detected nested-container geometry.** For the nested containers
+listed by this coverage walk, a clean deep pair no longer makes the receipt complete while that
+container's size, insets and layout remain unchecked. The done-gate stays false. Verification adds an
+`add_container_pair` blocker unless a spacing blocker already supplies the same action; the general
+blocker cap can withhold it and records the withheld tail in `blocking_capped`.
+
+### Changed
+
+- Budget-omission guidance uses input positions as replay identity; labels and node ids remain human
+  context rather than uniqueness claims.
+- Reports carrying a child action render both its design node and safe DOM selector. Child-address
+  volume is bounded before the general response clamp, and withheld actions count in `blocking_capped`.
+
 ## 0.28.0
 
 Two threads. First, a live re-check of 0.27.0's alignment work found the one interplay it had
