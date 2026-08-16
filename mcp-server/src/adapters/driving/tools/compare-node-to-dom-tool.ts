@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTool, jsonResult } from './shared-error-handler.js';
+import { runTool, textResult } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
@@ -10,7 +10,7 @@ import { diffPair, summarize, widthNoiseTolerance, deriveCoverage, condenseBulkP
 import { renderReport } from '../../../domain/layout-spec/report.js';
 import { DomSnapshotSchema, DOM_SNAPSHOT_SCHEMA_VERSION } from './dom-snapshot-schema.js';
 import { buildSetNames } from './component-set-names.js';
-import { clampToBudget } from '../../../application/get-comments.js';
+import { clampToBudget, responseBudgetFallback } from './response-budget.js';
 import { DomRefSchema, resolveDomRef } from './dom-ref.js';
 import { buildVerification, budgetDropNote } from '../../../domain/layout-spec/verification.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
@@ -924,29 +924,27 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // — the clamp measurement in the strip tier accounts for both the removed fix_plan and the added response flag.
         let fixPlanStripped = false;
         const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(parsed.value, tolerancePx, kept, frame, results, effPreflight, depthLevels, verification, hydration, degradedStages, fixPlanStripped));
-        // Budget cascade: full → bulk-pass compression → [fix-plan strip tier] → omitted_pairs
-        // (the last resort). fix_plan is pure duplication of rows: if it doesn't fit after condense, we FIRST
-        // strip fix_plan/fix_plan_capped from ALL pairs (+fix_plan_stripped:true, an honest flag), and only
-        // then does the clamp drop whole pairs — the rows data is worth more than the derived plan. On a fitting response
-        // condense is NOT called — behavior is byte-for-byte as before (serialize(results) ≤ budget → kept = results).
-        let kept = results;
-        if (serialize(results).length > budget) {
+        // Budget cascade: full → bulk-pass compression → [fix-plan strip tier] → omitted_pairs.
+        // A shared floor distinguishes a too-large first pair from an envelope that cannot fit at all.
+        let delivered = serialize(results);
+        if (delivered.length > budget) {
           const condensed = condenseBulkPass(results);
-          // The strip tier fires ONLY when condense wasn't enough AND there's something to strip: the
-          // fix_plan_stripped flag must be honest (not "dangling"), hence the gate on
-          // the real presence of fix_plan on at least one pair. No fix_plan → straight to the omitted resort
-          // (behavior byte-for-byte as before, without a false flag).
-          if (serialize(condensed).length > budget && condensed.some((p) => p.fix_plan !== undefined)) {
-            fixPlanStripped = true; // BEFORE the clamp: the serialize closure now measures the stripped form + flag
-            ({ kept } = clampToBudget(condensed.map(stripFixPlan), budget, serialize));
+          if (serialize(condensed).length <= budget) {
+            delivered = serialize(condensed);
           } else {
-            ({ kept } = clampToBudget(condensed, budget, serialize));
+            const candidates = condensed.some((p) => p.fix_plan !== undefined)
+              ? (fixPlanStripped = true, condensed.map(stripFixPlan))
+              : condensed;
+            const fitted = clampToBudget(candidates, budget, serialize);
+            delivered = fitted.kind === 'fit' || fitted.kind === 'truncated'
+              ? fitted.serialized
+              : serializeForDelivery(responseBudgetFallback(results, verification, fitted.kind));
           }
         }
         // Latency: one log line for the whole call — to measure wall-clock
         // without reconstructing it from fetch logs. Only on the successful main return.
         deps.logger.info({ total_ms: Date.now() - t0, pairs: args.pairs.length }, 'compare.done');
-        return jsonResult(buildOutput(parsed.value, tolerancePx, kept, frame, results, effPreflight, depthLevels, verification, hydration, degradedStages, fixPlanStripped));
+        return textResult(delivered);
       }, deps.noTokenHint),
   );
 }

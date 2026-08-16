@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTool, jsonResult } from './shared-error-handler.js';
+import { runTool, textResult } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
-import { clampToBudget } from '../../../application/get-comments.js';
+import { clampToBudget, responseTooLargeResult } from './response-budget.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { listTokens, listTokensForIds, collectNodeVariableIds } from '../../../domain/variables.js';
@@ -119,24 +119,24 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
               : t,
           );
 
-          // Delivered byte-clamp: get_variables was the only read tool without one; a multi-mode
-          // page can exceed the result budget even after count pagination. Measured on the SAME
-          // serialization jsonResult delivers (serializeForDelivery — compact by default), so the
-          // guard bounds the real wire payload. Honest: summary/total_matching stay over the full
-          // catalog; next_offset advances to the clamp cut so a re-request continues the tail.
+          // Measure and return the exact delivered envelope so the clamp accounts for the real
+          // pagination cursor and its own clamped marker.
           const budget = deps.maxResultChars ?? 40000;
-          const { kept: tokens, clamped } = clampToBudget(pageTokens, budget, (xs) =>
-            serializeForDelivery({ summary, total_matching: filtered.length, returned: xs.length, next_offset: null, tokens: xs }));
-          const next_offset = offset + tokens.length < filtered.length ? offset + tokens.length : null;
-
-          return jsonResult({
-            summary,
-            total_matching: filtered.length,
-            returned: tokens.length,
-            next_offset,
-            ...(clamped ? { clamped: true } : {}),
-            tokens,
+          const result = clampToBudget(pageTokens, budget, (tokens) => {
+            const next_offset = offset + tokens.length < filtered.length ? offset + tokens.length : null;
+            return serializeForDelivery({
+              summary,
+              total_matching: filtered.length,
+              returned: tokens.length,
+              next_offset,
+              tokens,
+              ...(tokens.length < pageTokens.length ? { clamped: true } : {}),
+            });
           });
+          if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+            return responseTooLargeResult(result.kind);
+          }
+          return textResult(result.serialized);
         } catch (err) {
           // BOTH 403 kinds, not just 'forbidden'. mapStatus routes a 403 whose reason names a scope
           // (and neither the token nor a plan) to kind 'auth' - that is the ONLY auth-403 it

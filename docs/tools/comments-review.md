@@ -41,6 +41,11 @@ Fetch review comments from a Figma file as threads, with rich filtering (author,
 node, mentions) and pagination. Anchors resolve to node names/pages. Use `summarize_comments`
 first on large files.
 
+If the configured response budget cannot fit even the first complete thread, the tool returns
+`isError:true` with `{code:"response_too_large", reason:"first_item_oversize"|"envelope_oversize",
+action:"narrow_request"}`. This static error carries no thread text, request data or pagination
+cursor: do not advance `offset`; narrow the filters or request fewer threads.
+
 **Parameters** — all [shared filters](#shared-filter-parameters), plus:
 
 | Parameter | Type | Description |
@@ -207,6 +212,11 @@ can drift the projection into a neighbouring band. To identify the element direc
 `get_screenshot` with `focus=target.atPercent` (a zoomed crop around the pin), read what it points
 at, then locate that element in the reference with `find_nodes` - this beats the linear projection
 when prod/reference layouts drift.
+
+If the configured response budget cannot fit even the first complete lane, the tool returns
+`isError:true` with `{code:"response_too_large", reason:"first_item_oversize"|"envelope_oversize",
+action:"narrow_request"}`. The static error carries no board data, screenshots, request data or
+continuation cursor; request a narrower board subtree or lower `depth`.
 
 **Parameters**
 

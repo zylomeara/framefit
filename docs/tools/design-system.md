@@ -41,6 +41,11 @@ Multi-mode tokens (collections with >1 mode) carry `mode_dependent:true` and
 without checking the node's mode (see
 [`get_design_context`](navigation.md#get_design_context)).
 
+If the configured response budget cannot fit even the first complete token, the tool returns
+`isError:true` with `{code:"response_too_large", reason:"first_item_oversize"|"envelope_oversize",
+action:"narrow_request"}`. This static error carries no token, request data or `next_offset`: do not
+advance `offset`; narrow the filters, lower `limit`, or scope the request to a node.
+
 **Parameters**
 
 | Parameter | Type | Description |

@@ -832,6 +832,11 @@ const ACTION_TYPE_MEMBER_SITES = [
   'src/multi-tenant/audit-db.ts string',
 ];
 
+/** `action` fields that are response directives, not verification blockers. */
+const ACTION_NON_BLOCKING_SITES = [
+  'src/adapters/driving/tools/response-budget.ts narrow_request',
+];
+
 interface ActionSite { file: string; line: number; value: string }
 
 const tsFilesUnder = (dir: string): string[] =>
@@ -955,11 +960,12 @@ function resolveActionLiterals(expr: string, file: string, seen = new Set<string
 /** The blocking vocabulary, plus the accounting that says every site was explained. */
 function actionCodeSide(): {
   values: Set<string>; sites: ActionSite[]; vocabularySites: ActionSite[];
-  literals: number; offenders: string[];
+  nonBlockingSites: string[]; literals: number; offenders: string[];
 } {
   const sites = actionKeySites();
   const values = new Set<string>();
   const vocabularySites: ActionSite[] = [];
+  const nonBlockingSites: string[] = [];
   const typeMembers: string[] = [];
   const offenders: string[] = [];
   let literals = 0;
@@ -971,6 +977,11 @@ function actionCodeSide(): {
     // number in the key: a declaration keyed by line rots on the next edit above it, which is the
     // defect docs-citations exists to ban -- the line is carried in the message instead.
     if (lits.length === 0) { typeMembers.push(`${s.file} ${s.value.split('\n')[0].slice(0, 40)}`); continue; }
+    const nonBlockingKey = `${s.file} ${lits.join('|')}`;
+    if (ACTION_NON_BLOCKING_SITES.includes(nonBlockingKey)) {
+      nonBlockingSites.push(nonBlockingKey);
+      continue;
+    }
     literals += lits.length;
     if (s.file !== VERIFICATION_FILE) {
       offenders.push(
@@ -991,7 +1002,15 @@ function actionCodeSide(): {
       + ` declared ${JSON.stringify(declared)} -- an unexplained site is a failure whatever shape it is written in`,
     );
   }
-  return { values, sites, vocabularySites, literals, offenders };
+  const foundNonBlocking = [...nonBlockingSites].sort();
+  const declaredNonBlocking = [...ACTION_NON_BLOCKING_SITES].sort();
+  if (JSON.stringify(foundNonBlocking) !== JSON.stringify(declaredNonBlocking)) {
+    offenders.push(
+      `the non-blocking \`action\` sites changed: found ${JSON.stringify(foundNonBlocking)},`
+      + ` declared ${JSON.stringify(declaredNonBlocking)}`,
+    );
+  }
+  return { values, sites, vocabularySites, nonBlockingSites, literals, offenders };
 }
 
 /** `<action>/<kind>` for every kind co-located with an action in one blocking-item object literal. */
@@ -1070,26 +1089,21 @@ describe('Gate 5B: both pages that enumerate the blocking actions name all thirt
   const codeSide = (): Set<string> => actionCodeSide().values;
 
   it('accounts for EVERY `action` key under src/, so no value shape can walk past', () => {
-    const { values, sites, vocabularySites, literals, offenders } = actionCodeSide();
+    const { values, sites, vocabularySites, nonBlockingSites, literals, offenders } = actionCodeSide();
     // The offenders check runs FIRST and by name: an unexplained site is the failure this row exists
     // for, and a size assert firing instead would say a number where it could say a file and a line.
     expect(offenders, 'an `action` key under src/ was not explained').toEqual([]);
     // A SHAPE-AGNOSTIC denominator. Round 2 asserted `plain === 18` using the same regex that read
     // the values, so it could not count a site that regex could not see -- measured, a camel-case
     // literal left it at 18. This number comes from a rule that never looks at a value at all.
-    // 24 -> 25, 19 -> 20, 20 -> 21: uncheckedToBlocking gained a `corner-radius` branch, so a DOM
-    // radius that is not one comparable px number is routed to the existing resolve_skip instead of
-    // falling through to "raise max_depth", which fixes no border radius. It REUSES an action rather than inventing a
-    // fourteenth, so these three counters move and the vocabulary below does not.
-    // 25 -> 26, 20 -> 21: holeToBlocking's children_truncated branch split on depth. At the maximum
-    // capture depth "raise max_depth" is not an action anyone can carry out, so the blocker could
-    // never clear and the done-gate could never close; at 8 it routes to the existing
-    // add_pairs_on_children instead. Another REUSE, so the vocabulary below is unchanged again.
-    expect(sites.length, 'the number of `action` keys under src/ changed').toBe(38) // 36 -> 38: ancestor own-layout debt reuses add_container_pair and the displaced edge-child diagnosis reuses add_pair; 34 -> 36: the icon scan-cap branch;
-    expect(vocabularySites.length, `the number of \`action\` value sites in ${VERIFICATION_FILE} changed`).toBe(33); // 31 -> 33: the two existing-action reuse sites above
+    // The one non-blocking site is the static response-too-large retry directive; it is accounted
+    // separately so it cannot silently enter the thirteen-action verification vocabulary.
+    expect(sites.length, 'the number of `action` keys under src/ changed').toBe(40);
+    expect(vocabularySites.length, `the number of \`action\` value sites in ${VERIFICATION_FILE} changed`).toBe(34);
+    expect(nonBlockingSites).toHaveLength(1);
     expect(ACTION_TYPE_MEMBER_SITES).toHaveLength(5);
     // Some sites are conditionals and contribute more than one resolved literal.
-    expect(literals, 'the resolved literal count changed -- a conditional branch gained or lost').toBe(34); // 32 -> 34: the two existing-action reuse sites above
+    expect(literals, 'the resolved blocking literal count changed -- a conditional branch gained or lost').toBe(35);
     expect(values.size, 'the extractor no longer finds thirteen distinct actions').toBe(13);
     // By name, both directions of the recipe's failure. `add_text_pair` is reachable ONLY through the
     // conditional, and `fix_frame_id` is the value both pages were missing.
@@ -1394,7 +1408,7 @@ const MARKED_QUOTES: Record<string, number> = {
  * more; there is no reason for this one to be looser than the marked count beside it.
  */
 const CANDIDATE_COUNT: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 50, // 49 -> 50: the exclude_regions step quotes "excluded by the caller"
+  'docs/agents/design-qa-skill.md': 52, // 50 -> 52: both no-detail guidance branches name code:"response_budget"
   'docs/coverage.md': 7, // 6 -> 7: the exclude_regions row quotes the excluded-by-the-caller line
 };
 

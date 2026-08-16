@@ -17,6 +17,11 @@ depth degrades per-branch: light branches stay deep while heavy ones collapse; t
 `effective_depth` (deepest shown) and `min_effective_depth` (shallowest branch), with
 `truncated:true` + `childCount` on each cut node.
 
+If the configured response budget cannot fit even the first complete child group, the tool returns
+`isError:true` with `{code:"response_too_large", reason:"first_item_oversize"|"envelope_oversize",
+action:"narrow_request"}` instead of a successful empty tree. The static error carries no request
+data or continuation cursor; request a narrower root or lower depth.
+
 **Parameters**
 
 | Parameter | Type | Description |
@@ -50,6 +55,11 @@ a DS section header) matches as `'property'`. Feed a `node_id` into `get_design_
 The response always carries a `coverage` ledger - scoped (`node_id`) calls included:
 `depth_cut`/`hidden_cut` name what the fetch did NOT search, and an empty result claims absence
 only when the ledger shows no cut. `type` takes Figma node types - a page is CANVAS.
+
+If the configured response budget cannot fit even the first complete match, the tool returns
+`isError:true` with `{code:"response_too_large", reason:"first_item_oversize"|"envelope_oversize",
+action:"narrow_request"}`. This static error has no matches, coverage ledger, request data or
+continuation cursor; narrow the query, scope with `node_id`, or lower `depth`.
 
 **Parameters**
 
@@ -111,6 +121,12 @@ Extract only the typography of a node's subtree (`fontFamily`, `fontWeight`, `fo
 `lineHeightPx`, `letterSpacing`, `align`) without the full design tree - for fast spec
 verification of a deep text node. Pass `dedupe=true` to group identical styles. Use `find_nodes`
 first to get a node_id.
+
+If the configured response budget cannot fit even the first complete style group or text hit, the
+tool returns `isError:true` with `{code:"response_too_large",
+reason:"first_item_oversize"|"envelope_oversize", action:"narrow_request"}`. The static error has no
+partial result, request data or continuation cursor; narrow the root, reduce `depth`, or filter the
+node first.
 
 **Parameters**
 

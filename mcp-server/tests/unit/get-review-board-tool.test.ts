@@ -68,6 +68,36 @@ describe('get_review_board tool', () => {
     expect(item2.target.referenceNode.path[0].w).toBe(1000);
   });
 
+  it('returns a fixed overflow error when the first review lane cannot fit the supported minimum budget', async () => {
+    const sentinel = `REQUEST_SENTINEL_${'x'.repeat(1400)}`;
+    const text = (id: string, characters: string): RawSceneNode => ({
+      id, name: id, type: 'TEXT', characters,
+      absoluteBoundingBox: { x: 0, y: 0, width: 20, height: 20 },
+    } as unknown as RawSceneNode);
+    const doc: RawSceneNode = {
+      id: '12:1', name: 'review', type: 'SECTION',
+      absoluteBoundingBox: { x: 0, y: 0, width: 3000, height: 1000 },
+      children: [
+        { id: 'prod', name: 'image', type: 'RECTANGLE', fills: [{ type: 'IMAGE', imageRef: 'r' }],
+          absoluteBoundingBox: { x: 0, y: 0, width: 1000, height: 1000 } } as unknown as RawSceneNode,
+        { id: 'pin', name: 'pin', type: 'INSTANCE', absoluteBoundingBox: { x: 400, y: 400, width: 74, height: 106 },
+          children: [text('pin-number', '1')] } as unknown as RawSceneNode,
+        { id: 'comments', name: 'comments', type: 'FRAME', absoluteBoundingBox: { x: 1200, y: 0, width: 500, height: 1000 }, children: [
+          { id: 'comment-row', name: 'row', type: 'FRAME', absoluteBoundingBox: { x: 1200, y: 400, width: 500, height: 120 },
+            children: [text('comment-number', '1'), text('comment-body', sentinel)] } as unknown as RawSceneNode,
+        ] } as unknown as RawSceneNode,
+      ],
+    } as unknown as RawSceneNode;
+    const res = await install(doc, 1000)({ file: 'k', node_id: '12:1' });
+    const output = textOf(res.content[0]);
+
+    expect(output.length).toBeLessThanOrEqual(1000);
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(output)).toEqual({ code: 'response_too_large', reason: 'first_item_oversize', action: 'narrow_request' });
+    expect(JSON.parse(output)).not.toHaveProperty('next_offset');
+    expect(output).not.toContain(sentinel);
+  });
+
   // Many-lane synthetic board — big enough that pretty-vs-compact (and envelope-vs-naked)
   // size deltas are well over any small fixed slack, so the lock below actually falsifies.
   // (The small review-board-profile.json fixture is too tiny for this — pretty overhead on

@@ -361,7 +361,7 @@ describe('find_nodes tool — whole-file (chunked, budgeted)', () => {
     expect(out.coverage).toEqual({ searched: 1, total: 1, skipped: [], skippedTotal: 0 });
   });
 
-  it('clamping (maxResultChars budget) is compatible with coverage: a clamped response still carries full coverage', async () => {
+  it('clamping at the supported minimum keeps a fitting prefix and full coverage', async () => {
     const skeleton = skeletonOf(page('Board', [
       { id: '2:1', name: 'Alpha' },
       { id: '2:2', name: 'widget' },
@@ -369,19 +369,22 @@ describe('find_nodes tool — whole-file (chunked, budgeted)', () => {
     ]));
     const docs: Record<string, any> = {
       '2:1': { id: '2:1', name: 'Alpha', type: 'FRAME' },
-      '2:2': { id: '2:2', name: 'widget', type: 'FRAME', children: [
-        { id: '2:2:1', name: 'widget-detail', type: 'FRAME' },
-      ] },
+      '2:2': { id: '2:2', name: 'widget', type: 'FRAME', children: Array.from({ length: 12 }, (_, i) => ({
+        id: `2:2:${i}`, name: `widget-${i}-${'x'.repeat(160)}`, type: 'FRAME',
+      })) },
       '2:3': { id: '2:3', name: 'Gamma', type: 'FRAME' },
     };
     const getDocumentRaw = vi.fn(async () => skeleton);
     const getNodesRaw = vi.fn(async (_file: string, ids: string[]) => ({ nodes: { [ids[0]]: { document: docs[ids[0]] } } }));
-    const run = harness({ getDocumentRaw, getNodesRaw }, { maxResultChars: 10 });
+    const run = harness({ getDocumentRaw, getNodesRaw }, { maxResultChars: 1000 });
 
     const res = await run({ file: 'abc', query: 'widget', depth: 6, limit: 20 });
     const out = JSON.parse(res.content[0].text);
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text.length).toBeLessThanOrEqual(1000);
     expect(out.clamped).toBe(true);
-    expect(out.matches.length).toBeLessThan(2);
+    expect(out.matches.length).toBeGreaterThan(0);
+    expect(out.matches.length).toBeLessThan(out.total);
     expect(out.coverage).toEqual({ searched: 3, total: 3, skipped: [], skippedTotal: 0 });
   });
 
@@ -433,5 +436,18 @@ describe('find_nodes tool — whole-file (chunked, budgeted)', () => {
       { maxResultChars: deliveredLen - 1, toolTimeBudgetMs: 0 });
     const edge = await runEdge({ file: 'abc', query: 'card', depth: 6, limit: 20 });
     expect(edge.content[0].text.length).toBeLessThanOrEqual(deliveredLen - 1); // budget is never exceeded
+  });
+
+  it('returns a fixed overflow error when the request envelope alone exceeds the supported minimum budget', async () => {
+    const sentinel = `REQUEST_SENTINEL_${'x'.repeat(1400)}`;
+    const run = harness({ getNodesRaw: async () => ({ nodes: { '1:0': { document: subtree } } }) }, { maxResultChars: 1000 });
+    const res = await run({ file: 'abc', node_id: '1-0', query: sentinel, depth: 6, limit: 20 });
+    const text = res.content[0].text as string;
+
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(text)).toEqual({ code: 'response_too_large', reason: 'envelope_oversize', action: 'narrow_request' });
+    expect(JSON.parse(text)).not.toHaveProperty('next_offset');
+    expect(text).not.toContain(sentinel);
   });
 });

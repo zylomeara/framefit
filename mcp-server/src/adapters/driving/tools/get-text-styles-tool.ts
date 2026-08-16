@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTool, jsonResult } from './shared-error-handler.js';
+import { runTool, textResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { simplify } from '../../../domain/design-context/simplify.js';
 import { collectTextStyles, dedupeTextStyles } from '../../../domain/text-styles.js';
-import { clampToBudget } from '../../../application/get-comments.js';
+import { clampToBudget, responseTooLargeResult } from './response-budget.js';
 import { serializeForDelivery } from './serialize.js';
 
 const InputSchema = {
@@ -49,13 +49,21 @@ export function registerGetTextStylesTool(server: McpServer, deps: ToolDeps): vo
         // (+~14 chars of fixed headroom — an honest shift upward, not drift).
         if (args.dedupe) {
           const groups = dedupeTextStyles(hits);
-          const { kept, clamped } = clampToBudget(groups, budget, (xs) =>
-            serializeForDelivery({ node_id: id, total: groups.length, returned: xs.length, clamped: true, styles: xs }));
-          return jsonResult({ node_id: id, total: groups.length, returned: kept.length, ...(clamped ? { clamped: true } : {}), styles: kept });
+          const result = clampToBudget(groups, budget, (xs) =>
+            serializeForDelivery({ node_id: id, total: groups.length, returned: xs.length,
+              ...(xs.length < groups.length ? { clamped: true } : {}), styles: xs }));
+          if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+            return responseTooLargeResult(result.kind);
+          }
+          return textResult(result.serialized);
         }
-        const { kept, clamped } = clampToBudget(hits, budget, (xs) =>
-          serializeForDelivery({ node_id: id, total: hits.length, returned: xs.length, clamped: true, styles: xs }));
-        return jsonResult({ node_id: id, total: hits.length, returned: kept.length, ...(clamped ? { clamped: true } : {}), styles: kept });
+        const result = clampToBudget(hits, budget, (xs) =>
+          serializeForDelivery({ node_id: id, total: hits.length, returned: xs.length,
+            ...(xs.length < hits.length ? { clamped: true } : {}), styles: xs }));
+        if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+          return responseTooLargeResult(result.kind);
+        }
+        return textResult(result.serialized);
       }, deps.noTokenHint),
   );
 }

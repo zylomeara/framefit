@@ -67,6 +67,23 @@ describe('get_metadata tool', () => {
     expect(res.content[0].text.length).toBeLessThanOrEqual(1500);
   });
 
+  it('returns a fixed overflow error when the first sparse child cannot fit the supported minimum budget', async () => {
+    const sentinel = `REQUEST_SENTINEL_${'x'.repeat(1400)}`;
+    const tree = {
+      id: '0:0', name: 'Doc', type: 'DOCUMENT', children: [
+        { id: '1:0', name: sentinel, type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 50 } },
+      ],
+    };
+    const res = await harness({ getDocumentRaw: async () => ({ name: 'F', lastModified: 'X', version: '1', document: tree }) }, 1000)({ file: 'abc', depth: 2 });
+    const text = res.content[0].text as string;
+
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(text)).toEqual({ code: 'response_too_large', reason: 'first_item_oversize', action: 'narrow_request' });
+    expect(JSON.parse(text)).not.toHaveProperty('next_offset');
+    expect(text).not.toContain(sentinel);
+  });
+
   it('returns the tree untouched (degraded:false) when it fits', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:5': { document: { id: '1:5', name: 'Hero', type: 'FRAME' } } } }));
     const run = harness({ getNodesRaw });

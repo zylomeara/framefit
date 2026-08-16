@@ -38,6 +38,28 @@ describe('SERVER_INSTRUCTIONS (initialize contract for skill-less hosts)', () =>
     expect(SERVER_INSTRUCTIONS).not.toContain('already measured');
   });
 
+  it('separates the always-incomplete no-detail fallback from ordinary pair omission', () => {
+    expect(SERVER_INSTRUCTIONS).toContain('code:"response_budget"');
+    expect(SERVER_INSTRUCTIONS).toContain('pairs:[]');
+    expect(SERVER_INSTRUCTIONS).toContain('always incomplete');
+    expect(SERVER_INSTRUCTIONS).toContain('smaller DOM roots');
+  });
+
+  it('does not claim that every submitted pair is individually too large', () => {
+    for (const body of [
+      SERVER_INSTRUCTIONS,
+      ...[
+        'docs/tools/design-qa.md',
+        'docs/design-qa-tutorial.md',
+        'docs/agents/design-qa-skill.md',
+        'docs/tools/README.md',
+      ].map((path) => readFileSync(join(repoRoot, path), 'utf8')),
+    ]) {
+      expect(body).toContain('a later pair may still fit unchanged');
+      expect(body).not.toContain('no complete pair detail fit');
+    }
+  });
+
   it('public omission guidance does not call every omitted pair measured', () => {
     for (const path of [
       'docs/tools/design-qa.md',

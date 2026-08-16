@@ -27,10 +27,14 @@ Then read `verification.complete` — the done-gate. Never claim the UI matches 
 `false` or `blocking[]` is non-empty: each blocking item names the action that closes it. Work those
 actions, re-capture the pairs they name (step 3), and run step 5 again. `complete: false` with an
 EMPTY `blocking[]` and ZERO ❌ rows means only inherent caveats remain (demotes, out-of-reach axes,
-a depth-ceiling tail) — verify those by eye, then you may proceed. If a response-budget note says
-omitted pairs carry FAILing rows, replay `originalArgs.pairs[i]` for each zero-based `i` in
-`omitted_pair_indices`; clean omitted pairs are already included in the aggregate verdict and may stay complete.
-`omitted_pair_ids` is display-only and may repeat.
+a depth-ceiling tail) — verify those by eye, then you may proceed. If an ordinary response-budget
+note says omitted pairs carry FAILing rows, replay `originalArgs.pairs[i]` for each zero-based `i` in
+`omitted_pair_indices`; clean omitted pairs are already included in the aggregate verdict and may
+stay complete. `omitted_pair_ids` is display-only and may repeat. If the response instead carries
+`code:"response_budget"` with `pairs: []`, the prefix-preserving clamp retained no complete pair
+detail; a later pair may still fit unchanged when replayed alone. That compact receipt is always
+incomplete. Replay every listed position in smaller calls or re-capture smaller DOM roots before
+retrying; the clean-omission exception does not apply to this no-detail fallback.
 
 [`get_view`](#get_view) is not a step in that sequence — it is orientation inside a large frame, at
 any point. [`examples/first-verdict.mjs`](../../examples/first-verdict.mjs) is the same five steps
@@ -454,8 +458,20 @@ submitted `pairs` array. A `verification.notes` line counts omitted pairs carryi
 any do (a note with no FAIL clause means none were). A dropped fail keeps the report verdict at
 "discrepancies found"; replay it with
 `omitted_pair_indices.map(i => originalArgs.pairs[i])` in a smaller call to see its rows. Clean
-omitted pairs were already processed and included in the aggregate verdict, so omission alone does not make a green receipt red. Both
-comparators share this contract.
+omitted pairs were already processed and included in the aggregate verdict, so ordinary omission
+alone does not make a green receipt red.
+
+A different compact shape means the prefix-preserving clamp retained no complete pair detail:
+`code:"response_budget"`, `pairs: []`, `omitted_pairs`, and every submitted position in
+`omitted_pair_indices`. A later pair may still fit unchanged when replayed alone. The response
+deliberately omits labels, selectors, ids, reports, notes, hydration and degradation details. Its
+receipt is always incomplete with a fixed `response_budget` blocker: replay the listed positions in
+smaller calls or re-capture smaller DOM roots. Do not infer clean omission from the absence of rows
+or notes. Both comparators share these two contracts.
+
+These comparator rules cover the configurable response budget. The separate fixed 1 MiB response
+floors used by `get_layout_spec` and `get_view` are unchanged and are not a server-wide size
+guarantee.
 
 ---
 

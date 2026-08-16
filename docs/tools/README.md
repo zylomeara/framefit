@@ -81,5 +81,12 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
   not a silent no-op.
 - Code fences: a request example is tagged `json` and a response example `jsonc`, which is what
   lets a response body carry comments and elisions.
-- Sizes, depths and limits are capped server-side; responses that would exceed the transport budget
-  degrade honestly (truncation flags, `omitted_*` counters) instead of silently dropping data.
+- The configurable `MAX_RESULT_CHARS` budget is measured against the exact delivered envelope for
+  `compare_node_to_dom`, `compare_dom_to_dom`, `find_nodes`, `get_comments`, `get_metadata`,
+  `get_review_board`, `get_text_styles` and `get_variables`. Ordinary comparator pair omissions use
+  `omitted_pair_indices`; when the prefix-preserving clamp retains no complete pair detail,
+  `code:"response_budget"` with `pairs: []` is always incomplete; a later pair may still fit unchanged
+  when replayed alone, so replay every listed position or use smaller DOM roots. The other six tools
+  return a static `isError:true` `response_too_large` result with `action:"narrow_request"` and no
+  cursor when no atomic result fits. The separate fixed 1 MiB floors in `get_layout_spec` and
+  `get_view` are unchanged, so this is not a server-wide response-size guarantee.

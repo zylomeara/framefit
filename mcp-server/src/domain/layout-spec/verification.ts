@@ -730,6 +730,13 @@ export function buildVerification(pairs: PairResult[], opts: {
   };
 }
 
+export function responseBudgetBlocker(): BlockingItem {
+  return {
+    kind: 'response_budget', action: 're_extract_dom',
+    detail: 'pair details exceed the response budget; re-extract smaller DOM roots or replay omitted pairs',
+  };
+}
+
 // The budget drop trace (clamped fail-pair debt): when the response-budget clamp drops whole
 // pairs, the receipt says so in ONE notes[] line - notes render as warn lines in BOTH report
 // branches and are not parseable by contract, so the machine replay key is the

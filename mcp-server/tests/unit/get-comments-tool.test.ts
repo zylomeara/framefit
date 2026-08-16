@@ -26,17 +26,17 @@ const structure = buildFileStructure(structFixture.document as unknown as RawDoc
 // that fixpoint by always measuring as-if-clamped. Tight-probe budgets are therefore anchored
 // ABOVE the conservative full-page measure, not at deliveredLen+100.
 
-function fakeApi(): Partial<FigmaApi> {
+function fakeApi(comments = rawComments): Partial<FigmaApi> {
   return {
-    getComments: vi.fn(async () => rawComments),
+    getComments: vi.fn(async () => comments),
     getFileStructure: vi.fn(async () => structure),
     resolveNodes: vi.fn(async () => new Map()),
   };
 }
 
-function harness(maxResultChars: number) {
+function harness(maxResultChars: number, comments = rawComments) {
   const { server, call } = makeFakeMcpServer();
-  const deps: ToolDeps = { buildApi: () => fakeApi() as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars };
+  const deps: ToolDeps = { buildApi: () => fakeApi(comments) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars };
   registerGetCommentsTool(server, deps);
   return (a: any): Promise<any> => call('get_comments', a);
 }
@@ -151,6 +151,15 @@ describe('get_comments tool', () => {
     expect(edgeOut.returned).toBeLessThan(edgeOut.total_matching); // genuinely clamped
   });
 
+  it('keeps the established near-limit warning on a fitting JSON page', async () => {
+    const res = await harness(2300)({ ...base, as_markdown: false });
+    const out = JSON.parse(res.content[0].text);
+
+    expect(out.returned).toBe(out.total_matching);
+    expect(out.warnings.map((w: { code: string }) => w.code)).toContain('large_result');
+    expect(res.content[0].text.length).toBeLessThanOrEqual(2300);
+  });
+
   // MCP_PRETTY_JSON lock: delivery is pretty AND the measure is pretty (lockstep — both go through
   // serializeForDelivery, which reads the env). A mutation that hardcodes a compact measure while
   // delivering pretty would under-count and overflow the budget.
@@ -169,5 +178,17 @@ describe('get_comments tool', () => {
     expect(edge.content[0].text.length).toBeLessThanOrEqual(deliveredLen - 1);
     const edgeOut = JSON.parse(edge.content[0].text);
     expect(edgeOut.returned).toBeLessThan(edgeOut.total_matching);
+  });
+
+  it('returns a fixed overflow error when the first JSON thread cannot fit the supported minimum budget', async () => {
+    const sentinel = `REQUEST_SENTINEL_${'x'.repeat(1400)}`;
+    const res = await harness(1000, [{ ...rawComments[0], message: sentinel }])({ ...base, as_markdown: false, limit: 1 });
+    const text = res.content[0].text as string;
+
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(text)).toEqual({ code: 'response_too_large', reason: 'first_item_oversize', action: 'narrow_request' });
+    expect(JSON.parse(text)).not.toHaveProperty('next_offset');
+    expect(text).not.toContain(sentinel);
   });
 });
