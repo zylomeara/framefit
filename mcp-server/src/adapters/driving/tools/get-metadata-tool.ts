@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTool, jsonResult } from './shared-error-handler.js';
+import { runTool, textResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { toSparseTree, countTruncated, type SparseNode } from '../../../domain/metadata.js';
 import { fitToBudgetPerBranch } from '../../../domain/design-context/auto-degrade.js';
-import { clampToBudget } from '../../../application/get-comments.js';
+import { clampToBudget, responseTooLargeResult } from './response-budget.js';
 import { serializeForDelivery } from './serialize.js';
 
 const InputSchema = {
@@ -64,31 +64,36 @@ export function registerGetMetadataTool(server: McpServer, deps: ToolDeps): void
           truncation?: { requested_depth: number; effective_depth: number; min_effective_depth: number; reason: string; truncated_branches: number; omitted_children: number };
         } = { ...fit.node, depth: fit.effectiveDepth, degraded: fit.degraded };
 
-        // Floor case: per-branch fitting already collapsed every branch to depth 1, but
-        // top-level breadth (the number/size of direct children) alone still exceeds the
-        // budget — trim children (keep the largest prefix that fits) and report how many
-        // were dropped.
-        let omitted = 0;
-        if (serializeForDelivery({ ...out, truncation: TRUNCATION_STUB }).length > budget && Array.isArray(out.children)) {
-          const all = out.children;
-          const { kept } = clampToBudget(all, budget, (xs) =>
-            serializeForDelivery({ ...fit.node, children: xs, depth: 1, degraded: true, omittedChildren: all.length - xs.length, truncation: TRUNCATION_STUB }));
-          out.children = kept;
-          out.degraded = true;
-          if (kept.length < all.length) { out.omittedChildren = all.length - kept.length; omitted = out.omittedChildren; }
-        }
-
         const depthReduced = fit.minEffectiveDepth < args.depth;
-        const reason = depthReduced && omitted ? 'both' : depthReduced ? 'depth' : omitted ? 'width' : 'none';
-        out.truncation = {
-          requested_depth: args.depth,
-          effective_depth: fit.effectiveDepth,
-          min_effective_depth: fit.minEffectiveDepth,
-          reason,
-          truncated_branches: countTruncated(out),
-          omitted_children: omitted,
-        };
-        return jsonResult(out);
+        const hasChildren = Array.isArray(out.children);
+        const children = Array.isArray(out.children) ? out.children : [];
+        const result = clampToBudget(children, budget, (kept) => {
+          const omitted = children.length - kept.length;
+          const candidate: SparseNode & {
+            depth: number; degraded: boolean; omittedChildren?: number;
+          } = {
+            ...out,
+            ...(hasChildren ? { children: kept } : {}),
+            degraded: out.degraded || omitted > 0,
+            ...(omitted > 0 ? { omittedChildren: omitted } : {}),
+          };
+          const reason = depthReduced && omitted ? 'both' : depthReduced ? 'depth' : omitted ? 'width' : 'none';
+          return serializeForDelivery({
+            ...candidate,
+            truncation: {
+              requested_depth: args.depth,
+              effective_depth: fit.effectiveDepth,
+              min_effective_depth: fit.minEffectiveDepth,
+              reason,
+              truncated_branches: countTruncated(candidate),
+              omitted_children: omitted,
+            },
+          });
+        });
+        if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+          return responseTooLargeResult(result.kind);
+        }
+        return textResult(result.serialized);
       }, deps.noTokenHint),
   );
 }

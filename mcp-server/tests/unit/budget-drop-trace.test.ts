@@ -41,6 +41,17 @@ const parse = (r: { content: { text: string }[] }): any => JSON.parse(r.content[
 const dropNotes = (out: any): string[] =>
   (out.verification.notes ?? []).filter((n: string) => n.includes('response budget'));
 
+async function firstDetailBudget(runAt: (budget: number) => Promise<any>): Promise<number> {
+  let lo = 1000;
+  let hi = (await runAt(400000)).content[0].text.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (parse(await runAt(mid)).pairs.length > 0) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
 // One card, matched cleanly by cleanDom; redDom diverges on the children's x (offset fail).
 const card: RawSceneNode = {
   id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 343, height: 120 },
@@ -78,12 +89,12 @@ describe('compare_node_to_dom: the drop trace', () => {
   const api = () => ({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: card } } })) });
 
   it('a clamped-out RED pair leaves the full trace, and the delivery still fits the budget', async () => {
-    // calibration: budget=1 -> the floor delivery (1 kept pair + the trace); then budget=floorLen
-    // must fit WITH the trace present - the both-halves assert (a note alone or a fit alone
-    // each passes for one of the two bugs: unmeasured delivery vs measured-but-undelivered).
-    const floor = await figmaHarness(api(), 1)({ file: 'abc', pairs: mixedPairs });
+    // Calibrate the supported floor: the smallest budget with one complete pair detail, then
+    // assert that its trace remains within the measurement selected budget.
+    const runAt = (budget: number) => figmaHarness(api(), budget)({ file: 'abc', pairs: mixedPairs });
+    const floor = await runAt(await firstDetailBudget(runAt));
     const floorLen = floor.content[0].text.length;
-    const res = await figmaHarness(api(), floorLen)({ file: 'abc', pairs: mixedPairs });
+    const res = await runAt(floorLen);
     const out = parse(res);
     expect(out.omitted_pairs).toBeGreaterThan(0);
     expect(out.omitted_pair_ids).toHaveLength(out.omitted_pairs);
@@ -114,6 +125,68 @@ describe('compare_node_to_dom: the drop trace', () => {
     expect(out.verification.complete).toBe(false);            // unchanged: receipt over ALL pairs
   });
 
+  it('the floor returns a safe incomplete fallback when no comparison pair can fit', async () => {
+    const hostileId = `1:${'9'.repeat(120)}`;
+    const hostileLabel = `HOSTILE_LABEL_${'x'.repeat(60)}`;
+    const hostileSelector = `HOSTILE_SELECTOR_${'x'.repeat(1400)}`;
+    const pairs = [
+      { node_id: hostileId, label: hostileLabel, dom: { ...cleanDom, selector: hostileSelector } },
+      { node_id: '1:1', label: 'SECOND_HOSTILE_LABEL', dom: { ...cleanDom, selector: 'SECOND_HOSTILE_SELECTOR' } },
+    ];
+    const getNodesRaw = vi.fn(async (_file: string, ids: string[]) => ({ nodes: Object.fromEntries(ids.map((id) => [id, {
+      document: id === hostileId ? { ...card, id: hostileId } : card,
+    }])) }));
+    const res = await figmaHarness({ getNodesRaw }, 1000)({ file: 'abc', pairs });
+    const out = parse(res);
+    const text = res.content[0].text;
+
+    expect(res.isError).toBeFalsy();
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(out.pairs).toEqual([]);
+    expect(out.verification.complete).toBe(false);
+    expect(out.verification.blocking).toEqual([
+      expect.objectContaining({ kind: 'response_budget', action: 're_extract_dom' }),
+    ]);
+    expect(out.omitted_pairs).toBe(2);
+    expect(out.omitted_pair_indices).toEqual([0, 1]);
+    expect(out).not.toHaveProperty('omitted_pair_ids');
+    expect(text).not.toContain(hostileId);
+    expect(text).not.toContain(hostileLabel);
+    expect(text).not.toContain(hostileSelector);
+    expect(text).not.toContain('SECOND_HOSTILE_LABEL');
+    expect(text).not.toContain('SECOND_HOSTILE_SELECTOR');
+  });
+
+  it('the maximum Figma batch fallback fits pretty JSON without request-derived detail', async () => {
+    const priorPretty = process.env.MCP_PRETTY_JSON;
+    process.env.MCP_PRETTY_JSON = 'true';
+    try {
+      const hostileId = `1:${'9'.repeat(120)}`;
+      const hostileLabel = `HOSTILE_LABEL_${'x'.repeat(60)}`;
+      const hostileSelector = `HOSTILE_SELECTOR_${'x'.repeat(1400)}`;
+      const pairs = Array.from({ length: 20 }, () => ({
+        node_id: hostileId, label: hostileLabel, dom: { ...cleanDom, selector: hostileSelector },
+      }));
+      const getNodesRaw = vi.fn(async () => ({ nodes: { [hostileId]: { document: { ...card, id: hostileId } } } }));
+      const full = parse(await figmaHarness({ getNodesRaw }, 400000)({ file: 'hostilefilekey', pairs }));
+      const res = await figmaHarness({ getNodesRaw }, 1000)({ file: 'hostilefilekey', pairs });
+      const out = parse(res);
+
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text.length).toBeLessThanOrEqual(1000);
+      expect(out).toEqual(expect.objectContaining({ code: 'response_budget', reason: expect.stringMatching(/^(first_item_oversize|envelope_oversize)$/), pairs: [], summary: full.summary, omitted_pairs: 20, omitted_pair_indices: Array.from({ length: 20 }, (_, i) => i) }));
+      expect(out.verification).toEqual(expect.objectContaining({ complete: false, scope: full.verification.scope, pairs: full.verification.pairs, blocking: [expect.objectContaining({ kind: 'response_budget', action: 're_extract_dom' })] }));
+      expect(Object.keys(out).sort()).toEqual(['code', 'reason', 'pairs', 'summary', 'verification', 'omitted_pairs', 'omitted_pair_indices'].sort());
+      expect(res.content[0].text).not.toContain('hostilefilekey');
+      expect(res.content[0].text).not.toContain('HOSTILE_LABEL_');
+      expect(res.content[0].text).not.toContain('HOSTILE_SELECTOR_');
+      expect(res.content[0].text).not.toContain(hostileId);
+    } finally {
+      if (priorPretty === undefined) delete process.env.MCP_PRETTY_JSON;
+      else process.env.MCP_PRETTY_JSON = priorPretty;
+    }
+  });
+
   it('the serialize closure MEASURES the trace: delivery at the kept=2 boundary equals the budget that selected it', async () => {
     // The robust measure==delivery lock at a NON-floor boundary. lo = the smallest budget at
     // which the clamp keeps 2 (bisection; kept is monotone in budget, step exactly 1 - swept).
@@ -131,7 +204,7 @@ describe('compare_node_to_dom: the drop trace', () => {
       return { len: res.content[0].text.length, kept: parse(res).pairs.length };
     };
     const full = await runAt(400000);
-    let lo = 1, hi = full.len; // smallest budget with kept >= 2
+    let lo = 1000, hi = full.len; // smallest supported budget with kept >= 2
     while (lo < hi) {
       const mid = Math.floor((lo + hi) / 2);
       if ((await runAt(mid)).kept >= 2) hi = mid; else lo = mid + 1;
@@ -143,8 +216,9 @@ describe('compare_node_to_dom: the drop trace', () => {
 
   it('an all-green clamped batch discloses without degrading the verdict (anti-cry-wolf)', async () => {
     const pairs = Array.from({ length: 5 }, (_, i) => ({ node_id: '1:1', dom: cleanDom, label: `clean-${i}` }));
-    const floor = await figmaHarness(api(), 1)({ file: 'abc', pairs });
-    const out = parse(await figmaHarness(api(), floor.content[0].text.length)({ file: 'abc', pairs }));
+    const runAt = (budget: number) => figmaHarness(api(), budget)({ file: 'abc', pairs });
+    const floor = await runAt(await firstDetailBudget(runAt));
+    const out = parse(await runAt(floor.content[0].text.length));
     expect(out.omitted_pairs).toBeGreaterThan(0);
     expect(out.omitted_pair_ids.length).toBe(out.omitted_pairs);
     expect(out.omitted_pair_indices).toEqual(
@@ -171,7 +245,8 @@ describe('compare_node_to_dom: the drop trace', () => {
       { node_id: '1:1', dom: cleanDom, label: 'duplicate' },
       { node_id: '1:1', dom: redDom, label: 'duplicate' },
     ];
-    const out = parse(await figmaHarness(api(), 1)({ file: 'abc', pairs }));
+    const runAt = (budget: number) => figmaHarness(api(), budget)({ file: 'abc', pairs });
+    const out = parse(await runAt(await firstDetailBudget(runAt)));
     expect(out.pairs).toHaveLength(1);
     expect(out.omitted_pair_ids).toEqual(['duplicate', 'duplicate']);
     expect(out.omitted_pair_indices).toEqual([1, 2]);
@@ -181,13 +256,16 @@ describe('compare_node_to_dom: the drop trace', () => {
     expect(replayed.pairs.map((p: any) => p.summary.fail)).toEqual([0, 2]);
   });
 
-  it('the floor overflow stays honest: budget=1 still names the dropped pairs', async () => {
-    // pre-existing ceiling: clampToBudget keeps at least 1 pair even over budget - the trace
-    // must ride that delivery too (no fits-budget assert here, the overflow is deliberate).
-    const out = parse(await figmaHarness(api(), 1)({ file: 'abc', pairs: mixedPairs }));
-    expect(out.omitted_pairs).toBeGreaterThan(0);
-    expect(out.omitted_pair_ids).toContain('red-tail');
-    expect(dropNotes(out)).toHaveLength(1);
+  it('the supported floor returns the safe fallback when no pair detail fits', async () => {
+    const out = parse(await figmaHarness(api(), 1000)({ file: 'abc', pairs: mixedPairs }));
+    expect(out.pairs).toEqual([]);
+    expect(out.omitted_pairs).toBe(mixedPairs.length);
+    expect(out.omitted_pair_indices).toEqual([0, 1, 2, 3, 4]);
+    expect(out.omitted_pair_ids).toBeUndefined();
+    expect(out.verification.complete).toBe(false);
+    expect(out.verification.blocking).toEqual([
+      expect.objectContaining({ kind: 'response_budget', action: 're_extract_dom' }),
+    ]);
   });
 });
 
@@ -226,11 +304,67 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
     expect(out.pairs.find((p: any) => p.node_id === 'red-shelf').summary.fail).toBeGreaterThan(0);
   });
 
+  it('the floor returns the same safe fallback without leaking DOM-derived labels or selectors', async () => {
+    const hostileLabel = `HOSTILE_LABEL_${'x'.repeat(60)}`;
+    const hostileSelector = `HOSTILE_SELECTOR_${'x'.repeat(1400)}`;
+    const pairs = [
+      { label: hostileLabel, reference: { dom: { ...bulkyState(366), selector: hostileSelector } }, candidate: { dom: { ...bulkyState(366), selector: hostileSelector } } },
+      { label: 'SECOND_HOSTILE_LABEL', reference: { dom: { ...bulkyState(366), selector: 'SECOND_HOSTILE_SELECTOR' } }, candidate: { dom: { ...bulkyState(366), selector: 'SECOND_HOSTILE_SELECTOR' } } },
+    ];
+    const res = await domDomHarness(1000)({ pairs });
+    const out = parse(res);
+    const text = res.content[0].text;
+
+    expect(res.isError).toBeFalsy();
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(out.pairs).toEqual([]);
+    expect(out.verification.complete).toBe(false);
+    expect(out.verification.blocking).toEqual([
+      expect.objectContaining({ kind: 'response_budget', action: 're_extract_dom' }),
+    ]);
+    expect(out.omitted_pairs).toBe(2);
+    expect(out.omitted_pair_indices).toEqual([0, 1]);
+    expect(out).not.toHaveProperty('omitted_pair_ids');
+    expect(text).not.toContain(hostileLabel);
+    expect(text).not.toContain(hostileSelector);
+    expect(text).not.toContain('SECOND_HOSTILE_LABEL');
+    expect(text).not.toContain('SECOND_HOSTILE_SELECTOR');
+  });
+
+  it('the maximum DOM batch fallback fits pretty JSON without request-derived detail', async () => {
+    const priorPretty = process.env.MCP_PRETTY_JSON;
+    process.env.MCP_PRETTY_JSON = 'true';
+    try {
+      const hostileLabel = `HOSTILE_LABEL_${'x'.repeat(60)}`;
+      const hostileSelector = `HOSTILE_SELECTOR_${'x'.repeat(1400)}`;
+      const pairs = Array.from({ length: 10 }, () => ({
+        label: hostileLabel,
+        reference: { dom: { ...bulkyState(366), selector: hostileSelector } },
+        candidate: { dom: { ...bulkyState(366), selector: hostileSelector } },
+      }));
+      const full = parse(await domDomHarness(400000)({ pairs }));
+      const res = await domDomHarness(1000)({ pairs });
+      const out = parse(res);
+
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text.length).toBeLessThanOrEqual(1000);
+      expect(out).toEqual(expect.objectContaining({ code: 'response_budget', reason: expect.stringMatching(/^(first_item_oversize|envelope_oversize)$/), pairs: [], summary: full.summary, omitted_pairs: 10, omitted_pair_indices: Array.from({ length: 10 }, (_, i) => i) }));
+      expect(out.verification).toEqual(expect.objectContaining({ complete: false, scope: full.verification.scope, pairs: full.verification.pairs, blocking: [expect.objectContaining({ kind: 'response_budget', action: 're_extract_dom' })] }));
+      expect(Object.keys(out).sort()).toEqual(['code', 'reason', 'pairs', 'summary', 'verification', 'omitted_pairs', 'omitted_pair_indices'].sort());
+      expect(res.content[0].text).not.toContain('HOSTILE_LABEL_');
+      expect(res.content[0].text).not.toContain('HOSTILE_SELECTOR_');
+    } finally {
+      if (priorPretty === undefined) delete process.env.MCP_PRETTY_JSON;
+      else process.env.MCP_PRETTY_JSON = priorPretty;
+    }
+  });
+
   it('a clamped-out RED pair leaves the same trace shapes as the Figma comparator', async () => {
     const pairs = domDomPairs(9);
-    const floor = await domDomHarness(1)({ pairs });
+    const runAt = (budget: number) => domDomHarness(budget)({ pairs });
+    const floor = await runAt(await firstDetailBudget(runAt));
     const floorLen = floor.content[0].text.length;
-    const res = await domDomHarness(floorLen)({ pairs });
+    const res = await runAt(floorLen);
     const out = parse(res);
     expect(out.omitted_pairs).toBeGreaterThan(0);
     expect(out.omitted_pair_ids).toContain('red-shelf');
@@ -258,7 +392,8 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
       { label: 'duplicate', reference: { dom: matching }, candidate: { dom: matching } },
       { label: 'duplicate', reference: { dom: matching }, candidate: { dom: changed } },
     ];
-    const out = parse(await domDomHarness(1)({ pairs }));
+    const runAt = (budget: number) => domDomHarness(budget)({ pairs });
+    const out = parse(await runAt(await firstDetailBudget(runAt)));
     expect(out.pairs).toHaveLength(1);
     expect(out.omitted_pair_ids).toEqual(['duplicate', 'duplicate']);
     expect(out.omitted_pair_indices).toEqual([1, 2]);
@@ -277,7 +412,7 @@ describe('compare_dom_to_dom: condense tier + the drop trace', () => {
       return { len: res.content[0].text.length, kept: parse(res).pairs.length };
     };
     const full = await runAt(400000);
-    let lo = 1, hi = full.len;
+    let lo = 1000, hi = full.len;
     while (lo < hi) {
       const mid = Math.floor((lo + hi) / 2);
       if ((await runAt(mid)).kept >= 2) hi = mid; else lo = mid + 1;

@@ -26,24 +26,6 @@ export type GetCommentsResult = {
   offset: number;
 };
 
-export function clampToBudget<T>(
-  items: T[],
-  budget: number,
-  serialize: (xs: T[]) => string,
-): { kept: T[]; clamped: boolean } {
-  if (items.length === 0) return { kept: items, clamped: false };
-  if (serialize(items).length <= budget) return { kept: items, clamped: false };
-  // Largest prefix that fits the budget (at least 1 item).
-  let lo = 1;
-  let hi = items.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (serialize(items.slice(0, mid)).length <= budget) lo = mid;
-    else hi = mid - 1;
-  }
-  return { kept: items.slice(0, lo), clamped: lo < items.length };
-}
-
 export function computeWarnings(a: {
   total_matching: number;
   next_offset: number | null;

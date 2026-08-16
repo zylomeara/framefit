@@ -1,11 +1,11 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTool, jsonResult } from './shared-error-handler.js';
+import { runTool, textResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeNodeId, NODE_ID_RE } from '../../../domain/node-id.js';
-import { buildReviewBoard, type Lane } from '../../../domain/review-board.js';
-import { clampToBudget } from '../../../application/get-comments.js';
+import { buildReviewBoard } from '../../../domain/review-board.js';
+import { clampToBudget, responseTooLargeResult } from './response-budget.js';
 import { serializeForDelivery } from './serialize.js';
 import { FigmaApiError } from '../../../ports/errors.js';
 
@@ -76,22 +76,16 @@ export function registerGetReviewBoardTool(server: McpServer, deps: ToolDeps): v
           }
         }
 
-        // Budget: clamp lanes (each lane is self-contained) if the response is oversized.
-        // Measure == delivery: serializeForDelivery is the same function
-        // jsonResult uses; the whole envelope; warnings in the measurement CONSERVATIVELY always carry
-        // 'auto_clamped' (+~15 chars of fixed headroom — an honest shift upward, not drift).
+        // Budget: clamp lanes (each lane is self-contained) against the exact final envelope.
         const budget = deps.maxResultChars ?? 40000;
-        const serialize = (lanes: Lane[]): string =>
+        const result = clampToBudget(board.groups, budget, (lanes) =>
           serializeForDelivery({ file: parsed.value, node_id: id, groups: lanes,
-            unmatched: board.unmatched, warnings: [...board.warnings, ...screenshotWarnings, 'auto_clamped'] });
-        const { kept, clamped } = clampToBudget(board.groups, budget, serialize);
-        return jsonResult({
-          file: parsed.value,
-          node_id: id,
-          groups: kept,
-          unmatched: board.unmatched,
-          warnings: [...board.warnings, ...screenshotWarnings, ...(clamped ? ['auto_clamped'] : [])],
-        });
+            unmatched: board.unmatched,
+            warnings: [...board.warnings, ...screenshotWarnings, ...(lanes.length < board.groups.length ? ['auto_clamped'] : [])] }));
+        if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+          return responseTooLargeResult(result.kind);
+        }
+        return textResult(result.serialized);
       }, deps.noTokenHint),
   );
 }

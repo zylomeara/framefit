@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTool, jsonResult } from './shared-error-handler.js';
+import { runTool, textResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { findNodes, overridePreview } from '../../../domain/find-nodes.js';
 import type { NodeMatch } from '../../../domain/find-nodes.js';
-import { clampToBudget } from '../../../application/get-comments.js';
+import { clampToBudget, responseTooLargeResult } from './response-budget.js';
 import { FigmaApiError } from '../../../ports/errors.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 import { serializeForDelivery } from './serialize.js';
@@ -278,20 +278,15 @@ export function registerFindNodesTool(server: McpServer, deps: ToolDeps): void {
         if (coverage && rows.length === args.limit) coverage.limit_reached = true;
 
         const budget = deps.maxResultChars ?? 40000;
-        // Measure == delivery: serializeForDelivery is the same function
-        // jsonResult uses; the whole envelope; clamped:true in the measurement is CONSERVATIVELY always set
-        // (+~14 chars of fixed headroom — an honest shift upward, not drift).
-        const { kept, clamped } = clampToBudget(rows, budget, (xs) =>
+        const result = clampToBudget(rows, budget, (xs) =>
           serializeForDelivery({ query: args.query, total: rows.length, returned: xs.length,
-            clamped: true, ...(typeNote ? { type_note: typeNote } : {}),
+            ...(xs.length < rows.length ? { clamped: true } : {}),
+            ...(typeNote ? { type_note: typeNote } : {}),
             ...(coverage ? { coverage } : {}), matches: xs }));
-        return jsonResult({
-          query: args.query, total: rows.length, returned: kept.length,
-          ...(clamped ? { clamped: true } : {}),
-          ...(typeNote ? { type_note: typeNote } : {}),
-          ...(coverage ? { coverage } : {}),
-          matches: kept,
-        });
+        if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+          return responseTooLargeResult(result.kind);
+        }
+        return textResult(result.serialized);
       }, deps.noTokenHint),
   );
 }

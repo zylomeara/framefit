@@ -469,15 +469,19 @@ including fails.
   meaning. If a description below and your own run disagree, the run is right.
 - The receipt is budget-honest: if the blocking list is truncated, `blocking_capped` says how many
   items were cut and `complete` stays `false` — nothing green is ever produced by truncation. The
-  same aggregate-verdict rule holds for whole pairs dropped by the response budget: every pair is
-  processed before response clamping, even when an early gate means no visual metric ran.
-  `omitted_pairs`
-  counts them, `omitted_pair_ids` gives display labels that may repeat, and
+  same aggregate-verdict rule holds for whole pairs dropped by an ordinary response budget: every
+  pair is processed before response clamping, even when an early gate means no visual metric ran.
+  `omitted_pairs` counts them, `omitted_pair_ids` gives display labels that may repeat, and
   `omitted_pair_indices` gives positionally aligned zero-based indices into the submitted `pairs`
   array. A `verification.notes` line counts those carrying FAILing rows when any do (no FAIL clause
   means none were), and a dropped fail keeps the verdict red — replay exact inputs with
   `omitted_pair_indices.map(i => originalArgs.pairs[i])` in a smaller call. Clean omitted pairs are
   already included in the aggregate verdict and may leave `complete:true` intact.
+- If the response instead has `code:"response_budget"` and `pairs: []`, the prefix-preserving clamp
+  retained no complete pair detail; a later pair may still fit unchanged when replayed alone. This
+  compact receipt is always incomplete and deliberately carries no labels, selectors, ids, report or
+  diagnostic notes. Replay every position in `omitted_pair_indices` in smaller calls or re-capture
+  smaller DOM roots; do not read the missing rows or notes as proof that omissions are clean.
 
 Work the loop: execute the blocking actions (add pairs, raise depth, fix the viewport…), re-run
 the compare, repeat until `complete: true`.

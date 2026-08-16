@@ -7,13 +7,13 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTokenlessTool, jsonResult } from './shared-error-handler.js';
+import { runTokenlessTool, textResult } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
 import { summarize, deriveCoverage, condenseBulkPass } from '../../../domain/layout-spec/diff.js';
 import { diffDomPair } from '../../../domain/layout-spec/dom-dom.js';
 import { renderReport } from '../../../domain/layout-spec/report.js';
 import { DomSnapshotSchema, DOM_SNAPSHOT_SCHEMA_VERSION } from './dom-snapshot-schema.js';
-import { clampToBudget } from '../../../application/get-comments.js';
+import { clampToBudget, responseBudgetFallback } from './response-budget.js';
 import { DomRefSchema, resolveDomRef } from './dom-ref.js';
 import { buildVerification, budgetDropNote } from '../../../domain/layout-spec/verification.js';
 import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, DiffRow, VerificationReceipt } from '../../../domain/layout-spec/types.js';
@@ -143,19 +143,21 @@ export function registerCompareDomToDomTool(server: McpServer, deps: ToolDeps): 
 
         const budget = deps.maxResultChars ?? 40000;
         const serialize = (kept: PairResult[]): string => serializeForDelivery(buildOutput(tolerancePx, kept, results, depthLevels, verification));
-        // Budget cascade: full -> bulk-pass compression -> omitted_pairs. This tool used to go
-        // straight from full to dropping whole pairs - the FIRST relief valve was the harshest,
-        // and on realistic skeleton-vs-loaded batches (60+ matched rows per pair = bulk pass)
-        // the clamp dropped the one red pair while condensation alone fits the whole batch.
-        // Mirrors the Figma comparator's tier minus fix_plan (dom-dom pairs carry none). On a
-        // fitting response condense is NOT called - byte-for-byte as before.
-        let kept = results;
-        if (serialize(results).length > budget) {
+        // Budget cascade: full → bulk-pass compression → omitted_pairs.
+        let delivered = serialize(results);
+        if (delivered.length > budget) {
           const condensed = condenseBulkPass(results);
-          kept = serialize(condensed).length <= budget ? condensed : clampToBudget(condensed, budget, serialize).kept;
+          if (serialize(condensed).length <= budget) {
+            delivered = serialize(condensed);
+          } else {
+            const fitted = clampToBudget(condensed, budget, serialize);
+            delivered = fitted.kind === 'fit' || fitted.kind === 'truncated'
+              ? fitted.serialized
+              : serializeForDelivery(responseBudgetFallback(results, verification, fitted.kind));
+          }
         }
         deps.logger.info({ total_ms: Date.now() - t0, pairs: args.pairs.length }, 'compare_dom_to_dom.done');
-        return jsonResult(buildOutput(tolerancePx, kept, results, depthLevels, verification));
+        return textResult(delivered);
       }),
   );
 }

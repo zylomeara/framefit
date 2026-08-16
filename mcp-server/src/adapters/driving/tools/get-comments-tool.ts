@@ -2,11 +2,12 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { FigmaApi } from '../../../ports/figma-api.js';
 import type { Logger } from '../../../infrastructure/logger.js';
-import { getCommentsUseCase, clampToBudget, computeWarnings } from '../../../application/get-comments.js';
+import { getCommentsUseCase, computeWarnings } from '../../../application/get-comments.js';
 import { formatMarkdown } from '../../../domain/format-markdown.js';
 import type { Thread } from '../../../domain/types.js';
 import { FilterSchema, toCriteria } from './shared-schemas.js';
-import { runTool, jsonResult, textResult, type ReadOnlyGate } from './shared-error-handler.js';
+import { runTool, textResult, type ReadOnlyGate } from './shared-error-handler.js';
+import { clampToBudget, responseTooLargeResult } from './response-budget.js';
 import { serializeForDelivery } from './serialize.js';
 
 export type ToolDeps = {
@@ -108,17 +109,8 @@ export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void
           offset: args.offset,
         });
         const budget = deps.maxResultChars ?? 40000;
-        // Clamp moved here from the application layer (hexagonal boundary — the use case can't see
-        // serializeForDelivery / the wire header). Two branches → two DIFFERENT measurements: the
-        // markdown branch measures EXACTLY the delivered plain-text (header + '\n\n' + formatMarkdown),
-        // the JSON branch measures the delivered envelope through serializeForDelivery (which also
-        // closes the MCP_PRETTY_JSON blind spot — pretty output is measured pretty).
-        //
-        // Conservative measurement envelope: returned = full-page length, next_offset = total (upper
-        // bound), warnings = the clamp-relevant ones (more_available + auto_clamped; ~200 chars of
-        // auto_clamped slack). broad_filter is not reasoned about here — it depends only on
-        // total_matching, so it appears IDENTICALLY in the conservative and the actual warnings and
-        // cancels out of the conservative-vs-delivered delta.
+        // Keep the established near-limit warning threshold, which was based on the conservative
+        // clamp envelope, while measuring the exact final delivery below.
         const conservativeWarnings = computeWarnings({
           total_matching: r.total_matching,
           next_offset: r.total_matching,
@@ -126,50 +118,46 @@ export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void
           budget,
           clamped: true,
         });
-        // JSON measurement: next_offset=r.total_matching here can serialize SHORTER than the delivered
-        // "null" (≤3 digits vs 4 chars) — that ≤3-char under-count is covered many times over by the
-        // ~200-char auto_clamped object always present in conservativeWarnings. Do NOT narrow
-        // conservativeWarnings (e.g. drop auto_clamped): the delivered payload would then be able to
-        // exceed the budget through this exact under-count.
-        const serialize = args.as_markdown
-          ? (xs: Thread[]) => {
-              const header = [
-                `(${r.page.length} of ${r.total_matching} matching threads, next_offset=${r.total_matching})`,
-                ...conservativeWarnings.map((w) => `⚠ [${w.code}] ${w.message}`),
-              ];
-              return header.join('\n') + '\n\n' + formatMarkdown(xs);
-            }
-          : (xs: Thread[]) =>
-              serializeForDelivery({
+        const conservativeSize = (threads: Thread[]): number => (args.as_markdown
+          ? [
+              `(${r.page.length} of ${r.total_matching} matching threads, next_offset=${r.total_matching})`,
+              ...conservativeWarnings.map((w) => `⚠ [${w.code}] ${w.message}`),
+            ].join('\n') + '\n\n' + formatMarkdown(threads)
+          : serializeForDelivery({
+              total_matching: r.total_matching,
+              returned: threads.length,
+              next_offset: r.total_matching,
+              warnings: conservativeWarnings,
+              threads,
+            })).length;
+        const serialize = (threads: Thread[]): string => {
+          const next_offset = r.offset + threads.length < r.total_matching ? r.offset + threads.length : null;
+          const clamped = threads.length < r.page.length;
+          const warnings = computeWarnings({
+            total_matching: r.total_matching,
+            next_offset,
+            payload_size: conservativeSize(threads),
+            budget,
+            clamped,
+          });
+          return args.as_markdown
+            ? [
+                `(${threads.length} of ${r.total_matching} matching threads${next_offset !== null ? `, next_offset=${next_offset}` : ''})`,
+                ...warnings.map((w) => `⚠ [${w.code}] ${w.message}`),
+              ].join('\n') + '\n\n' + formatMarkdown(threads)
+            : serializeForDelivery({
                 total_matching: r.total_matching,
-                returned: xs.length,
-                next_offset: r.total_matching,
-                warnings: conservativeWarnings,
-                threads: xs,
+                returned: threads.length,
+                next_offset,
+                warnings,
+                threads,
               });
-        const { kept, clamped } = clampToBudget(r.page, budget, serialize);
-        const next_offset = r.offset + kept.length < r.total_matching ? r.offset + kept.length : null;
-        const warnings = computeWarnings({
-          total_matching: r.total_matching,
-          next_offset,
-          payload_size: serialize(kept).length,
-          budget,
-          clamped,
-        });
-        if (args.as_markdown) {
-          const headerLines = [
-            `(${kept.length} of ${r.total_matching} matching threads${next_offset !== null ? `, next_offset=${next_offset}` : ''})`,
-            ...warnings.map((w) => `⚠ [${w.code}] ${w.message}`),
-          ];
-          return textResult(headerLines.join('\n') + '\n\n' + formatMarkdown(kept));
+        };
+        const result = clampToBudget(r.page, budget, serialize);
+        if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+          return responseTooLargeResult(result.kind);
         }
-        return jsonResult({
-          total_matching: r.total_matching,
-          returned: kept.length,
-          next_offset,
-          warnings,
-          threads: kept,
-        });
+        return textResult(result.serialized);
       }, deps.noTokenHint),
   );
 }

@@ -20,6 +20,17 @@ function harness(api: Partial<FigmaApi>, maxResultChars = 40000, extra: Partial<
   return (a: any): Promise<any> => call('compare_node_to_dom', a);
 }
 
+async function firstDetailBudget(runAt: (budget: number) => Promise<any>): Promise<number> {
+  let lo = 1000;
+  let hi = (await runAt(400000)).content[0].text.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (JSON.parse((await runAt(mid)).content[0].text).pairs.length > 0) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
 // records logger.info calls so a test can assert an event was (or was NOT)
 // emitted — mirrors the pattern in get-design-context-ancestor.test.ts's recordingLogger().
 function recordingLogger(): { logger: Logger; logs: { obj: unknown; msg: string }[] } {
@@ -1635,10 +1646,11 @@ describe('compare_node_to_dom tool', () => {
       })),
       { node_id: '3:1', dom: displacedEdgeDom, label: 'edge-tail' },
     ];
-    const floor = await harness({ getNodesRaw }, 1)({
+    const budget = await firstDetailBudget((maxResultChars) => harness({
+      getNodesRaw: vi.fn(getNodesRaw),
+    }, maxResultChars)({
       file: 'abc', tolerance_px: 1, pairs,
-    });
-    const budget = floor.content[0].text.length;
+    }));
     const res = await harness({ getNodesRaw: vi.fn(getNodesRaw) }, budget)({
       file: 'abc', tolerance_px: 1, pairs,
     });
@@ -1680,10 +1692,11 @@ describe('compare_node_to_dom tool', () => {
       })),
       { node_id: '3:1', dom: tail, label: 'edge-tail' },
     ];
-    const floor = await harness({ getNodesRaw }, 1)({
-      file: 'abc', tolerance_px: 1, pairs: pairsFor(displacedEdgeDom),
-    });
-    const budget = floor.content[0].text.length;
+    const budget = await firstDetailBudget((maxResultChars) => harness({
+      getNodesRaw: vi.fn(getNodesRaw),
+    }, maxResultChars)({
+      file: 'abc', tolerance_px: 1, pairs: pairsFor(unsafeDom),
+    }));
     const res = await harness({ getNodesRaw: vi.fn(getNodesRaw) }, budget)({
       file: 'abc', tolerance_px: 1, pairs: pairsFor(unsafeDom),
     });
@@ -1889,21 +1902,17 @@ describe('compare_node_to_dom tool', () => {
       const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: manyTextCard } } }));
       const getVariablesLocal = vi.fn(async () => emptyVars);
       const pairs = Array.from({ length: 6 }, () => ({ node_id: '1:1', dom: manyTextDom }));
-      // calibration of cascade C's FLOOR: budget=1 → clampToBudget keeps ≥1 pair (the floor), delivery = floorLen
-      // (the condensed 1 pair out of 6 + the omitted marker). Measured, not guessed.
-      const runFloor = harness({ getNodesRaw, getVariablesLocal }, 1);
-      const floor = await runFloor({ file: FILE, pairs });
-      const floorLen = floor.content[0].text.length;
-      const floorOut = JSON.parse(floor.content[0].text);
-      expect(floorOut.omitted_pairs).toBeGreaterThan(0);
-      expect(floorOut.pairs.length).toBeGreaterThanOrEqual(1);
-      expect(floorOut.pairs[0].rows.find((r: any) => r.prop === 'passes_condensed')).toBeDefined();
-      // budget = floorLen (exactly the floor): still omitted>0 (6 condensed pairs don't fit), but now
-      // delivery ≤ budget — unlike budget=1, where the floor honestly overflows.
+      // Calibrate the smallest supported budget that admits one condensed pair. Below it the
+      // selector-free response-budget receipt is the intended successful floor.
+      const floorLen = await firstDetailBudget((maxResultChars) => harness({
+        getNodesRaw: vi.fn(getNodesRaw), getVariablesLocal: vi.fn(async () => emptyVars),
+      }, maxResultChars)({ file: FILE, pairs }));
       const runTiny = harness({ getNodesRaw: vi.fn(getNodesRaw), getVariablesLocal: vi.fn(async () => emptyVars) }, floorLen);
       const tiny = await runTiny({ file: FILE, pairs });
       const out = JSON.parse(tiny.content[0].text);
       expect(out.omitted_pairs).toBeGreaterThan(0);
+      expect(out.pairs.length).toBeGreaterThanOrEqual(1);
+      expect(out.pairs[0].rows.find((r: any) => r.prop === 'passes_condensed')).toBeDefined();
       expect(tiny.content[0].text.length).toBeLessThanOrEqual(floorLen);
     });
   });

@@ -8,6 +8,7 @@ import { CachingFigmaApiAdapter, type ReadCaches } from '../../src/adapters/driv
 import { FileStructureCache } from '../../src/infrastructure/file-structure-cache.js';
 import { TtlCache } from '../../src/infrastructure/node-cache.js';
 import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
+import { serializeForDelivery } from '../../src/adapters/driving/tools/serialize.js';
 
 const logger = createLogger({ level: 'silent' });
 
@@ -349,6 +350,49 @@ describe('get_variables tool', () => {
     expect(out.returned).toBeLessThan(out.total_matching); // measured: returned=8, total_matching=40
     expect(out.next_offset).toBe(out.returned);            // advanced to the clamp cut (offset 0 + returned)
     expect(out.tokens).toHaveLength(out.returned);
+  });
+
+  it('returns a fixed overflow error when the first token cannot fit the supported minimum budget', async () => {
+    const sentinel = `REQUEST_SENTINEL_${'x'.repeat(1400)}`;
+    const cols = { c1: { id: 'c1', name: 'Col', modes: [{ modeId: 'm1', name: 'Default' }], defaultModeId: 'm1' } };
+    const vars = { v1: { id: 'v1', name: sentinel, resolvedType: 'STRING' as const, variableCollectionId: 'c1', valuesByMode: { m1: sentinel } } };
+    const res = await harness(async () => ({ meta: { variableCollections: cols, variables: vars } }), 1000)({ file: 'k' } as never);
+    const text = (res.content[0] as { text: string }).text;
+
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(text)).toEqual({ code: 'response_too_large', reason: 'first_item_oversize', action: 'narrow_request' });
+    expect(JSON.parse(text)).not.toHaveProperty('next_offset');
+    expect(text).not.toContain(sentinel);
+  });
+
+  it('measures the clamped token envelope with its real cursor and clamped flag', async () => {
+    const cols = { c1: { id: 'c1', name: 'Col', modes: [{ modeId: 'm1', name: 'Default' }], defaultModeId: 'm1' } };
+    let padding = '';
+    const getVariablesLocal = async () => ({ meta: {
+      variableCollections: cols,
+      variables: Object.fromEntries(Array.from({ length: 3 }, (_, i) => [
+        `v${i}`,
+        { id: `v${i}`, name: `token-${i}-${padding}`, resolvedType: 'STRING' as const, variableCollectionId: 'c1', valuesByMode: { m1: `value-${i}` } },
+      ])),
+    } });
+    const base = JSON.parse(textOf((await harness(getVariablesLocal, 400000)({ file: 'k' } as never)).content[0]));
+    const provisionalBase = serializeForDelivery({ ...base, returned: 2, next_offset: null, tokens: base.tokens.slice(0, 2) });
+    const finalBase = serializeForDelivery({ ...base, returned: 2, next_offset: 2, clamped: true, tokens: base.tokens.slice(0, 2) });
+    padding = 'x'.repeat(Math.floor((1000 - provisionalBase.length) / 2));
+    const calibrated = JSON.parse(textOf((await harness(getVariablesLocal, 400000)({ file: 'k' } as never)).content[0]));
+    const provisionalTwo = serializeForDelivery({ ...calibrated, returned: 2, next_offset: null, tokens: calibrated.tokens.slice(0, 2) });
+    const finalTwo = serializeForDelivery({ ...calibrated, returned: 2, next_offset: 2, clamped: true, tokens: calibrated.tokens.slice(0, 2) });
+    const expected = serializeForDelivery({ ...calibrated, returned: 1, next_offset: 1, clamped: true, tokens: calibrated.tokens.slice(0, 1) });
+
+    expect(finalBase.length).toBeGreaterThan(provisionalBase.length);
+    expect(provisionalTwo.length).toBeLessThanOrEqual(1000);
+    expect(finalTwo.length).toBeGreaterThan(1000);
+    expect(expected.length).toBeLessThanOrEqual(1000);
+
+    const res = await harness(getVariablesLocal, 1000)({ file: 'k' } as never);
+    expect(textOf(res.content[0]).length).toBeLessThanOrEqual(1000);
+    expect(textOf(res.content[0])).toBe(expected);
   });
 
   it('does NOT add a clamped field when the page fits (default output unchanged)', async () => {

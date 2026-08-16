@@ -40,6 +40,23 @@ describe('get_text_styles tool', () => {
       })) };
   }
 
+  it('returns a fixed overflow error when the first text-style group cannot fit the supported minimum budget', async () => {
+    const sentinel = `REQUEST_SENTINEL_${'x'.repeat(1400)}`;
+    const oversized = {
+      id: '1:0', name: 'root', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 }, children: [
+        { id: '1:1', name: sentinel, type: 'TEXT', characters: 'Label', style: { fontFamily: 'Inter', fontWeight: 400, fontSize: 12, lineHeightPx: 20 } },
+      ],
+    };
+    const res = await harness({ getNodesRaw: async () => ({ nodes: { '1:0': { document: oversized } } }) }, 1000)({ file: 'abc', node_id: '1-0' });
+    const text = res.content[0].text as string;
+
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(text)).toEqual({ code: 'response_too_large', reason: 'first_item_oversize', action: 'narrow_request' });
+    expect(JSON.parse(text)).not.toHaveProperty('next_offset');
+    expect(text).not.toContain(sentinel);
+  });
+
   it('budget (dedupe=true): measured == delivered (compact envelope), not a pretty array', async () => {
     const big5 = manyTexts(15, 5);
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:0': { document: big5 } } }));
