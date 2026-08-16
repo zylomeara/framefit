@@ -92,6 +92,21 @@ the extractor can POST snapshots to directly from the browser, yielding a `dom_r
 `compare_node_to_dom`; the stdio server has neither, so pass the snapshot inline as
 `compare_node_to_dom`'s `dom`.
 
+The exact delivered `content[0].text` is capped at 1 MiB (`1_048_576` UTF-8 bytes), including
+hydration, degradation, extractor and upload guidance. When a batch is too large, the tool keeps the
+largest contiguous prefix of complete `specs` entries and reports the positional suffix in
+`omitted_node_ids`; duplicate ids remain duplicated, so re-request that suffix as given. If even the
+first complete entry plus the required suffix metadata cannot fit, or the fixed envelope alone is too
+large, the tool returns the bounded static `isError:true` `response_too_large` result instead of a
+partial entry. `first_item_oversize` means the first retained entry plus required omitted-suffix
+metadata cannot fit in this batch. The entry may fit when replayed alone: retry the first input
+position by itself or with fewer `node_ids`, lower `max_depth`, or no inline extractor. For
+`envelope_oversize`, fixed response metadata — including `file`, `omitted_node_ids`, and
+extractor/upload guidance — cannot fit even without a `specs` entry. First retry without
+`include_extractor` or with fewer `node_ids`, then verify or correct the `file` and node ids. If the
+minimal request metadata is already correct, this request cannot be represented under the fixed
+limit.
+
 **Parameters**
 
 | Parameter | Type | Description |
@@ -469,9 +484,9 @@ receipt is always incomplete with a fixed `response_budget` blocker: replay the 
 smaller calls or re-capture smaller DOM roots. Do not infer clean omission from the absence of rows
 or notes. Both comparators share these two contracts.
 
-These comparator rules cover the configurable response budget. The separate fixed 1 MiB response
-floors used by `get_layout_spec` and `get_view` are unchanged and are not a server-wide size
-guarantee.
+These comparator rules cover the configurable response budget. `get_layout_spec` and `get_view`
+use the separate fixed 1 MiB UTF-8 contract documented in their sections. Neither contract is a
+server-wide response-size guarantee.
 
 ---
 
@@ -650,6 +665,17 @@ Response (abridged):
 Single-root navigation over a held frame: one `node_id`, five pure lenses
 (skeleton/branch/coverage/typography/spacing) sliced from one deep-fetch, zero re-fetch across
 views/depths.
+
+A view is one atomic response under the same fixed 1 MiB (`1_048_576` UTF-8-byte) ceiling as
+`get_layout_spec`, measured against the exact delivered `content[0].text`. If the complete view or
+its fixed envelope cannot fit, the tool returns the bounded static `isError:true`
+`response_too_large` result with `action:"narrow_request"`; it never emits a successful oversized
+view. For `first_item_oversize`, lower `max_depth` or request a narrower `node_id` and retry. For
+`envelope_oversize`, fixed response metadata — including `file`, `node_id`, `effective_max_depth`,
+and `hydration` — cannot fit even without the view payload. Retry with lower `max_depth` first
+because the depth-dependent hydration receipt may shrink; then verify or correct `file` and
+`node_id`. If the depth-1 envelope with correct identifiers still fails, this request cannot be
+represented under the fixed limit.
 
 **Parameters**
 

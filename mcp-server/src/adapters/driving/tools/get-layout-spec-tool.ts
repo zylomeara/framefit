@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTool, jsonResult } from './shared-error-handler.js';
+import { runTool, textResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { buildLayoutSpec, budgetFor, collectLeafTexts } from '../../../domain/layout-spec/projector.js';
@@ -14,7 +14,8 @@ import type { RawSceneNode } from '../../../domain/figma-raw.js';
 import { DOM_SNAPSHOT_SCHEMA_VERSION } from './dom-snapshot-schema.js';
 import { EXTRACTOR_JS, buildExtractorLoader } from './dom-extractor.js';
 import { buildSetNames } from './component-set-names.js';
-import { clampSpecsToBudget, RESULT_BUDGET_BYTES } from './clamp-specs.js';
+import { clampToBudget, responseTooLargeResult, RESULT_BUDGET_BYTES } from './response-budget.js';
+import { serializeForDelivery } from './serialize.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
@@ -76,7 +77,7 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         const frameRes = await api.getFrameRaw(parsed.value, ids, reqDepth);
         const res = frameRes.raw;
         const effDepth = frameRes.effectiveMaxDepth;
-        const hydration: HydrationReceipt[] = [];
+        const hydration: Array<HydrationReceipt | undefined> = new Array(ids.length);
 
         // Mode-aware token names for bound colors — the SAME resolver compare_node_to_dom uses
         // (color-token-resolver.ts), with three deliberate differences on this hot navigation path:
@@ -114,7 +115,7 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
           }
         }
 
-        const specs = await Promise.all(ids.map(async (id) => {
+        const specs = await Promise.all(ids.map(async (id, index) => {
           const entry = res.nodes[id];
           if (!entry?.document) return { node_id: id, error: 'not found' };
           const setNames = await buildSetNames(api, entry, deps.logger);
@@ -132,11 +133,9 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
             const { leaves, truncated } = collectLeafTexts(built);
             return { node_id: id, text_leaves: leaves, ...(truncated ? { text_leaves_truncated: true } : {}) };
           }
-          hydration.push(buildHydrationReceipt(id, built, frameRes));
+          hydration[index] = buildHydrationReceipt(id, built, frameRes);
           return { node_id: id, spec: built };
         }));
-
-        const { kept, omitted } = clampSpecsToBudget(specs, RESULT_BUDGET_BYTES);
 
         // (a') mint-meta: every successful node's rect.w (rounded, deduped)
         // — the widths a browser upload against this capToken is EXPECTED to match. Drives the
@@ -185,49 +184,65 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         // Same depth/budget arguments for the no-upload_url call form, which has no uploadUrl to pass:
         // depthLeft/budget are positional args 3 and 4, so slot 2 needs an explicit `undefined`.
         const stdioDepthArgs = depthArgsSuffix && `, undefined${depthArgsSuffix}`;
-        return jsonResult({
-          file: parsed.value,
-          snapshot_schema: DOM_SNAPSHOT_SCHEMA_VERSION,
-          specs: kept,
-          // Same shape as compare/get_design_context: without this an absent fillToken is
-          // ambiguous between "bound but the variables fetch degraded" and "bound but no
-          // resolver can name it" — fillBoundVar alone cannot tell those apart.
-          ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
-          ...(omitted.length ? { result_truncated: true, omitted_node_ids: omitted,
-            result_truncated_note: 'result exceeded the budget — re-request the omitted node_ids in a separate get_layout_spec call (fewer node_ids at a time) or lower max_depth' } : {}),
-          ...(hydration.length ? { hydration: hydration.filter((h) => kept.some((k: { node_id: string }) => k.node_id === h.node_id)) } : {}),
-          ...extractorFields,
-          // The call form for the branch with NO upload_url — this fires on `!uploadUrl`, which is
-          // every stdio server (no snapshot store, no public base URL) and equally any server that
-          // has a public base URL but no snapshot store: uploadUrl needs BOTH, the loader needs only
-          // the base URL, so that server would hand back a loader thunk AND this hint. No shipped
-          // wiring builds one — but the guard is `!uploadUrl`, and the hint is true of any branch it
-          // fires on: without an upload_url the snapshots come back to the caller either way.
-          // The guidance used to live only in upload_hint, i.e. in the one branch stdio never
-          // reaches, so a stdio caller got the full inline extractor and no instructions at all; the
-          // usual guess is then to re-paste it per capture and re-request it per call, which costs a
-          // cycle roughly 3x what it needs to.
-          //
-          // THE PASTE-ONCE FORM IS A THUNK, NOT AN ASSIGNMENT. chrome-devtools evaluate_script
-          // evaluates `(<what you sent>)` and then CALLS it with no arguments, so a bare
-          // `window.__extract = <script>;` does not even parse (the trailing `;` closes nothing) and
-          // the same text without the `;` parses as a function expression that is then invoked with
-          // no selectors — a TypeError inside the extractor. Wrapping the assignment in a thunk that
-          // returns is the only shape that survives both steps.
-          ...(args.include_extractor && !uploadUrl ? { extractor_hint:
-            'no upload_url on this server: the extractor hands the snapshots back to you. Paste ' +
-            'extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; ' +
-            "return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare " +
-            'assignment throws) — then every capture is ' +
-            `\`async () => await window.__extract(["<sel>", …]${stdioDepthArgs})\` (a reload drops the ` +
-            'handle — paste again). Pass include_extractor:false on every later get_layout_spec call. ' +
-            'Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom.' } : {}),
-          ...(uploadUrl ? { upload_url: uploadUrl, upload_hint:
-            `call the extractor as: async () => { const extract = <extractor_js VERBATIM>; return await extract(["<sel>", …], "<upload_url>"${depthArgsSuffix}); } ` +
-            '— extractor_js decides for itself whether to load the canonical script from the server (loader) or is already the full script (inline); ' +
-            'it returns {snapshot_ref, summaries}; pass pairs to compare_node_to_dom as dom_ref:{ref, index} (selector position, 0-based, disambiguates duplicates) or {ref, selector}' +
-            '; a batch >2MB — split it into several POSTs under the same upload_url (the limit is per-POST, not per-session)' } : {}),
-        });
+        const serialize = (kept: typeof specs) => {
+          const omitted = specs.slice(kept.length).map((entry) => entry.node_id);
+          const keptHydration = hydration.slice(0, kept.length).filter(
+            (receipt): receipt is HydrationReceipt => receipt !== undefined,
+          );
+          return serializeForDelivery({
+            file: parsed.value,
+            snapshot_schema: DOM_SNAPSHOT_SCHEMA_VERSION,
+            specs: kept,
+            // Same shape as compare/get_design_context: without this an absent fillToken is
+            // ambiguous between "bound but the variables fetch degraded" and "bound but no
+            // resolver can name it" — fillBoundVar alone cannot tell those apart.
+            ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
+            ...(omitted.length ? { result_truncated: true, omitted_node_ids: omitted,
+              result_truncated_note: 'result exceeded the budget — re-request the omitted node_ids in a separate get_layout_spec call (fewer node_ids at a time) or lower max_depth' } : {}),
+            ...(keptHydration.length ? { hydration: keptHydration } : {}),
+            ...extractorFields,
+            // The call form for the branch with NO upload_url — this fires on `!uploadUrl`, which is
+            // every stdio server (no snapshot store, no public base URL) and equally any server that
+            // has a public base URL but no snapshot store: uploadUrl needs BOTH, the loader needs only
+            // the base URL, so that server would hand back a loader thunk AND this hint. No shipped
+            // wiring builds one — but the guard is `!uploadUrl`, and the hint is true of any branch it
+            // fires on: without an upload_url the snapshots come back to the caller either way.
+            // The guidance used to live only in upload_hint, i.e. in the one branch stdio never
+            // reaches, so a stdio caller got the full inline extractor and no instructions at all; the
+            // usual guess is then to re-paste it per capture and re-request it per call, which costs a
+            // cycle roughly 3x what it needs to.
+            //
+            // THE PASTE-ONCE FORM IS A THUNK, NOT AN ASSIGNMENT. chrome-devtools evaluate_script
+            // evaluates `(<what you sent>)` and then CALLS it with no arguments, so a bare
+            // `window.__extract = <script>;` does not even parse (the trailing `;` closes nothing) and
+            // the same text without the `;` parses as a function expression that is then invoked with
+            // no selectors — a TypeError inside the extractor. Wrapping the assignment in a thunk that
+            // returns is the only shape that survives both steps.
+            ...(args.include_extractor && !uploadUrl ? { extractor_hint:
+              'no upload_url on this server: the extractor hands the snapshots back to you. Paste ' +
+              'extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; ' +
+              "return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare " +
+              'assignment throws) — then every capture is ' +
+              `\`async () => await window.__extract(["<sel>", …]${stdioDepthArgs})\` (a reload drops the ` +
+              'handle — paste again). Pass include_extractor:false on every later get_layout_spec call. ' +
+              'Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom.' } : {}),
+            ...(uploadUrl ? { upload_url: uploadUrl, upload_hint:
+              `call the extractor as: async () => { const extract = <extractor_js VERBATIM>; return await extract(["<sel>", …], "<upload_url>"${depthArgsSuffix}); } ` +
+              '— extractor_js decides for itself whether to load the canonical script from the server (loader) or is already the full script (inline); ' +
+              'it returns {snapshot_ref, summaries}; pass pairs to compare_node_to_dom as dom_ref:{ref, index} (selector position, 0-based, disambiguates duplicates) or {ref, selector}' +
+              '; a batch >2MB — split it into several POSTs under the same upload_url (the limit is per-POST, not per-session)' } : {}),
+          });
+        };
+        const result = clampToBudget(
+          specs,
+          RESULT_BUDGET_BYTES,
+          serialize,
+          (text) => Buffer.byteLength(text, 'utf8'),
+        );
+        if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+          return responseTooLargeResult(result.kind);
+        }
+        return textResult(result.serialized);
       }, deps.noTokenHint),
   );
 }

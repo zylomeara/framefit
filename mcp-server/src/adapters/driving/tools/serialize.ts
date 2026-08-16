@@ -1,6 +1,6 @@
 // Single source of truth for how tool output is serialized onto the MCP wire.
-// jsonResult (shared-error-handler.ts) emits this, and clampSpecsToBudget (clamp-specs.ts)
-// MEASURES through this — so the delivered serialization and every size-guard's byte count
+// jsonResult (shared-error-handler.ts) emits this, and response-budget callers
+// MEASURE through this — so the delivered serialization and every size guard's count
 // can never drift (the anti-desync invariant; experience taught "measure the DELIVERED
 // serialization" — delivery + measurement share ONE function so the invariant is structural,
 // not a calibrated number).

@@ -1,14 +1,14 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
-import { runTool, jsonResult } from './shared-error-handler.js';
+import { runTool, textResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { buildLayoutSpec, collectLeafTexts, VIEW_CAPS, type ViewCaps } from '../../../domain/layout-spec/projector.js';
 import { buildHydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
 import { buildSpacing, buildCoverage, buildSkeleton } from '../../../domain/layout-spec/views.js';
 import { buildSetNames } from './component-set-names.js';
-import { RESULT_BUDGET_BYTES, type SpecEntry } from './clamp-specs.js';
+import { clampToBudget, responseTooLargeResult, RESULT_BUDGET_BYTES } from './response-budget.js';
 import { serializeForDelivery } from './serialize.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 import type { ProjectorContext } from '../../../domain/layout-spec/projector.js';
@@ -85,26 +85,24 @@ export function registerGetViewTool(server: McpServer, deps: ToolDeps): void {
         const hydration = buildHydrationReceipt(id, receiptSpec, frameRes);
 
         const payload = buildView(view, entry.document, ctx, effDepth);
-        // Built as a local var (not an inline literal in argument position): SpecEntry has no index
-        // signature, and `view` is a computed key — an inline literal would trip TS excess-property
-        // checking. A pre-built variable is structurally compatible and skips that check.
-        const entryForBudget = { node_id: id, [view]: payload } as SpecEntry;
-        // Honest single-view guard: get_view always emits ONE view of ONE node, so clampSpecsToBudget
-        // (which bounds a MULTI-entry batch by dropping a tail — it never drops a lone entry) can't flag
-        // oversize here. Measure the DELIVERED serialization directly; an oversized view is still delivered
-        // (never silently dropped) but the consumer is told to narrow node_id / lower max_depth.
-        // serializeForDelivery is the exact fn jsonResult uses, so this byte count can't drift from delivery.
-        const oversized = serializeForDelivery(entryForBudget).length > RESULT_BUDGET_BYTES;
-
-        return jsonResult({
-          // node_id intentionally NOT set here: it's always supplied by the ...entryForBudget spread —
-          // an explicit duplicate would be silently overwritten by that spread, which tsc (TS2783) rejects.
-          file: parsed.value, view, effective_max_depth: effDepth,
-          ...entryForBudget,
-          ...(oversized ? { result_oversized: true, result_oversized_note:
-            'the view exceeded the response budget — lower max_depth or request a narrower node_id' } : {}),
+        const serialize = (items: unknown[]) => serializeForDelivery({
+          file: parsed.value,
+          view,
+          effective_max_depth: effDepth,
+          node_id: id,
+          ...(items.length ? { [view]: items[0] } : {}),
           hydration,
         });
+        const result = clampToBudget(
+          [payload],
+          RESULT_BUDGET_BYTES,
+          serialize,
+          (text) => Buffer.byteLength(text, 'utf8'),
+        );
+        if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+          return responseTooLargeResult(result.kind);
+        }
+        return textResult(result.serialized);
       }, deps.noTokenHint),
   );
 }

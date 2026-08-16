@@ -88,5 +88,12 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
   `code:"response_budget"` with `pairs: []` is always incomplete; a later pair may still fit unchanged
   when replayed alone, so replay every listed position or use smaller DOM roots. The other six tools
   return a static `isError:true` `response_too_large` result with `action:"narrow_request"` and no
-  cursor when no atomic result fits. The separate fixed 1 MiB floors in `get_layout_spec` and
-  `get_view` are unchanged, so this is not a server-wide response-size guarantee.
+  cursor when no atomic result fits. `get_layout_spec` and `get_view` use a separate fixed 1 MiB
+  ceiling, measured as UTF-8 bytes against the exact delivered `content[0].text`. Layout-spec
+  truncation keeps the largest ordered whole-entry prefix and reports the positional suffix in
+  `omitted_node_ids` (duplicate ids stay duplicated); `get_view` is atomic. The layout first-prefix
+  probe includes required omission metadata, so `first_item_oversize` does not prove that entry will
+  fail when replayed alone. `envelope_oversize` means fixed response metadata cannot fit without an
+  atomic item. For layout spec, retry without `include_extractor` or with fewer `node_ids`; a view
+  envelope includes depth-dependent hydration, so retry lower `max_depth` before correcting `file`
+  or `node_id`. These contracts do not make response size a server-wide guarantee.
