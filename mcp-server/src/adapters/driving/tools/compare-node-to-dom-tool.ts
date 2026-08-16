@@ -916,7 +916,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           ? `WINDOW WIDTH: ${verification.dominant_blocker.pairs} of ${args.pairs.length} pairs are unverified for one reason — window ${verification.dominant_blocker.window}px ≠ frame ${verification.dominant_blocker.frame}px; resize to ${verification.dominant_blocker.frame}, re-capture with the extractor and re-run compare`
           : preflight;
 
-        // CRITICAL (the size-guard-bug class, reference clamp-specs): the measurement goes THROUGH
+        // CRITICAL (the size-guard-bug class): the measurement goes THROUGH
         // serializeForDelivery — the same function jsonResult delivers with. It measures EXACTLY the delivered
         // text field; the jsonResult wrapper {"content":[{"type":"text","text":…}]} (~40 chars) is outside the measurement
         // DELIBERATELY. effPreflight is in BOTH buildOutput calls (the prior invariant is preserved).

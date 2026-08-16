@@ -3,8 +3,7 @@ import { registerGetViewTool } from '../../src/adapters/driving/tools/get-view-t
 import { withFrameRaw } from './helpers/frame-raw.js';
 import { buildLayoutSpec, VIEW_CAPS } from '../../src/domain/layout-spec/projector.js';
 import { buildSpacing, buildCoverage, buildSkeleton } from '../../src/domain/layout-spec/views.js';
-import { serializeForDelivery } from '../../src/adapters/driving/tools/serialize.js';
-import { RESULT_BUDGET_BYTES } from '../../src/adapters/driving/tools/clamp-specs.js';
+import { RESULT_BUDGET_BYTES } from '../../src/adapters/driving/tools/response-budget.js';
 import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 // Skeleton fixtures: a VERTICAL list whose items share a NAME but may differ in child-shape.
@@ -205,10 +204,10 @@ describe('get_view', () => {
     expect(body.skeleton.children.every((c: any) => c.repeated?.count !== 4)).toBe(true);
   });
 
-  it('skeleton: oversized view is delivered but honestly flagged result_oversized', async () => {
-    // ~3000 DISTINCT-named leaf children → nothing summarizes away → serialized skeleton > 1MB budget.
-    const children = Array.from({ length: 3000 }, (_, i) => ({
-      id: 'n' + i, name: 'x'.repeat(400) + i, type: 'FRAME',
+  it('skeleton: returns a bounded static error when the atomic view exceeds the budget', async () => {
+    // ~1800 DISTINCT-named leaf children → nothing summarizes away → UTF-8 skeleton > 1MB budget.
+    const children = Array.from({ length: 1800 }, (_, i) => ({
+      id: 'n' + i, name: '界'.repeat(400) + i, type: 'FRAME',
       absoluteBoundingBox: { x: 0, y: i, width: 10, height: 10 }, children: [] }));
     const bigFrame: any = { id: 'root', name: 'root', type: 'FRAME', layoutMode: 'VERTICAL',
       absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100000 }, children };
@@ -216,14 +215,30 @@ describe('get_view', () => {
       ({ nodes: Object.fromEntries(ids.map((id) => [id, { document: bigFrame, components: {} }])) }) } as any) });
     const out = await handler({ file: 'k', node_id: '1:2', view: 'skeleton', max_depth: 6 });
     const body = JSON.parse(out.content[0].text);
-    // confirm the fixture actually exceeds the delivered-byte budget (bump 400/3000 if this ever fails)
-    const measured = serializeForDelivery({ node_id: '1:2', skeleton: body.skeleton }).length;
-    expect(measured).toBeGreaterThan(RESULT_BUDGET_BYTES);
-    expect(body.result_oversized).toBe(true);
-    expect(body.result_oversized_note).toBeTruthy();
-    // flag-not-drop: the oversized payload is still delivered in full
-    expect(body.skeleton).toBeDefined();
-    expect(body.skeleton.children.length).toBe(3000);
+    expect(out.isError).toBe(true);
+    expect(body).toEqual({
+      code: 'response_too_large',
+      reason: 'first_item_oversize',
+      action: 'narrow_request',
+    });
+    expect(Buffer.byteLength(out.content[0].text, 'utf8')).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    expect(body.skeleton).toBeUndefined();
+    expect(body.hydration).toBeUndefined();
+    expect(body.result_oversized).toBeUndefined();
+  });
+
+  it('skeleton: returns envelope_oversize when fixed metadata alone exceeds the budget', async () => {
+    const file = 'k'.repeat(RESULT_BUDGET_BYTES);
+    const { handler } = harness();
+    const out = await handler({ file, node_id: '1:2', view: 'skeleton' });
+
+    expect(out.isError).toBe(true);
+    expect(JSON.parse(out.content[0].text)).toEqual({
+      code: 'response_too_large',
+      reason: 'envelope_oversize',
+      action: 'narrow_request',
+    });
+    expect(Buffer.byteLength(out.content[0].text, 'utf8')).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
   });
 
   // FIX 1 (never-false-green): the single-child collapse loop MUST decrement depthLeft, so a wrapper

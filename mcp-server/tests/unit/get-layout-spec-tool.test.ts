@@ -12,6 +12,7 @@ import type { RawSceneNode } from '../../src/domain/figma-raw.js';
 import { FETCH_DEPTH } from '../../src/domain/layout-spec/projector.js';
 import { withFrameRaw } from './helpers/frame-raw.js';
 import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
+import { RESULT_BUDGET_BYTES } from '../../src/adapters/driving/tools/response-budget.js';
 
 const logger = createLogger({ level: 'silent' });
 // Repo layout: <root>/mcp-server/tests/unit/<this file>.
@@ -404,28 +405,66 @@ describe('get_layout_spec tool', () => {
   });
 
   describe('result budget clamp (design-QA payload)', () => {
-    it('honest-clamps the aggregate result and lists omitted node_ids', async () => {
-      // Build a node whose projected spec is large, requested many times so the aggregate
-      // blows the 1MB budget. SIZE DRIVER IS `name` ONLY — the projector caps children at
-      // MAX_SPEC_CHILDREN=30 (so 40 → 30 survive) and slices textSnippet to 40 chars, so
-      // `characters` does NOT contribute to serialized size. Verified: name repeat=600 →
-      // aggregate ~1.9MB (×1.83 over 1MB) → clamp keeps ~11, omits ~9. (repeat≤320 is vacuous:
-      // aggregate < 1MB, clamp keeps all, result_truncated never set → the test would false-green.)
+    it('keeps an ordered positional prefix under the compact and pretty UTF-8 limit', async () => {
       const big: RawSceneNode = { id: 'n', name: 'n', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 9, height: 9 },
-        children: Array.from({ length: 40 }, (_, i) => ({ id: `c${i}`, name: 'Item '.repeat(600) + i, type: 'TEXT',
-          absoluteBoundingBox: { x: 0, y: i, width: 9, height: 1 }, characters: 'text '.repeat(80),
+        children: Array.from({ length: 40 }, (_, i) => ({ id: `c${i}`, name: '界'.repeat(1500) + i, type: 'TEXT',
+          absoluteBoundingBox: { x: 0, y: i, width: 9, height: 1 }, characters: 'text',
           style: { fontFamily: 'Inter', fontSize: 12 } })) };
-      const ids = Array.from({ length: 20 }, (_, i) => `${i}:1`);
+      const ids = [...Array.from({ length: 19 }, (_, i) => `${i}:1`), '0:1'];
       const nodes: Record<string, { document: RawSceneNode }> = {};
       for (const id of ids) nodes[id] = { document: { ...big, id } };
-      const getNodesRaw = vi.fn(async () => ({ nodes }));
-      const run = harness({ getNodesRaw });
-      const out = JSON.parse((await run({ file: 'abc', node_ids: ids })).content[0].text);
-      expect(out.result_truncated).toBe(true);
-      expect(out.omitted_node_ids.length).toBeGreaterThan(0);
-      expect(out.specs.length).toBeLessThan(ids.length);
-      // kept ++ omitted == all requested, contiguous
-      expect(out.specs.map((s: any) => s.node_id).concat(out.omitted_node_ids)).toEqual(ids);
+      const previous = process.env.MCP_PRETTY_JSON;
+
+      try {
+        for (const pretty of [false, true]) {
+          if (pretty) process.env.MCP_PRETTY_JSON = 'true';
+          else delete process.env.MCP_PRETTY_JSON;
+          const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes })) });
+          const result = await run({ file: 'abc', node_ids: ids, include_extractor: true, extractor_mode: 'inline' });
+          const text = result.content[0].text;
+          const out = JSON.parse(text);
+
+          expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+          expect(text.startsWith('{\n')).toBe(pretty);
+          expect(out.result_truncated).toBe(true);
+          expect(out.extractor_js).toBeTruthy();
+          expect(out.omitted_node_ids.length).toBeGreaterThan(0);
+          expect(out.specs.length).toBeLessThan(ids.length);
+          expect(out.specs.map((s: any) => s.node_id).concat(out.omitted_node_ids)).toEqual(ids);
+          expect(out.hydration.map((h: any) => h.node_id)).toEqual(out.specs.map((s: any) => s.node_id));
+        }
+      } finally {
+        if (previous === undefined) delete process.env.MCP_PRETTY_JSON;
+        else process.env.MCP_PRETTY_JSON = previous;
+      }
+    });
+
+    it('returns a bounded static error when one complete spec cannot fit', async () => {
+      const big: RawSceneNode = { id: '1:1', name: 'root', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 9, height: 9 },
+        children: Array.from({ length: 40 }, (_, i) => ({ id: `c${i}`, name: '界'.repeat(20_000) + i, type: 'FRAME',
+          absoluteBoundingBox: { x: 0, y: i, width: 9, height: 1 }, children: [] })) };
+      const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: big } } })) });
+      const result = await run({ file: 'abc', node_ids: ['1:1'] });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toEqual({
+        code: 'response_too_large',
+        reason: 'first_item_oversize',
+        action: 'narrow_request',
+      });
+      expect(Buffer.byteLength(result.content[0].text, 'utf8')).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    });
+
+    it('returns envelope_oversize when fixed metadata alone cannot fit', async () => {
+      const run = harness({ getNodesRaw: vi.fn(async () => ({ nodes: { '1:1': { document: doc } } })) });
+      const result = await run({ file: 'k'.repeat(RESULT_BUDGET_BYTES), node_ids: ['1:1'] });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toEqual({
+        code: 'response_too_large',
+        reason: 'envelope_oversize',
+        action: 'narrow_request',
+      });
     });
 
     it('does NOT flag when the result fits (default small call unchanged)', async () => {
@@ -502,6 +541,22 @@ describe('get_layout_spec hydration receipt (Phase 1)', () => {
     expect(rec.cause_breakdown.depth).toBeGreaterThan(0);
     expect(rec.hydrated).toBe(false); // withFrameRaw passthrough → not held
     expect(rec.note).not.toMatch(/already held|уже держ/i);
+  });
+
+  it('keeps hydration in request order when concurrent metadata lookups finish out of order', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: {
+      '1:1': { document: { ...doc, id: '1:1' }, components: { a: { key: 'slow', name: 'a', componentSetId: 's:1' } } },
+      '2:2': { document: { ...doc, id: '2:2' }, components: { b: { key: 'fast', name: 'b', componentSetId: 's:2' } } },
+    } }));
+    const getComponent = vi.fn(async (key: string) => {
+      if (key === 'slow') await new Promise((resolve) => setTimeout(resolve, 20));
+      return { key, file_key: 'lib', node_id: key, name: key };
+    });
+    const getFileComponentSets = vi.fn(async () => []);
+    const run = harness({ getNodesRaw, getComponent, getFileComponentSets });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1', '2:2'] })).content[0].text);
+
+    expect(out.hydration.map((h: any) => h.node_id)).toEqual(['1:1', '2:2']);
   });
 });
 

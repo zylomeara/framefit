@@ -2,6 +2,8 @@ import { serializeForDelivery } from './serialize.js';
 import { responseBudgetBlocker } from '../../../domain/layout-spec/verification.js';
 import type { PairResult, PairSummary, VerificationReceipt } from '../../../domain/layout-spec/types.js';
 
+export const RESULT_BUDGET_BYTES = 1024 * 1024;
+
 export type ResponseBudgetOverflow = 'first_item_oversize' | 'envelope_oversize';
 
 export type ClampToBudgetResult<T> =
@@ -44,22 +46,23 @@ export function clampToBudget<T>(
   items: T[],
   budget: number,
   serialize: (xs: T[]) => string,
+  measureSerialized: (serialized: string) => number = (serialized) => serialized.length,
 ): ClampToBudgetResult<T> {
   const full = serialize(items);
-  if (full.length <= budget) return { kind: 'fit', kept: items, serialized: full };
+  if (measureSerialized(full) <= budget) return { kind: 'fit', kept: items, serialized: full };
 
   const empty = serialize([]);
-  if (empty.length > budget) return { kind: 'envelope_oversize' };
+  if (measureSerialized(empty) > budget) return { kind: 'envelope_oversize' };
   if (items.length === 0) return { kind: 'fit', kept: items, serialized: empty };
 
   const first = serialize(items.slice(0, 1));
-  if (first.length > budget) return { kind: 'first_item_oversize' };
+  if (measureSerialized(first) > budget) return { kind: 'first_item_oversize' };
 
   let lo = 1;
   let hi = items.length;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    if (serialize(items.slice(0, mid)).length <= budget) lo = mid;
+    if (measureSerialized(serialize(items.slice(0, mid))) <= budget) lo = mid;
     else hi = mid - 1;
   }
   const kept = items.slice(0, lo);
