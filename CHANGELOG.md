@@ -3,6 +3,40 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.29.1
+
+Two response-budget fixes. Tools using the configurable result budget now measure the exact envelope
+sent to the client instead of a fragment assembled before final metadata. The two fixed-limit design-QA
+views now enforce their separate 1 MiB ceiling as UTF-8 bytes against the delivered text. Oversized
+responses either retain an addressable whole-item prefix or return a bounded fallback or error; none can
+silently cross the limit it claims to enforce.
+
+**Output compatibility.** Request schemas, DOM snapshot schema v7, and the extractor are unchanged, so
+no re-capture is required. Boundary responses can now add positional omission fields, return an
+explicitly incomplete `response_budget` comparator fallback, or return an `isError:true`
+`response_too_large` result where an oversized success was possible before. Consumers must handle
+those bounded cases. Reconnect only to refresh the updated tool and server guidance; the response
+behavior does not depend on a reconnect. These are tool-specific contracts, not a server-wide response
+size guarantee.
+
+### Fixed
+
+**Configurable budgets cover the final delivered envelope.** `compare_node_to_dom`,
+`compare_dom_to_dom`, `find_nodes`, `get_comments`, `get_metadata`, `get_review_board`,
+`get_text_styles`, and `get_variables` now fit the exact text delivered in `content[0].text`, including
+final metadata. Comparator aggregate verification still covers every submitted pair.
+Ordinary omissions carry zero-based `omitted_pair_indices` for exact replay even when labels or node
+ids repeat. If no complete pair detail fits, the comparator returns an explicitly incomplete response
+with `pairs: []` and `code:"response_budget"` instead of a false green. The other six tools return a
+static `response_too_large` error when no bounded successful result can be represented.
+
+**The fixed design-QA limits are exact UTF-8 ceilings.** `get_layout_spec` now measures its complete
+response, including hydration, degradation, extractor, upload, and omission guidance, against 1 MiB.
+When necessary it keeps the largest ordered whole-entry prefix and reports the positional suffix in
+`omitted_node_ids`, preserving duplicate ids. `get_view` treats its single view as atomic. Either tool
+returns the same bounded `response_too_large` shape for an unfit first-item or fixed-envelope probe;
+normal fitting responses retain their existing wire shape.
+
 ## 0.29.0
 
 Three comparison-contract improvements. Response-budget omissions now carry an exact positional replay
