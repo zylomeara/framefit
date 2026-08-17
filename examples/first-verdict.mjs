@@ -19,11 +19,12 @@
 // costs ~387,000 characters of agent context; theirs cost 87,000. Both crossings are avoidable and
 // neither of them is a framefit tool call:
 //
-//   1. THE EXTRACTOR. `get_layout_spec {include_extractor:true}` returns the whole script inline on
-//      stdio, because a stdio server has no public base URL for the browser to fetch it from. Pasted
-//      through the agent, that is 72395 characters. `serve-extractor` puts those characters on a
-//      loopback socket instead: they cross THIS process, which is not the agent's context, and what
-//      the agent handles is a ~278-character thunk that fetches them.
+//   1. THE EXTRACTOR. This client explicitly requests `extractor_mode:"inline"` because it closes
+//      the spawned stdio server (and its default loopback sidecar) before the browser uses the
+//      returned artifact. Pasted through the agent, that full script is 72395 characters.
+//      `serve-extractor` puts those characters on its own loopback socket instead: they cross THIS
+//      process, which is not the agent's context, and what the agent handles is a ~278-character
+//      thunk that fetches them.
 //   2. THE SNAPSHOT. `verdict` reads the capture from a FILE. chrome-devtools' `evaluate_script`
 //      takes a `filePath` and writes its result there, so the snapshot never has to come back as a
 //      tool result and go out again as a tool argument.
@@ -236,6 +237,7 @@ export const TOOL_ARGS = {
     file: args.file,
     node_ids: [...new Set([args.frame, ...args.pairs.map((p) => p.nodeId)])],
     include_extractor: true,
+    extractor_mode: 'inline',
     max_depth: args.maxDepth,
   }),
   suggest_pairs: (args, snapshots) => ({

@@ -26,7 +26,7 @@ const InputSchema = {
   collection: z.string().optional().describe('Filter tokens by collection name (case-insensitive substring match).'),
   name: z.string().optional().describe('Filter tokens by name (case-insensitive substring match).'),
   type: z.string().optional().describe('Filter tokens by resolved type (case-insensitive exact match, e.g. COLOR, FLOAT, STRING, BOOLEAN).'),
-  unresolved_only: z.boolean().default(false).describe('When true, return only tokens whose cross-library alias could not be resolved (value:null, alias:true). Useful to identify which teams need to be registered.'),
+  unresolved_only: z.boolean().default(false).describe('When true, return only unresolved rows: catalog tokens whose cross-library alias could not be resolved (value:null, alias:true), and node-scoped too-large fallback rows with definition_status:"unavailable". Useful to identify unresolved definitions and library teams that need registration.'),
   limit: z.number().int().min(1).max(1000).default(200).describe('Maximum number of tokens to return (default 200, max 1000).'),
   offset: z.number().int().min(0).default(0).describe('Number of tokens to skip for pagination (default 0).'),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),

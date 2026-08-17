@@ -66,7 +66,7 @@ a browser client cannot use `dom_ref` directly.
 captured from the request shown above it against a stub of one small Figma file (a `Product card`
 section holding a `Desktop` and a `Mobile` frame, the Desktop one holding the 320x420 card the other
 examples measure). They are then **trimmed, never edited**: an elided array or object tail is marked
-`/* ... */`, and two strings too long to print — the inline extractor and the report markdown — are
+`/* ... */`, and two strings too long to print — the short loader and the report markdown — are
 replaced by a `<..., N chars - elided>` placeholder. Nothing is added.
 `mcp-server/tests/unit/docs-response-examples.test.ts` rebuilds every capture from the handler on
 each test run and fails if a key or a value on this page is not in it.

@@ -189,6 +189,16 @@ describe('the tools/list surface a client receives is unchanged', () => {
     ).toEqual([]);
   });
 
+  it('describes both unresolved populations accepted by get_variables.unresolved_only', async () => {
+    const tool = (await deliveredTools()).find((entry) => entry.name === 'get_variables');
+    const properties = (tool?.inputSchema as {
+      properties?: Record<string, { description?: string }>;
+    } | undefined)?.properties;
+    const description = properties?.unresolved_only?.description ?? '';
+    expect(description).toContain('cross-library');
+    expect(description).toContain('definition_status:"unavailable"');
+  });
+
   it('delivers the recorded safety annotations, over the real protocol', async () => {
     const live = await liveSurface();
     // Fail-closed on both sides: a tool that stops sending annotations compares undefined against a
