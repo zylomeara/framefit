@@ -7,10 +7,16 @@ import { clampToBudget, responseTooLargeResult } from './response-budget.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { listTokens, listTokensForIds, collectNodeVariableIds } from '../../../domain/variables.js';
+import {
+  collectNodeVariableBindings,
+  type NodeVariableBinding,
+  type NodeVariableBindingRow,
+} from '../../../domain/node-variable-bindings.js';
 import { extractLibraryKey } from '../../../domain/variable-snapshot.js';
 import { FigmaApiError, TOO_LARGE_REASON_RE } from '../../../ports/errors.js';
 import { tokenStatusHint } from '../../../infrastructure/status-hint.js';
 import { summarizeTokens, filterTokens, dedupeTokens, canonicalizeCollections } from '../../../domain/variables-summary.js';
+import type { RawSceneNode } from '../../../domain/figma-raw.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
@@ -26,6 +32,174 @@ const InputSchema = {
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
+function snapshotValue(value: string, type: string | undefined): string | number | boolean {
+  if (type === 'FLOAT') {
+    const number = Number(value);
+    if (!Number.isNaN(number)) return number;
+  }
+  if (type === 'BOOLEAN' && (value === 'true' || value === 'false')) return value === 'true';
+  return value;
+}
+
+function dedupeBindingRows(rows: NodeVariableBindingRow[]): NodeVariableBindingRow[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = `${row.id}\u0000${row.binding_path}\u0000${typeof row.rendered_value}\u0000${String(row.rendered_value)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function canonicalizeBindingCollections(rows: NodeVariableBindingRow[]): NodeVariableBindingRow[] {
+  const canonical = new Map<string, string>();
+  for (const row of rows) {
+    if (row.collection === undefined) continue;
+    const key = row.collection.toLowerCase();
+    if (!canonical.has(key)) canonical.set(key, row.collection);
+  }
+  return rows.map((row) => {
+    if (row.collection === undefined) return row;
+    const collection = canonical.get(row.collection.toLowerCase());
+    return collection !== undefined && collection !== row.collection ? { ...row, collection } : row;
+  });
+}
+
+function filterBindingRows(
+  rows: NodeVariableBindingRow[],
+  filter: { collection?: string; name?: string; type?: string; unresolved_only?: boolean },
+): NodeVariableBindingRow[] {
+  return rows.filter((row) => {
+    if (filter.collection !== undefined
+      && (row.collection === undefined || !row.collection.toLowerCase().includes(filter.collection.toLowerCase()))) return false;
+    if (filter.name !== undefined
+      && (row.name === undefined || !row.name.toLowerCase().includes(filter.name.toLowerCase()))) return false;
+    if (filter.type !== undefined
+      && (row.type === undefined || row.type.toLowerCase() !== filter.type.toLowerCase())) return false;
+    if (filter.unresolved_only && row.definition_status !== 'unavailable') return false;
+    return true;
+  });
+}
+
+function summarizeBindingRows(rows: NodeVariableBindingRow[]) {
+  const summary = {
+    total: rows.length,
+    resolved_via: { local: 0, graph: 0, snapshot: 0 },
+    unresolved: 0,
+    by_type: {} as Record<string, number>,
+  };
+  for (const row of rows) {
+    if (row.definition_status === 'unavailable') summary.unresolved++;
+    else if (row.resolved_via === 'graph') summary.resolved_via.graph++;
+    else if (row.resolved_via === 'snapshot') summary.resolved_via.snapshot++;
+    if (row.type !== undefined) summary.by_type[row.type] = (summary.by_type[row.type] ?? 0) + 1;
+  }
+  return summary;
+}
+
+async function resolveBindingRows(
+  bindings: NodeVariableBinding[],
+  deps: ToolDeps,
+): Promise<NodeVariableBindingRow[]> {
+  await deps.variableGraph?.ensureReady?.();
+  const keys = [...new Set(bindings.map((binding) => extractLibraryKey(binding.id)).filter((key): key is string => key !== null))];
+  const graphHits = new Map<string, { value: string; name?: string; sourceLibrary?: string }>();
+  const snapshotHits = new Map<string, { value: string; resolved_type: string; name: string }>();
+  try {
+    if (deps.variableGraph) {
+      for (const key of keys) {
+        const hit = deps.variableGraph.resolve(key);
+        if (hit) graphHits.set(key, { value: hit.value, name: hit.name, sourceLibrary: hit.sourceLibrary });
+      }
+    }
+    const misses = keys.filter((key) => !graphHits.has(key));
+    if (deps.variableSnapshot && misses.length) {
+      const hits = await deps.variableSnapshot.lookup(misses);
+      for (const [key, hit] of hits) snapshotHits.set(key, hit);
+    }
+  } catch (err) {
+    deps.logger.info({ err: (err as Error).message }, 'get_variables.binding_resolution_unavailable');
+  }
+
+  return bindings.map((binding) => {
+    const base = {
+      id: binding.id,
+      ...(binding.rendered_value === undefined ? {} : { rendered_value: binding.rendered_value }),
+      binding_path: binding.binding_path,
+    };
+    const key = extractLibraryKey(binding.id);
+    const graph = key === null ? undefined : graphHits.get(key);
+    if (graph) return {
+      ...base,
+      ...(graph.name ? { name: graph.name } : {}),
+      value: graph.value,
+      definition_status: 'resolved' as const,
+      resolved_via: 'graph' as const,
+      ...(graph.sourceLibrary ? { source_library: graph.sourceLibrary } : {}),
+    };
+    const snapshot = key === null ? undefined : snapshotHits.get(key);
+    if (snapshot) return {
+      ...base,
+      ...(snapshot.name ? { name: snapshot.name } : {}),
+      ...(snapshot.resolved_type ? { type: snapshot.resolved_type } : {}),
+      value: snapshotValue(snapshot.value, snapshot.resolved_type),
+      definition_status: 'resolved' as const,
+      resolved_via: 'snapshot' as const,
+    };
+    return { ...base, value: null, definition_status: 'unavailable' as const };
+  });
+}
+
+async function bindingFallbackResult(
+  root: RawSceneNode,
+  deps: ToolDeps,
+  args: {
+    collection?: string;
+    name?: string;
+    type?: string;
+    unresolved_only?: boolean;
+    offset?: number;
+    limit?: number;
+  },
+) {
+  let rows = await resolveBindingRows(collectNodeVariableBindings(root), deps);
+  rows = dedupeBindingRows(canonicalizeBindingCollections(rows));
+  const summary = summarizeBindingRows(rows);
+  const definitionsUnavailable = rows.filter((row) => row.definition_status === 'unavailable').length;
+  const filtered = filterBindingRows(rows, {
+    collection: args.collection,
+    name: args.name,
+    type: args.type,
+    unresolved_only: args.unresolved_only,
+  });
+  const offset = args.offset ?? 0;
+  const limit = args.limit ?? 200;
+  const page = filtered.slice(offset, offset + limit);
+  const budget = deps.maxResultChars ?? 40000;
+  const result = clampToBudget(page, budget, (tokens) => {
+    const next_offset = offset + tokens.length < filtered.length ? offset + tokens.length : null;
+    return serializeForDelivery({
+      summary,
+      total_matching: filtered.length,
+      returned: tokens.length,
+      next_offset,
+      tokens,
+      partial: true,
+      degradation_receipt: {
+        stage: 'variables_local',
+        reason: 'request_too_large',
+        scope: 'node_bindings',
+        definitions_unavailable: definitionsUnavailable,
+      },
+      ...(tokens.length < page.length ? { clamped: true } : {}),
+    });
+  });
+  if (result.kind === 'first_item_oversize' || result.kind === 'envelope_oversize') {
+    return responseTooLargeResult(result.kind);
+  }
+  return textResult(result.serialized);
+}
+
 export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
     'get_variables',
@@ -38,9 +212,24 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
       runTool('get_variables', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
         const parsed = parseFileKey(args.file);
         if (!parsed.ok) throw new Error(parsed.error);
+        let nodeDocument: RawSceneNode | undefined;
+        let variablesLocalFailed = false;
         try {
           const api = deps.buildApi(token, args.timeout_ms);
-          const resp = await api.getVariablesLocal(parsed.value);
+          if (args.node_id) {
+            const nid = normalizeCompoundNodeId(args.node_id);
+            const nodes = await api.getNodesRaw(parsed.value, [nid], args.depth ?? 4);
+            const entry = nodes.nodes[nid];
+            if (!entry) throw new Error(`node ${nid} not found in file`);
+            nodeDocument = entry.document;
+          }
+          let resp;
+          try {
+            resp = await api.getVariablesLocal(parsed.value);
+          } catch (err) {
+            variablesLocalFailed = true;
+            throw err;
+          }
           // Build the single-tenant env library graph before the first cross-library resolve
           // (idempotent/fail-soft; a no-op for the MT wrappers and when no graph is configured).
           // Placed ABOVE the `deps.variableGraph || deps.variableSnapshot` guard so it dominates the
@@ -86,12 +275,8 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
           }
           // Node-scoped (only variables the node subtree references) or whole-file catalog.
           let allTokens;
-          if (args.node_id) {
-            const nid = normalizeCompoundNodeId(args.node_id);
-            const nodes = await api.getNodesRaw(parsed.value, [nid], args.depth ?? 4);
-            const entry = nodes.nodes[nid];
-            if (!entry) throw new Error(`node ${nid} not found in file`);
-            allTokens = listTokensForIds(resp, collectNodeVariableIds(entry.document), resolve);
+          if (nodeDocument) {
+            allTokens = listTokensForIds(resp, collectNodeVariableIds(nodeDocument), resolve);
           } else {
             allTokens = listTokens(resp, resolve);
           }
@@ -257,6 +442,9 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
             // parameter. mapStatus's fallthrough assigns unknown_4xx to EVERY non-401/403/404/429
             // 4xx, so this branch sees both.
             const reason = err.upstreamReason ?? '';
+            if (variablesLocalFailed && nodeDocument !== undefined && reason.length > 0 && TOO_LARGE_REASON_RE.test(reason)) {
+              return bindingFallbackResult(nodeDocument, deps, args);
+            }
             if (TOO_LARGE_REASON_RE.test(reason) || reason === '') {
               // err.message ends with mapStatus's generic 4xx tail ("Retrying this unchanged will
               // get the same answer"), which is FALSE for this endpoint's load-dependent job limit.
@@ -270,8 +458,9 @@ export function registerGetVariablesTool(server: McpServer, deps: ToolDeps): voi
                 `${err.message} ${lead}`
                 + "Figma rejected this file's variables as too large (its server-side ~55s job limit - too many variables/modes). "
                 + 'This is intermittent (load-dependent), so retry first - it often succeeds. '
-                + 'If it keeps failing: the endpoint has no filtering and node-scoping still fetches the whole file, '
-                + "so split the design-system file into smaller files. (Raising the request timeout does NOT help - this is Figma's job limit, not a client timeout.)",
+                + 'If it keeps failing: node scope can return binding-level partial evidence, but a '
+                + 'whole-file catalog cannot be filtered upstream, so split the design-system file into smaller files. '
+                + "(Raising the request timeout does NOT help - this is Figma's job limit, not a client timeout.)",
               );
             }
             throw new Error(`${err.message} Check the call's parameters against the quoted reason before assuming a size problem.`);

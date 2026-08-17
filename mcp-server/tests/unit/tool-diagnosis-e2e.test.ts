@@ -117,6 +117,8 @@ describe('get_variables: a token problem is never reported as a plan problem', (
   it('400 "Request too large" keeps the split-the-file advice', async () => {
     const r = await callVariables(400, '{"status":400,"err":"Request too large"}');
     expect(r.text).toMatch(/too large|split/i);
+    expect(r.text).toMatch(/node scope.*binding-level partial evidence/i);
+    expect(r.text).toMatch(/whole-file catalog cannot be filtered upstream/i);
   });
 
   it('400 for a malformed parameter does NOT recommend splitting the design system', async () => {

@@ -27,6 +27,12 @@ function harness(getVariablesLocal: FigmaApi['getVariablesLocal'], maxResultChar
   return (a: any): Promise<any> => call('get_variables', a);
 }
 
+function depsHarness(deps: ToolDeps) {
+  const { server, call } = makeFakeMcpServer();
+  registerGetVariablesTool(server, deps);
+  return (args: Record<string, unknown>): Promise<any> => call('get_variables', args);
+}
+
 describe('get_variables tool', () => {
   it('returns a flat token list', async () => {
     const run = harness(async () => ({ meta: {
@@ -301,6 +307,175 @@ describe('get_variables tool', () => {
     const body = JSON.parse(textOf(res.content[0]));
     expect(body.tokens.map((x: any) => x.name)).toEqual(['used/space']);
     expect(body.summary.total).toBe(1);
+  });
+
+  it('fetches and validates a node subtree before materializing local variables', async () => {
+    const calls: string[] = [];
+    const run = depsHarness({
+      buildApi: () => ({
+        getNodesRaw: async () => {
+          calls.push('nodes');
+          return { nodes: { '1:5': { document: {
+            id: '1:5', name: 'F', type: 'FRAME', itemSpacing: 8,
+            boundVariables: { itemSpacing: { type: 'VARIABLE_ALIAS', id: 'V:1' } },
+          } } } };
+        },
+        getVariablesLocal: async () => {
+          calls.push('variables');
+          return { meta: {
+            variableCollections: { VC: { id: 'VC', name: 'Brand', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'L' }] } },
+            variables: { 'V:1': { id: 'V:1', name: 'used/space', resolvedType: 'FLOAT', variableCollectionId: 'VC', valuesByMode: { m: 8 } } },
+          } };
+        },
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger,
+    });
+
+    const res = await run({ file: 'abc', node_id: '1-5' });
+    expect(res.isError).toBeFalsy();
+    expect(calls).toEqual(['nodes', 'variables']);
+  });
+
+  it('degrades the exact node-scoped too-large response to binding rows resolved graph-first, snapshot-only on misses', async () => {
+    const GRAPH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const SNAP = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const calls: string[] = [];
+    const resolve = vi.fn((key: string) => key === GRAPH
+      ? { value: '#aabbcc', name: 'graph/color', sourceLibrary: 'GRAPH_FILE' }
+      : undefined);
+    const lookup = vi.fn(async (keys: string[]) => new Map(keys.includes(SNAP)
+      ? [[SNAP, { value: '18', resolved_type: 'FLOAT', name: 'snapshot/space' }]]
+      : []));
+    const run = depsHarness({
+      buildApi: () => ({
+        getNodesRaw: async () => {
+          calls.push('nodes');
+          return { nodes: { '1:5': { document: {
+            id: '1:5', name: 'F', type: 'FRAME', paddingLeft: 8, paddingRight: 9,
+            boundVariables: {
+              paddingLeft: { type: 'VARIABLE_ALIAS', id: `VariableID:${GRAPH}/1:1` },
+              paddingRight: { type: 'VARIABLE_ALIAS', id: `VariableID:${GRAPH}/1:1` },
+            },
+            effects: [{
+              type: 'LAYER_BLUR', radius: 4,
+              boundVariables: { radius: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:local' } },
+            }],
+            children: [{
+              id: '1:6', name: 'child', type: 'FRAME', itemSpacing: 18,
+              boundVariables: { itemSpacing: { type: 'VARIABLE_ALIAS', id: `VariableID:${SNAP}/2:2` } },
+            }],
+          } } } };
+        },
+        getVariablesLocal: async () => {
+          calls.push('variables');
+          throw new FigmaApiError('unknown_4xx', 400, 'Figma returned 400', undefined, 'Request too large');
+        },
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger,
+      variableGraph: {
+        ensureReady: async () => { calls.push('ensure'); },
+        resolve,
+      },
+      variableSnapshot: { lookup },
+    });
+
+    const res = await run({ file: 'abc', node_id: '1-5' });
+    expect(res.isError).toBeFalsy();
+    const body = JSON.parse(textOf(res.content[0]));
+    expect(calls).toEqual(['nodes', 'variables', 'ensure']);
+    expect(resolve.mock.calls.map(([key]) => key)).toEqual([GRAPH, SNAP]);
+    expect(lookup).toHaveBeenCalledWith([SNAP]);
+    expect(body).toMatchObject({
+      partial: true,
+      degradation_receipt: {
+        stage: 'variables_local', reason: 'request_too_large', scope: 'node_bindings', definitions_unavailable: 1,
+      },
+      total_matching: 4,
+      returned: 4,
+    });
+    expect(body.tokens).toEqual([
+      {
+        id: `VariableID:${GRAPH}/1:1`, name: 'graph/color', value: '#aabbcc', rendered_value: 8,
+        binding_path: '1:5.boundVariables.paddingLeft', definition_status: 'resolved', resolved_via: 'graph', source_library: 'GRAPH_FILE',
+      },
+      {
+        id: `VariableID:${GRAPH}/1:1`, name: 'graph/color', value: '#aabbcc', rendered_value: 9,
+        binding_path: '1:5.boundVariables.paddingRight', definition_status: 'resolved', resolved_via: 'graph', source_library: 'GRAPH_FILE',
+      },
+      {
+        id: 'VariableID:1:local', value: null, rendered_value: 4,
+        binding_path: '1:5.effects[0].boundVariables.radius', definition_status: 'unavailable',
+      },
+      {
+        id: `VariableID:${SNAP}/2:2`, name: 'snapshot/space', type: 'FLOAT', value: 18, rendered_value: 18,
+        binding_path: '1:5.children[0].boundVariables.itemSpacing', definition_status: 'resolved', resolved_via: 'snapshot',
+      },
+    ]);
+  });
+
+  it('uses fallback only for the exact evidenced too-large 400 in node scope', async () => {
+    const cases: { label: string; node: boolean; error: FigmaApiError }[] = [
+      { label: 'too-large whole file', node: false, error: new FigmaApiError('unknown_4xx', 400, 'Figma returned 400', undefined, 'Request too large') },
+      { label: 'empty-reason 400', node: true, error: new FigmaApiError('unknown_4xx', 400, 'Figma returned 400') },
+      { label: 'malformed 400', node: true, error: new FigmaApiError('unknown_4xx', 400, 'Figma returned 400', undefined, 'Invalid parameter: node_id') },
+      { label: 'forbidden', node: true, error: new FigmaApiError('forbidden', 403, 'Figma returned 403', undefined, 'Invalid token') },
+      { label: 'rate limited', node: true, error: new FigmaApiError('rate_limited', 429, 'Figma returned 429') },
+    ];
+
+    for (const testCase of cases) {
+      const ensureReady = vi.fn(async () => undefined);
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:5': { document: {
+        id: '1:5', name: 'F', type: 'FRAME', paddingLeft: 8,
+        boundVariables: { paddingLeft: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:local' } },
+      } } } }));
+      const run = depsHarness({
+        buildApi: () => ({
+          getNodesRaw,
+          getVariablesLocal: async () => { throw testCase.error; },
+        } as unknown as FigmaApi),
+        defaultToken: 'figd_x', logger,
+        variableGraph: { ensureReady, resolve: () => undefined },
+      });
+
+      const res = await run({ file: 'abc', ...(testCase.node ? { node_id: '1-5' } : {}) });
+      expect(res.isError, testCase.label).toBe(true);
+      expect(ensureReady, testCase.label).not.toHaveBeenCalled();
+      expect(getNodesRaw, testCase.label).toHaveBeenCalledTimes(testCase.node ? 1 : 0);
+    }
+  });
+
+  it('applies positive filters, unresolved_only, and pagination to fallback binding rows', async () => {
+    const GRAPH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const SNAP = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const run = depsHarness({
+      buildApi: () => ({
+        getNodesRaw: async () => ({ nodes: { '1:5': { document: {
+          id: '1:5', name: 'F', type: 'FRAME', paddingLeft: 8, paddingRight: 9, itemSpacing: 18,
+          boundVariables: {
+            paddingLeft: { type: 'VARIABLE_ALIAS', id: `VariableID:${GRAPH}/1:1` },
+            paddingRight: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:local' },
+            itemSpacing: { type: 'VARIABLE_ALIAS', id: `VariableID:${SNAP}/2:2` },
+          },
+        } } } }),
+        getVariablesLocal: async () => { throw new FigmaApiError('unknown_4xx', 400, 'Figma returned 400', undefined, 'Request too large'); },
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger,
+      variableGraph: { resolve: (key) => key === GRAPH ? { value: '#aabbcc', name: 'graph/color' } : undefined },
+      variableSnapshot: { lookup: async () => new Map([[SNAP, { value: '18', resolved_type: 'FLOAT', name: 'snapshot/space' }]]) },
+    });
+
+    const named = JSON.parse(textOf((await run({ file: 'abc', node_id: '1-5', name: 'snapshot' })).content[0]));
+    expect(named.tokens.map((row: any) => row.name)).toEqual(['snapshot/space']);
+    const typed = JSON.parse(textOf((await run({ file: 'abc', node_id: '1-5', type: 'float' })).content[0]));
+    expect(typed.tokens.map((row: any) => row.type)).toEqual(['FLOAT']);
+    const unknownCollection = JSON.parse(textOf((await run({ file: 'abc', node_id: '1-5', collection: 'brand' })).content[0]));
+    expect(unknownCollection.tokens).toEqual([]);
+    const unresolved = JSON.parse(textOf((await run({ file: 'abc', node_id: '1-5', unresolved_only: true })).content[0]));
+    expect(unresolved.tokens.map((row: any) => row.id)).toEqual(['VariableID:1:local']);
+    const page = JSON.parse(textOf((await run({ file: 'abc', node_id: '1-5', offset: 1, limit: 1 })).content[0]));
+    expect(page.returned).toBe(1);
+    expect(page.next_offset).toBe(2);
+    expect(page.tokens[0].binding_path).toBe('1:5.boundVariables.paddingRight');
   });
 
   it('node_id mode errors when the node is not in the file', async () => {

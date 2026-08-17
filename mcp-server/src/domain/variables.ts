@@ -9,6 +9,7 @@ import {
   recordApplied, formatEffectiveModes, compositeModeSource,
   type AppliedMode, type ResolvedToken,
 } from './design-context/resolved-token.js';
+import { collectNodeVariableBindings } from './node-variable-bindings.js';
 
 export interface VariableIndex {
   byId: Map<string, RawVariable>;
@@ -341,30 +342,9 @@ export function listTokensForIds(
   return tokens.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Collect every variable id a node subtree binds — node-level boundVariables (all property
- * keys, single or array), fill/stroke paint bindings, and gradient-stop color bindings. */
+/** Set projection of the detailed node binding census. */
 export function collectNodeVariableIds(root: RawSceneNode): Set<string> {
-  const ids = new Set<string>();
-  const add = (bv?: Record<string, RawVariableAlias | RawVariableAlias[]>) => {
-    if (!bv) return;
-    for (const binding of Object.values(bv)) {
-      for (const a of Array.isArray(binding) ? binding : [binding]) {
-        if (a?.id) ids.add(a.id);
-      }
-    }
-  };
-  const walk = (n: RawSceneNode) => {
-    add(n.boundVariables);
-    for (const p of [...(n.fills ?? []), ...(n.strokes ?? [])]) {
-      add(p.boundVariables);
-      for (const stop of p.gradientStops ?? []) {
-        if (stop.boundVariables?.color?.id) ids.add(stop.boundVariables.color.id);
-      }
-    }
-    for (const c of n.children ?? []) walk(c);
-  };
-  walk(root);
-  return ids;
+  return new Set(collectNodeVariableBindings(root).map((binding) => binding.id));
 }
 
 // ── codeSyntax evidence (semantic-confirm v3) ────────────────────────────────────────────────
