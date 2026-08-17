@@ -32,7 +32,7 @@ const InputSchema = {
     .describe('loader (default): a short thunk that fetches the versioned extractor from the server ' +
       '(GET /api/dom-snapshots/extractor.js) instead of inlining the whole script ' +
       'every call - falls back to inline automatically if the server has no public base URL configured, ' +
-      'which is every stdio deployment. inline: always return the full extractor script (e.g. if the ' +
+      'including a stdio process whose loopback browser bridge could not start. inline: always return the full extractor script (e.g. if the ' +
       'loader\'s script-tag injection is CSP-blocked).'),
   max_depth: z.number().int().min(1).max(8).optional()
     .describe('Capture depth for BOTH sides (Figma projection + emitted extractor); default 4. Drill into a ' +
@@ -56,10 +56,11 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
       '(schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script ' +
       '(extractor_mode:"loader", the default) is returned only when the server has a public base URL to point the ' +
       'browser at - otherwise, and whenever extractor_mode:"inline" is passed, the full script comes back inline, ' +
-      'with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL, ' +
-      'plus the snapshot store only the HTTP servers construct, is what also returns an upload_url the extractor can ' +
-      'POST snapshots to directly from the browser, yielding a dom_ref to pass to compare_node_to_dom; the stdio ' +
-      'server has neither, so pass the snapshot inline as compare_node_to_dom\'s dom.',
+      'with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL ' +
+      'and snapshot store are available on HTTP deployments and through stdio\'s loopback browser sidecar; they return ' +
+      'an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref for ' +
+      'compare_node_to_dom. If the stdio sidecar cannot start, the response fails soft to the inline extractor and ' +
+      'inline DOM snapshots, with a machine-readable browser_bridge receipt.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

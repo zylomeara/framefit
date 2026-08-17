@@ -34,7 +34,6 @@ describe('findComponentInstances', () => {
     const second: Node = { id: '2:1', name: 'Checkout', type: 'FRAME', children: [
       { id: '2:2', name: 'Card', type: 'INSTANCE', componentId: '1:5' },
       { id: '2:3', name: 'Card', type: 'INSTANCE', componentId: '1:5' },
-      { id: '2:4', name: 'Card', type: 'INSTANCE', componentId: '1:5' },
     ] };
     const { api, getDocumentRaw, getNodesRaw } = apiFor(skeleton(page('Board', [first, second])), {
       '1:1': first, '2:1': second,

@@ -414,8 +414,8 @@ describe('Gate 5 reads a capture that is pinned against drift', () => {
       }
     }
     expect(census).toEqual({
-      minLength: 77, maxLength: 3, pattern: 24, enum: 18, // 23 -> 24: exclude_regions[] items carry the compound-id pattern
-      minimum: 82, maximum: 36, minItems: 6, maxItems: 13, // 60 -> 64: outOfFlow is nonnegative, and the DOM schema sits in two tools x two places
+      minLength: 77, maxLength: 3, pattern: 25, enum: 19, // screenshot probe adds expected hex + space enum
+      minimum: 86, maximum: 38, minItems: 6, maxItems: 13, // screenshot probe adds x/y/radius/tolerance bounds
       // 64 -> 68: reservedGutter + reservedGutterLeft are min(0) and sit at the ROOT of the DOM
       // schema only, so each lands once per tool
       // maxItems 9 -> 10: exclude_regions caps at 50 ids per call
@@ -558,22 +558,22 @@ describe('Gate 5A2: the compound-id bullet names exactly the parameters that acc
     });
   });
 
-  it('the payload carries only the two node-id forms, and no third', async () => {
-    // Measured at HEAD: 24 `pattern` sites, 14 compound and 10 strict. A third form appearing would
-    // make "every other node-id parameter is pinned to <one regex>" false without changing a single
-    // name in the bullet.
+  it('the payload carries only the two node-id forms, plus the documented probe-color pattern', async () => {
+    // Measured at HEAD: 25 `pattern` sites, 14 compound node ids, 10 strict node ids and the probe
+    // expected-color regex. The non-node pattern is partitioned explicitly so a third node-id form
+    // still makes "every other node-id parameter is pinned to <one regex>" false.
     const nodes = await everySchemaNode();
     const patterned = nodes.filter((n) => typeof n.node.pattern === 'string');
     const strict = patterned.filter((n) => n.node.pattern === STRICT_PATTERN);
     const compound = patterned.filter((n) => n.node.pattern === COMPOUND_PATTERN);
+    const nonNode = patterned.filter((n) => n.node.pattern !== STRICT_PATTERN && n.node.pattern !== COMPOUND_PATTERN);
     expect(
-      patterned
-        .filter((n) => n.node.pattern !== STRICT_PATTERN && n.node.pattern !== COMPOUND_PATTERN)
-        .map((n) => `${n.key}: ${String(n.node.pattern)}`),
-      'a parameter uses a THIRD pattern, so the bullet\'s "every other" is false',
-    ).toEqual([]);
-    expect(strict.length + compound.length, 'the pattern partition lost a site').toBe(patterned.length);
-    expect(patterned.length, 'the walk found no patterned parameter at all').toBe(24); // 23 -> 24: exclude_regions[] items (compound)
+      nonNode.map((n) => `${n.key}: ${String(n.node.pattern)}`),
+      'the declared non-node pattern set changed',
+    ).toEqual(['get_screenshot.probe.expected: ^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$']);
+    expect(strict.length + compound.length + nonNode.length, 'the pattern partition lost a site').toBe(patterned.length);
+    expect(strict.length + compound.length, 'the node-id pattern population changed').toBe(24);
+    expect(patterned.length, 'the walk found no patterned parameter at all').toBe(25);
   });
 
   it('spells a count that matches the set, so rewriting the number is not free', async () => {

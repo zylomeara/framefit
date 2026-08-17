@@ -295,8 +295,9 @@ export const PairSchema = z.object({
   dom: DomSnapshotSchema.optional().describe('DomSnapshot from the canonical extractor (get_layout_spec include_extractor:true). Pass exactly one of dom | dom_ref.'),
   dom_ref: DomRefSchema.optional().describe(
     'Reference to a browser-uploaded snapshot batch (get_layout_spec upload_url flow) instead of inlining raw ' +
-    'DOM JSON. Only the HTTP servers construct the snapshot store this resolves against; on stdio pass dom ' +
-    'inline. ref = the snapshot_ref returned by the extractor POST; selector must match byte-for-byte the ' +
+    'DOM JSON. HTTP deployments and stdio\'s loopback browser sidecar construct the snapshot store this resolves ' +
+    'against; if the stdio sidecar is unavailable, pass dom inline. ref = the snapshot_ref returned by the ' +
+    'extractor POST; selector must match byte-for-byte the ' +
     'selector string passed to the extractor, OR index addresses the snapshot by its position in that batch ' +
     '(duplicate-selector-safe). Resolvable while the underlying ref is live: sliding 30-min TTL ' +
     "from the last touch, hard-capped at 2h from the ref's OWN createdAt - NOT from when upload_url was minted. " +

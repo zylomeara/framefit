@@ -101,26 +101,25 @@ claude mcp add framefit \
 
 #### One prerequisite is not a package
 
-The design-QA cycle measures a *rendered* page, so it drives a
-real browser through a browser-automation MCP running alongside framefit (the
-[agent skill](docs/agents/design-qa-skill.md) is written against chrome-devtools tool names). On
-stdio there is no server for that browser to fetch the DOM extractor from, so `get_layout_spec`
-hands it back inline — 72395 characters, once per session if you park it on a global
-(`() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` — `evaluate_script` calls
-what you send, so the paste has to be a thunk). Each snapshot it returns then runs to tens of
-thousands of characters — it scales with the nodes captured, up to the default 90-node budget, so
-there is no one figure for it — and one capture carries one snapshot per pair — three for the
-tutorial's card — each crossing the agent's context twice: out of the browser, and back in as
-`compare_node_to_dom`'s `pairs[].dom`. (The [tutorial](docs/design-qa-tutorial.md)'s printed snapshot
-is trimmed to fit the page and is not a size reference.)
+The design-QA cycle measures a *rendered* page, so it drives a real browser through a
+browser-automation MCP running alongside framefit (the
+[agent skill](docs/agents/design-qa-skill.md) is written against chrome-devtools tool names).
+Stdio starts a browser sidecar on an ephemeral `127.0.0.1` port. `get_layout_spec` returns a short
+loader plus a capability-bearing `upload_url`; the browser fetches the canonical extractor, posts
+its snapshots directly to that loopback sidecar, and hands the MCP tools a compact `dom_ref`.
+The sidecar exposes only the DOM-snapshot routes and shares one in-memory store with the stdio tool
+handlers. It is not a second MCP endpoint and is not reachable off-machine.
 
-**Neither crossing is necessary, and [the recipe below](#your-first-verdict) does not make them.**
-The extractor can reach the page over a loopback socket, and the snapshot can go to a file the
-browser tool writes and this repository's client reads. Both cost tens of characters instead of tens
-of thousands. What that does NOT change is the tool contract: `compare_node_to_dom` still takes
-`pairs[].dom` inline and `suggest_pairs` still takes `dom_snapshot` inline, so the saving belongs to
-the client standing between you and the tools. An agent driving the tools directly, or a different
-client, still pays both costs in full.
+Sidecar startup is fail-soft. If the loopback bind is unavailable, `get_layout_spec` returns the
+full inline extractor and a machine-readable
+`browser_bridge:{status:"unavailable",reason:"loopback bridge could not start; using inline extractor"}`
+receipt. Capture the returned snapshot inline and pass it as `pairs[].dom` or `dom_snapshot`; the
+design-QA tools remain usable. Park the fallback extractor once with
+`() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }`, then call that handle for each
+capture; `evaluate_script` calls what you send, so the wrapper must remain a thunk. The extractor
+and snapshot can each cost tens of thousands of characters. (The
+[tutorial](docs/design-qa-tutorial.md)'s printed snapshot is trimmed to fit the page and is not a
+size reference.)
 
 ### Your first verdict
 

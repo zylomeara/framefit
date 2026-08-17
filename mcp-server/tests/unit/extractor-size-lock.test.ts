@@ -5,7 +5,9 @@
 // twice, both times silently. "~90 lines" and a "<=7-line thunk" survived the script growing to 738
 // lines and the loader to 8; the commit that corrected them wrote "738 lines, 54121 chars" into FOUR
 // places and gated exactly ONE of them -- the elision placeholder on docs/tools/design-qa.md, which
-// docs-response-examples.test.ts compares against the capture's real length. Measured at that
+// docs-response-examples.test.ts compared against the capture's real length at the time. The healthy
+// stdio response now carries the short loader there; its live 495-character value remains locked by
+// that capture gate, while this file continues to own only claims about the full inline script. Measured at that
 // commit: inserting ONE comment line into the EXTRACTOR_JS template literal left the other three
 // sites stating 738/54121 with the full suite green, and one of the three was the DELIVERED
 // `extractor_mode` field description that an MCP client reads.
@@ -70,11 +72,6 @@ const MUST_STATE: { file: string; what: string; fragment: string }[] = [
     file: 'README.md',
     what: "Tier 1's inline-extractor cost sentence -- the magnitude a reader adopting the 10-minute path is deciding on",
     fragment: `${CHARS} characters`,
-  },
-  {
-    file: 'docs/tools/design-qa.md',
-    what: "the get_layout_spec response fence's extractor_js elision (its VALUE is also compared with the capture by docs-response-examples.test.ts; this row is what names the site)",
-    fragment: `${CHARS} chars - elided`,
   },
   {
     file: 'examples/first-verdict.mjs',

@@ -41,6 +41,46 @@ Multi-mode tokens (collections with >1 mode) carry `mode_dependent:true` and
 without checking the node's mode (see
 [`get_design_context`](navigation.md#get_design_context)).
 
+**Node-scoped partial fallback.** A request with `node_id` fetches that subtree first. Only when the
+subsequent `/variables/local` request fails with a `FigmaApiError` whose kind is `unknown_4xx`, HTTP
+status is exactly `400`, and whose non-empty upstream reason matches
+`/too large|request too large/i`, the tool returns binding-level partial evidence instead of an
+error. An empty-reason 400, another 400, 403, 429, timeout, or the same too-large response without
+`node_id` stays on the normal error path.
+
+The fallback performs a stable preorder census of node, paint, gradient-stop, effect, and child
+bindings. Each row carries its exact `binding_path`, the same-property `rendered_value` when one is
+available, and `definition_status:"resolved"|"unavailable"`. Published keys resolve graph-first,
+then through the multi-tenant snapshot only for graph misses; local-only ids never enter either
+resolver and remain `value:null`, `definition_status:"unavailable"`. The normal `collection`,
+`name`, `type`, and `unresolved_only` filters and `limit`/`offset` pagination still apply after the
+census. `summary` describes the scoped census before filtering, while `total_matching`, `returned`,
+and `next_offset` describe the filtered page.
+
+Response (node-scoped partial fallback):
+
+```jsonc
+{
+  "summary": { "total": 2, "resolved_via": { "local": 0, "graph": 1, "snapshot": 0 },
+    "unresolved": 1, "by_type": {} },
+  "total_matching": 2,
+  "returned": 2,
+  "next_offset": null,
+  "tokens": [
+    { "id": "VariableID:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1:1",
+      "name": "graph/color", "value": "#aabbcc", "rendered_value": 8,
+      "binding_path": "1:5.boundVariables.paddingLeft", "definition_status": "resolved",
+      "resolved_via": "graph", "source_library": "GRAPH_FILE" },
+    { "id": "VariableID:1:local", "value": null, "rendered_value": 4,
+      "binding_path": "1:5.effects[0].boundVariables.radius",
+      "definition_status": "unavailable" }
+  ],
+  "partial": true,
+  "degradation_receipt": { "stage": "variables_local", "reason": "request_too_large",
+    "scope": "node_bindings", "definitions_unavailable": 1 }
+}
+```
+
 If the configured response budget cannot fit even the first complete token, the tool returns
 `isError:true` with `{code:"response_too_large", reason:"first_item_oversize"|"envelope_oversize",
 action:"narrow_request"}`. This static error carries no token, request data or `next_offset`: do not
@@ -57,7 +97,7 @@ advance `offset`; narrow the filters, lower `limit`, or scope the request to a n
 | `collection` | string | Filter tokens by collection name (case-insensitive substring match). |
 | `name` | string | Filter tokens by name (case-insensitive substring match). |
 | `type` | string | Filter tokens by resolved type (case-insensitive exact match, e.g. `COLOR`, `FLOAT`, `STRING`, `BOOLEAN`). |
-| `unresolved_only` | boolean (default `false`) | Return only tokens whose cross-library alias could not be resolved (`value:null`, `alias:true`). Useful to identify which teams need to be registered. |
+| `unresolved_only` | boolean (default `false`) | Return only unresolved tokens. Normal catalog rows use `value:null`, `alias:true`; node-scoped too-large fallback rows use `definition_status:"unavailable"`. |
 | `limit` | integer 1–1000 (default 200) | Maximum number of tokens to return. |
 | `offset` | integer ≥ 0 (default 0) | Number of tokens to skip for pagination. |
 | `figma_token` | string | Override Figma PAT |
@@ -198,4 +238,3 @@ index).
   "node_id": "3:200"
 }
 ```
-

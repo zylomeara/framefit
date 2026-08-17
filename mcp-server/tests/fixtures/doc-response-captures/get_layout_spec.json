@@ -191,9 +191,9 @@
     }
   ],
   "extractor_js": {
-    "length": 72395,
-    "sha256": "06a188e33d9d0e8ad6258998ff642866dd47cc1f7ed43773af86051603cdfa58"
+    "length": 495,
+    "sha256": "052934ed5f9a3122204401bc551e9e707b7b01c1d6ec022cf6f1f83bd25c6181"
   },
-  "extractor_note": "loader unavailable without public base URL — inline returned",
-  "extractor_hint": "no upload_url on this server: the extractor hands the snapshots back to you. Paste extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare assignment throws) — then every capture is `async () => await window.__extract([\"<sel>\", …], undefined, 3, 90)` (a reload drops the handle — paste again). Pass include_extractor:false on every later get_layout_spec call. Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom."
+  "upload_url": "http://127.0.0.1:3846/api/dom-snapshots/<capToken>",
+  "upload_hint": "call the extractor as: async () => { const extract = <extractor_js VERBATIM>; return await extract([\"<sel>\", …], \"<upload_url>\", 3, 90); } — extractor_js decides for itself whether to load the canonical script from the server (loader) or is already the full script (inline); it returns {snapshot_ref, summaries}; pass pairs to compare_node_to_dom as dom_ref:{ref, index} (selector position, 0-based, disambiguates duplicates) or {ref, selector}; a batch >2MB — split it into several POSTs under the same upload_url (the limit is per-POST, not per-session)"
 }

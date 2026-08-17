@@ -22,7 +22,7 @@
       "pairs",
       "tolerance_px"
     ],
-    "digest": "0da3da0bcf620c514f4bded737caee32bcecd039cffe6f639ad2c938c3277aad",
+    "digest": "bc682cc6c7f5988f0054a1b7ecfabc17351bcc271b8120cd0dd15fc0515ac465",
     "annotations": {
       "readOnlyHint": true
     }
@@ -40,7 +40,7 @@
       "pairs",
       "tolerance_px"
     ],
-    "digest": "fb334f859897ba2cde6277fef6d051f3a80b27225d9d32ce46a1d3963288d7ea",
+    "digest": "abe305917b551f02e5faa75b6caa5333031c0076337893e668d90cd1321f6c61",
     "annotations": {
       "readOnlyHint": true
     }
@@ -203,7 +203,7 @@
     }
   },
   "get_layout_spec": {
-    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script (extractor_mode:\"loader\", the default) is returned only when the server has a public base URL to point the browser at - otherwise, and whenever extractor_mode:\"inline\" is passed, the full script comes back inline, with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL, plus the snapshot store only the HTTP servers construct, is what also returns an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to compare_node_to_dom; the stdio server has neither, so pass the snapshot inline as compare_node_to_dom's dom.",
+    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script (extractor_mode:\"loader\", the default) is returned only when the server has a public base URL to point the browser at - otherwise, and whenever extractor_mode:\"inline\" is passed, the full script comes back inline, with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL and snapshot store are available on HTTP deployments and through stdio's loopback browser sidecar; they return an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref for compare_node_to_dom. If the stdio sidecar cannot start, the response fails soft to the inline extractor and inline DOM snapshots, with a machine-readable browser_bridge receipt.",
     "inputSchemaKeys": [
       "extractor_mode",
       "figma_token",
@@ -213,7 +213,7 @@
       "node_ids",
       "text_leaves"
     ],
-    "digest": "f1cf49076578945e8b628cecda8430d4d4e1b0d1724476655a73ee3fe6818cff",
+    "digest": "723af1aac2cd0a999003cebba32fcc357539999b83eaad7a0d03c434ea8169e0",
     "annotations": {
       "readOnlyHint": true
     }
@@ -244,14 +244,14 @@
     }
   },
   "get_node_ancestry": {
-    "description": "Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read the ancestor children. bbox-guided, id-confirmed, <=12 light REST calls - never fetches the whole file. query highlights matching names in scope.",
+    "description": "Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read the ancestor children. bbox-guided, id-confirmed, <=16 light REST calls - never fetches the whole file. query highlights matching names in scope.",
     "inputSchemaKeys": [
       "figma_token",
       "file",
       "node_id",
       "query"
     ],
-    "digest": "f545c04ade503514f0a27a4cc9e46b18f13e7d853916224e4a34f28ddac9929c",
+    "digest": "bcb7cc546ed14b986753c7f49291a3b432744e3427e2ef1e06b88b258b1c1822",
     "annotations": {
       "readOnlyHint": true
     }
@@ -302,11 +302,12 @@
       "focus_radius",
       "format",
       "node_id",
+      "probe",
       "return",
       "scale",
       "tiles"
     ],
-    "digest": "5cd8c322c83f3cc72304bc87c6f1f6203f030365335de56a9ae423c6582dc586",
+    "digest": "ec736f588dc0145a619425c33deebaa97b9631fa12c8a8bb441ccb19ba2c5690",
     "annotations": {
       "readOnlyHint": true
     }
@@ -409,7 +410,7 @@
       "frame_node_id",
       "max_depth"
     ],
-    "digest": "011e129dba84ce4439e5776abbf254c1eda3c257776746efe0b2cad7dd285ad3",
+    "digest": "a2521e6444b4de234219a358bf1da6805caf01b558b6d0f51fd3de0f9d28ad8d",
     "annotations": {
       "readOnlyHint": true
     }
