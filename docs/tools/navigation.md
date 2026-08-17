@@ -253,9 +253,8 @@ node as `raw_images:[{imageRef,url}]`.
 
 ### get_design_context
 
-Extract a descriptive, code-oriented representation of a Figma node: layout (auto-layout), sizing,
-fills/strokes/effects (deduplicated into `globalVars`), text + typography, and component
-instances.
+Extract a descriptive, code-oriented representation of a Figma node: layout, sizing,
+fills/strokes/effects (deduplicated into `globalVars`), text, typography, and component instances.
 
 This is the flagship design->code extraction tool; in a design-QA flow it complements
 [`compare_node_to_dom`](design-qa.md#compare_node_to_dom) - see the
@@ -263,20 +262,18 @@ This is the flagship design->code extraction tool; in a design-QA flow it comple
 
 Key behaviours (from the live tool description):
 
-- A fill/stroke bound to a variable in a multi-mode collection (>1 mode) is resolved to an object
-  in `globalVars`: `{ token, value (actual hex in the node's effective variable mode), mode,
-  mode_dependent, mode_source }`. `mode_source:'node'` means the node's mode was confirmed via
-  `explicitVariableModes`; `'default'` means the mode could not be determined and the default-mode
-  value is shown - do not treat it as the on-screen color; such an object also carries a short
-  `hint` pointing to `get_variables`' per-mode `modes` map for the actual value.
-- When the value was decided by modes across MORE THAN ONE multi-mode collection (a
-  cross-collection alias chain), the object also carries `modes_applied` - `{collection name:
-  "mode name (node|default)"}` - every axis actually APPLIED to compute `value`. `modes_applied`
-  explains the computation only - it makes NO on-screen claim (that is `mode_source`'s job).
+- A multi-mode bound variable emits `{token, default_value, effective_rendered_value, value,
+  effective_modes, effective_mode_source, mode_dependent}`. `value` aliases
+  `effective_rendered_value`; `default_value` is diagnostic only and is never substituted for a
+  rendered color.
+- `effective_mode_source` is `explicit_node`, `ancestor_chain`, `confirmed_default`, or
+  `unverifiable`. When it is `unverifiable`, `effective_rendered_value` and `value` are null and
+  the hint says not to use the default as the rendered color. Each `effective_modes` axis includes
+  its mode and source, plus `node_id` for explicit or ancestor evidence.
 - A top-level `mode_context` marker may be present: `"library_default_modes"` = this file is a
   registered component library rendered in its default variable modes - do NOT transfer these
   mode-dependent values to branded pages (the same tokens resolve differently there);
-  `"default_modes"` = every shown mode-dependent value is its axis default. The marker appears
+  `"default_modes"` = every shown mode-dependent value is its confirmed axis default. The marker appears
   only when the server has positive evidence; its absence claims nothing.
 - A fill/stroke bound to a single-mode (non-mode-dependent) variable keeps its inline form: the
   local token name, or `var(--name, value)` for a cross-library variable.

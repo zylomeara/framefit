@@ -143,7 +143,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('fill: mode-unconfirmed token + hex mismatch → review "mode not confirmed"', () => {
     const s = baseSpec();
     s.fillHex = '#a73afd'; // resolved in the default-mode Lunar
-    s.fillToken = { token: 'surface/accent', hex: '#a73afd', mode: 'Lunar', mode_dependent: true, mode_source: 'default', all_modes: { Solar: '#ffffff', Lunar: '#a73afd' } };
+    s.fillToken = { token: 'surface/accent', defaultHex: '#a73afd', effectiveHex: null, effectiveModeSource: 'unverifiable', all_modes: { Solar: '#ffffff', Lunar: '#a73afd' } };
     const f = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'fill'); // DOM bg #ffffff (Solar)
     expect(f?.status).toBe('review');
     expect(f?.note).toMatch(/mode is not confirmed/);
@@ -159,7 +159,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('fill: single-mode-top token, mode_source:default, NO all_modes + hex mismatch → review (group B), not group-C fail', () => {
     const s = baseSpec();
     s.fillHex = '#a73afd'; // downstream default-mode value
-    s.fillToken = { token: 'surface/card', hex: '#a73afd', mode_dependent: true, mode_source: 'default' }; // no all_modes / no mode
+    s.fillToken = { token: 'surface/card', defaultHex: '#a73afd', effectiveHex: null, effectiveModeSource: 'unverifiable' }; // no all_modes / no mode
     const d = baseSnap();
     d.styles = { ...d.styles!, backgroundColor: '#8b6afb' }; // on-screen Solar — legitimate, another mode
     const f = row(diffPair(s, d, { tolerancePx: 1 }), 'fill');
@@ -175,7 +175,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('fill: snapshot_default token → review with the snapshot note, NOT "pin" (mutation lock)', () => {
     const s = baseSpec();
     s.fillHex = '#ff5722';
-    s.fillToken = { token: 'brand/primary', hex: '#ff5722', mode_dependent: true, mode_source: 'default', snapshot_default: true };
+    s.fillToken = { token: 'brand/primary', defaultHex: '#ff5722', effectiveHex: null, effectiveModeSource: 'unverifiable', snapshot_default: true };
     const d = baseSnap();
     d.styles = { ...d.styles!, backgroundColor: '#ff5722' }; // hex matches the DOM
     const f = row(diffPair(s, d, { tolerancePx: 1 }), 'fill');
@@ -187,11 +187,11 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('fill: an ordinary mode_dependent default (without snapshot_default) → the prior gate-B note byte-for-byte (regression lock)', () => {
     const s = baseSpec();
     s.fillHex = '#ff5722';
-    s.fillToken = { token: 't', hex: '#ff5722', mode_dependent: true, mode_source: 'default' };
+    s.fillToken = { token: 't', defaultHex: '#ff5722', effectiveHex: null, effectiveModeSource: 'unverifiable' };
     const d = baseSnap();
     d.styles = { ...d.styles!, backgroundColor: '#ff5722' };
     const f = row(diffPair(s, d, { tolerancePx: 1 }), 'fill');
-    expect(f?.note).toBe("the node's mode is not confirmed (the pin is probably on an unloaded ancestor) — check under the mode; token t");
+    expect(f?.note).toBe("the node's effective mode is not confirmed; default #ff5722 is diagnostic only — token t");
   });
 
   it('fill: hex equal (no token) → pass without a note; unbound mismatch → fail as before', () => {
@@ -208,7 +208,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('color[child]: mode-unconfirmed token + mismatch → review; equal (no token) → pass; unbound mismatch → fail', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#a73afd',
-      colorToken: { token: 'text color/accent', hex: '#a73afd', mode: 'Lunar', mode_dependent: true, mode_source: 'default', all_modes: { Solar: '#141414', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', defaultHex: '#a73afd', effectiveHex: null, effectiveModeSource: 'unverifiable', all_modes: { Solar: '#141414', Lunar: '#a73afd' } } };
     const c = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'color[label]'); // DOM color #141414 (Solar)
     expect(c?.status).toBe('review');
     expect(c?.note).toMatch(/mode is not confirmed/);
@@ -245,7 +245,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('WS-D: mode-unconfirmed bound token → review (not-verified), never fail/green', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb',
-      colorToken: { token: 'text color/accent', hex: '#a73afd', mode: 'Lunar', mode_dependent: true, mode_source: 'default', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', defaultHex: '#a73afd', effectiveHex: null, effectiveModeSource: 'unverifiable', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
     // DOM shows Solar #8b6afb; figma resolved to default #a73afd because mode unconfirmed
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb';
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
@@ -256,7 +256,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('WS-D: mode confirmed + hex diverges + matches ANOTHER mode → fail (wrong subbrand)', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb',
-      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#a73afd'; // Lunar applied
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('fail');
@@ -266,7 +266,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('WS-D: unparseable DOM color (undefined) → info, never fail', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb',
-      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+      colorToken: { token: 'text color/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node' } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = undefined; // oklch → toHex undefined
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('info');
@@ -275,7 +275,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   it('WS-D: mode confirmed + hex matches + bound token, DOM token not captured → review (interim)', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb',
-      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+      colorToken: { token: 'text color/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node' } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb';
     expect(row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]')?.status).toBe('review');
   });
@@ -288,14 +288,14 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   // ── group D: the REAL DOM token from the snapshot (the 4th arg instead of interim undefined) ──
   it('WS-D: literal-catch — bound Figma token, DOM literal, hex matches → fail', () => {
     const s = baseSpec();
-    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'text color/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node' } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb'; (snap.children[1] as any).styles.colorToken = { literal: true };
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('fail'); expect(c?.note).toMatch(/literal|tokenize/i);
   });
   it('WS-D: both tokens, hex matches → review', () => {
     const s = baseSpec();
-    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'text color/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node' } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = '#8b6afb'; (snap.children[1] as any).styles.colorToken = { token: '--ds-text-icon-accent' };
     const c = row(diffPair(s, snap, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('review');
@@ -305,7 +305,7 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
   });
   it('WS-D: dom.unknown + hex matches → review (token unreadable); dom.unknown + !hex_match → fail', () => {
     const s = baseSpec();
-    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'x', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb' } } };
+    s.children[1].text = { ...s.children[1].text!, colorHex: '#8b6afb', colorToken: { token: 'x', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb' } } };
     const eq = baseSnap(); (eq.children[1] as any).styles.color = '#8b6afb'; (eq.children[1] as any).styles.colorToken = { unknown: 'cross-origin' };
     const eqRow = row(diffPair(s, eq, { tolerancePx: 1 }), 'color[label]');
     expect(eqRow?.status).toBe('review');
@@ -329,7 +329,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('fill resolved-match: confirmed token, raw≠resolved, DOM=resolved → NOT fail', () => {
     const s = baseSpec();
     s.fillHex = '#a73afd'; // the raw default-mode snapshot (Lunar-default)
-    s.fillToken = { token: 'surface/card', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
+    s.fillToken = { token: 'surface/card', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
     const d = baseSnap(); d.styles!.backgroundColor = '#8b6afb'; // on-screen under the Solar mode
     const f = row(diffPair(s, d, { tolerancePx: 1 }), 'fill');
     expect(f?.status).not.toBe('fail');           // before the fix → fail (false-red)
@@ -341,7 +341,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('fill mode-mismatch: same token, DOM=a different mode → fail "Lunar" (group C intact)', () => {
     const s = baseSpec();
     s.fillHex = '#a73afd';
-    s.fillToken = { token: 'surface/card', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
+    s.fillToken = { token: 'surface/card', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
     const d = baseSnap(); d.styles!.backgroundColor = '#a73afd'; // on screen Lunar was applied (the wrong mode)
     const f = row(diffPair(s, d, { tolerancePx: 1 }), 'fill');
     expect(f?.status).toBe('fail');
@@ -352,7 +352,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('text resolved-match: color[label] confirmed token, raw≠resolved, DOM=resolved → NOT fail', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#a73afd',
-      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
     const d = baseSnap(); (d.children[1] as any).styles.color = '#8b6afb';
     const c = row(diffPair(s, d, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).not.toBe('fail');
@@ -376,7 +376,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('border resolved-match: confirmed strokeToken, raw≠resolved, DOM=resolved → NOT fail (1st arg mutation lock)', () => {
     const s = baseSpec();
     s.strokeHex = '#a73afd'; s.strokeWeight = 2; // the raw default-mode snapshot (Lunar-default)
-    s.strokeToken = { token: 'border/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
+    s.strokeToken = { token: 'border/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
     const d = baseSnap(); // borders 2 on all 4 sides → activeSides.length===4
     d.borderColors = { top: '#8b6afb', right: '#8b6afb', bottom: '#8b6afb', left: '#8b6afb' }; // on-screen Solar, uniform
     const c = row(diffPair(s, d, { tolerancePx: 1 }), 'border-color');
@@ -392,7 +392,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('display resolved: a mode-mismatch fail shows the resolved figma-hex (#8b6afb), not the raw (#a73afd)', () => {
     const s = baseSpec();
     s.fillHex = '#a73afd'; // the raw default-mode snapshot (Lunar)
-    s.fillToken = { token: 'surface/card', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
+    s.fillToken = { token: 'surface/card', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
     const d = baseSnap(); d.styles!.backgroundColor = '#a73afd'; // on screen Lunar was applied (the wrong mode)
     const f = row(diffPair(s, d, { tolerancePx: 1 }), 'fill');
     expect(f?.status).toBe('fail');       // mode-mismatch (group C via all_modes)
@@ -409,7 +409,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('display resolved (text): a mode-mismatch fail shows the resolved figma-hex (#8b6afb), not the raw (#a73afd)', () => {
     const s = baseSpec();
     s.children[1].text = { ...s.children[1].text!, colorHex: '#a73afd', // the raw default-mode (Lunar)
-      colorToken: { token: 'text color/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
+      colorToken: { token: 'text color/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } } };
     const d = baseSnap(); (d.children[1] as any).styles.color = '#a73afd'; // on screen Lunar (the wrong mode)
     const c = row(diffPair(s, d, { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('fail');       // mode-mismatch (group C)
@@ -419,7 +419,7 @@ describe('colorVerdict — the resolved-under-mode hex is fed into eq, not the d
   it('display resolved (border): a mode-mismatch fail shows the resolved figma-hex (#8b6afb), not the raw (#a73afd)', () => {
     const s = baseSpec();
     s.strokeHex = '#a73afd'; s.strokeWeight = 2; // the raw default-mode snapshot (Lunar)
-    s.strokeToken = { token: 'border/accent', hex: '#8b6afb', mode: 'Solar', mode_dependent: true, mode_source: 'node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
+    s.strokeToken = { token: 'border/accent', effectiveHex: '#8b6afb', effectiveModeSource: 'explicit_node', all_modes: { Solar: '#8b6afb', Lunar: '#a73afd' } };
     const d = baseSnap(); // borders 2 on all 4 sides
     d.borderColors = { top: '#a73afd', right: '#a73afd', bottom: '#a73afd', left: '#a73afd' }; // Lunar, uniform
     const c = row(diffPair(s, d, { tolerancePx: 1 }), 'border-color');
@@ -505,7 +505,7 @@ describe('colorVerdict A2 — bound-but-unresolved color → review (never false
   it('A2 control: fillToken resolved (even with fillBoundVar set) → group-D review, NOT A2-intercepted', () => {
     const s = baseSpec(); // fillHex #ffffff == DOM bg
     s.fillBoundVar = 'VariableID:1:2';
-    s.fillToken = { token: 'bg/card', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.fillToken = { token: 'bg/card', effectiveHex: '#ffffff', effectiveModeSource: 'explicit_node' };
     const f = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'fill');
     expect(f?.status).toBe('review');
     // Group D (hex matched, DOM token not read) — NOT the A2 note
@@ -519,7 +519,7 @@ describe('colorVerdict A2 — bound-but-unresolved color → review (never false
   it('A2 control: text colorToken resolved (even with colorBoundVar set) → group-D review, NOT A2-intercepted', () => {
     const s = baseSpec(); // text colorHex #141414 == DOM color #141414
     s.children[1].text = { ...s.children[1].text!, colorBoundVar: 'VariableID:5:6',
-      colorToken: { token: 'text color/accent', hex: '#141414', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+      colorToken: { token: 'text color/accent', effectiveHex: '#141414', effectiveModeSource: 'explicit_node' } };
     const c = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'color[label]');
     expect(c?.status).toBe('review');
     expect(c?.note).toContain('the DOM token was not read');
@@ -532,7 +532,7 @@ describe('colorVerdict A2 — bound-but-unresolved color → review (never false
   it('A2 control: border strokeToken resolved (even with strokeBoundVar set) → group-D review, NOT A2-intercepted', () => {
     const s = baseSpec();
     s.strokeHex = '#00ff00'; s.strokeWeight = 2; s.strokeBoundVar = 'VariableID:7:8';
-    s.strokeToken = { token: 'border/default', hex: '#00ff00', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.strokeToken = { token: 'border/default', effectiveHex: '#00ff00', effectiveModeSource: 'explicit_node' };
     const d = baseSnap(); // borders 2 all sides
     d.borderColors = { top: '#00ff00', right: '#00ff00', bottom: '#00ff00', left: '#00ff00' };
     const c = row(diffPair(s, d, { tolerancePx: 1 }), 'border-color');
@@ -555,7 +555,7 @@ describe('e2e never-false-green locks', () => {
     // Align the typography with the DOM (otherwise font-size/weight fails would gate), leaving the color info
     // as the ONLY non-pass axis (DOM color unrecognized — oklch/color()/transparent).
     s.children[1].text = { ...s.children[1].text!, fontSize: 18, fontWeight: 700, colorHex: '#141414',
-      colorToken: { token: 't', hex: '#141414', mode: 'Solar', mode_dependent: true, mode_source: 'node' } };
+      colorToken: { token: 't', effectiveHex: '#141414', effectiveModeSource: 'explicit_node' } };
     const snap = baseSnap(); (snap.children[1] as any).styles.color = undefined; // oklch → toHex undefined → info
     const rows = diffPair(s, snap, { tolerancePx: 1 });
     const summary = summarize(rows);
@@ -571,7 +571,7 @@ describe('e2e never-false-green locks', () => {
 
   it('B fill threading-lock: figToken + DOM backgroundColorToken {literal} + hex matches → group-D fail "tokenize it"', () => {
     const s = baseSpec(); // fillHex #ffffff == DOM bg #ffffff (matched)
-    s.fillToken = { token: 'neutral/bg/base', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.fillToken = { token: 'neutral/bg/base', effectiveHex: '#ffffff', effectiveModeSource: 'explicit_node' };
     const d = baseSnap();
     (d.styles as any).backgroundColorToken = { literal: true };
     const f = row(diffPair(s, d, { tolerancePx: 1 }), 'fill');
@@ -583,7 +583,7 @@ describe('e2e never-false-green locks', () => {
   it('B border threading-lock: strokeToken + DOM borderColorsToken {literal} (uniform) + hex matches → group-D fail', () => {
     const s = baseSpec();
     s.strokeHex = '#00ff00'; s.strokeWeight = 2;
-    s.strokeToken = { token: 'border/accent', hex: '#00ff00', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.strokeToken = { token: 'border/accent', effectiveHex: '#00ff00', effectiveModeSource: 'explicit_node' };
     const d = baseSnap(); // borders 2 on all 4 sides → activeSides.length===4
     d.borderColors = { top: '#00ff00', right: '#00ff00', bottom: '#00ff00', left: '#00ff00' }; // uniform, matched the stroke
     d.borderColorsToken = { top: { literal: true }, right: { literal: true }, bottom: { literal: true }, left: { literal: true } };
@@ -596,7 +596,7 @@ describe('e2e never-false-green locks', () => {
   it('B shadow threading-lock: fs.colorToken + DOM shadow.colorToken {literal} + hex matches → group-D fail (ds.colorToken set by hand)', () => {
     const s = baseSpec();
     s.shadow = { inner: false, x: 0, y: 4, blur: 6, spread: 0, colorHex: '#000000',
-      colorToken: { token: 'shadow/ambient', hex: '#000000', mode: 'Solar', mode_dependent: true, mode_source: 'node' }, count: 1 };
+      colorToken: { token: 'shadow/ambient', effectiveHex: '#000000', effectiveModeSource: 'explicit_node' }, count: 1 };
     const d = baseSnap();
     d.shadow = { inset: false, x: 0, y: 4, blur: 6, spread: 0, colorHex: '#000000', colorToken: { literal: true }, count: 1 };
     const c = row(diffPair(s, d, { tolerancePx: 1 }), 'shadow-color');
@@ -615,7 +615,7 @@ describe('colorVerdict C — fail rows carry token + tokenReason color-diverged'
     const s = baseSpec();
     s.fillHex = '#8f8fa3';
     s.fillBoundVar = 'VariableID:1:2';
-    s.fillToken = { token: 'bg/level 2', hex: '#8f8fa3', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.fillToken = { token: 'bg/level 2', effectiveHex: '#8f8fa3', effectiveModeSource: 'explicit_node' };
     const f = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'fill');
     expect(f?.status).toBe('fail');
     expect(f?.token).toBe('bg/level 2');
@@ -625,7 +625,7 @@ describe('colorVerdict C — fail rows carry token + tokenReason color-diverged'
     const s = baseSpec();
     s.fillHex = '#8f8fa3';
     s.fillBoundVar = 'VariableID:1:2';
-    s.fillToken = { token: 'bg/level 2', hex: '#8f8fa3', mode: 'Solar', mode_dependent: true, mode_source: 'node',
+    s.fillToken = { token: 'bg/level 2', effectiveHex: '#8f8fa3', effectiveModeSource: 'explicit_node',
       all_modes: { Solar: '#8f8fa3', Lunar: '#ffffff' } };
     const f = row(diffPair(s, baseSnap(), { tolerancePx: 1 }), 'fill'); // DOM bg #ffffff == Lunar
     expect(f?.status).toBe('fail');
@@ -658,7 +658,7 @@ describe('colorVerdict D — codeSyntax evidence (positive collision only)', () 
   const evSpec = () => {
     const s = baseSpec();
     s.fillBoundVar = 'V:1';
-    s.fillToken = { token: 'bg/x', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.fillToken = { token: 'bg/x', effectiveHex: '#ffffff', effectiveModeSource: 'explicit_node' };
     return s;
   };
   const evSnap = (domVar: string) => {
@@ -702,7 +702,7 @@ describe('colorVerdict D — codeSyntax evidence (positive collision only)', () 
 
   it('BRANCH ORDER LOCK: mode-unconfirmed outranks a matching codeSyntax — evidence must not skip gate B', () => {
     const s = evSpec();
-    s.fillToken = { token: 'bg/x', hex: '#ffffff', mode_dependent: true, mode_source: 'default' };
+    s.fillToken = { token: 'bg/x', defaultHex: '#ffffff', effectiveHex: null, effectiveModeSource: 'unverifiable' };
     const f = row(diffPair(s, evSnap('--ds-x'), { tolerancePx: 1, cssEvidence: EV() }), 'fill');
     expect(f?.status).toBe('review');
     expect(f?.tokenReason).toBe('mode-unconfirmed');
@@ -731,7 +731,7 @@ describe('colorVerdict D evidence — wave locks', () => {
       node: { id: '2:1', name: 'label', type: 'TEXT' },
       rect: { x: 0, y: 0, w: 200, h: 24 },
       text: { fontFamily: 'Inter', fontWeight: 400, fontSize: 16, colorHex: '#141414',
-        colorBoundVar: 'V:1', colorToken: { token: 'text/x', hex: '#141414', mode: 'Solar', mode_dependent: true, mode_source: 'node' } },
+        colorBoundVar: 'V:1', colorToken: { token: 'text/x', effectiveHex: '#141414', effectiveModeSource: 'explicit_node' } },
       children: [],
     };
     const d = baseSnap();
@@ -749,7 +749,7 @@ describe('colorVerdict D evidence — wave locks', () => {
   it('bound variable WITHOUT authored codeSyntax + DOM var minted by an unrelated variable → LEGACY (absence of evidence about the BOUND side never gates)', () => {
     const s = baseSpec();
     s.fillBoundVar = 'V:77'; // nameOf(V:77) === undefined — no authored mapping on the bound side
-    s.fillToken = { token: 'bg/x', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.fillToken = { token: 'bg/x', effectiveHex: '#ffffff', effectiveModeSource: 'explicit_node' };
     const d = baseSnap();
     (d.styles as Record<string, unknown>).backgroundColorToken = { token: '--ds-other' }; // authored by V:9
     const f = row(diffPair(s, d, { tolerancePx: 1, cssEvidence: EV2 }), 'fill');
@@ -760,7 +760,7 @@ describe('colorVerdict D evidence — wave locks', () => {
   it('case typo lands LEGACY, not diverged (a case-variant name is absent from the exact-match map)', () => {
     const s = baseSpec();
     s.fillBoundVar = 'V:1'; // authored '--ds-x'
-    s.fillToken = { token: 'bg/x', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.fillToken = { token: 'bg/x', effectiveHex: '#ffffff', effectiveModeSource: 'explicit_node' };
     const d = baseSnap();
     (d.styles as Record<string, unknown>).backgroundColorToken = { token: '--DS-X' };
     const f = row(diffPair(s, d, { tolerancePx: 1, cssEvidence: EV2 }), 'fill');
@@ -773,7 +773,7 @@ describe('colorVerdict D evidence — quantifier gate (delta-wave locks)', () =>
   const spec = () => {
     const s = baseSpec();
     s.fillBoundVar = 'V:F';
-    s.fillToken = { token: 'bg/f', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.fillToken = { token: 'bg/f', effectiveHex: '#ffffff', effectiveModeSource: 'explicit_node' };
     return s;
   };
   const snapWith = (domVar: string) => {
@@ -833,7 +833,7 @@ describe('colorVerdict D evidence — tri-state at the interface (no green throu
   const spec = () => {
     const s = baseSpec();
     s.fillBoundVar = 'V:F';
-    s.fillToken = { token: 'bg/f', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' };
+    s.fillToken = { token: 'bg/f', effectiveHex: '#ffffff', effectiveModeSource: 'explicit_node' };
     return s;
   };
   const snapWith = (domVar: string) => {

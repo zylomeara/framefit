@@ -178,13 +178,13 @@ own pair in `compare_node_to_dom`.
 `text.colorHex`) are the RAW paint values from the REST response - for a color bound to a Figma
 variable that raw hex is a snapshot in the library's default mode and may legitimately differ in
 the app under another mode. When the binding can be resolved, the spec carries a sibling
-`fillToken`/`strokeToken`/`text.colorToken` object: `{ token, hex, mode?, mode_dependent?,
-mode_source? }` (single-mode tokens omit `mode_source`) - `token` is the variable name (the thing to write into code), `hex` its
-mode-resolved value. `mode_source: "node"` means the mode was confirmed by an explicit pin inside
-the FETCHED subtree; `"default"` means no pin was visible here and the value shown is the
-collection default - this tool deliberately does not pay for whole-file ancestor discovery, so a
-pin sitting above the requested node reads `"default"` where `get_design_context` (which does
-discover ancestors) says `"node"`. When both tools name a binding they name it identically - one
+`fillToken`/`strokeToken`/`text.colorToken` object: `{ token, defaultHex?, effectiveHex,
+effectiveModes?, effectiveModeSource? }`. `token` is the variable name (the thing to write into
+code); `effectiveHex` is the evidenced rendered value. A multi-mode token with no visible pin has
+`effectiveHex: null` and `effectiveModeSource: "unverifiable"`; `defaultHex` remains diagnostic
+only. This tool deliberately does not pay for whole-file ancestor discovery, so a pin above the
+requested node stays unverifiable where `get_design_context` can report `ancestor_chain` with a
+non-null rendered value. When both tools name a binding they name it identically - one
 shared resolver - but today `get_design_context` does not name every binding this tool can: a
 single-mode variable bound at the PAINT level renders there as its raw hex (a legacy naming path
 that predates paint-level reads), and a name recovered from the snapshot-DB tier is likewise

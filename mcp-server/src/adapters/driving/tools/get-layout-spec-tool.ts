@@ -7,7 +7,7 @@ import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/no
 import { buildLayoutSpec, budgetFor, collectLeafTexts } from '../../../domain/layout-spec/projector.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
 import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
-import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, buildModeByCollection } from '../../../domain/mode-resolve.js';
+import { collectSubtreeChains, hasBoundPaintColor, buildExactModeEvidence, buildGraphModeEvidence, modeIds } from '../../../domain/mode-resolve.js';
 import { makeColorTokenResolver, prefetchSnapshotHits, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
 import { FigmaApiError } from '../../../ports/errors.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
@@ -85,7 +85,7 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         // (2) the variables fetch is ALWAYS capped (compare caps MT-only): a bounded miss with a
         //     degraded_stages receipt beats a measured ~90s stall, and the caller still has
         //     fillBoundVar + this receipt to tell "not bound" from "bound, fetch degraded";
-        // (3) subtree-only mode stacks, NO whole-file ancestor discovery — so mode_source is
+        // (3) subtree-only mode evidence, NO whole-file ancestor discovery — so the source is
         //     honestly 'default' whenever the pin sits above the fetched subtree. The token NAME
         //     is the portable artifact; for a mode-confirmed VALUE run compare_node_to_dom or
         //     get_design_context, which do pay for ancestor discovery.
@@ -119,12 +119,13 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
           const entry = res.nodes[id];
           if (!entry?.document) return { node_id: id, error: 'not found' };
           const setNames = await buildSetNames(api, entry, deps.logger);
-          const subtreeModes = collectSubtreeModes(entry.document);
           const subtreeChains = collectSubtreeChains(entry.document);
           const resolveColorToken = makeColorTokenResolver({
             variableIndex, snapHits, variableGraph: deps.variableGraph,
-            stackFor: (n: RawSceneNode) => subtreeModes.get(n.id) ?? new Map<string, string>(),
-            graphStackFor: (n: RawSceneNode) => buildModeByCollection(subtreeChains.get(n.id) ?? [n]),
+            stackFor: (n: RawSceneNode) => modeIds(buildExactModeEvidence(subtreeChains.get(n.id) ?? [n], n.id)),
+            graphStackFor: (n: RawSceneNode) => modeIds(buildGraphModeEvidence(subtreeChains.get(n.id) ?? [n], n.id)),
+            exactEvidenceFor: (n: RawSceneNode) => buildExactModeEvidence(subtreeChains.get(n.id) ?? [n], n.id),
+            graphEvidenceFor: (n: RawSceneNode) => buildGraphModeEvidence(subtreeChains.get(n.id) ?? [n], n.id),
             coverageComplete: false,   // ancestors above the fetched subtree are never observed here
             omitAllModes: true,        // all_modes is compare's confirm payload, not navigation data
           });

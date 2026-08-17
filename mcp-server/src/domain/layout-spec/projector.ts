@@ -149,7 +149,8 @@ function withPaintAlpha(rt: ResolvedColorToken, paints: RawPaint[] | undefined):
   if (opacity >= 1) return rt;
   return {
     ...rt,
-    hex: hexTimesAlpha(rt.hex, opacity),
+    effectiveHex: rt.effectiveHex === null ? null : hexTimesAlpha(rt.effectiveHex, opacity),
+    ...(rt.defaultHex ? { defaultHex: hexTimesAlpha(rt.defaultHex, opacity) } : {}),
     ...(rt.all_modes
       ? { all_modes: Object.fromEntries(Object.entries(rt.all_modes).map(([k, v]) => [k, hexTimesAlpha(v, opacity)])) }
       : {}),
@@ -264,7 +265,8 @@ function surveyFigIcon(raw: RawSceneNode, ctx: ProjectorContext): IconSurvey | u
   // it unfolded false-fails a dimmed token-bound icon (and false-greens a mismatched one).
   const token = rt === undefined ? undefined : first.alpha >= 1 ? rt : {
     ...rt,
-    hex: hexTimesAlpha(rt.hex, first.alpha),
+    effectiveHex: rt.effectiveHex === null ? null : hexTimesAlpha(rt.effectiveHex, first.alpha),
+    ...(rt.defaultHex ? { defaultHex: hexTimesAlpha(rt.defaultHex, first.alpha) } : {}),
     ...(rt.all_modes
       ? { all_modes: Object.fromEntries(Object.entries(rt.all_modes).map(([k, v]) => [k, hexTimesAlpha(v, first.alpha)])) }
       : {}),
@@ -396,7 +398,7 @@ function typographyOf(n: RawSceneNode, ctx: ProjectorContext = {}): SpecTypograp
       const sid = fillStyleId(n);
       if (sid) {
         const nm = ctx.styleNames?.(sid);
-        t.colorToken = { token: nm ? `(style: ${nm})` : '(paint)', hex };
+        t.colorToken = { token: nm ? `(style: ${nm})` : '(paint)', effectiveHex: hex };
       }
     }
   }
@@ -640,7 +642,7 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
       const sid = fillStyleId(raw);
       if (sid) {
         const nm = ctx.styleNames?.(sid);
-        spec.fillToken = { token: nm ? `(style: ${nm})` : '(paint)', hex: fill };
+        spec.fillToken = { token: nm ? `(style: ${nm})` : '(paint)', effectiveHex: fill };
       }
     }
   }
@@ -657,7 +659,7 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
       const sid = strokeStyleId(raw);
       if (sid) {
         const nm = ctx.styleNames?.(sid);
-        spec.strokeToken = { token: nm ? `(style: ${nm})` : '(paint)', hex: stroke };
+        spec.strokeToken = { token: nm ? `(style: ${nm})` : '(paint)', effectiveHex: stroke };
       }
     }
   }

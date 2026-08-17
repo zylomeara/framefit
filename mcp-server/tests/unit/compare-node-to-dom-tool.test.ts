@@ -571,8 +571,10 @@ describe('compare_node_to_dom tool', () => {
       expect([...lookup.mock.calls[0][0]].sort()).toEqual([EXT_KEY, EXT_KEY2].sort()); // union of both keys in one array
       // Both rows are actually resolved from ONE batch (not just the call shape):
       const rows = JSON.parse(res.content[0].text).pairs.map((p: any) => p.rows.find((r: any) => r.prop === 'fill'));
-      expect(rows[0].figma).toBe('#123456');
-      expect(rows[1].figma).toBe('#654321');
+      expect(rows[0].figma).toBeNull();
+      expect(rows[1].figma).toBeNull();
+      expect(rows[0].tokenReason).toBe('snapshot-default');
+      expect(rows[1].tokenReason).toBe('snapshot-default');
     });
 
     it('union batch dedup: 2 pairs with the SAME key → lookup receives an array of EXACTLY one key', async () => {
@@ -609,7 +611,7 @@ describe('compare_node_to_dom tool', () => {
         // byte-identity assert below would catch it immediately.
         variableGraph: {
           resolve: () => ({ value: '#000000' }),
-          resolveInMode: () => ({ token: 'wrong', value: '#000000', mode_dependent: false, mode_source: 'default', pinned_axis_used: false, unconfirmed_default_used: false }),
+          resolveInMode: () => ({ token: 'wrong', value: '#000000', pinned_axis_used: false, unconfirmed_default_used: false }),
         },
       });
       const a = (await withoutGraph({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] })).content[0].text;
@@ -626,7 +628,7 @@ describe('compare_node_to_dom tool', () => {
         variableGraph: {
           resolve: (k: string) => (k === EXT_KEY ? { value: GRAPH_HEX } : undefined),
           resolveInMode: (k: string) => (k === EXT_KEY
-            ? { token: 'brand/accent', value: GRAPH_HEX, mode_dependent: false, mode_source: 'default', pinned_axis_used: false, unconfirmed_default_used: false }
+            ? { token: 'brand/accent', value: GRAPH_HEX, pinned_axis_used: false, unconfirmed_default_used: false }
             : undefined),
         },
       });
@@ -713,7 +715,8 @@ describe('compare_node_to_dom tool', () => {
         const run = harness({ getNodesRaw, getVariablesLocal, getDocumentRaw }, 40000, {
           variableGraph: {
             resolve: (k: string) => (k === LIB_KEY ? { value: HEX_B, modesByName: { Default: '#ffffff', A: HEX_A, B: HEX_B } } : undefined),
-            resolveInMode: (k: string, mbc: Map<string, string>, cc?: boolean) => resolveKeyInMode(g, k, mbc, cc),
+            resolveInMode: (k: string, mbc: Map<string, string>, cc?: boolean, ev?: import('../../src/domain/mode-resolve.js').ModeEvidenceStack) =>
+              resolveKeyInMode(g, k, mbc, cc, ev),
           },
         });
         const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardDualSuffix) }] });
@@ -880,7 +883,7 @@ describe('compare_node_to_dom tool', () => {
       // only observable surface here is exactly this note, diff.ts:924). Status 'review' for both
       // groups B and D — the lock rests EXACTLY on the note: the mutation "coverageComplete=true on a partial chain" yields
       // mode_source:'node' → group D "hex matched under the mode" (a confident lie) → RED on the toMatch below.
-      expect(colorRow.figma).toBe(HEX_DEFAULT);              // honest default-hex, NOT HEX_71
+      expect(colorRow.figma).toBeNull();                     // default is diagnostic, NOT HEX_71
       expect(colorRow.status).toBe('review');
       expect(colorRow.note).toMatch(/mode is not confirmed/);
     });
@@ -1188,7 +1191,8 @@ describe('compare_node_to_dom tool', () => {
       const run = harness({ getNodesRaw, getVariablesLocal, getDocumentRaw }, 40000, {
         variableGraph: {
           resolve: (k: string) => (k === LIB_KEY ? { value: HEX_ANCESTOR, modesByName: { Default: HEX_DEFAULT_G, A: HEX_ANCESTOR } } : undefined),
-          resolveInMode: (k: string, mbc: Map<string, string>, cc?: boolean) => resolveKeyInMode(g, k, mbc, cc),
+          resolveInMode: (k: string, mbc: Map<string, string>, cc?: boolean, ev?: import('../../src/domain/mode-resolve.js').ModeEvidenceStack) =>
+            resolveKeyInMode(g, k, mbc, cc, ev),
         },
       });
       const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardExtInFrame) }] });
@@ -3047,7 +3051,7 @@ describe('compare_node_to_dom variables cap 20s (MT-only) + compare.done', () =>
         variableGraph: {
           resolve: (k: string) => (k === LIB_KEY ? { value: HEX } : undefined),
           resolveInMode: (k: string) => (k === LIB_KEY
-            ? { token: 'brand/t3cap', value: HEX, mode_dependent: false, mode_source: 'default', pinned_axis_used: false, unconfirmed_default_used: false }
+            ? { token: 'brand/t3cap', value: HEX, pinned_axis_used: false, unconfirmed_default_used: false }
             : undefined),
         },
       });

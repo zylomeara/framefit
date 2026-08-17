@@ -590,13 +590,18 @@ describe('get_layout_spec — bound colors resolve to token names (shared resolv
     return { run: (a: any): Promise<any> => call('get_layout_spec', a), getVariablesLocal, caps };
   };
 
-  it('paint-level bound fill → fillToken {token, hex, mode_source:default}; raw fillHex unchanged; all_modes omitted; fetch capped', async () => {
+  it('paint-level bound fill keeps the default diagnostic but does not claim an effective ancestor mode', async () => {
     const { run, getVariablesLocal, caps } = tokenHarness(boundDoc());
     const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
     const spec = out.specs[0].spec;
     expect(spec.fillHex).toBe('#ffffff');                       // RAW snapshot, documented as raw
     expect(spec.fillBoundVar).toBe('V:1');
-    expect(spec.fillToken).toMatchObject({ token: 'color/brand/primary', hex: '#7b61f6', mode_source: 'default' });
+    expect(spec.fillToken).toMatchObject({
+      token: 'color/brand/primary',
+      defaultHex: '#7b61f6',
+      effectiveHex: null,
+      effectiveModeSource: 'unverifiable',
+    });
     expect(spec.fillToken.all_modes).toBeUndefined();           // compare's confirm payload, not navigation data
     expect(out.degraded_stages).toBeUndefined();
     expect(getVariablesLocal).toHaveBeenCalledTimes(1);
@@ -616,10 +621,16 @@ describe('get_layout_spec — bound colors resolve to token names (shared resolv
     expect(out.specs[0].spec.fillBoundVar).toBe('V:1');
   });
 
-  it('a subtree explicitVariableModes pin → mode-resolved value + mode_source:node', async () => {
+  it('a subtree explicitVariableModes pin produces an explicit effective value', async () => {
     const { run } = tokenHarness(boundDoc({ explicitVariableModes: { 'VC:1': 'm2' } } as Partial<RawSceneNode>));
     const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
-    expect(out.specs[0].spec.fillToken).toMatchObject({ token: 'color/brand/primary', hex: '#9980ff', mode: 'Dark', mode_source: 'node' });
+    expect(out.specs[0].spec.fillToken).toMatchObject({
+      token: 'color/brand/primary',
+      defaultHex: '#7b61f6',
+      effectiveHex: '#9980ff',
+      effectiveModeSource: 'explicit_node',
+      effectiveModes: { Brand: { mode: 'Dark', source: 'explicit_node', node_id: '1:1' } },
+    });
   });
 
   it('demand gate: a batch that binds no colour never fetches variables', async () => {

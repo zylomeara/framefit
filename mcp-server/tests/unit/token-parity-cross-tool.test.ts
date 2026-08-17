@@ -87,7 +87,7 @@ function harness(doc: RawSceneNode) {
 }
 
 describe('token parity across get_design_context and get_layout_spec', () => {
-  it('pin visible to both (on the requested node): same name, same hex, both mode_source:node', async () => {
+  it('pin visible to both (on the requested node): same name, same effective hex and explicit source', async () => {
     const h = harness(NUM(rootNode(true)));
     const dcFill = dcFillOf(await h.designContext());
     const lsTok = fillTokenOf(await h.layoutSpec());
@@ -95,12 +95,12 @@ describe('token parity across get_design_context and get_layout_spec', () => {
     expect(dcFill.token).toBe('bg/level 2');
     expect(lsTok.token).toBe('bg/level 2');           // the NAME is the portable artifact — always equal
     expect(dcFill.value).toBe(HEX_M2);
-    expect(lsTok.hex).toBe(HEX_M2);
-    expect(dcFill.mode_source).toBe('node');
-    expect(lsTok.mode_source).toBe('node');
+    expect(lsTok.effectiveHex).toBe(HEX_M2);
+    expect(dcFill.effective_mode_source).toBe('explicit_node');
+    expect(lsTok.effectiveModeSource).toBe('explicit_node');
   });
 
-  it('pin ABOVE the requested node: same name; design_context discovers it (node), get_layout_spec honestly defaults', async () => {
+  it('pin ABOVE the requested node: design_context confirms it while get_layout_spec stays unverifiable', async () => {
     const h = harness(NUM(rootNode(false)));
     const dcFill = dcFillOf(await h.designContext());
     const lsTok = fillTokenOf(await h.layoutSpec());
@@ -108,11 +108,12 @@ describe('token parity across get_design_context and get_layout_spec', () => {
     expect(lsTok.token).toBe('bg/level 2');
     // design_context pays for whole-file ancestor discovery and confirms the ancestor pin:
     expect(dcFill.value).toBe(HEX_M2);
-    expect(dcFill.mode_source).toBe('node');
+    expect(dcFill.effective_mode_source).toBe('ancestor_chain');
     // get_layout_spec folds the fetched subtree only — the pin above is invisible, and the
-    // honest answer is the default-mode value marked 'default', never a guessed 'node':
-    expect(lsTok.hex).toBe(HEX_M1);
-    expect(lsTok.mode_source).toBe('default');
+    // diagnostic default is retained, but never exposed as the effective rendered value:
+    expect(lsTok.defaultHex).toBe(HEX_M1);
+    expect(lsTok.effectiveHex).toBeNull();
+    expect(lsTok.effectiveModeSource).toBe('unverifiable');
   });
 });
 
@@ -155,7 +156,7 @@ describe('the naming ceiling: single-mode paint-level binding', () => {
     const h = singleModeHarness();
     const lsTok = fillTokenOf(await h.layoutSpec());
     expect(lsTok?.token).toBe('accent/solid');
-    expect(lsTok?.hex).toBe('#7b61f6');
+    expect(lsTok?.effectiveHex).toBe('#7b61f6');
     const dcText = await h.designContext();
     // The ceiling itself: no name in design_context's output for this shape TODAY. If a
     // design_context fix lands (its legacy resolveToken reads node-level boundVariables only),

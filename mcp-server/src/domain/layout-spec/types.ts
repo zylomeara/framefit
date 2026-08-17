@@ -5,6 +5,7 @@
 // SourceHint — a code address derived from a CSS-modules class. types.ts
 // imports it for PairSource; class-source.ts is a leaf module (imports nothing), so there is no cycle.
 import type { SourceHint } from './class-source.js';
+import type { EffectiveModeAxis, EffectiveModeSource } from '../design-context/resolved-token.js';
 
 export interface SpecRect { x: number; y: number; w: number; h: number }
 export interface Edges { top: number; right: number; bottom: number; left: number }
@@ -28,15 +29,16 @@ export interface SpecTypography {
 
 // Mode-resolved value of a color variable: the projector does NOT resolve on its own — it is filled
 // ONLY via ProjectorContext.resolveColorToken (the calling tool injects the real resolver, reusing
-// resolveBoundVariableInMode). hex is the value UNDER the node's active mode (not the library default).
+// resolveBoundVariableInMode). effectiveHex is null unless the node's rendered mode is evidenced;
+// defaultHex is diagnostic only.
 export interface ResolvedColorToken {
-  token: string;                 // variable name, e.g. 'text color/accent'
-  hex: string;                   // value UNDER the node's mode, '#rrggbb'
-  mode?: string;                 // the node's active mode (multi-mode only)
-  mode_dependent?: boolean;
-  mode_source?: 'node' | 'default';
-  all_modes?: Record<string, string>;   // mode name → hex (multi-mode, for mode-mismatch)
-  snapshot_default?: true;              // marker of a snapshot resolve (mode-blind default value) — gate B emits its own note, does not mis-attribute the pin
+  token: string;
+  defaultHex?: string;
+  effectiveHex: string | null;
+  effectiveModes?: Record<string, EffectiveModeAxis>;
+  effectiveModeSource?: EffectiveModeSource;
+  all_modes?: Record<string, string>;
+  snapshot_default?: true;
 }
 
 /** Slice of content identifiers for BOTH sides (projector textSnippet / dom-extractor text).

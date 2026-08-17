@@ -48,7 +48,7 @@ describe('icon-color: the direct child pair', () => {
   });
   it('token-bound fig vs a DOM literal on the same hex -> the tokenize-it fail', () => {
     const rows = diffPair(
-      spec([figIcon({ iconHex: '#242429', iconToken: { token: '--icon-neutral', hex: '#242429' } })]),
+      spec([figIcon({ iconHex: '#242429', iconToken: { token: '--icon-neutral', effectiveHex: '#242429' } })]),
       snap([domIcon({ iconColor: '#242429', iconColorToken: { literal: true } })]), { tolerancePx: 1 });
     const r = iconRows(rows)[0];
     expect(r?.status).toBe('fail');
@@ -56,7 +56,7 @@ describe('icon-color: the direct child pair', () => {
   });
   it('token on both sides, same hex -> review semantic-confirm (the text-color ladder)', () => {
     const rows = diffPair(
-      spec([figIcon({ iconHex: '#242429', iconToken: { token: '--icon-neutral', hex: '#242429' } })]),
+      spec([figIcon({ iconHex: '#242429', iconToken: { token: '--icon-neutral', effectiveHex: '#242429' } })]),
       snap([domIcon({ iconColor: '#242429', iconColorToken: { token: '--icon-neutral' } })]), { tolerancePx: 1 });
     const r = iconRows(rows)[0];
     expect(r?.status).toBe('review');

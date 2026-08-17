@@ -97,20 +97,22 @@ function harness(opts: {
   // Wrap resolveInMode to capture the stacks it receives, if a graph is provided.
   if (deps.variableGraph?.resolveInMode) {
     const inner = deps.variableGraph.resolveInMode.bind(deps.variableGraph);
-    deps.variableGraph = { ...deps.variableGraph, resolveInMode: (key, stack) => { stacksSeen.push(new Map(stack)); return inner(key, stack); } };
+    deps.variableGraph = { ...deps.variableGraph, resolveInMode: (key, stack, cc, evidence) => { stacksSeen.push(new Map(stack)); return inner(key, stack, cc, evidence); } };
   }
   registerGetDesignContextTool(server, deps);
   return { handler: (a: any): Promise<any> => call('get_design_context', a), depthsSeen, stacksSeen };
 }
 
 describe('get_design_context ancestor-mode glue (FR-2 / FR-3a)', () => {
-  it('resolves a LEAF stroke in the ABOVE-root ancestor mode (#8b6afb, mode_source:node)', async () => {
+  it('resolves a LEAF stroke with the above-root ancestor provenance', async () => {
     const h = harness();
     const res = await h.handler({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text color/accent', value: '#8b6afb', mode: 'Dusk', mode_dependent: true, mode_source: 'node',
+      token: 'text color/accent', default_value: '#a73afd', effective_rendered_value: '#8b6afb', value: '#8b6afb',
+      mode_dependent: true, effective_mode_source: 'ancestor_chain',
+      effective_modes: { Theme: { mode: 'Dusk', source: 'ancestor_chain', node_id: 'ANC' } },
     });
     // The ancestor chain WAS fetched at depth=1 (never depth=0).
     expect(h.depthsSeen).toContain(1);
@@ -123,7 +125,12 @@ describe('get_design_context ancestor-mode glue (FR-2 / FR-3a)', () => {
       // modesByName present → the cross-lib top collection is MULTI-mode, so needsAncestors()
       // triggers discovery (a single-mode top would render inline and skip the whole-file fetch).
       resolve: () => ({ value: '#8b6afb', name: 'lib/accent', modesByName: { Default: '#a73afd', Dusk: '#8b6afb' } }),
-      resolveInMode: () => ({ token: 'lib/accent', value: '#8b6afb', mode: 'Dusk', mode_dependent: true, mode_source: 'node', pinned_axis_used: false, unconfirmed_default_used: false }),
+      resolveInMode: () => ({
+        token: 'lib/accent', default_value: '#a73afd', effective_rendered_value: '#8b6afb', value: '#8b6afb',
+        mode_dependent: true, effective_mode_source: 'ancestor_chain',
+        effective_modes: { Theme: { mode: 'Dusk', source: 'ancestor_chain', node_id: 'PAGE' } },
+        pinned_axis_used: false, unconfirmed_default_used: false,
+      }),
     };
     // Local index does NOT know the external id → the cross-library path is taken.
     const h = harness({ leafBoundId: EXT,
@@ -131,7 +138,7 @@ describe('get_design_context ancestor-mode glue (FR-2 / FR-3a)', () => {
     const res = await h.handler({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
-    expect(body.globalVars[strokeRef]).toMatchObject({ token: 'lib/accent', value: '#8b6afb', mode_source: 'node' });
+    expect(body.globalVars[strokeRef]).toMatchObject({ token: 'lib/accent', value: '#8b6afb', effective_mode_source: 'ancestor_chain' });
     // Prove the ancestor mode reached the graph resolver: some captured stack had C→m2.
     expect(h.stacksSeen.some((s) => s.get('C') === 'm2')).toBe(true);
   });
@@ -170,7 +177,7 @@ describe('get_design_context: cross-lib discovery gated on multi-mode top (perf)
       variableGraph: {
         resolve: () => resolveResult,
         resolveInMode: () => (resolveResult?.modesByName
-          ? { token: resolveResult.name, value: resolveResult.value, mode: 'Dusk', mode_dependent: true as const, mode_source: 'node' as const, pinned_axis_used: false, unconfirmed_default_used: false }
+          ? { token: resolveResult.name, default_value: resolveResult.value, effective_rendered_value: resolveResult.value, value: resolveResult.value, mode_dependent: true as const, effective_mode_source: 'confirmed_default' as const, effective_modes: { Theme: { mode: 'Dusk', source: 'confirmed_default' as const } }, pinned_axis_used: false, unconfirmed_default_used: false }
           : undefined),
         ...(isMultiMode !== undefined ? { isMultiMode: () => isMultiMode } : {}),
       },
@@ -571,7 +578,8 @@ describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest 
     const body = JSON.parse(textOf(res.content[0]));
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text color/accent', value: '#a73afd', mode: 'Default', mode_dependent: true, mode_source: 'default',
+      token: 'text color/accent', default_value: '#a73afd', effective_rendered_value: null, value: null,
+      mode_dependent: true, effective_mode_source: 'unverifiable',
     });
     // Discovery genuinely deepened to the cap (4 -> 8) and then stopped — it never located ROOT.
     expect(depthsSeen).toEqual([4, 8]);
@@ -639,7 +647,8 @@ function collisionGraph(): { graph: ToolDeps['variableGraph']; stacksSeen: Map<s
   const stacksSeen: Map<string, string>[] = [];
   const graph: ToolDeps['variableGraph'] = {
     resolve: () => undefined,   // force the mode-dependent resolveInMode path (never the legacy snapshot form)
-    resolveInMode: (key, stack) => { stacksSeen.push(new Map(stack)); return resolveKeyInMode(g, key, stack); },
+    isMultiMode: () => true,
+    resolveInMode: (key, stack, cc, evidence) => { stacksSeen.push(new Map(stack)); return resolveKeyInMode(g, key, stack, cc, evidence); },
   };
   return { graph, stacksSeen };
 }
@@ -690,10 +699,10 @@ function collisionHarness(fullDoc: CNode, rootSubtree: CNode, rootId: string):
 }
 
 // The single mode-dependent cross-lib token in globalVars (dedup-flat across the whole tree).
-function resolvedAccent(body: any): { value: string } {
+function resolvedAccent(body: any): { value: string | null; effective_rendered_value: string | null } {
   const hit = Object.values(body.globalVars).find(
     (v: any) => v && typeof v === 'object' && v.token === 'text color/accent');
-  return hit as { value: string };
+  return hit as { value: string | null; effective_rendered_value: string | null };
 }
 function subBrandModes(stack: Map<string, string>): string[] {
   return [...stack].filter(([k]) => k.includes(SUBBRAND_KEY)).map(([, v]) => v);
@@ -720,7 +729,7 @@ describe('get_design_context nearest-wins BY LIBRARY KEY across the full chain',
     const h = collisionHarness(fullDoc, rootSubtree, 'ROOT');
     const res = await h.handler({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
-    expect(resolvedAccent(body).value).toBe('#8b6afb');   // NEAREST (ROOT/Solar), NOT ancestor Lunar #a73afd
+    expect(resolvedAccent(body).effective_rendered_value).toBe('#8b6afb');   // NEAREST (ROOT/Solar), NOT ancestor Lunar #a73afd
     // The graph saw exactly ONE sub-brand entry — the nearest node's — no farther collision survived.
     const merged = h.stacksSeen.find((s) => subBrandModes(s).length > 0)!;
     expect(subBrandModes(merged)).toEqual(['34:0']);
@@ -751,7 +760,7 @@ describe('get_design_context nearest-wins BY LIBRARY KEY across the full chain',
     const h = collisionHarness(fullDoc, rootSubtree, 'ROOT');
     const res = await h.handler({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
-    expect(resolvedAccent(body).value).toBe('#8b6afb');   // DEEPER (INNER/Solar), NOT shallower Lunar #a73afd
+    expect(resolvedAccent(body).effective_rendered_value).toBe('#8b6afb');   // DEEPER (INNER/Solar), NOT shallower Lunar #a73afd
     const merged = h.stacksSeen.find((s) => subBrandModes(s).length > 0)!;
     expect(subBrandModes(merged)).toEqual(['34:0']);
   });
@@ -827,7 +836,8 @@ describe('get_design_context: skipped discovery + downstream-alias multi-mode de
     // mode (#a73afd). Because discovery was SKIPPED, coverage is NOT complete → mode_source MUST stay
     // honest 'default', never a false 'node'.
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text color/accent', value: '#a73afd', mode: 'Dark', mode_dependent: true, mode_source: 'default',
+      token: 'text color/accent', default_value: '#a73afd', effective_rendered_value: null, value: null,
+      mode_dependent: true, effective_mode_source: 'unverifiable',
     });
     // Prove this is the SKIPPED-discovery path (needsAncestors=false): getDocumentRaw never fired.
     expect(docFetches).toEqual([]);

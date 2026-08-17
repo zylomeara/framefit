@@ -328,10 +328,18 @@ describe('get_design_context tool', () => {
       const tokenWithout = bodyWithout.globalVars[leafWithout.fill];
       const tokenWith = bodyWith.globalVars[leafWith.fill];
       expect(tokenWith).toMatchObject({
-        value: tokenWithout.value, mode: tokenWithout.mode, mode_source: tokenWithout.mode_source,
+        value: tokenWithout.value,
+        effective_rendered_value: tokenWithout.effective_rendered_value,
+        effective_modes: tokenWithout.effective_modes,
+        effective_mode_source: tokenWithout.effective_mode_source,
       });
       // Sanity: the mode really did resolve node-confirmed Dark (#8b6afb), not silently defaulted.
-      expect(tokenWithout).toMatchObject({ value: '#8b6afb', mode: 'Dark', mode_source: 'node' });
+      expect(tokenWithout).toMatchObject({
+        value: '#8b6afb',
+        effective_rendered_value: '#8b6afb',
+        effective_mode_source: 'ancestor_chain',
+        effective_modes: { Theme: { mode: 'Dark', source: 'ancestor_chain', node_id: '1:5' } },
+      });
     });
 
     // REGRESSION (Finding 2): the HONESTY REGRESSION test above uses an inert depth+1 node (a plain
@@ -404,9 +412,16 @@ describe('get_design_context tool', () => {
 
       // (a) LEAF's resolution is untouched by the never-rendered depth+1 alias.
       expect(tokenWith).toMatchObject({
-        value: tokenWithout.value, mode: tokenWithout.mode, mode_source: tokenWithout.mode_source,
+        value: tokenWithout.value,
+        effective_rendered_value: tokenWithout.effective_rendered_value,
+        effective_modes: tokenWithout.effective_modes,
+        effective_mode_source: tokenWithout.effective_mode_source,
       });
-      expect(tokenWithout).toMatchObject({ value: '#8b6afb', mode: 'Dark', mode_source: 'node' });
+      expect(tokenWithout).toMatchObject({
+        value: '#8b6afb',
+        effective_rendered_value: '#8b6afb',
+        effective_mode_source: 'ancestor_chain',
+      });
 
       // (b) the critical guard: a bound variable that exists ONLY on a depth+1 (never-rendered) node
       // must not trigger ancestor-discovery. Pre-fix, needsAncestors() walks the whole (unpruned)

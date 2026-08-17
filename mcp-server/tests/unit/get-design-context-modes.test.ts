@@ -74,12 +74,14 @@ const docNoExplicitMode = {
 };
 
 describe('get_design_context node-mode resolution', () => {
-  it('resolves a stroke token to the node-mode hex (#8b6afb) with mode_source=node', async () => {
+  it('resolves a stroke token with ancestor-chain evidence', async () => {
     const res = await run()({ file: 'abc', node_id: 'F', include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text color/accent', value: '#8b6afb', mode: 'Dusk', mode_source: 'node',
+      token: 'text color/accent', default_value: '#a73afd', effective_rendered_value: '#8b6afb', value: '#8b6afb',
+      effective_mode_source: 'ancestor_chain',
+      effective_modes: { Theme: { mode: 'Dusk', source: 'ancestor_chain', node_id: 'F' } },
     });
   });
 
@@ -95,13 +97,16 @@ describe('get_design_context node-mode resolution', () => {
   // mode_source:'default' means the shown value may NOT be the on-screen color.
   // The tool must attach a terse pointer to get_variables so the agent can look up the real
   // per-mode value for its sub-brand/theme instead of trusting the collection default.
-  it('attaches a hint pointing to get_variables when mode_source=default (unconfirmed)', async () => {
+  it('keeps the default diagnostic-only when mode evidence is incomplete', async () => {
     const res = await handlerFor(docNoExplicitMode, variables, 'F')({ file: 'abc', node_id: 'F', include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
     const resolved = body.globalVars[strokeRef];
-    expect(resolved.mode_source).toBe('default');
-    expect(resolved.hint).toBe("⚠️ mode-default — do not port the hex; see get_variables 'modes' for the per-mode value");
+    expect(resolved).toMatchObject({
+      default_value: '#a73afd', effective_rendered_value: null, value: null,
+      effective_mode_source: 'unverifiable',
+      hint: 'mode evidence incomplete - default_value is diagnostic only; do not use it as the rendered color',
+    });
   });
 
   // Option B pin: a single-mode LOCAL binding reverts to the legacy inline token NAME — no
@@ -143,21 +148,27 @@ const varsTwoAxes = { meta: {
 } };
 
 describe('get_design_context modes_applied', () => {
-  it('local cross-collection chain: the interned object carries modes_applied', async () => {
+  it('local cross-collection chain carries structured effective modes', async () => {
     const res = await handlerFor(docTwoAxes, varsTwoAxes, 'F')({ file: 'abc', node_id: 'F', include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'src/accent', value: '#000000', mode: 'Dark', mode_source: 'node',
-      modes_applied: { Theme: 'Dark (node)', Palette: 'Night (node)' },
+      token: 'src/accent', default_value: '#ffffff', effective_rendered_value: '#000000', value: '#000000',
+      effective_mode_source: 'ancestor_chain',
+      effective_modes: {
+        Theme: { mode: 'Dark', source: 'ancestor_chain', node_id: 'F' },
+        Palette: { mode: 'Night', source: 'ancestor_chain', node_id: 'F' },
+      },
     });
   });
 
-  it('single-axis token stays free of modes_applied (existing fixture, byte-identical)', async () => {
+  it('single-axis token carries its effective mode evidence', async () => {
     const res = await run()({ file: 'abc', node_id: 'F', include_component_docs: false });
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
-    expect(body.globalVars[strokeRef].modes_applied).toBeUndefined();
+    expect(body.globalVars[strokeRef].effective_modes).toEqual({
+      Theme: { mode: 'Dusk', source: 'ancestor_chain', node_id: 'F' },
+    });
   });
 
   it('graph path: resolveInMode modes_applied passes through, hint interplay intact', async () => {
@@ -173,9 +184,12 @@ describe('get_design_context modes_applied', () => {
       resolve: () => undefined,
       isMultiMode: () => true,
       resolveInMode: () => ({
-        token: 'text color/accent', value: '#8b6afb', mode: 'Light',
-        mode_dependent: true, mode_source: 'default',
-        modes_applied: { Theme: 'Light (default)', 'sub-brand': 'Solar (node)' },
+        token: 'text color/accent', default_value: '#a73afd', effective_rendered_value: null, value: null,
+        mode_dependent: true, effective_mode_source: 'unverifiable',
+        effective_modes: {
+          Theme: { mode: 'Light', source: 'unverifiable' },
+          'sub-brand': { mode: 'Solar', source: 'ancestor_chain', node_id: 'FRAME' },
+        },
         pinned_axis_used: true, unconfirmed_default_used: false,
       }),
     };
@@ -184,9 +198,9 @@ describe('get_design_context modes_applied', () => {
     const body = JSON.parse(res.content[0].text);
     const strokeRef = body.node.children[0].stroke;
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'text color/accent', value: '#8b6afb', mode_source: 'default',
-      modes_applied: { Theme: 'Light (default)', 'sub-brand': 'Solar (node)' },
-      hint: "⚠️ mode-default — do not port the hex; see get_variables 'modes' for the per-mode value",
+      token: 'text color/accent', default_value: '#a73afd', effective_rendered_value: null, value: null,
+      effective_mode_source: 'unverifiable',
+      hint: 'mode evidence incomplete - default_value is diagnostic only; do not use it as the rendered color',
     });
   });
 
@@ -209,7 +223,7 @@ describe('get_design_context modes_applied', () => {
     ]);
     const variableGraph: ToolDeps['variableGraph'] = {
       resolve: (key) => { const r = resolveKey(g, key); return r.value !== undefined ? { value: r.value, name: r.name } : undefined; },
-      resolveInMode: (key, stack, cc) => resolveKeyInMode(g, key, stack, cc),
+      resolveInMode: (key, stack, cc, evidence) => resolveKeyInMode(g, key, stack, cc, evidence),
       isMultiMode: (key) => keyIsMultiMode(g, key),
     };
     const crossLibId = 'VariableID:' + KA + '/1:1';
@@ -226,8 +240,9 @@ describe('get_design_context modes_applied', () => {
     // mode-aware interned object with default-mode hint — BEFORE the mirror fix this was a legacy inline
     // string (no token/mode_dependent/hint), so toMatchObject on these fields is the render-path lock.
     expect(body.globalVars[strokeRef]).toMatchObject({
-      token: 'surface/card', value: '#a73afd', mode_dependent: true, mode_source: 'default',
-      hint: "⚠️ mode-default — do not port the hex; see get_variables 'modes' for the per-mode value",
+      token: 'surface/card', default_value: '#a73afd', effective_rendered_value: null, value: null,
+      mode_dependent: true, effective_mode_source: 'unverifiable',
+      hint: 'mode evidence incomplete - default_value is diagnostic only; do not use it as the rendered color',
     });
   });
 });
@@ -307,7 +322,7 @@ describe('get_design_context mode_context', () => {
     const variableGraph: ToolDeps['variableGraph'] = {
       resolve: () => ({ value: '#000000' }),
       isMultiMode: () => false,
-      resolveInMode: () => ({ value: '#000000', mode_dependent: false, mode_source: 'default', pinned_axis_used: true, unconfirmed_default_used: false }),
+      resolveInMode: () => ({ value: '#000000', pinned_axis_used: true, unconfirmed_default_used: false }),
     };
     const res = await handlerFor(docCross, { meta: { variableCollections: {}, variables: {} } }, 'F', { variableGraph, libraryFiles: { has: async () => true } })({
       file: 'abc', node_id: 'F', include_component_docs: false });

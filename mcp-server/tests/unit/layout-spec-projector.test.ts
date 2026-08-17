@@ -642,10 +642,22 @@ describe('ResolvedColorToken (projector resolver hook)', () => {
   it('projector attaches a resolved fill token via the injected resolver', () => {
     const spec = buildLayoutSpec(node(), {
       resolveColorToken: (_n, key) => key === 'fills'
-        ? { token: 'neutral/bg/base', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' }
+        ? {
+            token: 'neutral/bg/base',
+            defaultHex: '#ffffff',
+            effectiveHex: '#ffffff',
+            effectiveModes: { Theme: { mode: 'Solar', source: 'explicit_node', node_id: '1:1' } },
+            effectiveModeSource: 'explicit_node',
+          }
         : undefined,
     });
-    expect(spec.fillToken).toEqual({ token: 'neutral/bg/base', hex: '#ffffff', mode: 'Solar', mode_dependent: true, mode_source: 'node' });
+    expect(spec.fillToken).toEqual({
+      token: 'neutral/bg/base',
+      defaultHex: '#ffffff',
+      effectiveHex: '#ffffff',
+      effectiveModes: { Theme: { mode: 'Solar', source: 'explicit_node', node_id: '1:1' } },
+      effectiveModeSource: 'explicit_node',
+    });
   });
 });
 
@@ -949,7 +961,7 @@ describe('solid fill tokenizes on a fill-style', () => {
   it('fill-style, no name resolver → fillToken carries (paint) sentinel (STATE unifies with NAME → branch C/D)', () => {
     const n = solidNode({ styles: { fill: 'S:brand' } });
     const spec = buildLayoutSpec(n, {});
-    expect(spec.fillToken).toEqual({ token: '(paint)', hex: '#ff0000' });
+    expect(spec.fillToken).toEqual({ token: '(paint)', effectiveHex: '#ff0000' });
   });
   it('G1: non-fill slot (text style) on a literal solid fill → NOT tokenized', () => {
     const n = solidNode({ styles: { text: 'S:body' } });
@@ -987,7 +999,7 @@ describe('stroke tokenizes on a stroke-style', () => {
     expect(spec.strokeToken?.token).toBe('(style: Border/Default)');
   });
   it('stroke-style, no name → strokeToken carries (paint) sentinel (STATE unifies with NAME)', () => {
-    expect(buildLayoutSpec(strokeNode({ styles: { stroke: 'S:line' } }), {}).strokeToken).toEqual({ token: '(paint)', hex: '#0000ff' });
+    expect(buildLayoutSpec(strokeNode({ styles: { stroke: 'S:line' } }), {}).strokeToken).toEqual({ token: '(paint)', effectiveHex: '#0000ff' });
   });
   it('G1: fill-slot style does NOT tokenize the stroke', () => {
     expect(buildLayoutSpec(strokeNode({ styles: { fill: 'S:brand' } }), {}).strokeToken).toBeUndefined();
@@ -1011,7 +1023,7 @@ describe('text color tokenizes on a fill-style (text-color = fill slot)', () => 
     expect(spec.text?.colorToken?.token).toBe('(style: Text/Primary)');
   });
   it('text fill-style, no name → colorToken carries (paint) sentinel (STATE unifies with NAME)', () => {
-    expect(buildLayoutSpec(textNode({ styles: { fill: 'S:ink' } }), {}).text?.colorToken).toEqual({ token: '(paint)', hex: '#000000' });
+    expect(buildLayoutSpec(textNode({ styles: { fill: 'S:ink' } }), {}).text?.colorToken).toEqual({ token: '(paint)', effectiveHex: '#000000' });
   });
   it('G1: typography (text-slot) style does NOT tokenize the color', () => {
     const spec = buildLayoutSpec(textNode({ styles: { text: 'S:heading' } }), {});
@@ -1097,14 +1109,14 @@ describe('node-level boundVariables → *BoundVar projected', () => {
 // colorVerdict emitted FAIL over correct code. Same defect was fixed for gradient stops
 // (figmaGradient paintOpacity) and never carried to the solid meet points.
 describe('paint opacity is multiplied into the resolved token hex', () => {
-  const resolver = () => ({ token: 'brand/red', hex: '#ff0000', all_modes: { Solar: '#ff0000', Lunar: '#00ff00' } });
+  const resolver = () => ({ token: 'brand/red', effectiveHex: '#ff0000', all_modes: { Solar: '#ff0000', Lunar: '#00ff00' } });
   it('fill: opacity 0.5 → fillToken.hex carries the alpha octet; all_modes multiplied too; fillHex (raw) already has it', () => {
     const spec = buildLayoutSpec({
       id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
       fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: 0.5, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:2' } } }],
     } as RawSceneNode, { resolveColorToken: resolver });
     expect(spec.fillHex).toBe('#ff000080');
-    expect(spec.fillToken?.hex).toBe('#ff000080');
+    expect(spec.fillToken?.effectiveHex).toBe('#ff000080');
     expect(spec.fillToken?.all_modes).toEqual({ Solar: '#ff000080', Lunar: '#00ff0080' });
   });
   it('CONTROL fill: opacity 1 (or absent) → resolved hex unchanged, no alpha octet appended', () => {
@@ -1112,20 +1124,20 @@ describe('paint opacity is multiplied into the resolved token hex', () => {
       id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
       fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:1:2' } } }],
     } as RawSceneNode, { resolveColorToken: resolver });
-    expect(spec.fillToken?.hex).toBe('#ff0000');
+    expect(spec.fillToken?.effectiveHex).toBe('#ff0000');
     expect(spec.fillToken?.all_modes).toEqual({ Solar: '#ff0000', Lunar: '#00ff00' });
   });
   it('stroke and TEXT color: same multiplication at their meet points', () => {
     const spec = buildLayoutSpec({
       id: '1:1', name: 'card', type: 'FRAME', absoluteBoundingBox: box(0, 0, 100, 40),
       strokes: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: 0.25, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:3:4' } } }],
-    } as RawSceneNode, { resolveColorToken: () => ({ token: 'stroke/x', hex: '#ff0000' }) });
-    expect(spec.strokeToken?.hex).toBe('#ff000040');
+    } as RawSceneNode, { resolveColorToken: () => ({ token: 'stroke/x', effectiveHex: '#ff0000' }) });
+    expect(spec.strokeToken?.effectiveHex).toBe('#ff000040');
     const text = buildLayoutSpec({
       id: '2:1', name: 't', type: 'TEXT', absoluteBoundingBox: box(0, 0, 100, 20),
       characters: 'x', style: { fontSize: 14 },
       fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 0.5, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:5:6' } } }],
-    } as RawSceneNode, { resolveColorToken: () => ({ token: 'text/x', hex: '#000000' }) });
-    expect(text.text?.colorToken?.hex).toBe('#00000080');
+    } as RawSceneNode, { resolveColorToken: () => ({ token: 'text/x', effectiveHex: '#000000' }) });
+    expect(text.text?.colorToken?.effectiveHex).toBe('#00000080');
   });
 });

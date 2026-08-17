@@ -10,7 +10,10 @@ const boundNode = (aliasId: string): RawSceneNode => ({
   id: '1:1', name: 'n', type: 'FRAME',
   fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: aliasId } } }],
 } as RawSceneNode);
-const stacks = { stackFor: () => new Map<string, string>(), graphStackFor: () => new Map<string, string>(), coverageComplete: false };
+const stacks = {
+  stackFor: () => new Map<string, string>(), graphStackFor: () => new Map<string, string>(),
+  exactEvidenceFor: () => new Map(), graphEvidenceFor: () => new Map(), coverageComplete: false,
+};
 
 describe('empty-name producers fall back to the library key', () => {
   it('snapshot tail: name "" (NOT NULL DEFAULT) → token is the libKey, never empty', () => {
@@ -24,7 +27,7 @@ describe('empty-name producers fall back to the library key', () => {
     const resolve = makeColorTokenResolver({ ...stacks,
       variableGraph: {
         resolve: () => undefined,
-        resolveInMode: () => ({ token: '', value: '#123456', mode_dependent: false, mode_source: 'default' as const, pinned_axis_used: false, unconfirmed_default_used: false }),
+        resolveInMode: () => ({ token: '', value: '#123456', pinned_axis_used: false, unconfirmed_default_used: false }),
       } });
     const t = resolve(boundNode(`VariableID:${LIBKEY}/1:2`), 'fills');
     expect(t?.token).toBe(LIBKEY);

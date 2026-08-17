@@ -5,13 +5,13 @@
 // snapHits ⊆ graph-misses invariant (prefetchSnapshotHits below) — so the pieces live in one
 // module and a second consumer cannot get half of them right. The two tools feed it DIFFERENT
 // mode stacks (compare discovers ancestors; get_layout_spec folds the fetched subtree only,
-// coverageComplete=false) — same resolver, same NAME, but mode_source may honestly differ:
+// coverageComplete=false) — same resolver, same name, but effective evidence may honestly differ:
 // that asymmetry is documented at both tools and pinned by a cross-tool fixture.
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 import { colorAliasId } from '../../../domain/figma-raw.js';
 import type { ResolvedColorToken } from '../../../domain/layout-spec/types.js';
 import { resolveBoundVariableInMode, resolveAllModes, type VariableIndex } from '../../../domain/variables.js';
-import { collectExternalPaintKeys } from '../../../domain/mode-resolve.js';
+import { collectExternalPaintKeys, type ModeEvidenceStack } from '../../../domain/mode-resolve.js';
 import { extractLibraryKey } from '../../../domain/variable-snapshot.js';
 import type { ToolDeps } from './get-comments-tool.js';
 
@@ -30,6 +30,8 @@ export interface ColorResolverEnv {
   stackFor(n: RawSceneNode): Map<string, string>;
   /** library-key-folded stack for the graph resolver (buildModeByCollection semantics). */
   graphStackFor(n: RawSceneNode): Map<string, string>;
+  exactEvidenceFor(n: RawSceneNode): ModeEvidenceStack;
+  graphEvidenceFor(n: RawSceneNode): ModeEvidenceStack;
   coverageComplete: boolean;
   /** get_layout_spec: drop all_modes from the emitted token — it is compare's confirm/mode-mismatch
    * payload, and the navigation response runs ~13% under its 1MB budget without it. */
@@ -45,21 +47,26 @@ export function makeColorTokenResolver(env: ColorResolverEnv) {
     if (!aliasId) return undefined;
     if (env.variableIndex) {
       const bv = { [key]: { type: 'VARIABLE_ALIAS' as const, id: aliasId } };
-      const r = resolveBoundVariableInMode(bv, key, env.variableIndex, env.stackFor(n), env.coverageComplete);
+      const r = resolveBoundVariableInMode(
+        bv, key, env.variableIndex, env.stackFor(n), env.coverageComplete, env.exactEvidenceFor(n),
+      );
       // Honest degradation: need a resolved hex string AND a token name to compare against —
       // a nameless cross-lib snapshot value (ResolvedToken.token undefined) can't anchor a
       // token row, so surface no token (row → unknown) rather than an empty-named one.
-      if (r && typeof r.value === 'string' && r.token !== undefined) {
+      if (r && r.token !== undefined && (typeof r.value === 'string' || r.value === null)) {
         const v = env.variableIndex.byId.get(aliasId);
         const all = !env.omitAllModes && v ? resolveAllModes(v, env.variableIndex) : null;
         const all_modes = all
           ? Object.fromEntries(Object.entries(all.modes).filter(([, x]) => typeof x === 'string')) as Record<string, string>
           : undefined;
         return {
-          token: r.token, hex: r.value,
-          ...(r.mode ? { mode: r.mode } : {}),
-          ...(r.mode_dependent ? { mode_dependent: true } : {}),
-          ...(r.mode_source ? { mode_source: r.mode_source } : {}),
+          token: r.token,
+          ...(typeof r.default_value === 'string' ? { defaultHex: r.default_value } : {}),
+          effectiveHex: typeof r.effective_rendered_value === 'string'
+            ? r.effective_rendered_value
+            : r.effective_rendered_value === null ? null : r.value,
+          ...(r.effective_modes ? { effectiveModes: r.effective_modes } : {}),
+          ...(r.effective_mode_source ? { effectiveModeSource: r.effective_mode_source } : {}),
           ...(all_modes ? { all_modes } : {}),
         };
       }
@@ -73,17 +80,22 @@ export function makeColorTokenResolver(env: ColorResolverEnv) {
     // (A2: stays an honest unknown, never silently retried against the wrong resolver).
     const libKey = extractLibraryKey(aliasId);
     if (libKey === null) return undefined;
-    const g = env.variableGraph?.resolveInMode?.(libKey, env.graphStackFor(n), env.coverageComplete);
-    if (g && typeof g.value === 'string') {
+    const g = env.variableGraph?.resolveInMode?.(
+      libKey, env.graphStackFor(n), env.coverageComplete, env.graphEvidenceFor(n),
+    );
+    if (g && (typeof g.value === 'string' || g.value === null)) {
       const all = !env.omitAllModes ? env.variableGraph?.resolve(libKey)?.modesByName : undefined; // all_modes symmetry with the local-index path
       return {
         // `||`, not `??`: the graph/snapshot name columns are NOT NULL DEFAULT '' — an empty
         // string is the real "unnamed" shape, and an empty-named token degrades confirm_token
         // grouping (verification keys on truthy r.token).
-        token: g.token || libKey, hex: g.value,
-        ...(g.mode ? { mode: g.mode } : {}),
-        ...(g.mode_dependent ? { mode_dependent: true } : {}),
-        mode_source: g.mode_source,
+        token: g.token || libKey,
+        ...(typeof g.default_value === 'string' ? { defaultHex: g.default_value } : {}),
+        effectiveHex: typeof g.effective_rendered_value === 'string'
+          ? g.effective_rendered_value
+          : g.effective_rendered_value === null ? null : g.value,
+        ...(g.effective_modes ? { effectiveModes: g.effective_modes } : {}),
+        ...(g.effective_mode_source ? { effectiveModeSource: g.effective_mode_source } : {}),
         ...(all ? { all_modes: all } : {}),
       };
     }
@@ -92,7 +104,13 @@ export function makeColorTokenResolver(env: ColorResolverEnv) {
       // snapshot_default: mode-BLIND (the plugin upload has no ancestor-mode context) — gate
       // B in diff.ts must attribute this to "resolved from a snapshot", never mis-attribute
       // it to "an unconfirmed ancestor pin".
-      return { token: s.name || libKey, hex: s.value, mode_dependent: true, mode_source: 'default', snapshot_default: true }; // `||`: name is '' when unnamed, never null
+      return {
+        token: s.name || libKey,
+        defaultHex: s.value,
+        effectiveHex: null,
+        effectiveModeSource: 'unverifiable',
+        snapshot_default: true,
+      }; // `||`: name is '' when unnamed, never null
     }
     return undefined; // honest unknown — neither index, graph, nor snapshot could resolve this alias
   };
