@@ -15,6 +15,7 @@
 // with one appended sentence naming what was attempted - the agent must not re-dial a
 // proven-dead road blind.
 import { describe, it, expect, vi } from 'vitest';
+import { Jimp } from 'jimp';
 import { registerGetScreenshotTool } from '../../src/adapters/driving/tools/get-screenshot-tool.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
@@ -177,6 +178,24 @@ describe('step 2: the scale fallback after a double transient failure', () => {
       const meta = JSON.parse(res.content[1].text as string);
       expect(meta).toMatchObject({ scale: 1, requested_scale: 2 });
       expect(meta.scale_note).toMatch(/failed twice/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a probe download after a fallback stays outside the getImages retry ladder', async () => {
+    const png = await new Jimp({ width: 3, height: 3, color: 0xefeff5ff }).getBuffer('image/png');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(png as unknown as BodyInit, { status: 200 })));
+    try {
+      const f = failing([netErr(), netErr()]);
+      const res = await harness(f.fn)({
+        file: 'abc', node_id: '1:1', format: 'png', scale: 2, return: 'inline',
+        probe: { x: 0.5, y: 0.5, space: 'normalized', radius: 0, tolerance: 2 },
+      });
+      expect(f.scales).toEqual([2, 2, 1]);
+      expect(f.spy).toHaveBeenCalledTimes(3);
+      expect(res.content).toHaveLength(2);
+      expect(JSON.parse(res.content[1].text as string).color_probe.status).toBe('ok');
     } finally {
       vi.unstubAllGlobals();
     }
