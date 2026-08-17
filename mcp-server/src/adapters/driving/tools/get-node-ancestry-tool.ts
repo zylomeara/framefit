@@ -140,7 +140,7 @@ export function registerGetNodeAncestryTool(server: McpServer, deps: ToolDeps): 
     {
       description: 'Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). ' +
         'Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read ' +
-        'the ancestor children. bbox-guided, id-confirmed, <=12 light REST calls - never fetches the whole ' +
+        'the ancestor children. bbox-guided, id-confirmed, <=16 light REST calls - never fetches the whole ' +
         'file. query highlights matching names in scope.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
@@ -161,7 +161,30 @@ export function registerGetNodeAncestryTool(server: McpServer, deps: ToolDeps): 
           breadcrumbs,
           confirmed: result.confirmed,
         };
-        if (!result.confirmed) out.ambiguous = true;
+        if (!result.confirmed) {
+          out.ambiguous = true;
+          const confirmedPrefix = breadcrumbs.map(({ id: breadcrumbId, name, type, w, h }) => ({
+            id: breadcrumbId,
+            name,
+            type,
+            ...(w === undefined ? {} : { w }),
+            ...(h === undefined ? {} : { h }),
+          }));
+          const tail = confirmedPrefix[confirmedPrefix.length - 1];
+          out.confirmed_prefix = confirmedPrefix;
+          out.next_call = {
+            tool: 'find_nodes',
+            arguments: {
+              file: parsed.value,
+              ...(tail ? { node_id: tail.id } : {}),
+              query: result.target.name,
+              type: result.target.type,
+              depth: 10,
+              limit: 20,
+            },
+            reason: 'target membership below the confirmed prefix is not proven',
+          };
+        }
         if (result.note) out.note = result.note;
         if (args.query !== undefined) out.query_hits = queryHits(scope, args.query);
         out.callsUsed = result.callsUsed;
