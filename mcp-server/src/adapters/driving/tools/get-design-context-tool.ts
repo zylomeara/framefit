@@ -31,6 +31,7 @@ import type { RawSceneNode, RawPaint, RawVariableAlias, PublishedComponentMeta }
 import type { DesignContext, ComponentDoc, SimplifiedNode } from '../../../domain/design-context/types.js';
 import { collectInstanceKeys, indexSnippetsByNodeId, buildComponentDocs, type CodeConnectSnippet } from '../../../domain/code-connect-enrich.js';
 import { fitToBudget } from '../../../domain/design-context/auto-degrade.js';
+import { findComponentInstances } from '../../../application/find-component-instances.js';
 
 // CSS var() name segment: escape chars that would prematurely close the function or
 // be read as the fallback separator. Figma names are free-form (e.g. "button(default)").
@@ -667,6 +668,43 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
 
         const { node, globalVars } = simplify(doc, { resolveToken, resolveSnapshot, resolveTokenMode, truncatedChildCounts: boundaryChildCounts });
 
+        // A component definition with no rendered children is not useful design context by itself.
+        // Its root shape is authoritative only after simplify (which removes hidden children and
+        // carries the boundary truncation signal); a best-effort bounded scan may then point to a
+        // concrete INSTANCE without ever replacing the core response.
+        let concreteInstances: DesignContext['concrete_instances'];
+        let resolutionHints: DesignContext['resolution_hints'];
+        const rootWasTruncated = (doc as RawSceneNode & { truncated?: boolean }).truncated === true;
+        const isEmptyComponentDefinition = node.type === 'COMPONENT'
+          && !node.truncated && !rootWasTruncated && !(node.children?.length);
+        if (isEmptyComponentDefinition) {
+          resolutionHints = {
+            reason: 'definition_has_no_rendered_children',
+            next_call: {
+              tool: 'find_nodes',
+              arguments: { file: parsed.value, query: node.name, type: 'INSTANCE', depth: 8, limit: 20 },
+            },
+          };
+          const instanceApi = deps.buildApi(token, Math.max(1_000, Math.min(remaining(), 90_000)), deadlineAt);
+          const discovered = await findComponentInstances(instanceApi, parsed.value, node.id, { deadlineAt });
+          if (discovered.candidates.length) concreteInstances = discovered.candidates;
+          if (!discovered.partial && discovered.candidates.length === 1) {
+            resolutionHints = {
+              reason: 'definition_has_no_rendered_children',
+              next_call: {
+                tool: 'get_design_context',
+                arguments: { file: parsed.value, node_id: discovered.candidates[0].node_id, depth: args.depth },
+              },
+            };
+          }
+          if (discovered.partial) {
+            deps.logger.info(
+              { file_key_prefix: parsed.value.slice(0, 8), node_id: id, candidates: discovered.candidates.length },
+              'design_context.component_instance_scan_degraded',
+            );
+          }
+        }
+
         progress('component docs / code connect', 75);
         // Component-instance enrichment, shared by Code Connect snippets and component docs:
         // both need getComponent(key), so resolve each distinct key once. Best-effort — never
@@ -795,7 +833,7 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
         // the measured object (context / noShot / noDocs / lean), so no stub reserve is needed.
         const budget = deps.maxResultChars ?? 40000;
         const sizeOf = (n: typeof node): number =>
-          serializeForDelivery({ file: parsed.value, node: n, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(componentDocs ? { components: componentDocs } : {}), ...(screenshot ? { screenshot } : {}), depth: 0, degraded: false }).length;
+          serializeForDelivery({ file: parsed.value, node: n, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(componentDocs ? { components: componentDocs } : {}), ...(screenshot ? { screenshot } : {}), ...(concreteInstances ? { concrete_instances: concreteInstances } : {}), ...(resolutionHints ? { resolution_hints: resolutionHints } : {}), depth: 0, degraded: false }).length;
 
         const fit = fitToBudget(node, args.depth, budget, sizeOf, (out, count) => { out.childCount = count; });
 
@@ -842,6 +880,8 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
           ...(codeConnect ? { codeConnect } : {}),
           ...(componentDocs ? { components: componentDocs } : {}),
           ...(screenshot ? { screenshot } : {}),
+          ...(concreteInstances ? { concrete_instances: concreteInstances } : {}),
+          ...(resolutionHints ? { resolution_hints: resolutionHints } : {}),
           depth: fit.depth, degraded: fit.degraded,
           ...(modeContext ? { mode_context: modeContext } : {}),
           ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
@@ -854,16 +894,18 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
           // node can still be marked truncated:true after shedding enrichment, and without the hint
           // here the caller would lose the pointer to it.
           if (screenshot) {
-            const noShot = { file: parsed.value, node: fit.node, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(componentDocs ? { components: componentDocs } : {}), depth: fit.depth, degraded: true, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
+            const noShot = { file: parsed.value, node: fit.node, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(componentDocs ? { components: componentDocs } : {}), ...(concreteInstances ? { concrete_instances: concreteInstances } : {}), ...(resolutionHints ? { resolution_hints: resolutionHints } : {}), depth: fit.depth, degraded: true, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
             if (serializeForDelivery(noShot).length <= budget) return jsonResult(noShot);
           }
           if (componentDocs) {
-            const noDocs = { file: parsed.value, node: fit.node, globalVars, ...(codeConnect ? { codeConnect } : {}), depth: fit.depth, degraded: true, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
+            const noDocs = { file: parsed.value, node: fit.node, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(concreteInstances ? { concrete_instances: concreteInstances } : {}), ...(resolutionHints ? { resolution_hints: resolutionHints } : {}), depth: fit.depth, degraded: true, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
             if (serializeForDelivery(noDocs).length <= budget) return jsonResult(noDocs);
           }
-          const lean = { file: parsed.value, node: fit.node, depth: fit.depth, degraded: true, globalVars, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
+          const lean = { file: parsed.value, node: fit.node, depth: fit.depth, degraded: true, globalVars, ...(concreteInstances ? { concrete_instances: concreteInstances } : {}), ...(resolutionHints ? { resolution_hints: resolutionHints } : {}), ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
           if (serializeForDelivery(lean).length <= budget) return jsonResult(lean);
           return jsonResult({ file: parsed.value, node: fit.node, depth: fit.depth, degraded: true,
+            ...(concreteInstances ? { concrete_instances: concreteInstances } : {}),
+            ...(resolutionHints ? { resolution_hints: resolutionHints } : {}),
             ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
             note: 'Result exceeded the size budget even at minimum depth; globalVars omitted — style refs (fill_0, text_0, …) are unresolved. Request a deeper child node directly for full detail.' });
         }
