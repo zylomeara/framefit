@@ -4,9 +4,11 @@
 // shown for each collection's default mode; one alias hop is resolved.
 import type { RawVariablesResponse, RawVariable, RawVariableAlias, RawVariableValue, RawColor, RawSceneNode } from './figma-raw.js';
 import { rgbaToHex } from './design-context/color.js';
-import type { ModeStack } from './mode-resolve.js';
-import { effectiveMode } from './mode-resolve.js';
-import { recordApplied, formatModesApplied, type AppliedMode, type ResolvedToken } from './design-context/resolved-token.js';
+import type { ModeEvidenceStack, ModeStack } from './mode-resolve.js';
+import {
+  recordApplied, formatEffectiveModes, compositeModeSource,
+  type AppliedMode, type ResolvedToken,
+} from './design-context/resolved-token.js';
 
 export interface VariableIndex {
   byId: Map<string, RawVariable>;
@@ -82,14 +84,13 @@ export function resolveBoundVariable(
 
 /** Resolve a node's LOCAL bound variable to a ResolvedToken in the node's effective mode.
  * null when the binding's variable is not in the local index (try the cross-library path).
- * `coverageComplete` (whether the node's full ancestor chain was discovered) drives the
- * honest-label logic: a multi-mode collection that took its default because it was ABSENT
- * from the stack genuinely renders that default on screen when coverage is complete, so the
- * composite equals on-screen → mode_source:'node'; under incomplete coverage an unseen ancestor
- * could override it → 'default'. */
+ * `coverageComplete` and per-axis evidence determine whether a multi-mode candidate can be
+ * exposed as the rendered value. An incomplete or invalid axis retains a diagnostic default but
+ * emits null for both effective_rendered_value and its value alias. */
 export function resolveBoundVariableInMode(
   boundVariables: Record<string, RawVariableAlias | RawVariableAlias[]> | undefined,
   key: string, idx: VariableIndex, stack: ModeStack, coverageComplete?: boolean,
+  evidence?: ModeEvidenceStack,
   stats?: { pinnedAxisUsed: boolean; unconfirmedDefaultUsed: boolean },
 ): ResolvedToken | null {
   const id = boundVariableId(boundVariables, key);
@@ -98,55 +99,52 @@ export function resolveBoundVariableInMode(
   if (!v) return null;
   const modes = idx.collectionModes.get(v.variableCollectionId) ?? [];
   const multi = modes.length > 1;
-  const eff = effectiveMode(stack, v.variableCollectionId, idx.defaultModeByCollection.get(v.variableCollectionId));
-  const modeId = eff?.modeId ?? idx.defaultModeByCollection.get(v.variableCollectionId) ?? Object.keys(v.valuesByMode)[0];
-  // Track whether resolving the value needed an alias hop that fell back to a target's default
-  // mode (on a multi-mode target collection). If so, the value shown is a default-mode value and
-  // mode_source must be honest ('default') unless coverage is complete (see below). `invalidExplicit`
-  // (a DOWNSTREAM hop whose target had a stack entry it could not validly apply) mirrors the graph
-  // path's `track.invalidExplicit` and is never rescued to 'node'.
-  const track = { fellBack: false, invalidExplicit: false, applied: [] as AppliedMode[] };
+  const stackMode = stack.get(v.variableCollectionId);
+  const validStackMode = stackMode !== undefined && modes.some((mode) => mode.modeId === stackMode)
+    ? stackMode
+    : undefined;
+  const modeId = validStackMode ?? idx.defaultModeByCollection.get(v.variableCollectionId) ?? Object.keys(v.valuesByMode)[0];
+  // Track every multi-mode axis encountered by the alias walk. A downstream invalid explicit
+  // selection is never rescued by otherwise complete ancestor coverage.
+  const track: LocalModeTrack = {
+    fellBack: false, invalidExplicit: false, applied: [], pinnedAxisUsed: false,
+    coverageComplete, evidence,
+  };
+  if (validStackMode !== undefined) track.pinnedAxisUsed = true;
   if (multi) recordApplied(track.applied, {
     key: v.variableCollectionId,
-    collection: idx.collectionName.get(v.variableCollectionId) ?? '',
-    mode: modes.find((m) => m.modeId === modeId)?.name ?? '',
-    source: eff?.source === 'node' && modes.some((m) => m.modeId === eff.modeId) ? 'node' : 'default',
+    collection: idx.collectionName.get(v.variableCollectionId) ?? v.variableCollectionId,
+    mode: modes.find((m) => m.modeId === modeId)?.name ?? modeId,
+    ...localAxisEvidence(v.variableCollectionId, modeId, modes, stack, coverageComplete, evidence),
   });
   const value = resolveInMode(v, modeId, idx, 0, track, stack);
   if (value === null) return null;
-  const modeName = modes.find((m) => m.modeId === modeId)?.name;
-  // `usedMultiModeDefault` = a multi-mode collection took its default rather than a
-  // stack-confirmed mode (a hop fell back — track.fellBack — OR the TOP collection was absent from
-  // the stack — eff.source !== 'node'). No multi-mode default → 'node' regardless of coverage.
-  // Some multi-mode default under COMPLETE coverage → the absent collection genuinely defaults on
-  // screen → 'node'; under incomplete coverage → 'default'. Residual: an explicit mode that is
-  // present but NOT a real mode of the collection means the value fell back to the default — never
-  // trust that as 'node', even under complete coverage. This holds for the TOP collection
-  // (effectiveMode does not validate) AND for any DOWNSTREAM hop (track.invalidExplicit).
-  const invalidExplicit = (eff?.source === 'node' && !modes.some((m) => m.modeId === eff.modeId)) || track.invalidExplicit;
-  const usedMultiModeDefault = track.fellBack || (multi && eff?.source !== 'node');
   // mode_context (spec (1)): out-of-band pin-consumption signal — set unconditionally (NOT gated
   // on `multi`: a single-mode top can consume a pin on a downstream hop) and never placed on the
   // returned token (globalVars dedup keys on JSON.stringify).
   if (stats) {
-    if (track.applied.some((a) => a.source === 'node')) stats.pinnedAxisUsed = true;
+    if (track.pinnedAxisUsed || track.applied?.some((a) => a.source === 'explicit_node' || a.source === 'ancestor_chain')) {
+      stats.pinnedAxisUsed = true;
+    }
     // mode_context (R1): some multi-mode axis (top OR downstream hop — incl. under a single-mode
     // top) took its default WITHOUT confirmed coverage, or an invalid explicit pin was skipped.
     // "No pins anywhere" is then NOT positive knowledge for this chain — the marker must not fire.
-    if (invalidExplicit || (usedMultiModeDefault && !coverageComplete)) stats.unconfirmedDefaultUsed = true;
+    if (track.applied?.some((a) => a.source === 'unverifiable')) stats.unconfirmedDefaultUsed = true;
   }
-  const mode_source: 'node' | 'default' =
-    !invalidExplicit && (!usedMultiModeDefault || coverageComplete) ? 'node' : 'default';
-  const applied = formatModesApplied(track.applied);
-  // Emit mode fields when the collection is multi-mode OR a DOWNSTREAM multi-mode hop fell back
-  // (`track.fellBack`): a single-mode-top SEMANTIC token that aliases a multi-mode PRIMITIVE is
-  // genuinely mode-dependent (the downstream palette repaints it by theme), so the returned token
-  // must carry mode_dependent/mode_source — otherwise colorVerdict group B cannot gate it and a
-  // legitimate default-mode color false-red's as a group-C hex divergence (Finding-1). mode_source
-  // is already computed honestly above (default under incomplete coverage, node when complete).
+  const effectiveModes = formatEffectiveModes(track.applied);
+  if (!effectiveModes) return { token: v.name, value };
+  const defaultResolved = resolveDefault(v, idx);
+  if ('aliasOf' in defaultResolved) return null;
+  const effectiveModeSource = compositeModeSource(effectiveModes);
+  const effectiveRenderedValue = effectiveModeSource === 'unverifiable' ? null : value;
   return {
-    token: v.name, value,
-    ...((multi || track.fellBack) ? { mode: modeName, mode_dependent: true, mode_source, ...(applied ? { modes_applied: applied } : {}) } : {}),
+    token: v.name,
+    default_value: defaultResolved.value,
+    effective_rendered_value: effectiveRenderedValue,
+    value: effectiveRenderedValue,
+    effective_modes: effectiveModes,
+    effective_mode_source: effectiveModeSource,
+    mode_dependent: true,
   };
 }
 
@@ -197,16 +195,43 @@ function pickTargetModeLocal(
   return { modeId: dm ?? Object.keys(target.valuesByMode)[0], fellBack: multi, invalidExplicit, source: 'default' };
 }
 
+function localAxisEvidence(
+  collectionId: string,
+  modeId: string,
+  modes: { modeId: string; name: string }[],
+  stack: ModeStack,
+  coverageComplete: boolean | undefined,
+  evidence: ModeEvidenceStack | undefined,
+): Pick<AppliedMode, 'source' | 'nodeId'> {
+  const stackMode = stack.get(collectionId);
+  if (stackMode !== undefined) {
+    if (!modes.some((mode) => mode.modeId === stackMode)) return { source: 'unverifiable' };
+    const item = evidence?.get(collectionId);
+    if (!item || item.modeId !== modeId) return { source: 'unverifiable' };
+    return { source: item.source, nodeId: item.nodeId };
+  }
+  return { source: coverageComplete ? 'confirmed_default' : 'unverifiable' };
+}
+
+type LocalModeTrack = {
+  fellBack: boolean;
+  invalidExplicit?: boolean;
+  applied?: AppliedMode[];
+  pinnedAxisUsed?: boolean;
+  coverageComplete?: boolean;
+  evidence?: ModeEvidenceStack;
+};
+
 /** Resolve a single mode's value to a scalar/hex, following within-file aliases. At each
  * cross-collection alias hop the target's mode is RE-PICKED for its own collection from `stack`
  * (when provided) — symmetric with the graph path's `resolveNodeInMode` — so a downstream
  * collection validly pinned to a non-default mode resolves to its on-screen value rather than the
  * target default. `stack`/`track` are optional so best-effort callers (resolveAllModes, no stack)
  * keep their prior default-on-miss behavior; `track.fellBack`/`track.invalidExplicit` let the caller
- * keep mode_source honest. */
+ * keep rendered-value evidence honest. */
 export function resolveInMode(
   v: RawVariable, modeId: string, idx: VariableIndex, hops = 0,
-  track?: { fellBack: boolean; invalidExplicit?: boolean; applied?: AppliedMode[] }, stack?: ModeStack,
+  track?: LocalModeTrack, stack?: ModeStack,
 ): string | number | boolean | null {
   const raw = v.valuesByMode[modeId] ?? v.valuesByMode[idx.defaultModeByCollection.get(v.variableCollectionId) ?? ''];
   if (raw === undefined) return null;
@@ -218,13 +243,17 @@ export function resolveInMode(
     if (track) {
       if (pick.fellBack) track.fellBack = true;
       if (pick.invalidExplicit) track.invalidExplicit = true;
+      if (pick.source === 'node') track.pinnedAxisUsed = true;
       if (track.applied && pick.source !== 'inherited') {
         const tModes = idx.collectionModes.get(target.variableCollectionId) ?? [];
         if (tModes.length > 1) recordApplied(track.applied, {
           key: target.variableCollectionId,
-          collection: idx.collectionName.get(target.variableCollectionId) ?? '',
-          mode: tModes.find((m) => m.modeId === pick.modeId)?.name ?? '',
-          source: pick.source,
+          collection: idx.collectionName.get(target.variableCollectionId) ?? target.variableCollectionId,
+          mode: tModes.find((m) => m.modeId === pick.modeId)?.name ?? pick.modeId,
+          ...localAxisEvidence(
+            target.variableCollectionId, pick.modeId, tModes, stack ?? new Map(),
+            track.coverageComplete, track.evidence,
+          ),
         });
       }
     }

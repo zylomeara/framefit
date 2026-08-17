@@ -84,10 +84,11 @@ describe('createEnvGraph wrapper completeness (mode-aware)', () => {
     expect(g.isMultiMode(SINGLE_KEY)).toBe(false);
 
     // The mutation-lock: a wrapper missing resolveInMode would throw here (RED). Spec HIGH.
-    const r = g.resolveInMode(MULTI_KEY, new Map());
+    const r = g.resolveInMode(MULTI_KEY, new Map(), true, new Map());
     expect(r).toBeDefined();
     expect(r!.value).toBe('#ffffff');       // default mode 'light'
-    expect(r!.mode).toBe('Light');
+    expect(r!.effective_modes).toEqual({ ThemeMulti: { mode: 'Light', source: 'confirmed_default' } });
+    expect(r!.effective_mode_source).toBe('confirmed_default');
     expect(r!.mode_dependent).toBe(true);
 
     // resolve() also surfaces both modes for a multi-mode key.

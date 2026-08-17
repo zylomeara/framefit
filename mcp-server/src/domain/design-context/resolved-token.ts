@@ -1,24 +1,38 @@
 // mcp-server/src/domain/design-context/resolved-token.ts
-export interface ResolvedToken {
-  token?: string;                        // variable name; absent for cross-lib snapshot without a name
-  value: string | number | boolean;      // actual value in the node's effective mode (COLOR -> hex)
-  mode?: string;                          // effective mode NAME (only for multi-mode collections)
-  mode_dependent?: boolean;               // true when the collection has >1 mode
-  mode_source?: 'node' | 'default';       // 'node' = confirmed node mode; 'default' = fallback
-  /** {collection name -> "<mode name> (node|default)"} — every multi-mode axis actually APPLIED
-   * while computing `value` (top collection + each cross-collection hop). Present ONLY when >=2
-   * DISTINCT multi-mode collections participated. Explains the computation; makes NO on-screen
-   * claim (that is mode_source's job). Names are verbatim Figma names. */
-  modes_applied?: Record<string, string>;
-  cssVar?: string;                        // optional "var(--name, value)"
-  hint?: string;                          // presentation-only pointer (e.g. see get_variables on 'default')
+export type EffectiveModeSource =
+  | 'explicit_node'
+  | 'ancestor_chain'
+  | 'confirmed_default'
+  | 'unverifiable';
+
+export interface EffectiveModeAxis {
+  mode: string;
+  source: EffectiveModeSource;
+  node_id?: string;
 }
 
-/** One mode pick actually APPLIED while resolving a value. `key` identifies the collection for
- * de-dup (graph: fileKey|libKey; local: collectionId); `source` reuses mode_source vocabulary
- * per axis: 'node' = stack-confirmed (pinned via explicitVariableModes on self/an ancestor),
- * 'default' = the collection's default mode was used (incl. invalid-explicit fallback). */
-export interface AppliedMode { key: string; collection: string; mode: string; source: 'node' | 'default' }
+export interface ResolvedToken {
+  token?: string;
+  value: string | number | boolean | null;
+  default_value?: string | number | boolean;
+  effective_rendered_value?: string | number | boolean | null;
+  effective_modes?: Record<string, EffectiveModeAxis>;
+  effective_mode_source?: EffectiveModeSource;
+  mode_dependent?: boolean;
+  cssVar?: string;
+  hint?: string;
+}
+
+/** One multi-mode axis used while resolving a value. `key` identifies the collection for
+ * de-dup (graph: fileKey|libKey; local: collectionId); source records whether the selected mode
+ * came from the target node, its ancestor chain, a proven default, or incomplete evidence. */
+export interface AppliedMode {
+  key: string;
+  collection: string;
+  mode: string;
+  source: EffectiveModeSource;
+  nodeId?: string;
+}
 
 /** Record a pick unless its collection key was already recorded — resolution walks from the
  * token outward, so first-seen = nearest the token, and it wins. No-op without a sink. */
@@ -28,15 +42,30 @@ export function recordApplied(applied: AppliedMode[] | undefined, entry: Applied
   applied.push(entry);
 }
 
-/** Fold applied picks into the emitted modes_applied map, enforcing the contract: (a) >=2
- * distinct multi-mode axes, else undefined; (b) any axis with an unknown (empty) collection or
- * mode name -> undefined, the WHOLE field is omitted (explainability-only, absence is safe —
- * pre-resync graph rows have no names); (c) two DIFFERENT collections sharing a display name:
- * first-seen wins, and the >=2 gate is re-checked on the folded keys. */
-export function formatModesApplied(applied: AppliedMode[] | undefined): Record<string, string> | undefined {
-  if (!applied || applied.length < 2) return undefined;
-  if (applied.some((a) => !a.collection || !a.mode)) return undefined;
-  const out: Record<string, string> = {};
-  for (const a of applied) if (!(a.collection in out)) out[a.collection] = `${a.mode} (${a.source})`;
-  return Object.keys(out).length >= 2 ? out : undefined;
+/** Fold applied picks into the emitted evidence map. Empty names are skipped; if two different
+ * collections share a display name, the first axis encountered wins. */
+export function formatEffectiveModes(
+  applied: AppliedMode[] | undefined,
+): Record<string, EffectiveModeAxis> | undefined {
+  if (!applied || applied.length === 0) return undefined;
+  const out: Record<string, EffectiveModeAxis> = {};
+  for (const a of applied) {
+    if (!a.collection || !a.mode || a.collection in out) continue;
+    out[a.collection] = {
+      mode: a.mode,
+      source: a.source,
+      ...(a.nodeId !== undefined ? { node_id: a.nodeId } : {}),
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function compositeModeSource(
+  axes: Record<string, EffectiveModeAxis>,
+): EffectiveModeSource {
+  const sources = Object.values(axes).map((axis) => axis.source);
+  if (sources.includes('unverifiable')) return 'unverifiable';
+  if (sources.includes('ancestor_chain')) return 'ancestor_chain';
+  if (sources.includes('explicit_node')) return 'explicit_node';
+  return 'confirmed_default';
 }

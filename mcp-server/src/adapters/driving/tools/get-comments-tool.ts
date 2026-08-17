@@ -44,8 +44,8 @@ export type ToolDeps = {
     } | undefined;
     // coverageComplete (optional) tells the resolver whether the node's full ancestor chain was
     // discovered — consumed by the honest-label logic; existing impls may ignore it.
-    resolveInMode?(key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean):
-      { token?: string; value: string; mode?: string; mode_dependent: boolean; mode_source: 'node' | 'default'; modes_applied?: Record<string, string>; pinned_axis_used: boolean; unconfirmed_default_used: boolean } | undefined;
+    resolveInMode?(key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean, evidence?: import('../../../domain/mode-resolve.js').ModeEvidenceStack):
+      (import('../../../domain/design-context/resolved-token.js').ResolvedToken & { pinned_axis_used: boolean; unconfirmed_default_used: boolean }) | undefined;
     // True iff the key's TOP collection is multi-mode (by mode EXISTENCE, not resolvability) — the
     // exact condition under which resolveInMode emits a mode-dependent object. Lets needsAncestors
     // gate ancestor discovery precisely; when absent, callers fall back to `resolve().modesByName`.
