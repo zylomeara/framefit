@@ -27,8 +27,13 @@ const logger = createLogger({ level: 'silent' });
 const captured: ToolDeps[] = [];
 const bridgeControl = vi.hoisted(() => ({
   start: undefined as undefined | ((logger: unknown) => Promise<unknown>),
+  last: undefined as unknown,
+}));
+const buildDepsControl = vi.hoisted(() => ({
+  errorOnce: undefined as unknown,
 }));
 const stdioControl = vi.hoisted(() => ({
+  startError: undefined as unknown,
   closeCalls: 0,
   closeError: undefined as unknown,
 }));
@@ -37,9 +42,30 @@ vi.mock('../../src/infrastructure/stdio-browser-bridge.js', async (importOrigina
   const orig = await importOriginal<typeof import('../../src/infrastructure/stdio-browser-bridge.js')>();
   return {
     ...orig,
-    startStdioBrowserBridge: (logger: Logger) => bridgeControl.start
-      ? bridgeControl.start(logger) as Promise<StdioBrowserBridge>
-      : orig.startStdioBrowserBridge(logger),
+    startStdioBrowserBridge: async (logger: Logger) => {
+      const bridge = bridgeControl.start
+        ? await bridgeControl.start(logger) as StdioBrowserBridge
+        : await orig.startStdioBrowserBridge(logger);
+      bridgeControl.last = bridge;
+      return bridge;
+    },
+  };
+});
+
+vi.mock('../../src/infrastructure/cache-budget.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../src/infrastructure/cache-budget.js')>();
+  return {
+    ...orig,
+    CacheBudget: class extends orig.CacheBudget {
+      constructor(...args: ConstructorParameters<typeof orig.CacheBudget>) {
+        if (buildDepsControl.errorOnce) {
+          const err = buildDepsControl.errorOnce;
+          buildDepsControl.errorOnce = undefined;
+          throw err;
+        }
+        super(...args);
+      }
+    },
   };
 });
 
@@ -60,7 +86,9 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
     onclose?: () => void;
     onerror?: (e: Error) => void;
     onmessage?: (m: unknown) => void;
-    async start(): Promise<void> {}
+    async start(): Promise<void> {
+      if (stdioControl.startError) throw stdioControl.startError;
+    }
     async send(_m: unknown): Promise<void> {}
     async close(): Promise<void> {
       stdioControl.closeCalls += 1;
@@ -102,6 +130,9 @@ beforeAll(async () => {
 afterAll(() => vi.unstubAllGlobals());
 afterEach(() => {
   bridgeControl.start = undefined;
+  bridgeControl.last = undefined;
+  buildDepsControl.errorOnce = undefined;
+  stdioControl.startError = undefined;
   stdioControl.closeCalls = 0;
   stdioControl.closeError = undefined;
   vi.restoreAllMocks();
@@ -176,6 +207,48 @@ describe('stdio: publicBaseUrl and snapshot store come from the loopback browser
       });
     } finally {
       await handle.close();
+    }
+  });
+
+  it('does not degrade or mislog a dependency initialization failure after the bridge starts', async () => {
+    const initError = new Error('dependency initialization failed');
+    buildDepsControl.errorOnce = initError;
+    const warn = vi.spyOn(logger, 'warn');
+    const config = loadConfig({ MCP_TRANSPORT: 'stdio', NODE_ENV: 'test' });
+
+    const outcome = await startServer(config, logger).then(
+      (handle) => ({ handle, error: undefined }),
+      (error: unknown) => ({ handle: undefined, error }),
+    );
+    try {
+      expect(outcome.error).toBe(initError);
+      expect(outcome.handle).toBeUndefined();
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'server.stdio_browser_bridge_unavailable',
+      );
+    } finally {
+      if (outcome.handle) await outcome.handle.close().catch(() => {});
+      else await (bridgeControl.last as StdioBrowserBridge | undefined)?.close().catch(() => {});
+    }
+  });
+
+  it('closes the bound bridge before rethrowing a transport initialization failure', async () => {
+    const initError = new Error('transport initialization failed');
+    stdioControl.startError = initError;
+    const warn = vi.spyOn(logger, 'warn');
+    const config = loadConfig({ MCP_TRANSPORT: 'stdio', NODE_ENV: 'test' });
+
+    await expect(startServer(config, logger)).rejects.toBe(initError);
+    const bridge = bridgeControl.last as StdioBrowserBridge;
+    try {
+      await expect(fetch(`${bridge.publicBaseUrl}/api/dom-snapshots/extractor.js`)).rejects.toThrow();
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'server.stdio_browser_bridge_unavailable',
+      );
+    } finally {
+      await bridge.close().catch(() => {});
     }
   });
 

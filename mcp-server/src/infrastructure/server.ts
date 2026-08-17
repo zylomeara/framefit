@@ -322,38 +322,45 @@ async function startStdioServer(
 ): Promise<ServerHandle> {
   const mcp = new McpServer(SERVER_INFO, { instructions: SERVER_INSTRUCTIONS });
   let bridge: StdioBrowserBridge | undefined;
-  let deps: ToolDeps;
   try {
     bridge = await startStdioBrowserBridge(logger);
-    deps = buildToolDeps(config, logger, bridge.store);
-    deps.publicBaseUrl = bridge.publicBaseUrl;
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'server.stdio_browser_bridge_unavailable');
-    deps = buildToolDeps(config, logger);
-    deps.browserBridgeDegraded = {
-      status: 'unavailable',
-      reason: 'loopback bridge could not start; using inline extractor',
-    };
   }
-  registerAllTools(mcp, deps);
 
-  const transport = new StdioServerTransport();
-  await mcp.connect(transport);
-  logger.info('server.stdio_ready');
+  try {
+    const deps = buildToolDeps(config, logger, bridge?.store);
+    if (bridge) {
+      deps.publicBaseUrl = bridge.publicBaseUrl;
+    } else {
+      deps.browserBridgeDegraded = {
+        status: 'unavailable',
+        reason: 'loopback bridge could not start; using inline extractor',
+      };
+    }
+    registerAllTools(mcp, deps);
 
-  return {
-    port: 0,
-    address: '', // stdio binds no socket; there is no address to report
-    close: async () => {
-      const results = await Promise.allSettled([
-        Promise.resolve().then(() => transport.close()),
-        Promise.resolve().then(() => mcp.close()),
-        Promise.resolve().then(() => bridge?.close()),
-      ]);
-      const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-      if (failed) throw failed.reason;
-    },
-  };
+    const transport = new StdioServerTransport();
+    await mcp.connect(transport);
+    logger.info('server.stdio_ready');
+
+    return {
+      port: 0,
+      address: '', // stdio binds no socket; there is no address to report
+      close: async () => {
+        const results = await Promise.allSettled([
+          Promise.resolve().then(() => transport.close()),
+          Promise.resolve().then(() => mcp.close()),
+          Promise.resolve().then(() => bridge?.close()),
+        ]);
+        const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failed) throw failed.reason;
+      },
+    };
+  } catch (startupError) {
+    await Promise.resolve().then(() => bridge?.close()).catch(() => {});
+    throw startupError;
+  }
 }
 
 async function startHttpServer(
