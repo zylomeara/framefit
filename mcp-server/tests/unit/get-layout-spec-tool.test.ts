@@ -242,6 +242,23 @@ describe('get_layout_spec tool', () => {
   describe('extractor_mode (loader/inline)', () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
 
+    it('bridge-shaped deps return the short loader, upload URL, and dom_ref instructions', async () => {
+      const snapshotStore = { mint: vi.fn(() => 'stdio-cap-token') } as unknown as ToolDeps['snapshotStore'];
+      const run = harness({ getNodesRaw }, {
+        snapshotStore,
+        publicBaseUrl: 'http://127.0.0.1:3846',
+        tenantId: 'local',
+      });
+      const out = JSON.parse((await run({
+        file: 'abc', node_ids: ['1:1'], include_extractor: true,
+      })).content[0].text);
+
+      expect(out.extractor_js).toContain('/api/dom-snapshots/extractor.js');
+      expect(out.extractor_js).not.toContain('pruneToBudget');
+      expect(out.upload_url).toBe('http://127.0.0.1:3846/api/dom-snapshots/stdio-cap-token');
+      expect(out.upload_hint).toContain('dom_ref');
+    });
+
     it('default mode (loader) + publicBaseUrl → thunk pointing at /api/dom-snapshots/extractor.js, not the full script', async () => {
       const run = harness({ getNodesRaw }, { publicBaseUrl: 'https://figma.test' });
       const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
@@ -263,6 +280,25 @@ describe('get_layout_spec tool', () => {
       const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
       expect(out.extractor_js).toContain('pruneToBudget');
       expect(out.extractor_note).toBe('loader unavailable without public base URL — inline returned');
+    });
+
+    it('bridge startup failure adds the exact receipt only when the extractor is requested', async () => {
+      const browserBridgeDegraded = {
+        status: 'unavailable' as const,
+        reason: 'loopback bridge could not start; using inline extractor' as const,
+      };
+      const run = harness({ getNodesRaw }, { browserBridgeDegraded } as Partial<ToolDeps>);
+
+      const withExtractor = JSON.parse((await run({
+        file: 'abc', node_ids: ['1:1'], include_extractor: true,
+      })).content[0].text);
+      expect(withExtractor.extractor_js).toContain('pruneToBudget');
+      expect(withExtractor.browser_bridge).toEqual(browserBridgeDegraded);
+
+      const withoutExtractor = JSON.parse((await run({
+        file: 'abc', node_ids: ['1:1'], include_extractor: false,
+      })).content[0].text);
+      expect(withoutExtractor.browser_bridge).toBeUndefined();
     });
   });
 

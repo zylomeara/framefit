@@ -68,11 +68,16 @@ export type ToolDeps = {
    * (only "default_modes" can be emitted). */
   libraryFiles?: { has(fileKey: string): Promise<boolean> };
   /** dom-diff-dx browser-direct upload flow: mints capTokens that gate POST /api/dom-snapshots/:capToken.
-   * Undefined → get_layout_spec never emits upload_url (e.g. stdio with no public HTTP endpoint). */
+   * Undefined → get_layout_spec never emits upload_url (e.g. degraded stdio bridge startup). */
   snapshotStore?: import('../../../infrastructure/dom-snapshot-store.js').DomSnapshotStore;
   /** Public base URL the minted upload_url is built against (e.g. 'https://figma.mcp.example.com').
    * Undefined → get_layout_spec never emits upload_url (no public endpoint to point at). */
   publicBaseUrl?: string;
+  /** Stdio-only fail-soft receipt. Present when the loopback browser bridge could not start. */
+  browserBridgeDegraded?: {
+    status: 'unavailable';
+    reason: 'loopback bridge could not start; using inline extractor';
+  };
   /** Owner id passed to snapshotStore.mint() — scopes uploaded snapshots to this caller. Multi-tenant:
    * the JWT-authenticated userId of the current request. Single-tenant/stdio: 'local'. */
   tenantId?: string;

@@ -149,8 +149,8 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         // Multi-use upload_url: minted only when the caller asked for the extractor AND the
         // server is wired for the browser-direct upload flow (snapshotStore + a public base URL
         // to point the browser at). Absent either, the tool falls back to its prior output
-        // unchanged — no field, no mint() call (a stdio/local-dev server with no public HTTP
-        // endpoint is a correct, silent no-op here, not an error).
+        // unchanged — no field, no mint() call. On stdio this is the fail-soft branch when the
+        // loopback browser bridge could not start.
         const uploadUrl = args.include_extractor && deps.snapshotStore && deps.publicBaseUrl
           ? `${deps.publicBaseUrl}/api/dom-snapshots/${deps.snapshotStore.mint(deps.tenantId ?? 'local', widths.length ? { expectedWidths: widths } : undefined)}`
           : undefined;
@@ -202,14 +202,17 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
               result_truncated_note: 'result exceeded the budget — re-request the omitted node_ids in a separate get_layout_spec call (fewer node_ids at a time) or lower max_depth' } : {}),
             ...(keptHydration.length ? { hydration: keptHydration } : {}),
             ...extractorFields,
+            ...(args.include_extractor && deps.browserBridgeDegraded
+              ? { browser_bridge: deps.browserBridgeDegraded }
+              : {}),
             // The call form for the branch with NO upload_url — this fires on `!uploadUrl`, which is
-            // every stdio server (no snapshot store, no public base URL) and equally any server that
+            // a degraded stdio server (no snapshot store, no public base URL) and equally any server that
             // has a public base URL but no snapshot store: uploadUrl needs BOTH, the loader needs only
             // the base URL, so that server would hand back a loader thunk AND this hint. No shipped
             // wiring builds one — but the guard is `!uploadUrl`, and the hint is true of any branch it
             // fires on: without an upload_url the snapshots come back to the caller either way.
-            // The guidance used to live only in upload_hint, i.e. in the one branch stdio never
-            // reaches, so a stdio caller got the full inline extractor and no instructions at all; the
+            // The guidance used to live only in upload_hint, so a caller on any degraded/no-endpoint
+            // path got the full inline extractor and no instructions at all; the
             // usual guess is then to re-paste it per capture and re-request it per call, which costs a
             // cycle roughly 3x what it needs to.
             //
