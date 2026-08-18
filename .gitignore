@@ -11,6 +11,7 @@ coverage/
 token*.txt
 
 .superpowers/
+.worktrees/
 
 # prepack copies these from the repo root into the package root so the tarball has a front
 # page and a licence; postpack removes them. A stray copy must never reach the index -- two
