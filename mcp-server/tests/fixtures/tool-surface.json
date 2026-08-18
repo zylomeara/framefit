@@ -22,7 +22,7 @@
       "pairs",
       "tolerance_px"
     ],
-    "digest": "0da3da0bcf620c514f4bded737caee32bcecd039cffe6f639ad2c938c3277aad",
+    "digest": "bc682cc6c7f5988f0054a1b7ecfabc17351bcc271b8120cd0dd15fc0515ac465",
     "annotations": {
       "readOnlyHint": true
     }
@@ -40,7 +40,7 @@
       "pairs",
       "tolerance_px"
     ],
-    "digest": "fb334f859897ba2cde6277fef6d051f3a80b27225d9d32ce46a1d3963288d7ea",
+    "digest": "abe305917b551f02e5faa75b6caa5333031c0076337893e668d90cd1321f6c61",
     "annotations": {
       "readOnlyHint": true
     }
@@ -173,7 +173,7 @@
     }
   },
   "get_design_context": {
-    "description": "Extract a descriptive, code-oriented representation of a Figma node: layout (auto-layout), sizing, fills/strokes/effects (deduplicated into globalVars), text + typography, and component instances. A fill/stroke bound to a variable in a multi-mode collection (>1 mode) is resolved to an object in globalVars: { token, value (actual hex in the node's effective variable mode), mode, mode_dependent, mode_source }. mode_source:'node' means the node's mode was confirmed via explicitVariableModes; 'default' means the mode could not be determined and the default-mode value is shown - do not treat it as the on-screen color, and such an object also carries a short `hint` pointing you to get_variables' per-mode `modes` map for the actual value. When the value was decided by modes across MORE THAN ONE multi-mode collection (a cross-collection alias chain), the object also carries modes_applied - {collection name: \"mode name (node|default)\"} - every axis actually APPLIED to compute value: (node) = that axis was pinned via explicitVariableModes on the node or an ancestor; (default) = that collection's default mode was used. modes_applied explains the computation only - it makes NO on-screen claim (that is mode_source's job, for the composite). A top-level mode_context marker may be present: \"library_default_modes\" = this file is a registered component library rendered in its default variable modes - do NOT transfer these mode-dependent values to branded pages (the same tokens resolve differently there); \"default_modes\" = every shown mode-dependent value is its axis default. The marker appears only when the server has positive evidence (all bindings tracked, no pinned axes anywhere); its absence claims nothing. Mode and collection names are verbatim Figma names; casing can differ between collections. A fill/stroke bound to a single-mode (non-mode-dependent) variable keeps its inline form: the local token name, or var(--name, value) for a cross-library variable. Human-authored component descriptions/documentation are returned as a deduped `components` map keyed by component id (disable with include_component_docs:false). Set include_screenshot:true to also attach a short-lived signed PNG URL for visual context. Container nodes whose children were cut - by the requested depth, or by the size-budget auto-degrade when `degraded` is true - are marked `truncated:true` with `childCount`; request that node_id directly, raise `depth` (max 8, no effect when `degraded` is true), or use get_metadata to see them. The call runs under a server time budget: enrichment stages (variables resolution, ancestor-mode discovery, component docs, Code Connect, screenshot) that do not fit are skipped and listed in degraded_stages [{stage, reason}] - the core subtree is never time-degraded (the size budget's `degraded` flag is separate). If the subtree fetch itself exceeds the budget the call fails fast and suggests a lower depth. Use get_metadata first to pick a node_id.",
+    "description": "Extract a descriptive, code-oriented representation of a Figma node: layout, sizing, fills/strokes/effects (deduplicated into globalVars), text, typography, and component instances. A multi-mode bound variable emits {token, default_value, effective_rendered_value, value, effective_modes, effective_mode_source, mode_dependent}. value aliases effective_rendered_value. default_value is diagnostic only and is never substituted for a rendered color. effective_mode_source is explicit_node, ancestor_chain, confirmed_default, or unverifiable; when it is unverifiable, effective_rendered_value and value are null and the hint says not to use the default as the rendered color. Each effective_modes axis includes its mode and source, plus node_id for explicit or ancestor evidence. A top-level mode_context marker may be present: \"library_default_modes\" means this file is a registered component library rendered in its default variable modes; \"default_modes\" means every shown mode-dependent value is its confirmed axis default. The marker appears only with positive evidence; its absence claims nothing. Single-mode variables keep their compact inline form. Human-authored component documentation is returned as a deduped components map (disable with include_component_docs:false). Set include_screenshot:true to attach a short-lived signed PNG URL. Truncated containers carry truncated:true and childCount; request that node directly, raise depth (max 8), or use get_metadata. Enrichment stages that exceed the server time budget are listed in degraded_stages; the core subtree is never time-degraded. Use get_metadata first to pick a node_id.",
     "inputSchemaKeys": [
       "depth",
       "figma_token",
@@ -183,7 +183,7 @@
       "node_id",
       "screenshot_scale"
     ],
-    "digest": "edeb43fef5b512705eb6b52d7d615b3a76fab92bf16fcbf39c305256903c72d3",
+    "digest": "e9fd8e0eec4eff5cbe119e06568065c91cac13199ffa62e4869f317d03b5e03d",
     "annotations": {
       "readOnlyHint": true
     }
@@ -203,7 +203,7 @@
     }
   },
   "get_layout_spec": {
-    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script (extractor_mode:\"loader\", the default) is returned only when the server has a public base URL to point the browser at - otherwise, and whenever extractor_mode:\"inline\" is passed, the full script comes back inline, with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL, plus the snapshot store only the HTTP servers construct, is what also returns an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref to pass to compare_node_to_dom; the stdio server has neither, so pass the snapshot inline as compare_node_to_dom's dom.",
+    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script (extractor_mode:\"loader\", the default) is returned only when the server has a public base URL to point the browser at - otherwise, and whenever extractor_mode:\"inline\" is passed, the full script comes back inline, with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL and snapshot store are available on HTTP deployments and through stdio's loopback browser sidecar; they return an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref for compare_node_to_dom. If the stdio sidecar cannot start, the response fails soft to the inline extractor and inline DOM snapshots, with a machine-readable browser_bridge receipt.",
     "inputSchemaKeys": [
       "extractor_mode",
       "figma_token",
@@ -213,7 +213,7 @@
       "node_ids",
       "text_leaves"
     ],
-    "digest": "f1cf49076578945e8b628cecda8430d4d4e1b0d1724476655a73ee3fe6818cff",
+    "digest": "723af1aac2cd0a999003cebba32fcc357539999b83eaad7a0d03c434ea8169e0",
     "annotations": {
       "readOnlyHint": true
     }
@@ -244,14 +244,14 @@
     }
   },
   "get_node_ancestry": {
-    "description": "Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read the ancestor children. bbox-guided, id-confirmed, <=12 light REST calls - never fetches the whole file. query highlights matching names in scope.",
+    "description": "Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors). Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read the ancestor children. bbox-guided, id-confirmed, <=16 light REST calls - never fetches the whole file. query highlights matching names in scope.",
     "inputSchemaKeys": [
       "figma_token",
       "file",
       "node_id",
       "query"
     ],
-    "digest": "f545c04ade503514f0a27a4cc9e46b18f13e7d853916224e4a34f28ddac9929c",
+    "digest": "bcb7cc546ed14b986753c7f49291a3b432744e3427e2ef1e06b88b258b1c1822",
     "annotations": {
       "readOnlyHint": true
     }
@@ -302,11 +302,12 @@
       "focus_radius",
       "format",
       "node_id",
+      "probe",
       "return",
       "scale",
       "tiles"
     ],
-    "digest": "5cd8c322c83f3cc72304bc87c6f1f6203f030365335de56a9ae423c6582dc586",
+    "digest": "ec736f588dc0145a619425c33deebaa97b9631fa12c8a8bb441ccb19ba2c5690",
     "annotations": {
       "readOnlyHint": true
     }
@@ -341,7 +342,7 @@
       "type",
       "unresolved_only"
     ],
-    "digest": "c7d7562d5ee32e5a2ad484c0c3ac9dbbeb43cbba2872f63d45900d5f942dd0ef",
+    "digest": "9b646df126b998a78bfa3bd4127fd1332398019e60f280cf8f68650153c231f2",
     "annotations": {
       "readOnlyHint": true
     }
@@ -409,7 +410,7 @@
       "frame_node_id",
       "max_depth"
     ],
-    "digest": "011e129dba84ce4439e5776abbf254c1eda3c257776746efe0b2cad7dd285ad3",
+    "digest": "a2521e6444b4de234219a358bf1da6805caf01b558b6d0f51fd3de0f9d28ad8d",
     "annotations": {
       "readOnlyHint": true
     }

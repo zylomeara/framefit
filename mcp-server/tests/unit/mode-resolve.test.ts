@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { collectSubtreeModes, collectSubtreeChains, effectiveMode, ancestorModes, buildModeByCollection, hasBoundPaintColor, ancestorChainFromSubtree, hasExternalBoundPaintColor, collectExternalPaintKeys, pickDescentCandidates, boxIntersects, sceneIdEquals } from '../../src/domain/mode-resolve.js';
+import { collectSubtreeModes, collectSubtreeChains, effectiveMode, ancestorModes, buildModeByCollection, buildExactModeEvidence, buildGraphModeEvidence, modeIds, hasBoundPaintColor, ancestorChainFromSubtree, hasExternalBoundPaintColor, collectExternalPaintKeys, pickDescentCandidates, boxIntersects, sceneIdEquals } from '../../src/domain/mode-resolve.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
 
 const tree: RawSceneNode = {
@@ -93,6 +93,32 @@ describe('buildModeByCollection (nearest-ancestor-wins, de-duped by library key)
     ]);
     expect(stack.get('A')).toBe('a1');
     expect(stack.get('B')).toBe('b1');
+  });
+});
+
+describe('mode evidence provenance', () => {
+  const LIBKEY = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
+  const rootColl = `VariableCollectionId:${LIBKEY}/1:1`;
+  const parentColl = `VariableCollectionId:${LIBKEY}/2:2`;
+  const chain: RawSceneNode[] = [
+    { id: 'ROOT', name: 'Root', type: 'FRAME', explicitVariableModes: { [rootColl]: 'root-mode', C: 'root-c' } },
+    { id: 'FRAME', name: 'Frame', type: 'FRAME', explicitVariableModes: { [parentColl]: 'parent-mode', B: 'b2' } },
+    { id: 'ILEAF', name: 'Leaf', type: 'RECTANGLE', explicitVariableModes: { A: 'a2' } },
+  ];
+
+  it('preserves exact collection provenance and classifies the compound-safe target pin', () => {
+    const evidence = buildExactModeEvidence(chain, 'LEAF');
+    expect(evidence.get('A')).toEqual({ modeId: 'a2', source: 'explicit_node', nodeId: 'ILEAF' });
+    expect(evidence.get('B')).toEqual({ modeId: 'b2', source: 'ancestor_chain', nodeId: 'FRAME' });
+    expect(evidence.has('ABSENT')).toBe(false);
+    expect(modeIds(evidence)).toEqual(new Map([['C', 'root-c'], [rootColl, 'root-mode'], [parentColl, 'parent-mode'], ['B', 'b2'], ['A', 'a2']]));
+  });
+
+  it('de-duplicates graph collections by library key with the nearest carrier winning', () => {
+    const evidence = buildGraphModeEvidence(chain, 'LEAF');
+    expect(evidence.has(rootColl)).toBe(false);
+    expect(evidence.get(parentColl)).toEqual({ modeId: 'parent-mode', source: 'ancestor_chain', nodeId: 'FRAME' });
+    expect(evidence.get('A')).toEqual({ modeId: 'a2', source: 'explicit_node', nodeId: 'ILEAF' });
   });
 });
 

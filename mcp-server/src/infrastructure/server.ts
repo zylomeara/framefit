@@ -51,6 +51,7 @@ import type { FigmaApi } from '../ports/figma-api.js';
 import type { Request, Response, NextFunction } from 'express';
 import { allowedOriginSet, makeOriginGuard } from './origin-guard.js';
 import { SERVER_INFO } from './version.js';
+import { startStdioBrowserBridge, type StdioBrowserBridge } from './stdio-browser-bridge.js';
 
 export type ServerHandle = {
   port: number;
@@ -238,15 +239,13 @@ export function makeReadCaches(config: AppConfig, logger?: Logger, budget?: Cach
  * single instance is reused across requests (HTTP) or for the process lifetime
  * (stdio).
  *
- * `snapshotStore` is optional and passed in by the caller (single-tenant/stdio
- * HTTP servers mint one instance up front and reuse it — see startHttpServer —
+ * `snapshotStore` is optional and passed in by the caller. Single-tenant HTTP and stdio bridge
+ * callers mint one instance up front and reuse it — see startHttpServer/startStdioServer —
  * so tool-issued capTokens resolve against the SAME store the upload endpoint
- * reads from). `publicBaseUrl` is deliberately NOT set here — it is MODE-AWARE
+ * reads from. `publicBaseUrl` is deliberately NOT set here — it is MODE-AWARE
  * and resolved by each caller:
- *   stdio             → stays undefined, always: no HTTP endpoint exists in this
- *                       process, so any base URL (configured or localhost-fallback)
- *                       would mint a DEAD loader/upload URL — worse than the honest
- *                       "upload_url is not emitted" absence;
+ *   stdio             → assigned from its ephemeral loopback browser bridge after
+ *                       that bridge starts;
  *   single-tenant http → config.PUBLIC_BASE_URL ?? the actual bound loopback origin
  *                       (assigned in startHttpServer's listen callback, where the
  *                       real port is known);
@@ -322,20 +321,46 @@ async function startStdioServer(
   logger: Logger,
 ): Promise<ServerHandle> {
   const mcp = new McpServer(SERVER_INFO, { instructions: SERVER_INSTRUCTIONS });
-  registerAllTools(mcp, buildToolDeps(config, logger));
+  let bridge: StdioBrowserBridge | undefined;
+  try {
+    bridge = await startStdioBrowserBridge(logger);
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'server.stdio_browser_bridge_unavailable');
+  }
 
-  const transport = new StdioServerTransport();
-  await mcp.connect(transport);
-  logger.info('server.stdio_ready');
+  try {
+    const deps = buildToolDeps(config, logger, bridge?.store);
+    if (bridge) {
+      deps.publicBaseUrl = bridge.publicBaseUrl;
+    } else {
+      deps.browserBridgeDegraded = {
+        status: 'unavailable',
+        reason: 'loopback bridge could not start; using inline extractor',
+      };
+    }
+    registerAllTools(mcp, deps);
 
-  return {
-    port: 0,
-    address: '', // stdio binds no socket; there is no address to report
-    close: async () => {
-      await transport.close();
-      await mcp.close();
-    },
-  };
+    const transport = new StdioServerTransport();
+    await mcp.connect(transport);
+    logger.info('server.stdio_ready');
+
+    return {
+      port: 0,
+      address: '', // stdio binds no socket; there is no address to report
+      close: async () => {
+        const results = await Promise.allSettled([
+          Promise.resolve().then(() => transport.close()),
+          Promise.resolve().then(() => mcp.close()),
+          Promise.resolve().then(() => bridge?.close()),
+        ]);
+        const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failed) throw failed.reason;
+      },
+    };
+  } catch (startupError) {
+    await Promise.resolve().then(() => bridge?.close()).catch(() => {});
+    throw startupError;
+  }
 }
 
 async function startHttpServer(

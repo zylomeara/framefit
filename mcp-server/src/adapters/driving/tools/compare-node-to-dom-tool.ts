@@ -17,7 +17,7 @@ import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/la
 import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, LayoutSpec, VerificationReceipt, CaptureInfo, PairAttribution, PairSource, DiffRow, FixPlanGroup, FixPlanEdit, MatchProfile } from '../../../domain/layout-spec/types.js';
 import { hintForNode, type SourceHint } from '../../../domain/layout-spec/class-source.js';
 import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
-import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, collectExternalPaintKeys, ancestorChainFromSubtree, buildModeByCollection, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
+import { collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, collectExternalPaintKeys, ancestorChainFromSubtree, buildExactModeEvidence, buildGraphModeEvidence, modeIds, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
 import { discoverAncestorModes } from './get-design-context-tool.js';
 import { makeColorTokenResolver, prefetchSnapshotHits, buildMergedCssEvidence, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
 import { FigmaApiError, isTimeoutMessage, TOO_LARGE_REASON_RE } from '../../../ports/errors.js';
@@ -295,8 +295,9 @@ export const PairSchema = z.object({
   dom: DomSnapshotSchema.optional().describe('DomSnapshot from the canonical extractor (get_layout_spec include_extractor:true). Pass exactly one of dom | dom_ref.'),
   dom_ref: DomRefSchema.optional().describe(
     'Reference to a browser-uploaded snapshot batch (get_layout_spec upload_url flow) instead of inlining raw ' +
-    'DOM JSON. Only the HTTP servers construct the snapshot store this resolves against; on stdio pass dom ' +
-    'inline. ref = the snapshot_ref returned by the extractor POST; selector must match byte-for-byte the ' +
+    'DOM JSON. HTTP deployments and stdio\'s loopback browser sidecar construct the snapshot store this resolves ' +
+    'against; if the stdio sidecar is unavailable, pass dom inline. ref = the snapshot_ref returned by the ' +
+    'extractor POST; selector must match byte-for-byte the ' +
     'selector string passed to the extractor, OR index addresses the snapshot by its position in that batch ' +
     '(duplicate-selector-safe). Resolvable while the underlying ref is live: sliding 30-min TTL ' +
     "from the last touch, hard-capped at 2h from the ref's OWN createdAt - NOT from when upload_url was minted. " +
@@ -703,7 +704,6 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           // failure EXCEPT rate_limited degrades to an EMPTY ancestor stack + coverageComplete=false
           // — the resolver then either resolves from subtree modes alone or stays honestly 'default';
           // it never throws. Mirrors get_design_context's stackFor/resolveTokenMode wiring.
-          let ancestorStack = new Map<string, string>();
           let coverageComplete = false;
           // Raw ancestor nodes (root→parent), threaded ALONGSIDE ancestorStack in every
           // branch below — the graph resolver (graphStackFor, near stackFor) needs the RAW node
@@ -746,17 +746,15 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
                     // === [] — the frame is correctly EXCLUDED from the ancestor stack (its own modes
                     // arrive via collectSubtreeModes/stackFor instead). ONLY spread-concat form here
                     // — a slice-variant would double-count the frame when pair === frame.
-                    ancestorStack = buildModeByCollection([...canvasChain, ...frameChain]);
                     ancestorNodes = [...canvasChain, ...frameChain];
                     coverageComplete = true;
                     done = true;
                   } else {
                     const disc = await discoverAncestorModes(api, parsed.value, id, deps.logger, cappedCfg);
                     if (disc.droppedReason === undefined) {
-                      ancestorStack = disc.stack; coverageComplete = disc.coverageComplete;
+                      coverageComplete = disc.coverageComplete;
                       ancestorNodes = disc.nodesRootToParent;
                     } else {
-                      ancestorStack = buildModeByCollection(frameChain); // partial intra-frame chain (frameChain[0]===bestFrameRaw)
                       ancestorNodes = frameChain;
                       coverageComplete = false;
                     }
@@ -767,7 +765,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
               }
               if (!done) {                                           // (a)(b)(c) → deadline-capped whole-file discovery
                 const disc = await discoverAncestorModes(api, parsed.value, id, deps.logger, cappedCfg);
-                ancestorStack = disc.stack; coverageComplete = disc.coverageComplete;
+                coverageComplete = disc.coverageComplete;
                 ancestorNodes = disc.nodesRootToParent;
               }
             } catch (err) {
@@ -775,10 +773,6 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
               deps.logger.info({ err: (err as Error).message }, 'compare.ancestor_modes_unavailable');
             }
           }
-          const subtreeModes = collectSubtreeModes(entry.document);
-          const stackFor = (n: RawSceneNode): Map<string, string> =>
-            new Map<string, string>([...ancestorStack, ...(subtreeModes.get(n.id) ?? new Map<string, string>())]);
-
           // The GRAPH resolver's stack, matched by LIBRARY KEY (not exact collection
           // id) — a plain stackFor merge would let two subscribed-instance suffixes of the SAME
           // library collection both survive (one from ancestorNodes, one from the subtree chain),
@@ -787,15 +781,22 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           // argument nearest→farthest, so the chain is passed root→node order (mirrors
           // get-design-context-tool.ts's graphStackFor, :519-530).
           const subtreeChains = collectSubtreeChains(entry.document);
+          const fullChainFor = (n: RawSceneNode): RawSceneNode[] =>
+            [...ancestorNodes, ...(subtreeChains.get(n.id) ?? [n])];
+          const stackFor = (n: RawSceneNode): Map<string, string> =>
+            modeIds(buildExactModeEvidence(fullChainFor(n), n.id));
           const graphStackFor = (n: RawSceneNode): Map<string, string> =>
-            buildModeByCollection([...ancestorNodes, ...(subtreeChains.get(n.id) ?? [n])]);
+            modeIds(buildGraphModeEvidence(fullChainFor(n), n.id));
 
           // The shared factory (color-token-resolver.ts): index → graph → snapshot → honest
           // unknown, both binding forms via colorAliasId. compare feeds it ancestor-discovered
           // stacks; get_layout_spec feeds subtree-only ones — same resolver by construction.
           const resolveColorToken = makeColorTokenResolver({
             variableIndex, snapHits, variableGraph: deps.variableGraph,
-            stackFor, graphStackFor, coverageComplete,
+            stackFor, graphStackFor,
+            exactEvidenceFor: (n) => buildExactModeEvidence(fullChainFor(n), n.id),
+            graphEvidenceFor: (n) => buildGraphModeEvidence(fullChainFor(n), n.id),
+            coverageComplete,
           });
 
           // Symmetric depth fix: maxDepth MUST reach the Figma-side projection too, not just the

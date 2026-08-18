@@ -61,6 +61,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
+import { DomSnapshotStore } from '../../src/infrastructure/dom-snapshot-store.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
@@ -161,10 +162,19 @@ function stubApi(): Partial<FigmaApi> {
   };
 }
 
-// stdio-shaped deps: no snapshotStore and no publicBaseUrl, so get_layout_spec returns the FULL
-// inline extractor plus extractor_note and NO upload_url -- which is what the page documents.
+// Stdio bridge-shaped deps: one store is shared by every documented tool call, exactly as the
+// process-wide bridge shares its store with both the upload route and every registered tool.
+// The fixed loopback origin keeps the capture deterministic without opening a socket.
+const snapshotStore = new DomSnapshotStore();
 function deps(): ToolDeps {
-  return { buildApi: () => stubApi() as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 };
+  return {
+    buildApi: () => stubApi() as FigmaApi,
+    defaultToken: 'figd_x',
+    logger,
+    maxResultChars: 40000,
+    snapshotStore,
+    publicBaseUrl: 'http://127.0.0.1:3846',
+  };
 }
 
 type Registrar = (server: McpServer, deps: ToolDeps) => void;
@@ -285,8 +295,8 @@ const BUILDERS: Record<string, () => Promise<Record<string, unknown>>> = {
   ),
 };
 
-// `extractor_js` is the whole extractor as ONE string on stdio, tens of KB of it. Stored verbatim it
-// would be that much literal source in a committed fixture; stored as {length, sha256} the
+// `extractor_js` can be either the stdio/HTTP loader or the full inline fallback. Stored verbatim it
+// would commit executable source; stored as {length, sha256} the
 // live-equality assert below stays exactly as strong (any byte of dom-extractor.ts changes the
 // digest) and the fixture stays readable. This is the ONLY path normalized on the way into a
 // capture, and it is normalized on both sides of the comparison, so it cannot hide drift.
@@ -297,12 +307,16 @@ const BUILDERS: Record<string, () => Promise<Record<string, unknown>>> = {
 // checked by nothing -- a number restated where it could have been read is the defect the gates
 // around it exist to catch, so the stale figure is not repeated here, not even as narration.
 const NORMALIZED_PATH = 'extractor_js';
+const CAP_TOKEN_PATH_RE = /^http:\/\/127\.0\.0\.1:3846\/api\/dom-snapshots\/[0-9a-f]{32}$/;
 function normalizeCapture(out: Record<string, unknown>): Record<string, unknown> {
-  const v = out[NORMALIZED_PATH];
+  const normalized = typeof out.upload_url === 'string' && CAP_TOKEN_PATH_RE.test(out.upload_url)
+    ? { ...out, upload_url: 'http://127.0.0.1:3846/api/dom-snapshots/<capToken>' }
+    : out;
+  const v = normalized[NORMALIZED_PATH];
   if (typeof v === 'string') {
-    return { ...out, [NORMALIZED_PATH]: { length: v.length, sha256: createHash('sha256').update(v).digest('hex') } };
+    return { ...normalized, [NORMALIZED_PATH]: { length: v.length, sha256: createHash('sha256').update(v).digest('hex') } };
   }
-  return out;
+  return normalized;
 }
 
 // =================================================================================================

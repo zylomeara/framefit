@@ -7,6 +7,7 @@ import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/no
 import { downloadRaster, downloadText } from './image-download.js';
 import { DEFAULT_FOCUS_RADIUS, renderFocusCrop } from './focus-crop.js';
 import { FigmaApiError, isTimeoutMessage } from '../../../ports/errors.js';
+import { ColorProbeValidationError, probePng, type ColorProbeResult } from './color-probe.js';
 
 const InputSchema = {
   file: z.string().min(1).describe('Figma file URL or raw key'),
@@ -24,6 +25,14 @@ const InputSchema = {
   }).optional().describe('Point of interest within the node (0..1 each) - e.g. target.atPercent from get_review_board. When set, returns a tight zoomed crop centered on this point (with a reticle marking it) instead of the whole node.'),
   focus_radius: z.number().min(0.02).max(0.5).default(DEFAULT_FOCUS_RADIUS)
     .describe('Focus-crop half-size as a fraction of node width (only used with focus). 0.12 gives a ~24%-wide window around the point.'),
+  probe: z.object({
+    x: z.number().nonnegative(),
+    y: z.number().nonnegative(),
+    space: z.enum(['normalized', 'pixel']).default('normalized'),
+    radius: z.number().int().min(0).max(20).default(0),
+    expected: z.string().regex(/^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/).optional(),
+    tolerance: z.number().int().min(0).max(255).default(2),
+  }).optional(),
   figma_token: z.string().min(1).optional().describe('Override Figma PAT'),
 };
 
@@ -43,6 +52,10 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
     },
     async (args) =>
       runTool('get_screenshot', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
+        if (args.probe && args.format !== 'png') throw new Error('color probe requires PNG output');
+        if (args.probe?.space === 'normalized' && (args.probe.x > 1 || args.probe.y > 1)) {
+          throw new Error('normalized probe coordinates must be between 0 and 1');
+        }
         const parsed = parseFileKey(args.file);
         if (!parsed.ok) throw new Error(parsed.error);
         const id = normalizeCompoundNodeId(args.node_id);
@@ -106,6 +119,15 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
           : undefined;
         const url = images![id];
         if (!url) throw new Error(`Figma did not render node ${id} (it may be empty or invalid for ${args.format}).`);
+        let colorProbe: ColorProbeResult | { status: 'unavailable'; reason: string } | undefined;
+        if (args.probe) {
+          try {
+            colorProbe = await probePng(await downloadRaster(url, deliveredScale), args.probe);
+          } catch (error) {
+            if (error instanceof ColorProbeValidationError) throw error;
+            colorProbe = { status: 'unavailable', reason: 'rendered PNG could not be sampled' };
+          }
+        }
 
         if (args.focus) {
           const fbox = entry.document.absoluteBoundingBox!;
@@ -117,6 +139,7 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
             file: parsed.value, node_id: id, focus: args.focus, focus_radius: focusRadius,
             region, source_scale: sourceScale, full_res_url: url,
             note: `Focus crop (PNG) around (${args.focus.x}, ${args.focus.y}); reticle marks the exact point. Whole node at full res: curl -o screenshot.${args.format} "${url}".`,
+            ...(colorProbe ? { color_probe: colorProbe } : {}),
           };
           return {
             content: [
@@ -146,6 +169,7 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
             file: parsed.value, node_id: id, format: args.format,
             full_res_url: url, preview_scale: previewScale,
             note: `Inline preview at scale ${previewScale}. Full-res: curl -o screenshot.${args.format} "${url}" (short-lived signed URL).`,
+            ...(colorProbe ? { color_probe: colorProbe } : {}),
           };
           if (bbox) {
             meta.original_width = bbox.width;
@@ -168,6 +192,7 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
             // The degradation is ALWAYS visible: the delivered scale replaces the requested
             // one in every field that names it, and the pair of extra fields says why.
             ...(scaleDegraded ? { requested_scale: args.scale, scale_note: scaleNote } : {}),
+            ...(colorProbe ? { color_probe: colorProbe } : {}),
             note: `Download with: curl -o screenshot.${args.format} "${url}"  — short-lived signed URL, treat it like a secret.`,
           };
           if (bbox) {
@@ -217,13 +242,19 @@ export function registerGetScreenshotTool(server: McpServer, deps: ToolDeps): vo
           return textResult(await downloadText(url));
         }
         const buf = await downloadRaster(url, deliveredScale);
+        const inlineMeta = scaleDegraded || colorProbe
+          ? {
+            ...(scaleDegraded ? { scale: deliveredScale, requested_scale: args.scale, scale_note: scaleNote } : {}),
+            ...(colorProbe ? { color_probe: colorProbe } : {}),
+          }
+          : undefined;
         return {
           content: [
             { type: 'image' as const, data: buf.toString('base64'), mimeType: MIME[args.format] },
             // Inline mode has no meta channel - a degraded delivery gains a SECOND (text)
             // content item; the undegraded shape stays single-item byte-identically.
-            ...(scaleDegraded
-              ? [{ type: 'text' as const, text: JSON.stringify({ scale: deliveredScale, requested_scale: args.scale, scale_note: scaleNote }, null, 2) }]
+            ...(inlineMeta
+              ? [{ type: 'text' as const, text: JSON.stringify(inlineMeta, null, 2) }]
               : []),
           ],
         };

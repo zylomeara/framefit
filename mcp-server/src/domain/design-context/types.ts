@@ -30,6 +30,19 @@ export interface ComponentDoc {
   docs?: string[]; // documentation link uris
 }
 
+export interface ConcreteComponentInstance {
+  node_id: string;
+  name: string;
+  path: string[];
+}
+
+export interface ResolutionHints {
+  reason: 'definition_has_no_rendered_children';
+  next_call:
+    | { tool: 'find_nodes'; arguments: { file: string; query: string; type: 'INSTANCE'; depth: 8; limit: 20 } }
+    | { tool: 'get_design_context'; arguments: { file: string; node_id: string; depth: number } };
+}
+
 export interface DesignContext {
   file: string;
   node: SimplifiedNode;
@@ -37,6 +50,10 @@ export interface DesignContext {
   codeConnect?: Record<string, CodeConnectSnippet>;
   components?: Record<string, ComponentDoc>;
   screenshot?: string; // short-lived signed PNG URL, only when include_screenshot=true
+  /** Rendered instances discovered for an otherwise-empty component definition (at most five). */
+  concrete_instances?: ConcreteComponentInstance[];
+  /** One executable continuation for resolving an empty component definition to a rendered instance. */
+  resolution_hints?: ResolutionHints;
   depth?: number;
   degraded?: boolean;
   hint?: string; // set when any node in `node` was cut by the depth limit (see SimplifiedNode.truncated)

@@ -1966,7 +1966,7 @@ describe('border-color / border-width', () => {
     // The former boundColorNote demotion (warn); the mechanism was switched to a mode-resolved token:
     // mode_source:'default' = the mode is not confirmed → hex discrepancy → review (gating).
     const rows = diffPair({ node: { id: '1', name: 'n', type: 'FRAME' }, strokeHex: '#00ff00', strokeWeight: 2,
-      strokeToken: { token: 'border/accent', hex: '#00ff00', mode: 'Lunar', mode_dependent: true, mode_source: 'default', all_modes: { Solar: '#ff0000', Lunar: '#00ff00' } }, children: [] } as any,
+      strokeToken: { token: 'border/accent', defaultHex: '#00ff00', effectiveHex: null, effectiveModeSource: 'unverifiable', all_modes: { Solar: '#ff0000', Lunar: '#00ff00' } }, children: [] } as any,
       domBorder({ top: '#ff0000', right: '#ff0000', bottom: '#ff0000', left: '#ff0000' }) as any, { tolerancePx: 1 });
     expect(rows.find((r) => r.prop === 'border-color')?.status).toBe('review');
   });
@@ -2804,7 +2804,7 @@ describe('paint-style tokenization reaches colorVerdict', () => {
     // NAME arm: projector set spec.fillToken = {token:'(style: Brand/Primary)', hex}; hex matches DOM bg →
     // branch D fires. DOM classified literal → fail "tokenize".
     const s = { node: { id: '1', name: 'n', type: 'FRAME' }, fillHex: '#ff0000',
-      fillToken: { token: '(style: Brand/Primary)', hex: '#ff0000' }, children: [] } as any;
+      fillToken: { token: '(style: Brand/Primary)', effectiveHex: '#ff0000' }, children: [] } as any;
     const fill = diffPair(s, domFill({ literal: true }) as any, { tolerancePx: 1 }).find((r) => r.prop === 'fill');
     expect(fill?.status).toBe('fail');
     expect(fill?.note).toContain('tokenize');
@@ -2815,7 +2815,7 @@ describe('paint-style tokenization reaches colorVerdict', () => {
     // A paint-style hex is mode-independent & reliable → routes through branch D exactly like NAME. hex matches
     // DOM bg + DOM classified literal → fail "tokenize" (NOT the old A2 review softening).
     const s = { node: { id: '1', name: 'n', type: 'FRAME' }, fillHex: '#ff0000',
-      fillToken: { token: '(paint)', hex: '#ff0000' }, children: [] } as any;
+      fillToken: { token: '(paint)', effectiveHex: '#ff0000' }, children: [] } as any;
     const fill = diffPair(s, domFill({ literal: true }) as any, { tolerancePx: 1 }).find((r) => r.prop === 'fill');
     expect(fill?.status).toBe('fail');
     expect(fill?.note).toContain('tokenize');
@@ -2826,7 +2826,7 @@ describe('paint-style tokenization reaches colorVerdict', () => {
     // #00ff00) was demoted fail→review by the old A2-before-hex gate. Unified STATE routes hex-diverge → branch C
     // → fail. It MUST now fail, not review.
     const s = { node: { id: '1', name: 'n', type: 'FRAME' }, fillHex: '#ff0000',
-      fillToken: { token: '(paint)', hex: '#ff0000' }, children: [] } as any;
+      fillToken: { token: '(paint)', effectiveHex: '#ff0000' }, children: [] } as any;
     const fill = diffPair(s, domFill({ literal: true }, '#00ff00') as any, { tolerancePx: 1 }).find((r) => r.prop === 'fill');
     expect(fill?.status).toBe('fail');
     expect(fill?.note).toContain('diverged');
@@ -2840,7 +2840,7 @@ describe('paint-style tokenization reaches colorVerdict', () => {
 
   it('stroke-style STATE (no name) × DOM literal border → border-color row fail "tokenize" (branch D, unified)', () => {
     const s = { node: { id: '1', name: 'n', type: 'FRAME' }, strokeHex: '#0000ff', strokeWeight: 1,
-      strokeToken: { token: '(paint)', hex: '#0000ff' }, children: [] } as any;
+      strokeToken: { token: '(paint)', effectiveHex: '#0000ff' }, children: [] } as any;
     const dom = { schema: 1, status: 'ok', innerWidth: 400, rect: { x: 0, y: 0, w: 100, h: 50 },
       borders: { top: 1, right: 1, bottom: 1, left: 1 },
       borderColors: { top: '#0000ff', right: '#0000ff', bottom: '#0000ff', left: '#0000ff' },
@@ -2853,7 +2853,7 @@ describe('paint-style tokenization reaches colorVerdict', () => {
 
   it('text-color STATE (no name) × DOM literal color → color row fail "tokenize" (branch D, unified)', () => {
     const s = { node: { id: '1', name: 'n', type: 'TEXT' },
-      text: { fontSize: 14, colorHex: '#000000', colorToken: { token: '(paint)', hex: '#000000' } }, children: [] } as any;
+      text: { fontSize: 14, colorHex: '#000000', colorToken: { token: '(paint)', effectiveHex: '#000000' } }, children: [] } as any;
     const dom = { schema: 1, status: 'ok', innerWidth: 400, rect: { x: 0, y: 0, w: 100, h: 50 },
       borders: { top: 0, right: 0, bottom: 0, left: 0 }, scroll: { top: 0, left: 0 },
       styles: { color: '#000000', colorToken: { literal: true } },
@@ -2871,12 +2871,12 @@ describe('review rows carry structural token/tokenReason (confirm_token aggregat
   const fillRow = (spec: any, d: any) => diffPair(spec as any, d as any, { tolerancePx: 1 }).find((r) => r.prop === 'fill')!;
 
   it('mode-unconfirmed branch: token = name, tokenReason = mode-unconfirmed; note unchanged', () => {
-    const r = fillRow({ ...base, fillHex: '#111111', fillToken: { token: 'bg/level 2', hex: '#111111', mode_dependent: true, mode_source: 'library' } },
+    const r = fillRow({ ...base, fillHex: '#111111', fillToken: { token: 'bg/level 2', defaultHex: '#111111', effectiveHex: null, effectiveModeSource: 'unverifiable' } },
       dom({ backgroundColor: '#111111' }));
     expect(r.status).toBe('review');
     expect(r.token).toBe('bg/level 2');
     expect(r.tokenReason).toBe('mode-unconfirmed');
-    expect(r.note).toContain("the node's mode is not confirmed"); // byte-for-byte unchanged
+    expect(r.note).toContain("the node's effective mode is not confirmed");
   });
   it('bound-unresolved branch (:1008): token ABSENT, tokenReason = bound-unresolved', () => {
     const r = fillRow({ ...base, fillHex: '#111111', fillBoundVar: 'VariableID:x/1:2' }, dom({ backgroundColor: '#111111' }));
@@ -2897,19 +2897,19 @@ describe('review rows carry structural token/tokenReason (confirm_token aggregat
     expect(r.note).toBe('Figma color not resolved — the token cannot be checked'); // byte-for-byte
   });
   it('snapshot-default branch: token present, tokenReason = snapshot-default', () => {
-    const r = fillRow({ ...base, fillHex: '#111111', fillToken: { token: 'bg/x', hex: '#111111', snapshot_default: true } },
+    const r = fillRow({ ...base, fillHex: '#111111', fillToken: { token: 'bg/x', effectiveHex: '#111111', snapshot_default: true } },
       dom({ backgroundColor: '#111111' }));
     expect(r.token).toBe('bg/x');
     expect(r.tokenReason).toBe('snapshot-default');
   });
   it('D-unknown branch: tokenReason = the open code from dt.unknown (inherited)', () => {
-    const r = fillRow({ ...base, fillHex: '#111111', fillToken: { token: 'bg/x', hex: '#111111' } },
+    const r = fillRow({ ...base, fillHex: '#111111', fillToken: { token: 'bg/x', effectiveHex: '#111111' } },
       dom({ backgroundColor: '#111111', backgroundColorToken: { unknown: 'inherited' } }));
     expect(r.token).toBe('bg/x');
     expect(r.tokenReason).toBe('inherited');
   });
   it('semantic-confirm branch: both from a token', () => {
-    const r = fillRow({ ...base, fillHex: '#111111', fillToken: { token: 'bg/x', hex: '#111111' } },
+    const r = fillRow({ ...base, fillHex: '#111111', fillToken: { token: 'bg/x', effectiveHex: '#111111' } },
       dom({ backgroundColor: '#111111', backgroundColorToken: { token: '--bg-x' } }));
     expect(r.token).toBe('bg/x');
     expect(r.tokenReason).toBe('semantic-confirm');

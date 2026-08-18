@@ -27,8 +27,9 @@ const SideSchema = z.object({
   dom: DomSnapshotSchema.optional().describe('DomSnapshot from the canonical extractor (get_layout_spec include_extractor:true). Pass exactly one of dom | dom_ref.'),
   dom_ref: DomRefSchema.optional().describe(
     'Reference to a browser-uploaded snapshot batch instead of inlining raw DOM JSON - same store, '
-    + 'TTLs and addressing as compare_node_to_dom\'s dom_ref. Only the HTTP servers construct the '
-    + 'snapshot store; on stdio pass dom inline. Pass exactly one of dom | dom_ref.',
+    + 'TTLs and addressing as compare_node_to_dom\'s dom_ref. HTTP deployments and stdio\'s loopback browser '
+    + 'sidecar construct the snapshot store; if the stdio sidecar is unavailable, pass dom inline. '
+    + 'Pass exactly one of dom | dom_ref.',
   ),
 }).superRefine((p, ctx) => {
   if ((p.dom === undefined) === (p.dom_ref === undefined)) {

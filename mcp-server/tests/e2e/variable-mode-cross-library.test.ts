@@ -52,7 +52,7 @@ async function libFromFile(api: FigmaApi, fileKey: string): Promise<Lib> {
 // resolved value depends on correctly matching the node's explicit variable mode to
 // that library's mode (not just falling back to the library's default mode).
 describe.skipIf(!enabled)('nested-menu case — cross-library mode resolution', () => {
-  it('resolves 24/Stroke/menu stroke to a #8b6afb OBJECT with mode_source:node (not default #a73afd)', async () => {
+  it('resolves 24/Stroke/menu stroke with confirmed ancestor evidence and a separate diagnostic default', async () => {
     const logger = createLogger({ level: 'silent' });
     const { server, call } = makeFakeMcpServer();
 
@@ -81,8 +81,8 @@ describe.skipIf(!enabled)('nested-menu case — cross-library mode resolution', 
         // Mirrors the production wiring in src/infrastructure/server.ts: coverageComplete must
         // reach the resolver so a benign collection-default under complete ancestor coverage is
         // honestly labeled 'node' rather than dropped to an unconfirmed 'default'.
-        resolveInMode: (key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean) =>
-          resolveKeyInMode(g, key, modeByCollection, coverageComplete),
+        resolveInMode: (key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean, evidence?: import('../../src/domain/mode-resolve.js').ModeEvidenceStack) =>
+          resolveKeyInMode(g, key, modeByCollection, coverageComplete, evidence),
       },
     };
     registerGetDesignContextTool(server, deps);
@@ -101,19 +101,20 @@ describe.skipIf(!enabled)('nested-menu case — cross-library mode resolution', 
     //    suffix than the graph's library-instance copy) was matched by library key and actually applied;
     //  - A: the ancestor chain was reached even though the target node is deeper than a depth-4
     //    whole-file fetch;
-    //  - C: the resulting mode_source is honestly 'node' (confirmed), not 'default'.
+    //  - C: the resulting effective source is honestly the ancestor chain.
     const confirmed = entries.find(
       (e) =>
         e && typeof e === 'object' &&
         e.value === '#8b6afb' &&
-        e.mode_source === 'node' &&
+        e.effective_rendered_value === '#8b6afb' &&
+        e.default_value === '#a73afd' &&
+        e.effective_mode_source === 'ancestor_chain' &&
         e.mode_dependent === true &&
         typeof e.token === 'string',
     );
     expect(confirmed).toBeDefined();
 
-    // The library's DEFAULT mode resolves to #a73afd, so it must NOT appear anywhere as a value —
-    // neither as this fill's value nor smuggled in under a false 'node'/'default' label.
-    expect(JSON.stringify(body.globalVars)).not.toContain('#a73afd');
+    // The library default is retained only as diagnostic evidence, never substituted into value.
+    expect(confirmed.value).not.toBe(confirmed.default_value);
   }, 60_000);
 });

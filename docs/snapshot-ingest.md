@@ -161,7 +161,7 @@ The other two consumers mark it differently — do not expect `resolved_via` fro
 | Tool | Marker on a snapshot-resolved value |
 |---|---|
 | `get_variables` | `resolved_via: "snapshot"` on the row + the `snapshot` summary bucket |
-| `compare_node_to_dom` | `snapshot_default: true` with `mode_source: "default"` on the color row (mode-blind: the upload has no ancestor-mode context) |
+| `compare_node_to_dom` | `snapshot_default: true`, `defaultHex`, `effectiveHex: null`, and `effectiveModeSource: "unverifiable"` (mode-blind: the upload has no ancestor-mode context) |
 | `get_design_context` | the resolved value, with **no** provenance marker |
 
 `compare_node_to_dom` also consults the snapshot **only** when it could not read the consuming file's

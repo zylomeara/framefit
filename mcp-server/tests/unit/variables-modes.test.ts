@@ -1,7 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { buildVariableIndex, resolveAllModes, listTokens, resolveBoundVariableInMode } from '../../src/domain/variables.js';
+import { buildVariableIndex, resolveAllModes, listTokens, resolveBoundVariableInMode as resolveBoundVariableInModeImpl } from '../../src/domain/variables.js';
 import type { RawVariablesResponse } from '../../src/domain/figma-raw.js';
-import type { ModeStack } from '../../src/domain/mode-resolve.js';
+import type { ModeEvidenceStack, ModeStack } from '../../src/domain/mode-resolve.js';
+
+const evidenceFor = (stack: ModeStack): ModeEvidenceStack => new Map(
+  [...stack].map(([collectionId, modeId]) => [collectionId, {
+    modeId, source: 'explicit_node' as const, nodeId: 'LEAF',
+  }]),
+);
+const evidence = (entries: [string, string, 'explicit_node' | 'ancestor_chain', string][]): ModeEvidenceStack =>
+  new Map(entries.map(([collectionId, modeId, source, nodeId]) => [collectionId, { modeId, source, nodeId }]));
+
+// Existing regression cases use a direct-node stack. Adapt that test input to the new evidence
+// contract while keeping each case's original topology and behavioral assertion intact.
+function resolveBoundVariableInMode(
+  bound: Parameters<typeof resolveBoundVariableInModeImpl>[0],
+  key: Parameters<typeof resolveBoundVariableInModeImpl>[1],
+  idx: Parameters<typeof resolveBoundVariableInModeImpl>[2],
+  stack: ModeStack,
+  coverageComplete?: boolean,
+  stats?: Parameters<typeof resolveBoundVariableInModeImpl>[6],
+): ReturnType<typeof resolveBoundVariableInModeImpl> {
+  return resolveBoundVariableInModeImpl(bound, key, idx, stack, coverageComplete, evidenceFor(stack), stats);
+}
 
 const resp: RawVariablesResponse = { meta: {
   variableCollections: {
@@ -55,9 +76,10 @@ describe('resolveBoundVariableInMode honesty on cross-collection hops', () => {
     const idx = buildVariableIndex(crossResp);
     const stack: ModeStack = new Map([['VC:A', 'a2']]);   // confirms source (Dark), NOT the target
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:src' } }, 'fills', idx, stack)!;
-    expect(r.value).toBe('#ffffff');           // target DEFAULT-mode (b1) value, best-effort
+    expect(r.default_value).toBe('#ffffff');   // target DEFAULT-mode (b1) remains diagnostic
+    expect(r.value).toBeNull();                // an unconfirmed required axis is not rendered evidence
     expect(r.mode_dependent).toBe(true);
-    expect(r.mode_source).toBe('default');     // honest: hop fell back — NOT 'node'
+    expect(r.effective_mode_source).toBe('unverifiable');
   });
 
   it('keeps node source when the resolved value needs no falling-back alias hop', () => {
@@ -66,7 +88,7 @@ describe('resolveBoundVariableInMode honesty on cross-collection hops', () => {
     const stack: ModeStack = new Map([['VC:1', 'm2']]);
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'fills', idx, stack)!;
     expect(r.value).toBe('#8b6afb');
-    expect(r.mode_source).toBe('node');
+    expect(r.effective_mode_source).toBe('explicit_node');
   });
 });
 
@@ -82,32 +104,35 @@ describe('resolveBoundVariableInMode honest mode_source under complete coverage'
     const stack: ModeStack = new Map([['VC:A', 'a2']]);   // confirms source (Dark); target absent → default
     const complete = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:src' } }, 'fills', idx, stack, true)!;
     expect(complete.value).toBe('#ffffff');               // target's default-mode (b1) value
-    expect(complete.mode_source).toBe('node');            // complete coverage: absent collection genuinely defaults
+    expect(complete.effective_mode_source).toBe('explicit_node'); // explicit source pin outranks confirmed default
     const incomplete = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:src' } }, 'fills', idx, stack, false)!;
-    expect(incomplete.value).toBe('#ffffff');
-    expect(incomplete.mode_source).toBe('default');       // uncertain: an unseen ancestor might set the target
+    expect(incomplete.default_value).toBe('#ffffff');
+    expect(incomplete.value).toBeNull();
+    expect(incomplete.effective_mode_source).toBe('unverifiable');
   });
 
   it('#2 all modes explicit (no multi-mode default) → node regardless of coverage', () => {
     const idx = buildVariableIndex(resp);
     const stack: ModeStack = new Map([['VC:1', 'm2']]);
-    expect(resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'fills', idx, stack, false)!.mode_source).toBe('node');
-    expect(resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'fills', idx, stack, true)!.mode_source).toBe('node');
+    expect(resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'fills', idx, stack, false)!.effective_mode_source).toBe('explicit_node');
+    expect(resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'fills', idx, stack, true)!.effective_mode_source).toBe('explicit_node');
   });
 
   it('#3 incomplete coverage + a multi-mode default (collection absent from stack) → default', () => {
     const idx = buildVariableIndex(resp);
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'fills', idx, new Map(), false)!;
-    expect(r.value).toBe('#a73afd');
-    expect(r.mode_source).toBe('default');
+    expect(r.default_value).toBe('#a73afd');
+    expect(r.value).toBeNull();
+    expect(r.effective_mode_source).toBe('unverifiable');
   });
 
   it('#4 never-wrong: an invalid explicit mode stays default even under complete coverage', () => {
     const idx = buildVariableIndex(resp);
     const stack: ModeStack = new Map([['VC:1', 'bogus-mode']]);   // present but not a real mode → value falls back
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'fills', idx, stack, true)!;
-    expect(r.value).toBe('#a73afd');
-    expect(r.mode_source).toBe('default');
+    expect(r.default_value).toBe('#a73afd');
+    expect(r.value).toBeNull();
+    expect(r.effective_mode_source).toBe('unverifiable');
   });
 
   // #5 CONFIRMED SCENARIO (the C1 honesty regression): the downstream collection is VALIDLY PINNED
@@ -121,7 +146,7 @@ describe('resolveBoundVariableInMode honest mode_source under complete coverage'
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:src' } }, 'fills', idx, stack, true)!;
     expect(r.value).toBe('#000000');       // VC:B mode b2 — the value that actually renders on screen
     expect(r.mode_dependent).toBe(true);
-    expect(r.mode_source).toBe('node');    // every mode explicitly confirmed → honest 'node'
+    expect(r.effective_mode_source).toBe('explicit_node');
   });
 
   // #6 downstream collection PRESENT in the stack but with an INVALID/unmappable mode → the hop
@@ -132,8 +157,9 @@ describe('resolveBoundVariableInMode honest mode_source under complete coverage'
     const idx = buildVariableIndex(crossResp);
     const stack: ModeStack = new Map([['VC:A', 'a2'], ['VC:B', 'bogus']]); // target pinned to a non-mode
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:src' } }, 'fills', idx, stack, true)!;
-    expect(r.value).toBe('#ffffff');       // target default-mode (b1) value, best-effort
-    expect(r.mode_source).toBe('default'); // present-but-invalid downstream mode is never trusted as 'node'
+    expect(r.default_value).toBe('#ffffff');
+    expect(r.value).toBeNull();
+    expect(r.effective_mode_source).toBe('unverifiable');
   });
 });
 
@@ -147,25 +173,55 @@ describe('resolveBoundVariableInMode modes_applied (local path)', () => {
     const stack: ModeStack = new Map([['VC:A', 'a2'], ['VC:B', 'b2']]);
     const r = resolveBoundVariableInMode(bind, 'fills', idx, stack)!;
     expect(r.value).toBe('#000000');
-    expect(r.mode_source).toBe('node');
-    expect(r.modes_applied).toEqual({ Theme: 'Dark (node)', Palette: 'Night (node)' });
+    expect(r.effective_mode_source).toBe('explicit_node');
+    expect(r.effective_modes).toEqual({
+      Theme: { mode: 'Dark', source: 'explicit_node', node_id: 'LEAF' },
+      Palette: { mode: 'Night', source: 'explicit_node', node_id: 'LEAF' },
+    });
   });
 
   it('marks an unconfirmed hop target "(default)" and still emits under mode_source:"default"', () => {
     const idx = buildVariableIndex(crossResp);
     const stack: ModeStack = new Map([['VC:A', 'a2']]);    // Palette unconfirmed -> default b1
     const r = resolveBoundVariableInMode(bind, 'fills', idx, stack)!;
-    expect(r.value).toBe('#ffffff');
-    expect(r.mode_source).toBe('default');
-    expect(r.modes_applied).toEqual({ Theme: 'Dark (node)', Palette: 'Light (default)' });
+    expect(r.default_value).toBe('#ffffff');
+    expect(r.value).toBeNull();
+    expect(r.effective_mode_source).toBe('unverifiable');
+    expect(r.effective_modes).toEqual({
+      Theme: { mode: 'Dark', source: 'explicit_node', node_id: 'LEAF' },
+      Palette: { mode: 'Light', source: 'unverifiable' },
+    });
   });
 
-  it('single-collection multi-mode token (bg/level-1-base shape) -> no modes_applied', () => {
+  it('single-collection multi-mode token records its one effective axis', () => {
     const idx = buildVariableIndex(resp);                  // top-of-file fixture: V:1 in Theme only
     const stack: ModeStack = new Map([['VC:1', 'm2']]);
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } }, 'fills', idx, stack)!;
     expect(r.value).toBe('#8b6afb');
-    expect(r.modes_applied).toBeUndefined();
+    expect(r.effective_modes).toEqual({
+      Theme: { mode: 'Dusk', source: 'explicit_node', node_id: 'LEAF' },
+    });
+  });
+
+  it('keeps a duplicate-name downstream unverifiable axis safety-critical', () => {
+    const duplicateNames: RawVariablesResponse = { meta: {
+      variableCollections: {
+        ...crossResp.meta!.variableCollections,
+        'VC:B': { ...crossResp.meta!.variableCollections['VC:B'], name: 'Theme' },
+      },
+      variables: crossResp.meta!.variables,
+    } };
+    const idx = buildVariableIndex(duplicateNames);
+    const stack: ModeStack = new Map([['VC:A', 'a2']]);
+    const r = resolveBoundVariableInMode(bind, 'fills', idx, stack, false)!;
+    expect(r).toMatchObject({
+      default_value: '#ffffff', effective_rendered_value: null, value: null,
+      effective_mode_source: 'unverifiable', mode_dependent: true,
+      effective_modes: {
+        Theme: { mode: 'Dark', source: 'explicit_node', node_id: 'LEAF' },
+        'Theme [2]': { mode: 'Light', source: 'unverifiable' },
+      },
+    });
   });
 });
 
@@ -213,7 +269,10 @@ describe('resolveBoundVariableInMode stats.pinnedAxisUsed (out-of-band)', () => 
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:sem' } }, 'fills', idx,
       new Map([['VC:B', 'b2']]), true, stats)!;
     expect(r.value).toBe('#000000');            // pinned Night value
-    expect(r.mode_dependent).toBeUndefined();   // single-mode top: Option-B inline shape unchanged
+    expect(r.mode_dependent).toBe(true);
+    expect(r.effective_modes).toEqual({
+      Palette: { mode: 'Night', source: 'explicit_node', node_id: 'LEAF' },
+    });
     expect(stats.pinnedAxisUsed).toBe(true);    // ...but the consumed pin IS reported out-of-band
   });
 
@@ -222,6 +281,15 @@ describe('resolveBoundVariableInMode stats.pinnedAxisUsed (out-of-band)', () => 
     const stats = { pinnedAxisUsed: false, unconfirmedDefaultUsed: false };
     resolveBoundVariableInMode(bind, 'fills', idx, new Map(), true, stats);
     expect(stats.pinnedAxisUsed).toBe(false);
+    expect(stats.unconfirmedDefaultUsed).toBe(false);
+  });
+
+  it('reports an unconfirmed default without claiming that a pin was consumed', () => {
+    const idx = buildVariableIndex(crossResp);
+    const stats = { pinnedAxisUsed: false, unconfirmedDefaultUsed: false };
+    resolveBoundVariableInMode(bind, 'fills', idx, new Map(), false, stats);
+    expect(stats.pinnedAxisUsed).toBe(false);
+    expect(stats.unconfirmedDefaultUsed).toBe(true);
   });
 
   it('never appears on the returned token (globalVars dedup safety)', () => {
@@ -229,6 +297,34 @@ describe('resolveBoundVariableInMode stats.pinnedAxisUsed (out-of-band)', () => 
     const r = resolveBoundVariableInMode(bind, 'fills', idx, new Map([['VC:A', 'a2'], ['VC:B', 'b2']]), true, { pinnedAxisUsed: false, unconfirmedDefaultUsed: false })!;
     expect('pinned_axis_used' in r).toBe(false);
     expect('pinnedAxisUsed' in r).toBe(false);
+  });
+});
+
+describe('resolveBoundVariableInMode exact evidence projection', () => {
+  it('preserves distinct explicit-node and ancestor-chain provenance across two axes', () => {
+    const idx = buildVariableIndex(crossResp);
+    const stack: ModeStack = new Map([['VC:A', 'a2'], ['VC:B', 'b2']]);
+    const r = resolveBoundVariableInModeImpl(bind, 'fills', idx, stack, true, evidence([
+      ['VC:A', 'a2', 'explicit_node', 'LEAF'],
+      ['VC:B', 'b2', 'ancestor_chain', 'FRAME'],
+    ]))!;
+    expect(r).toMatchObject({
+      default_value: '#ffffff',
+      effective_rendered_value: '#000000',
+      value: '#000000',
+      effective_mode_source: 'ancestor_chain',
+      effective_modes: {
+        Theme: { mode: 'Dark', source: 'explicit_node', node_id: 'LEAF' },
+        Palette: { mode: 'Night', source: 'ancestor_chain', node_id: 'FRAME' },
+      },
+    });
+  });
+
+  it('keeps a direct single-mode token byte-for-byte compatible', () => {
+    const idx = buildVariableIndex(resp);
+    expect(resolveBoundVariableInModeImpl(
+      { fills: { type: 'VARIABLE_ALIAS', id: 'V:2' } }, 'fills', idx, new Map(), true, new Map(),
+    )).toEqual({ token: 'space/md', value: 16 });
   });
 });
 
@@ -245,9 +341,10 @@ describe('resolveBoundVariableInMode single-mode top with downstream multi-mode 
     const idx = buildVariableIndex(singleTopResp);
     const stack: ModeStack = new Map();   // downstream Palette (VC:B) ABSENT from stack → hop falls back
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:sem' } }, 'fills', idx, stack, false)!;
-    expect(r.value).toBe('#ffffff');       // Palette default-mode (b1) value, best-effort
+    expect(r.default_value).toBe('#ffffff');
+    expect(r.value).toBeNull();
     expect(r.mode_dependent).toBe(true);   // the composite IS mode-dependent via the downstream palette
-    expect(r.mode_source).toBe('default'); // incomplete coverage: an unseen ancestor could set VC:B
+    expect(r.effective_mode_source).toBe('unverifiable');
   });
 
   it('complete coverage mirror → same topology, mode_source:"node" (absent downstream genuinely defaults on screen)', () => {
@@ -256,17 +353,18 @@ describe('resolveBoundVariableInMode single-mode top with downstream multi-mode 
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:sem' } }, 'fills', idx, stack, true)!;
     expect(r.value).toBe('#ffffff');
     expect(r.mode_dependent).toBe(true);
-    expect(r.mode_source).toBe('node');    // complete coverage: absent collection genuinely defaults → honest node
+    expect(r.effective_mode_source).toBe('confirmed_default');
   });
 
-  it('no downstream fellback (single-mode top, pin CONFIRMED) → mode fields still absent (Option-B shape unchanged)', () => {
-    // Regression guard: the fix must NOT emit mode fields when the downstream hop did NOT fall back
-    // (here VC:B is validly pinned to b2), keeping the pre-fix single-mode-top inline shape.
+  it('no downstream fallback (single-mode top, pin CONFIRMED) records that downstream axis', () => {
     const idx = buildVariableIndex(singleTopResp);
     const r = resolveBoundVariableInMode({ fills: { type: 'VARIABLE_ALIAS', id: 'V:sem' } }, 'fills', idx,
       new Map([['VC:B', 'b2']]), true)!;
     expect(r.value).toBe('#000000');            // pinned Night value — on screen, no fallback
-    expect(r.mode_dependent).toBeUndefined();   // track.fellBack=false → no mode fields (unchanged)
-    expect(r.mode_source).toBeUndefined();
+    expect(r.mode_dependent).toBe(true);
+    expect(r.effective_mode_source).toBe('explicit_node');
+    expect(r.effective_modes).toEqual({
+      Palette: { mode: 'Night', source: 'explicit_node', node_id: 'LEAF' },
+    });
   });
 });

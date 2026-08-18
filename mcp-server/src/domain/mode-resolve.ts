@@ -8,6 +8,14 @@ import { extractLibraryKey } from './variable-snapshot.js';   // no cycle (varia
 
 export type ModeStack = Map<string, string>; // collectionId -> modeId
 
+export interface ModeEvidence {
+  modeId: string;
+  source: 'explicit_node' | 'ancestor_chain';
+  nodeId: string;
+}
+
+export type ModeEvidenceStack = Map<string, ModeEvidence>;
+
 function merge(base: ModeStack, explicit: Record<string, string> | undefined): ModeStack {
   // Always allocate a fresh map so every per-node stack is a distinct instance —
   // never alias the inherited stack across the ancestor chain or across sibling leaves.
@@ -166,6 +174,49 @@ export function buildModeByCollection(ancestorsRootToParent: RawSceneNode[]): Mo
     }
   }
   return out;
+}
+
+/** Fold a complete root-to-node chain by exact collection id; the nearest carrier wins. */
+export function buildExactModeEvidence(
+  chainRootToNode: RawSceneNode[], targetId: string,
+): ModeEvidenceStack {
+  const out: ModeEvidenceStack = new Map();
+  for (const node of chainRootToNode) {
+    for (const [collectionId, modeId] of Object.entries(node.explicitVariableModes ?? {})) {
+      out.set(collectionId, {
+        modeId,
+        source: sceneIdEquals(node.id, targetId) ? 'explicit_node' : 'ancestor_chain',
+        nodeId: node.id,
+      });
+    }
+  }
+  return out;
+}
+
+/** Fold a complete root-to-node chain by collection library key; the nearest carrier wins. */
+export function buildGraphModeEvidence(
+  chainRootToNode: RawSceneNode[], targetId: string,
+): ModeEvidenceStack {
+  const out: ModeEvidenceStack = new Map();
+  const seenLibKeys = new Set<string>();
+  for (let i = chainRootToNode.length - 1; i >= 0; i--) {
+    const node = chainRootToNode[i];
+    for (const [collectionId, modeId] of Object.entries(node.explicitVariableModes ?? {})) {
+      const libKey = collectionLibKey(collectionId);
+      if (seenLibKeys.has(libKey)) continue;
+      seenLibKeys.add(libKey);
+      out.set(collectionId, {
+        modeId,
+        source: sceneIdEquals(node.id, targetId) ? 'explicit_node' : 'ancestor_chain',
+        nodeId: node.id,
+      });
+    }
+  }
+  return out;
+}
+
+export function modeIds(evidence: ModeEvidenceStack): ModeStack {
+  return new Map([...evidence].map(([collectionId, item]) => [collectionId, item.modeId]));
 }
 
 export function effectiveMode(

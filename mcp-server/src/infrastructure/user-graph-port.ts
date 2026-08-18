@@ -9,6 +9,7 @@ import {
   graphCssEvidenceView, type Graph,
 } from '../domain/variable-graph.js';
 import type { ToolDeps } from '../adapters/driving/tools/get-comments-tool.js';
+import type { ModeEvidenceStack } from '../domain/mode-resolve.js';
 
 export function userGraphPort(userGraph: Graph): NonNullable<ToolDeps['variableGraph']> {
   return {
@@ -25,8 +26,8 @@ export function userGraphPort(userGraph: Graph): NonNullable<ToolDeps['variableG
         ...(multi ? { modesByName: m!.modesByName } : {}),
       };
     },
-    resolveInMode: (key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean) =>
-      resolveKeyInMode(userGraph, key, modeByCollection, coverageComplete),
+    resolveInMode: (key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean, evidence?: ModeEvidenceStack) =>
+      resolveKeyInMode(userGraph, key, modeByCollection, coverageComplete, evidence),
     isMultiMode: (key: string) => keyIsMultiMode(userGraph, key),
     cssEvidence: (referencedKeys: string[], excludeFileKey?: string) =>
       graphCssEvidenceView(userGraph, referencedKeys, excludeFileKey),

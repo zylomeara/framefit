@@ -7,7 +7,11 @@ import { extractLibraryKey } from './variable-snapshot.js';
 import { extractCssName } from './variables.js';
 import { rgbaToHex } from './design-context/color.js';
 import type { RawColor } from './figma-raw.js';
-import { recordApplied, formatModesApplied, type AppliedMode } from './design-context/resolved-token.js';
+import type { ModeEvidenceStack } from './mode-resolve.js';
+import {
+  recordApplied, formatEffectiveModes, compositeModeSource,
+  type AppliedMode, type ResolvedToken,
+} from './design-context/resolved-token.js';
 
 interface Node { name: string; valuesByMode: Record<string, unknown>; collectionId: string; fileKey: string; codeSyntaxWeb: string }
 export interface Graph {
@@ -89,7 +93,7 @@ export function buildGraph(libs: Lib[]): Graph {
 // seenLibKeys de-dupe in mode-resolve.ts, and the recordApplied dedup keys below) must compare
 // normalized strings on both sides, so normalizing once here is enough as long as the OTHER
 // side (collKeys, populated below) is also lower-cased — a case-mismatched pin/collection-key
-// pair would otherwise silently fail the join and reproduce the dishonest mode_source:'node'
+// pair would otherwise silently fail the join and produce incorrect provenance
 // this file exists to prevent (incident 2026-07-02).
 const COLLECTION_ID_PREFIX = 'VariableCollectionId:';
 
@@ -152,6 +156,43 @@ function stackHasEntryForCollection(collectionId: string, modeByCollection?: Map
   return false;
 }
 
+function graphEvidenceForCollection(
+  collectionId: string,
+  evidence?: ModeEvidenceStack,
+  publishedKey?: string,
+) {
+  if (!evidence) return undefined;
+  const exact = evidence.get(collectionId);
+  if (exact !== undefined) return exact;
+  const scanKey = collectionId.includes('/') ? collectionLibKey(collectionId) : (publishedKey || undefined);
+  if (scanKey === undefined) return undefined;
+  for (const [entryId, item] of evidence) {
+    if (collectionLibKey(entryId) === scanKey) return item;
+  }
+  return undefined;
+}
+
+function graphAxisEvidence(
+  collectionId: string,
+  modeId: string,
+  modes: { modeId: string; name: string }[],
+  modeByCollection: Map<string, string>,
+  coverageComplete: boolean | undefined,
+  evidence: ModeEvidenceStack | undefined,
+  publishedKey?: string,
+): Pick<AppliedMode, 'source' | 'nodeId'> {
+  const hasStackEntry = stackHasEntryForCollection(collectionId, modeByCollection, publishedKey);
+  const item = graphEvidenceForCollection(collectionId, evidence, publishedKey);
+  if (hasStackEntry) {
+    if (!modes.some((mode) => mode.modeId === modeId) || !item || item.modeId !== modeId) {
+      return { source: 'unverifiable' };
+    }
+    return { source: item.source, nodeId: item.nodeId };
+  }
+  if (item !== undefined) return { source: 'unverifiable' };
+  return { source: coverageComplete ? 'confirmed_default' : 'unverifiable' };
+}
+
 export interface Resolved { value?: string; name?: string; missingKey?: string }
 
 export function resolveKey(g: Graph, key: string, hops = 0): Resolved {
@@ -208,11 +249,11 @@ function pickTargetMode(
 // mode. `track.fellBack` records whether any hop had to fall back to a default (multi-mode)
 // mode; `track.invalidExplicit` records the SUBSET of those fallbacks where the collection had an
 // explicit (but unmappable) stack entry — never rescued to 'node' by coverage. The caller uses
-// both to keep mode_source honest. `modeByCollection`/`track` are optional so best-effort callers
+// both to keep rendered-value evidence honest. `modeByCollection`/`track` are optional so best-effort callers
 // (resolveKeyModes, which has no node stack) keep their prior behavior.
 function resolveNodeInMode(
   g: Graph, node: Node, modeId: string, hops: number,
-  modeByCollection?: Map<string, string>, track?: { fellBack: boolean; invalidExplicit?: boolean; applied?: AppliedMode[] },
+  modeByCollection?: Map<string, string>, track?: GraphModeTrack,
 ): string | undefined {
   if (hops > 14) return undefined;
   // Prefer the requested mode; if the (possibly alias-hopped) node's collection doesn't
@@ -230,14 +271,18 @@ function resolveNodeInMode(
     if (track) {
       if (pick.fellBack) track.fellBack = true;
       if (pick.invalidExplicit) track.invalidExplicit = true;
+      if (pick.source === 'node') track.pinnedAxisUsed = true;
       if (track.applied && pick.source !== 'inherited') {
         const collKey = target.fileKey + '|' + target.collectionId;
         const tModes = g.collModes.get(collKey) ?? [];
         if (tModes.length > 1) recordApplied(track.applied, {
           key: target.fileKey + '|' + collectionLibKey(target.collectionId),
-          collection: g.collNames.get(collKey) ?? '',
-          mode: tModes.find((m) => m.modeId === pick.modeId)?.name ?? '',
-          source: pick.source,
+          collection: g.collNames.get(collKey) ?? target.collectionId,
+          mode: tModes.find((m) => m.modeId === pick.modeId)?.name ?? pick.modeId,
+          ...graphAxisEvidence(
+            target.collectionId, pick.modeId, tModes, modeByCollection ?? new Map(),
+            track.coverageComplete, track.evidence, g.collKeys.get(collKey),
+          ),
         });
       }
     }
@@ -247,9 +292,19 @@ function resolveNodeInMode(
   return val === undefined || val === null ? undefined : String(val);
 }
 
+type GraphModeTrack = {
+  fellBack: boolean;
+  invalidExplicit?: boolean;
+  applied?: AppliedMode[];
+  pinnedAxisUsed?: boolean;
+  coverageComplete?: boolean;
+  evidence?: ModeEvidenceStack;
+};
+
 export function resolveKeyInMode(
   g: Graph, key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean,
-): { token?: string; value: string; mode?: string; mode_dependent: boolean; mode_source: 'node' | 'default'; modes_applied?: Record<string, string>; pinned_axis_used: boolean; unconfirmed_default_used: boolean } | undefined {
+  evidence?: ModeEvidenceStack,
+): (ResolvedToken & { pinned_axis_used: boolean; unconfirmed_default_used: boolean }) | undefined {
   const node = g.byKey.get(key.toLowerCase());
   if (!node) return undefined;
   const modes = g.collModes.get(node.fileKey + '|' + node.collectionId) ?? [];
@@ -265,50 +320,54 @@ export function resolveKeyInMode(
   const modeId = validPicked ?? defaultMode ?? Object.keys(node.valuesByMode)[0];
   // Thread the node's per-collection mode map through the alias chain so a cross-collection hop
   // that cannot confirm its target's mode is recorded (track.fellBack / track.invalidExplicit).
-  const track = { fellBack: false, invalidExplicit: false, applied: [] as AppliedMode[] };
+  const track: GraphModeTrack = {
+    fellBack: false, invalidExplicit: false, applied: [], pinnedAxisUsed: false,
+    coverageComplete, evidence,
+  };
+  if (validPicked !== undefined) track.pinnedAxisUsed = true;
   if (multi) recordApplied(track.applied, {
     key: node.fileKey + '|' + collectionLibKey(node.collectionId),
-    collection: g.collNames.get(node.fileKey + '|' + node.collectionId) ?? '',
-    mode: modes.find((m) => m.modeId === modeId)?.name ?? '',
-    source: validPicked !== undefined ? 'node' : 'default',
+    collection: g.collNames.get(node.fileKey + '|' + node.collectionId) ?? node.collectionId,
+    mode: modes.find((m) => m.modeId === modeId)?.name ?? modeId,
+    ...graphAxisEvidence(
+      node.collectionId, modeId, modes, modeByCollection, coverageComplete, evidence,
+      g.collKeys.get(node.fileKey + '|' + node.collectionId),
+    ),
   });
   const value = resolveNodeInMode(g, node, modeId, 0, modeByCollection, track);
   if (value === undefined) return undefined;
-  // Honest, TRUSTWORTHY mode_source. `usedMultiModeDefault` = at least one MULTI-mode
-  // collection in the chain (INCLUDING the TOP variable's own) took its collection default rather
-  // than a mode explicitly present in the stack for it (track.fellBack covers downstream hops; the
-  // `multi && validPicked === undefined` term adds the TOP collection). When NO multi-mode default
-  // was used, every mode was explicitly confirmed → 'node' regardless of coverage. When some was
-  // used but coverage is COMPLETE, an absent-from-stack collection genuinely uses its default on
-  // screen → the composite equals on-screen → 'node'. Incomplete coverage → an unseen ancestor
-  // might override → 'default'. Residual: a multi-mode collection whose EXPLICIT stack entry
-  // could not be validly applied (present but invalid/unknown mode id) is UNSAFE — on screen it
-  // uses that unmappable mode, so our default-mode value may differ; never rescue it to 'node'.
-  const usedMultiModeDefault = track.fellBack || (multi && validPicked === undefined);
-  const invalidExplicit = track.invalidExplicit
-    || (multi && validPicked === undefined && stackHasEntryForCollection(node.collectionId, modeByCollection, g.collKeys.get(node.fileKey + '|' + node.collectionId)));
-  const source: 'node' | 'default' =
-    !invalidExplicit && (!usedMultiModeDefault || coverageComplete) ? 'node' : 'default';
-  const modeName = modes.find((m) => m.modeId === modeId)?.name;
-  const applied = formatModesApplied(track.applied);
+  // Port-only accounting stays separate from the serialized evidence. Any axis sourced from an
+  // explicit node or ancestor consumes a pin; any unverifiable axis records an unconfirmed default.
   // mode_context (spec (1)): unconditional port-level signal — present on BOTH branches (a
   // single-mode top can still consume a pin downstream); the tool must read it before its
   // mode_dependent-gated discard and never copy it onto the interned ResolvedToken.
-  const pinned_axis_used = track.applied.some((a) => a.source === 'node');
+  const pinned_axis_used = track.pinnedAxisUsed === true
+    || track.applied?.some((a) => a.source === 'explicit_node' || a.source === 'ancestor_chain') === true;
   // mode_context (R1): mirrors resolveBoundVariableInMode's stats block — for a single-mode top,
   // usedMultiModeDefault === track.fellBack (a downstream multi-mode hop defaulted).
-  const unconfirmed_default_used = invalidExplicit || (usedMultiModeDefault && !coverageComplete);
-  // Emit the mode-aware object when the TOP is multi-mode OR a downstream multi-mode hop fell back
-  // (track.fellBack): in the latter the value IS mode-dependent even though the top is single-mode, so a
-  // hardcoded non-multi `mode_dependent:false` would hide a real downstream theme-dependence. This is the
-  // cross-library MIRROR of the resolveBoundVariableInMode fix (`(multi || track.fellBack)` gate) — leaving
-  // it asymmetric = local emits the signal, graph doesn't = the "mirror desync → false confidence" trap.
-  // `source` already reflects it honestly ('default' under incomplete coverage → get_design_context
-  // surfaces the ⚠️ mode hint; 'node' when the downstream mode is confirmed and genuinely on-screen).
-  return { token: node.name, value, pinned_axis_used, unconfirmed_default_used,
-    ...((multi || track.fellBack)
-      ? { mode: modeName, mode_dependent: true, mode_source: source, ...(applied ? { modes_applied: applied } : {}) }
-      : { mode_dependent: false, mode_source: 'default' }) };
+  const unconfirmed_default_used = track.applied?.some((a) => a.source === 'unverifiable') === true;
+  // Emit the mode-aware object whenever the top or a downstream alias hop reached a multi-mode
+  // collection. The default composite is resolved independently and remains diagnostic when the
+  // effective evidence is unverifiable.
+  const applied = track.applied ?? [];
+  if (applied.length === 0) return { token: node.name, value, pinned_axis_used, unconfirmed_default_used };
+  // Safety is computed from the identity-preserving axes before their display-name projection.
+  const effectiveModeSource = compositeModeSource(applied);
+  const effectiveModes = formatEffectiveModes(applied)!;
+  const defaultValue = resolveKey(g, key).value;
+  if (defaultValue === undefined) return undefined;
+  const effectiveRenderedValue = effectiveModeSource === 'unverifiable' ? null : value;
+  return {
+    token: node.name,
+    default_value: defaultValue,
+    effective_rendered_value: effectiveRenderedValue,
+    value: effectiveRenderedValue,
+    effective_modes: effectiveModes,
+    effective_mode_source: effectiveModeSource,
+    mode_dependent: true,
+    pinned_axis_used,
+    unconfirmed_default_used,
+  };
 }
 
 export function resolveKeyModes(

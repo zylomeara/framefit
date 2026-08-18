@@ -7,7 +7,7 @@ import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/no
 import { buildLayoutSpec, budgetFor, collectLeafTexts } from '../../../domain/layout-spec/projector.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
 import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
-import { collectSubtreeModes, collectSubtreeChains, hasBoundPaintColor, buildModeByCollection } from '../../../domain/mode-resolve.js';
+import { collectSubtreeChains, hasBoundPaintColor, buildExactModeEvidence, buildGraphModeEvidence, modeIds } from '../../../domain/mode-resolve.js';
 import { makeColorTokenResolver, prefetchSnapshotHits, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
 import { FigmaApiError } from '../../../ports/errors.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
@@ -32,7 +32,7 @@ const InputSchema = {
     .describe('loader (default): a short thunk that fetches the versioned extractor from the server ' +
       '(GET /api/dom-snapshots/extractor.js) instead of inlining the whole script ' +
       'every call - falls back to inline automatically if the server has no public base URL configured, ' +
-      'which is every stdio deployment. inline: always return the full extractor script (e.g. if the ' +
+      'including a stdio process whose loopback browser bridge could not start. inline: always return the full extractor script (e.g. if the ' +
       'loader\'s script-tag injection is CSP-blocked).'),
   max_depth: z.number().int().min(1).max(8).optional()
     .describe('Capture depth for BOTH sides (Figma projection + emitted extractor); default 4. Drill into a ' +
@@ -56,10 +56,11 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
       '(schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script ' +
       '(extractor_mode:"loader", the default) is returned only when the server has a public base URL to point the ' +
       'browser at - otherwise, and whenever extractor_mode:"inline" is passed, the full script comes back inline, ' +
-      'with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL, ' +
-      'plus the snapshot store only the HTTP servers construct, is what also returns an upload_url the extractor can ' +
-      'POST snapshots to directly from the browser, yielding a dom_ref to pass to compare_node_to_dom; the stdio ' +
-      'server has neither, so pass the snapshot inline as compare_node_to_dom\'s dom.',
+      'with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL ' +
+      'and snapshot store are available on HTTP deployments and through stdio\'s loopback browser sidecar; they return ' +
+      'an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref for ' +
+      'compare_node_to_dom. If the stdio sidecar cannot start, the response fails soft to the inline extractor and ' +
+      'inline DOM snapshots, with a machine-readable browser_bridge receipt.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -85,7 +86,7 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         // (2) the variables fetch is ALWAYS capped (compare caps MT-only): a bounded miss with a
         //     degraded_stages receipt beats a measured ~90s stall, and the caller still has
         //     fillBoundVar + this receipt to tell "not bound" from "bound, fetch degraded";
-        // (3) subtree-only mode stacks, NO whole-file ancestor discovery — so mode_source is
+        // (3) subtree-only mode evidence, NO whole-file ancestor discovery — so the source is
         //     honestly 'default' whenever the pin sits above the fetched subtree. The token NAME
         //     is the portable artifact; for a mode-confirmed VALUE run compare_node_to_dom or
         //     get_design_context, which do pay for ancestor discovery.
@@ -119,12 +120,13 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
           const entry = res.nodes[id];
           if (!entry?.document) return { node_id: id, error: 'not found' };
           const setNames = await buildSetNames(api, entry, deps.logger);
-          const subtreeModes = collectSubtreeModes(entry.document);
           const subtreeChains = collectSubtreeChains(entry.document);
           const resolveColorToken = makeColorTokenResolver({
             variableIndex, snapHits, variableGraph: deps.variableGraph,
-            stackFor: (n: RawSceneNode) => subtreeModes.get(n.id) ?? new Map<string, string>(),
-            graphStackFor: (n: RawSceneNode) => buildModeByCollection(subtreeChains.get(n.id) ?? [n]),
+            stackFor: (n: RawSceneNode) => modeIds(buildExactModeEvidence(subtreeChains.get(n.id) ?? [n], n.id)),
+            graphStackFor: (n: RawSceneNode) => modeIds(buildGraphModeEvidence(subtreeChains.get(n.id) ?? [n], n.id)),
+            exactEvidenceFor: (n: RawSceneNode) => buildExactModeEvidence(subtreeChains.get(n.id) ?? [n], n.id),
+            graphEvidenceFor: (n: RawSceneNode) => buildGraphModeEvidence(subtreeChains.get(n.id) ?? [n], n.id),
             coverageComplete: false,   // ancestors above the fetched subtree are never observed here
             omitAllModes: true,        // all_modes is compare's confirm payload, not navigation data
           });
@@ -148,8 +150,8 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         // Multi-use upload_url: minted only when the caller asked for the extractor AND the
         // server is wired for the browser-direct upload flow (snapshotStore + a public base URL
         // to point the browser at). Absent either, the tool falls back to its prior output
-        // unchanged — no field, no mint() call (a stdio/local-dev server with no public HTTP
-        // endpoint is a correct, silent no-op here, not an error).
+        // unchanged — no field, no mint() call. On stdio this is the fail-soft branch when the
+        // loopback browser bridge could not start.
         const uploadUrl = args.include_extractor && deps.snapshotStore && deps.publicBaseUrl
           ? `${deps.publicBaseUrl}/api/dom-snapshots/${deps.snapshotStore.mint(deps.tenantId ?? 'local', widths.length ? { expectedWidths: widths } : undefined)}`
           : undefined;
@@ -201,14 +203,17 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
               result_truncated_note: 'result exceeded the budget — re-request the omitted node_ids in a separate get_layout_spec call (fewer node_ids at a time) or lower max_depth' } : {}),
             ...(keptHydration.length ? { hydration: keptHydration } : {}),
             ...extractorFields,
+            ...(args.include_extractor && deps.browserBridgeDegraded
+              ? { browser_bridge: deps.browserBridgeDegraded }
+              : {}),
             // The call form for the branch with NO upload_url — this fires on `!uploadUrl`, which is
-            // every stdio server (no snapshot store, no public base URL) and equally any server that
+            // a degraded stdio server (no snapshot store, no public base URL) and equally any server that
             // has a public base URL but no snapshot store: uploadUrl needs BOTH, the loader needs only
             // the base URL, so that server would hand back a loader thunk AND this hint. No shipped
             // wiring builds one — but the guard is `!uploadUrl`, and the hint is true of any branch it
             // fires on: without an upload_url the snapshots come back to the caller either way.
-            // The guidance used to live only in upload_hint, i.e. in the one branch stdio never
-            // reaches, so a stdio caller got the full inline extractor and no instructions at all; the
+            // The guidance used to live only in upload_hint, so a caller on any degraded/no-endpoint
+            // path got the full inline extractor and no instructions at all; the
             // usual guess is then to re-paste it per capture and re-request it per call, which costs a
             // cycle roughly 3x what it needs to.
             //

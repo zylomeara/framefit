@@ -37,6 +37,60 @@ function harness(over: Partial<FigmaApi> = {}, maxResultChars = 40000) {
 }
 
 describe('get_design_context tool', () => {
+  const componentDefinition = (extra: Record<string, unknown> = {}) => ({
+    id: '1:5', name: 'Card', type: 'COMPONENT', ...extra,
+  });
+  const instanceSkeleton = (containers: { id: string; name: string }[] = []) => ({
+    name: 'F', lastModified: 'X', version: '1',
+    document: { id: '0:0', name: 'Doc', type: 'DOCUMENT', children: [
+      { id: '0:1', name: 'Board', type: 'CANVAS', children: containers.map((c) => ({ ...c, type: 'FRAME' })) },
+    ] },
+  });
+
+  it('adds an executable find_nodes continuation for an empty root component', async () => {
+    const getNodesRaw = vi.fn(async (_file: string, ids: string[]) =>
+      ({ nodes: { [ids[0]]: ids[0] === '1:5' ? { document: componentDefinition() } : null } }));
+    const run = harness({ getNodesRaw, getDocumentRaw: async () => instanceSkeleton() as any });
+
+    const res = await run({ file: 'abc', node_id: '1-5', depth: 4 });
+    const body = JSON.parse(res.content[0].text as string);
+    expect(body.resolution_hints).toEqual({
+      reason: 'definition_has_no_rendered_children',
+      next_call: { tool: 'find_nodes', arguments: { file: 'abc', query: 'Card', type: 'INSTANCE', depth: 8, limit: 20 } },
+    });
+  });
+
+  it('uses the one concrete rendered instance as the only continuation', async () => {
+    const container = { id: '2:1', name: 'Checkout', type: 'FRAME', children: [
+      { id: '2:2', name: 'Card instance', type: 'INSTANCE', componentId: '1:5' },
+    ] };
+    const getNodesRaw = vi.fn(async (_file: string, ids: string[]) => ({
+      nodes: { [ids[0]]: ids[0] === '1:5' ? { document: componentDefinition() } : ids[0] === '2:1' ? { document: container } : null },
+    }));
+    const run = harness({ getNodesRaw, getDocumentRaw: async () => instanceSkeleton([{ id: '2:1', name: 'Checkout' }]) as any });
+
+    const body = JSON.parse((await run({ file: 'abc', node_id: '1-5', depth: 4 })).content[0].text as string);
+    expect(body.concrete_instances).toEqual([{ node_id: '2:2', name: 'Card instance', path: ['Board', 'Checkout'] }]);
+    expect(body.resolution_hints.next_call).toEqual({
+      tool: 'get_design_context', arguments: { file: 'abc', node_id: '2:2', depth: 4 },
+    });
+  });
+
+  it('does not hint for a root component whose rendered children were truncated', async () => {
+    const run = harness({ getNodesRaw: async () => ({ nodes: { '1:5': { document: componentDefinition({ truncated: true }) } } }) });
+
+    const body = JSON.parse((await run({ file: 'abc', node_id: '1-5', depth: 4 })).content[0].text as string);
+    expect(body.resolution_hints).toBeUndefined();
+  });
+
+  it('does not hint for an ordinary empty frame or an already rendered instance root', async () => {
+    const frameRun = harness({ getNodesRaw: async () => ({ nodes: { '1:5': { document: { id: '1:5', name: 'Empty', type: 'FRAME' } } } }) });
+    const instanceRun = harness({ getNodesRaw: async () => ({ nodes: { '1:5': { document: { id: '1:5', name: 'Card', type: 'INSTANCE', componentId: '1:4' } } } }) });
+
+    expect(JSON.parse((await frameRun({ file: 'abc', node_id: '1-5', depth: 4 })).content[0].text as string).resolution_hints).toBeUndefined();
+    expect(JSON.parse((await instanceRun({ file: 'abc', node_id: '1-5', depth: 4 })).content[0].text as string).resolution_hints).toBeUndefined();
+  });
+
   it('returns simplified node with fill resolved to the token name', async () => {
     const run = harness();
     const res = await run({ file: 'abc', node_id: '1-5', depth: 4 });
@@ -328,10 +382,18 @@ describe('get_design_context tool', () => {
       const tokenWithout = bodyWithout.globalVars[leafWithout.fill];
       const tokenWith = bodyWith.globalVars[leafWith.fill];
       expect(tokenWith).toMatchObject({
-        value: tokenWithout.value, mode: tokenWithout.mode, mode_source: tokenWithout.mode_source,
+        value: tokenWithout.value,
+        effective_rendered_value: tokenWithout.effective_rendered_value,
+        effective_modes: tokenWithout.effective_modes,
+        effective_mode_source: tokenWithout.effective_mode_source,
       });
       // Sanity: the mode really did resolve node-confirmed Dark (#8b6afb), not silently defaulted.
-      expect(tokenWithout).toMatchObject({ value: '#8b6afb', mode: 'Dark', mode_source: 'node' });
+      expect(tokenWithout).toMatchObject({
+        value: '#8b6afb',
+        effective_rendered_value: '#8b6afb',
+        effective_mode_source: 'ancestor_chain',
+        effective_modes: { Theme: { mode: 'Dark', source: 'ancestor_chain', node_id: '1:5' } },
+      });
     });
 
     // REGRESSION (Finding 2): the HONESTY REGRESSION test above uses an inert depth+1 node (a plain
@@ -404,9 +466,16 @@ describe('get_design_context tool', () => {
 
       // (a) LEAF's resolution is untouched by the never-rendered depth+1 alias.
       expect(tokenWith).toMatchObject({
-        value: tokenWithout.value, mode: tokenWithout.mode, mode_source: tokenWithout.mode_source,
+        value: tokenWithout.value,
+        effective_rendered_value: tokenWithout.effective_rendered_value,
+        effective_modes: tokenWithout.effective_modes,
+        effective_mode_source: tokenWithout.effective_mode_source,
       });
-      expect(tokenWithout).toMatchObject({ value: '#8b6afb', mode: 'Dark', mode_source: 'node' });
+      expect(tokenWithout).toMatchObject({
+        value: '#8b6afb',
+        effective_rendered_value: '#8b6afb',
+        effective_mode_source: 'ancestor_chain',
+      });
 
       // (b) the critical guard: a bound variable that exists ONLY on a depth+1 (never-rendered) node
       // must not trigger ancestor-discovery. Pre-fix, needsAncestors() walks the whole (unpruned)

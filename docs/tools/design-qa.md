@@ -47,29 +47,26 @@ to verify it against a rendered page, use
 
 **Which deployment the examples on this page need.** Every request example below is shaped for the
 stdio server the [quickstart](../../README.md#quickstart) installs - substitute your own file key
-and node ids and it runs there. The one thing that does not run there is `dom_ref`: it, and the
-`upload_url` that mints it, need the DOM-snapshot store, which only the HTTP server paths construct.
-On stdio `suggest_pairs` throws `snapshot store unavailable on this server — pass dom_snapshot
-inline`, and `compare_node_to_dom` notes `snapshot store unavailable on this server — pass dom
-inline` on the pair. So the examples here pass the snapshot inline; switch to `dom_ref` once you run
-the server over HTTP.
+and node ids and it runs there. Stdio starts a loopback-only browser sidecar, then registers all
+tools with that sidecar's one shared `DomSnapshotStore` and its ephemeral public base URL. With
+`include_extractor:true`, `get_layout_spec` returns a short loader and an `upload_url` under that
+origin. Run the returned `upload_hint` in the browser: the extractor loads from the sidecar, POSTs
+the captures there, and returns `{snapshot_ref,summaries}`. Pass that ref as `dom_ref` to
+`suggest_pairs`, `compare_node_to_dom`, or `compare_dom_to_dom`; the same store resolves it.
 
-**What the two big payloads cost, and who can avoid paying it.** Step 2's `extractor_js` is the whole
-script inline on stdio, and step 3's snapshot is tens of thousands of characters per pair. Both cross
-an agent's context by default, and neither has to:
-[`examples/first-verdict.mjs`](../../examples/first-verdict.mjs) `serve-extractor` holds the script on
-a loopback socket so the page fetches it, and its `verdict` reads the capture from a file the browser
-tool wrote (chrome-devtools' `evaluate_script` takes a `filePath`). **That is the client avoiding the
-crossing, not the tool contract changing.** `suggest_pairs` still takes `dom_snapshot` inline and
-`compare_node_to_dom` still takes `pairs[].dom` inline — an agent calling these tools directly, with
-no client in between, pays both costs in full, and so does any other client that does not do the same
-two things.
+**Fail-soft fallback.** If the loopback bridge cannot bind, stdio still starts. A layout-spec call
+that requests the extractor returns the full inline script, no `upload_url`, and
+`browser_bridge:{status:"unavailable",reason:"loopback bridge could not start; using inline extractor"}`.
+Run the inline extractor and pass its snapshot object as `dom_snapshot`/`dom`. This fallback keeps
+the workflow available but sends the large extractor and snapshots over the MCP wire. The
+[`examples/first-verdict.mjs`](../../examples/first-verdict.mjs) file-based path remains useful when
+a browser client cannot use `dom_ref` directly.
 
 **Where the response examples come from.** Each one below is a real return of that tool's handler,
 captured from the request shown above it against a stub of one small Figma file (a `Product card`
 section holding a `Desktop` and a `Mobile` frame, the Desktop one holding the 320x420 card the other
 examples measure). They are then **trimmed, never edited**: an elided array or object tail is marked
-`/* ... */`, and two strings too long to print — the inline extractor and the report markdown — are
+`/* ... */`, and two strings too long to print — the short loader and the report markdown — are
 replaced by a `<..., N chars - elided>` placeholder. Nothing is added.
 `mcp-server/tests/unit/docs-response-examples.test.ts` rebuilds every capture from the handler on
 each test run and fails if a key or a value on this page is not in it.
@@ -84,13 +81,11 @@ frame width and build node<->selector pairs before `compare_node_to_dom`.
 
 `include_extractor:true` returns the DOM extractor (schema-versioned with the server) as
 `extractor_js`: the loader thunk that fetches the canonical script (`extractor_mode:"loader"`, the
-default) is returned only when the server has a public base URL to point the browser at -
-otherwise, and whenever `extractor_mode:"inline"` is passed, the full script comes back inline, with
-`extractor_note` saying so when the loader was asked for and was unavailable. That same public base
-URL, plus the snapshot store only the HTTP servers construct, is what also returns an `upload_url`
-the extractor can POST snapshots to directly from the browser, yielding a `dom_ref` to pass to
-`compare_node_to_dom`; the stdio server has neither, so pass the snapshot inline as
-`compare_node_to_dom`'s `dom`.
+default) is returned when the server has a public base URL - including stdio's ephemeral loopback
+sidecar. The same sidecar store returns an `upload_url` that the extractor can POST snapshots to,
+yielding a `dom_ref`. Whenever `extractor_mode:"inline"` is passed, the full script comes back
+inline. If stdio's sidecar could not start, loader mode also falls back to the full inline script,
+adds `extractor_note`, omits `upload_url`, and adds the `browser_bridge` receipt shown above.
 
 The exact delivered `content[0].text` is capped at 1 MiB (`1_048_576` UTF-8 bytes), including
 hydration, degradation, extractor and upload guidance. When a batch is too large, the tool keeps the
@@ -114,7 +109,7 @@ limit.
 | `file` | string, **required** | Figma file URL or raw key |
 | `node_ids` | string[], **required** | Node ids to project into diff-ready layout specs, up to 20 per call (batched in one REST call). |
 | `include_extractor` | boolean (default `false`) | Include the canonical DOM extractor script (paste it VERBATIM into chrome-devtools `evaluate_script`). |
-| `extractor_mode` | `"loader"` \| `"inline"` (default `"loader"`) | `loader`: a short thunk that fetches the versioned extractor from the server (`GET /api/dom-snapshots/extractor.js`) instead of inlining the whole script every call - falls back to inline automatically if the server has no public base URL configured, which is every stdio deployment. `inline`: always return the full extractor script (e.g. if the loader's script-tag injection is CSP-blocked). |
+| `extractor_mode` | `"loader"` \| `"inline"` (default `"loader"`) | `loader`: a short thunk that fetches the versioned extractor from the server (`GET /api/dom-snapshots/extractor.js`) instead of inlining the whole script every call; stdio serves it from its loopback sidecar and falls back inline only if that bridge is unavailable. `inline`: always return the full extractor script (e.g. if the loader's script-tag injection is CSP-blocked). |
 | `max_depth` | integer 1–8 (default 4) | Capture depth for BOTH sides (Figma projection + emitted extractor). Drill into a `childrenTruncated` branch by re-fetching it deeper (e.g. `max_depth:6`) - pass the SAME `max_depth` to `compare_node_to_dom` for that pair, or the Figma/DOM sides desync. |
 | `text_leaves` | boolean (default `false`) | Instead of the full spec tree, return a flat list of leaf TEXT nodes (id/name/path/text_snippet/typography) under each node_id - one call to enumerate typography for pair-building/inspection, no manual frame->children->text drill. Respects `max_depth`; `text_leaves_truncated` flags leaves beyond the depth cut (raise `max_depth` to reach them). |
 | `figma_token` | string | Override Figma PAT |
@@ -130,7 +125,7 @@ limit.
 }
 ```
 
-Response (abridged), from the stdio server:
+Response (abridged), from a healthy stdio loopback sidecar:
 
 ```jsonc
 {
@@ -158,13 +153,12 @@ Response (abridged), from the stdio server:
     { "node_id": "12:340", "held_depth": 5, "hydrated": true, "drill_free_upto": 4,
       "cause_breakdown": { "depth": 0, "breadth": 0, "budget": 0 } }
   ],
-  "extractor_js": "<full inline extractor script, 72395 chars - elided>",
-  "extractor_note": "loader unavailable without public base URL — inline returned",
-  "extractor_hint": "no upload_url on this server: the extractor hands the snapshots back to you. Paste extractor_js ONCE inside a thunk: `() => { window.__extract = <extractor_js VERBATIM>; return 'ok'; }` (evaluate_script CALLS what you send with no arguments, so a bare assignment throws) — then every capture is `async () => await window.__extract([\"<sel>\", …], undefined, 3, 90)` (a reload drops the handle — paste again). Pass include_extractor:false on every later get_layout_spec call. Hand each snapshot inline to the matching compare_node_to_dom pairs[i].dom."
-  /* On an HTTP server with a public base URL, extractor_js is the versioned loader thunk instead,
-     there is no extractor_note and no extractor_hint, and an
-     "upload_url": "https://<server>/api/dom-snapshots/<capToken>" is returned alongside it, carrying
-     its own "upload_hint" with the browser-POST call form. */
+  "extractor_js": "<loader thunk, 495 chars - elided>",
+  "upload_url": "http://127.0.0.1:3846/api/dom-snapshots/<capToken>",
+  "upload_hint": "call the extractor as: async () => { const extract = <extractor_js VERBATIM>; return await extract([\"<sel>\", …], \"<upload_url>\", 3, 90); } — extractor_js decides for itself whether to load the canonical script from the server (loader) or is already the full script (inline); it returns {snapshot_ref, summaries}; pass pairs to compare_node_to_dom as dom_ref:{ref, index} (selector position, 0-based, disambiguates duplicates) or {ref, selector}; a batch >2MB — split it into several POSTs under the same upload_url (the limit is per-POST, not per-session)"
+  /* If the stdio bridge cannot start, upload_url/upload_hint are absent; extractor_js is the full
+     inline script and the response adds extractor_note, extractor_hint, and the browser_bridge
+     unavailable receipt documented above. */
 }
 ```
 
@@ -178,13 +172,13 @@ own pair in `compare_node_to_dom`.
 `text.colorHex`) are the RAW paint values from the REST response - for a color bound to a Figma
 variable that raw hex is a snapshot in the library's default mode and may legitimately differ in
 the app under another mode. When the binding can be resolved, the spec carries a sibling
-`fillToken`/`strokeToken`/`text.colorToken` object: `{ token, hex, mode?, mode_dependent?,
-mode_source? }` (single-mode tokens omit `mode_source`) - `token` is the variable name (the thing to write into code), `hex` its
-mode-resolved value. `mode_source: "node"` means the mode was confirmed by an explicit pin inside
-the FETCHED subtree; `"default"` means no pin was visible here and the value shown is the
-collection default - this tool deliberately does not pay for whole-file ancestor discovery, so a
-pin sitting above the requested node reads `"default"` where `get_design_context` (which does
-discover ancestors) says `"node"`. When both tools name a binding they name it identically - one
+`fillToken`/`strokeToken`/`text.colorToken` object: `{ token, defaultHex?, effectiveHex,
+effectiveModes?, effectiveModeSource? }`. `token` is the variable name (the thing to write into
+code); `effectiveHex` is the evidenced rendered value. A multi-mode token with no visible pin has
+`effectiveHex: null` and `effectiveModeSource: "unverifiable"`; `defaultHex` remains diagnostic
+only. This tool deliberately does not pay for whole-file ancestor discovery, so a pin above the
+requested node stays unverifiable where `get_design_context` can report `ancestor_chain` with a
+non-null rendered value. When both tools name a binding they name it identically - one
 shared resolver - but today `get_design_context` does not name every binding this tool can: a
 single-mode variable bound at the PAINT level renders there as its raw hex (a legacy naming path
 that predates paint-level reads), and a name recovered from the snapshot-DB tier is likewise
@@ -246,7 +240,7 @@ of trusting the verdict.
 | `file` | string, **required** | Figma file URL or raw key |
 | `frame_node_id` | string, **required** | Frame/root node to align against the DOM subtree |
 | `dom_snapshot` | object | `DomSnapshot` object from the canonical extractor (`get_layout_spec include_extractor:true`) - the WHOLE frame-root subtree (root selector), carrying per-node `path`. Pass the OBJECT (same shape as `compare_node_to_dom.dom`), not a stringified JSON. Pass exactly one of `dom_snapshot` \| `dom_ref`. |
-| `dom_ref` | object `{ ref, selector?, index? }` | Reference to a browser-uploaded snapshot (`get_layout_spec` `upload_url` flow) instead of inlining the whole-frame DOM JSON. Only the HTTP servers construct the snapshot store this resolves against; on stdio pass `dom_snapshot` inline. `ref` = the `snapshot_ref` from the extractor POST; `selector` must match byte-for-byte the root selector passed to the extractor, OR `index` addresses it by position (safe on duplicate selectors). Pass exactly one of `dom_snapshot` \| `dom_ref`. |
+| `dom_ref` | object `{ ref, selector?, index? }` | Reference to a browser-uploaded snapshot (`get_layout_spec` `upload_url` flow) instead of inlining the whole-frame DOM JSON. HTTP deployments and stdio's healthy loopback sidecar construct the shared snapshot store; only degraded stdio needs `dom_snapshot` inline. `ref` = the `snapshot_ref` from the extractor POST; `selector` must match byte-for-byte the root selector passed to the extractor, OR `index` addresses it by position (safe on duplicate selectors). Pass exactly one of `dom_snapshot` \| `dom_ref`. |
 | `max_depth` | integer ≥ 1 | Bound matching depth (large frames - pair a subtree at a time). Levels 0..max_depth inclusive are processed. |
 | `figma_token` | string | Override Figma PAT |
 
@@ -356,6 +350,12 @@ failed 120s call is itself cached for ~10 minutes). `ms`
 is the point. Measured on this transport, that one endpoint took 90 seconds of a 93-second call, and
 without it the caller has a two-minute silence and no way to tell a slow call from a hung one.
 
+Every color verdict consumes only `effectiveHex`. `defaultHex` is diagnostic evidence and never
+feeds a `pass`, `fail`, or measured Figma value. When a bound token has `effectiveHex:null` (or an
+`effectiveModeSource` of `"unverifiable"`), the row is `review` with
+`tokenReason:"mode-unconfirmed"` even when `defaultHex` happens to equal the DOM color. Confirm the
+node's effective mode; do not promote the diagnostic default to an on-screen value.
+
 The example below submits one pair out of the frame's three children, so its receipt reports
 `complete: false` and names what is still unchecked. That is the gate doing its job, not the tool
 failing: a `false` here means the run measured less than the whole frame, and `blocking` says which
@@ -368,7 +368,7 @@ something more pairs can fix.
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `file` | string, **required** | Figma file URL or raw key |
-| `pairs` | array, **required** | `node_id` <-> DOM snapshot pairs - up to 20 per call, all fetched in ONE REST call. Each item: `{ node_id, dom?, dom_ref?, label?, expected_component? }` - pass `dom` (extractor snapshot object) or `dom_ref` (uploaded-snapshot reference). |
+| `pairs` | array, **required** | `node_id` <-> DOM snapshot pairs - up to 20 per call, all fetched in ONE REST call. Each item: `{ node_id, dom?, dom_ref?, label?, expected_component? }` - pass `dom` (extractor snapshot object) or `dom_ref` (uploaded-snapshot reference from HTTP or stdio's loopback sidecar; degraded stdio uses inline `dom`). |
 | `frame_node_id` | string | The breakpoint frame you resized the viewport to - enables the viewport guard |
 | `exclude_regions` | string[] | Frame regions to EXCLUDE from the coverage demand - up to 50 ids per call (chrome outside your task: page footer, global tabs). An excluded region stops being demanded as uncovered, the receipt lists it under `frame_coverage.excluded` and the report prints "excluded by the caller", and any measurement from a pair you submitted inside it still counts - exclusion can never hide a measured fail. What is NOT demanded is the excluded container's own derived between-children audit: excluding a container renounces its internal spacing question along with the rest of its scope. Ids that match no coverage region come back loud in `excluded_not_found`. Meaningful only together with `frame_node_id`. Exclude ONLY what is outside YOUR task. |
 | `expected_overlay_width` | number | The actual rendered width of a fixed-width overlay (drawer/modal) whose DOM box does not scale with the viewport. Decouples `size.w` and the viewport guard from `frame_node_id`, adds a dedicated `overlay_width` row, and - when `frame_node_id` is ALSO given - a preflight check that the chosen breakpoint frame actually matches this width. |
@@ -548,7 +548,7 @@ fonts are an advisory `info` row - geometry still compares.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `pairs` | array, **required** | reference/candidate snapshot pairs - up to 10 per call. Each item: `{ label, reference: { dom? \| dom_ref? }, candidate: { dom? \| dom_ref? } }` - `label` is required (it IS the pair's identity), each side passes exactly one of `dom` (extractor snapshot object) or `dom_ref` (uploaded-snapshot reference, same store and TTLs as `compare_node_to_dom`; on stdio pass `dom` inline). |
+| `pairs` | array, **required** | reference/candidate snapshot pairs - up to 10 per call. Each item: `{ label, reference: { dom? \| dom_ref? }, candidate: { dom? \| dom_ref? } }` - `label` is required (it IS the pair's identity), each side passes exactly one of `dom` (extractor snapshot object) or `dom_ref` (uploaded-snapshot reference, same store and TTLs as `compare_node_to_dom`; HTTP and healthy stdio sidecar support refs, degraded stdio uses inline `dom`). |
 | `tolerance_px` | number 0-10 | A delta below this is a pass (px metrics); omitted -> 1 |
 | `max_depth` | integer 1-8 (default 4) | The `max_depth` BOTH captures were made with. This tool captures nothing itself - the value bounds the nested-text descent and the drill advice in the receipt, so pass the SAME `max_depth` the extractor ran with for both states. |
 

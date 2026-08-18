@@ -205,6 +205,8 @@ describe('resolveAncestry', () => {
     expect(res.path.map((p) => p.id)).toEqual(['0:1', 'bud:cand', 'bud:child']);
     expect(res.path.some((p) => p.id === 'bud:gc')).toBe(false); // no grandchild in the tail
     expect(res.note).toMatch(/call budget/);
+    expect(api.getNodesRaw).toHaveBeenCalledTimes(2); // target + one descent fetch; the partial path costs no extra call
+    expect(api.getDocumentRaw).toHaveBeenCalledTimes(1);
   });
 
   it('DFS exhausted while the budget is still alive (outcome b): containment chain breaks', async () => {
@@ -219,8 +221,11 @@ describe('resolveAncestry', () => {
 
     const res = await resolveAncestry(api, 'FILE', 'dead:target', { maxCalls: MAX_ANCESTRY_CALLS });
     expect(res.confirmed).toBe(false);
-    expect(res.callsUsed).toBeLessThan(MAX_ANCESTRY_CALLS);
+    expect(res.path.map((p) => p.id)).toEqual(['0:1', 'dead:cand']);
+    expect(res.callsUsed).toBe(3);
     expect(res.note).toMatch(/containment chain broke/);
+    expect(api.getNodesRaw).toHaveBeenCalledTimes(2); // target + candidate; no continuation fetch happens here
+    expect(api.getDocumentRaw).toHaveBeenCalledTimes(1);
   });
 
   it('no first-tier candidate contains the target center (outcome c): path=[]', async () => {
@@ -234,6 +239,8 @@ describe('resolveAncestry', () => {
     expect(res.callsUsed).toBe(2);
     expect(res.path).toEqual([]);
     expect(res.note).toMatch(/falls into no top-level container/);
+    expect(api.getNodesRaw).toHaveBeenCalledTimes(1); // target only; an empty prefix triggers no fallback fetch
+    expect(api.getDocumentRaw).toHaveBeenCalledTimes(1);
   });
 
   it('deadlineAt already in the past (now-injection): an honest time-budget note, not a call-budget one', async () => {
@@ -244,8 +251,10 @@ describe('resolveAncestry', () => {
     const res = await resolveAncestry(api, 'FILE', 't:target', { now: () => 1_000_000, deadlineAt: 999_000 });
     expect(res.confirmed).toBe(false);
     expect(res.callsUsed).toBe(1); // call1 (target id) happened; call2 was refused by the deadline
+    expect(res.path).toEqual([]); // no partial ancestor can be claimed when the skeleton call is refused
     expect(res.note).toMatch(/time budget/);
-    expect((api.getDocumentRaw as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    expect(api.getNodesRaw).toHaveBeenCalledTimes(1);
+    expect(api.getDocumentRaw).toHaveBeenCalledTimes(0);
   });
 
   it('target has no absoluteBoundingBox: throws an honest Error', async () => {

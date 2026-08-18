@@ -91,8 +91,34 @@ continuation cursor; narrow the query, scope with `node_id`, or lower `depth`.
 
 Breadcrumbs from a node UP to its page + direct children of every ancestor (siblings/neighbors).
 Use when the node you need lies OUTSIDE the frame you know: call on a nearby known node and read
-the ancestor children. bbox-guided, id-confirmed, <=12 light REST calls - never fetches the whole
+the ancestor children. bbox-guided, id-confirmed, <=16 light REST calls - never fetches the whole
 file. `query` highlights matching names in scope.
+
+When `confirmed:false`, the response also carries the compact path that was actually proved as
+`confirmed_prefix` and exactly one executable continuation. Its `next_call` is a bounded
+`find_nodes` request scoped to the prefix tail (or the file when the prefix is empty), using the
+resolved target name/type. This does not add another REST call to ancestry itself. A confirmed
+response omits both fields.
+
+Response (unconfirmed ancestry excerpt):
+
+```jsonc
+{
+  "target": { "id": "30:1", "name": "Checkout", "type": "FRAME", "w": 320, "h": 640 },
+  "confirmed": false,
+  "ambiguous": true,
+  "confirmed_prefix": [
+    { "id": "0:1", "name": "Product page", "type": "CANVAS" },
+    { "id": "12:300", "name": "Desktop", "type": "FRAME", "w": 1280, "h": 900 }
+  ],
+  "next_call": {
+    "tool": "find_nodes",
+    "arguments": { "file": "AbCdEf012345", "node_id": "12:300", "query": "Checkout",
+      "type": "FRAME", "depth": 10, "limit": 20 },
+    "reason": "target membership below the confirmed prefix is not proven"
+  }
+}
+```
 
 **Parameters**
 
@@ -194,6 +220,16 @@ Pass `focus={x,y}` (0..1, e.g. `target.atPercent` from `get_review_board`) to ge
 centered on that point with a reticle marking it - ideal for seeing exactly what a review pin
 points at; the crop is always PNG.
 
+For a deterministic pixel check, pass `probe` with PNG output. Coordinates are normalized to the
+full rendered node by default, or integer-rounded pixels with `space:"pixel"`; `radius` samples the
+clipped square around the point and returns the per-channel median. Optional six- or eight-digit
+`expected` hex is compared channel-by-channel with inclusive `tolerance`. The probe always samples
+the successful main full-node PNG before any preview or focus secondary render. Its `color_probe`
+receipt is placed in URL JSON, preview/focus metadata, or the one metadata item added after an inline
+image. A decode/download failure keeps the screenshot and returns
+`{status:"unavailable",reason:"rendered PNG could not be sampled"}`; invalid coordinates remain a
+request error.
+
 **Parameters**
 
 | Parameter | Type | Description |
@@ -206,6 +242,7 @@ points at; the crop is always PNG.
 | `tiles` | boolean (default `false`) | For very large frames: also return a `children_map` (per-direct-child node_id, bounds, and a signed URL) so each part can be rendered legibly. Figma renders whole nodes, not regions, so tiling = per-child. |
 | `focus` | object `{ x, y }` (0..1 each) | Point of interest within the node - e.g. `target.atPercent` from `get_review_board`. When set, returns a tight zoomed crop centered on this point (with a reticle marking it) instead of the whole node. |
 | `focus_radius` | number 0.02–0.5 (default 0.12) | Focus-crop half-size as a fraction of node width (only used with `focus`). 0.12 gives a ~24%-wide window around the point. |
+| `probe` | object `{ x, y, space?, radius?, expected?, tolerance? }` | PNG-only color sample on the main full-node raster. `space` is `"normalized"` (default, x/y 0..1) or `"pixel"`; `radius` is integer 0–20 (default 0); `expected` is `#RRGGBB` or `#RRGGBBAA`; `tolerance` is integer 0–255 (default 2). |
 | `figma_token` | string | Override Figma PAT |
 
 **Example**
@@ -214,7 +251,30 @@ points at; the crop is always PNG.
 {
   "file": "https://www.figma.com/design/AbCdEf012345/Product-Page",
   "node_id": "12:340",
-  "return": "preview"
+  "return": "url",
+  "probe": { "x": 0.5, "y": 0.5, "space": "normalized", "radius": 0,
+    "expected": "#efeff5", "tolerance": 2 }
+}
+```
+
+Preview/focus put the same object in their text metadata; inline adds one text metadata item after
+the image.
+
+Response (URL excerpt):
+
+```jsonc
+{
+  "url": "https://signed.example/render.png",
+  "color_probe": {
+    "status": "ok",
+    "source_coordinates": { "x": 1, "y": 1, "width": 3, "height": 3 },
+    "center_rgba": { "r": 239, "g": 239, "b": 245, "a": 255 },
+    "sampled_rgba": { "r": 239, "g": 239, "b": 245, "a": 255 },
+    "radius": 0,
+    "expected": "#efeff5",
+    "tolerance": 2,
+    "matches_expected": true
+  }
 }
 ```
 
@@ -253,9 +313,8 @@ node as `raw_images:[{imageRef,url}]`.
 
 ### get_design_context
 
-Extract a descriptive, code-oriented representation of a Figma node: layout (auto-layout), sizing,
-fills/strokes/effects (deduplicated into `globalVars`), text + typography, and component
-instances.
+Extract a descriptive, code-oriented representation of a Figma node: layout, sizing,
+fills/strokes/effects (deduplicated into `globalVars`), text, typography, and component instances.
 
 This is the flagship design->code extraction tool; in a design-QA flow it complements
 [`compare_node_to_dom`](design-qa.md#compare_node_to_dom) - see the
@@ -263,25 +322,29 @@ This is the flagship design->code extraction tool; in a design-QA flow it comple
 
 Key behaviours (from the live tool description):
 
-- A fill/stroke bound to a variable in a multi-mode collection (>1 mode) is resolved to an object
-  in `globalVars`: `{ token, value (actual hex in the node's effective variable mode), mode,
-  mode_dependent, mode_source }`. `mode_source:'node'` means the node's mode was confirmed via
-  `explicitVariableModes`; `'default'` means the mode could not be determined and the default-mode
-  value is shown - do not treat it as the on-screen color; such an object also carries a short
-  `hint` pointing to `get_variables`' per-mode `modes` map for the actual value.
-- When the value was decided by modes across MORE THAN ONE multi-mode collection (a
-  cross-collection alias chain), the object also carries `modes_applied` - `{collection name:
-  "mode name (node|default)"}` - every axis actually APPLIED to compute `value`. `modes_applied`
-  explains the computation only - it makes NO on-screen claim (that is `mode_source`'s job).
+- A multi-mode bound variable emits `{token, default_value, effective_rendered_value, value,
+  effective_modes, effective_mode_source, mode_dependent}`. `value` aliases
+  `effective_rendered_value`; `default_value` is diagnostic only and is never substituted for a
+  rendered color.
+- `effective_mode_source` is `explicit_node`, `ancestor_chain`, `confirmed_default`, or
+  `unverifiable`. When it is `unverifiable`, `effective_rendered_value` and `value` are null and
+  the hint says not to use the default as the rendered color. Each `effective_modes` axis includes
+  its mode and source, plus `node_id` for explicit or ancestor evidence.
 - A top-level `mode_context` marker may be present: `"library_default_modes"` = this file is a
   registered component library rendered in its default variable modes - do NOT transfer these
   mode-dependent values to branded pages (the same tokens resolve differently there);
-  `"default_modes"` = every shown mode-dependent value is its axis default. The marker appears
+  `"default_modes"` = every shown mode-dependent value is its confirmed axis default. The marker appears
   only when the server has positive evidence; its absence claims nothing.
 - A fill/stroke bound to a single-mode (non-mode-dependent) variable keeps its inline form: the
   local token name, or `var(--name, value)` for a cross-library variable.
 - Human-authored component descriptions/documentation are returned as a deduped `components` map
   keyed by component id (disable with `include_component_docs:false`).
+- An empty, untruncated root `COMPONENT` returns
+  `resolution_hints.reason:"definition_has_no_rendered_children"`. A bounded rendered-instance scan
+  adds up to five `concrete_instances:[{node_id,name,path}]`. Exactly one fully discovered candidate
+  changes the one `resolution_hints.next_call` to `get_design_context` for that instance; zero,
+  multiple, or partial candidates keep a bounded `find_nodes` continuation. Ordinary empty frames,
+  instances, and truncated component definitions receive no such hint.
 - Container nodes whose children were cut - by the requested depth, or by the size-budget
   auto-degrade when `degraded` is true - are marked `truncated:true` with `childCount`; request
   that node_id directly, raise `depth` (max 8, no effect when `degraded` is true), or use
@@ -293,6 +356,39 @@ Key behaviours (from the live tool description):
   and suggests a lower depth.
 
 Use `get_metadata` first to pick a `node_id`.
+
+Response (multi-mode evidence excerpt; the default remains diagnostic when any axis is unverifiable):
+
+```jsonc
+{
+  "token": "text color/accent",
+  "default_value": "#a73afd",
+  "effective_rendered_value": "#8b6afb",
+  "value": "#8b6afb",
+  "effective_modes": {
+    "Theme": { "mode": "Dusk", "source": "ancestor_chain", "node_id": "12:300" }
+  },
+  "effective_mode_source": "ancestor_chain",
+  "mode_dependent": true
+}
+```
+
+Response (empty component continuation excerpt):
+
+```jsonc
+{
+  "concrete_instances": [
+    { "node_id": "2:2", "name": "Card instance", "path": ["Board", "Checkout"] }
+  ],
+  "resolution_hints": {
+    "reason": "definition_has_no_rendered_children",
+    "next_call": {
+      "tool": "get_design_context",
+      "arguments": { "file": "AbCdEf012345", "node_id": "2:2", "depth": 4 }
+    }
+  }
+}
+```
 
 **Parameters**
 

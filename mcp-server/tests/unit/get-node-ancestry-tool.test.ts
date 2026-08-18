@@ -89,6 +89,8 @@ describe('get_node_ancestry tool', () => {
 
     expect(out.confirmed).toBe(true);
     expect(out.ambiguous).toBeUndefined();
+    expect(out.confirmed_prefix).toBeUndefined();
+    expect(out.next_call).toBeUndefined();
     const breadcrumbs = out.breadcrumbs as Array<Record<string, unknown>>;
     expect(breadcrumbs.map((b) => b.id)).toEqual(['0:1', '10:1', '20:1']);
 
@@ -318,41 +320,86 @@ describe('get_node_ancestry tool', () => {
     expect(out3.query_hits).toEqual([]);
   });
 
-  it('ambiguous passthrough: confirmed:false surfaces ambiguous:true + the engine note, breadcrumbs built from the partial path', async () => {
+  it.each([
+    ['call-budget', 'call budget exhausted (overlays/depth) — verify against the last ancestor\'s children', true],
+    ['time-budget', 'time budget exhausted — verify against the last ancestor\'s children', true],
+    ['broken-chain', 'containment chain broke (overflow/invisible) — target not found by geometry', true],
+    ['no-candidate', 'the target center falls into no top-level container — non-standard layout or a stale bbox', false],
+  ])('partial %s ancestry preserves breadcrumbs and note with one continuation hint', async (_label, note, hasPrefix) => {
     const child = named('c', 'Child', 'FRAME', { x: 0, y: 0, w: 5, h: 5 });
     const cand = named('cand', 'Cand', 'FRAME', { x: 0, y: 0, w: 100, h: 100 }, { children: [child] });
     const page = named('0:1', 'Page', 'CANVAS', null, { children: [cand] });
 
     mockResult({
       target: { id: 'missing', name: 'Missing', type: 'FRAME', w: 1, h: 1 },
-      path: [page, cand],
+      path: hasPrefix ? [page, cand] : [],
       confirmed: false,
       callsUsed: 5,
-      note: 'call budget exhausted (overlays/depth) — verify against the last ancestor\'s children',
+      note,
     });
 
     const call = install();
     const out = parseOutput(await call({ file: 'ABC', node_id: 'missing' }));
     expect(out.confirmed).toBe(false);
     expect(out.ambiguous).toBe(true);
-    expect(out.note).toMatch(/call budget/);
+    expect(out.note).toBe(note);
     const breadcrumbs = out.breadcrumbs as Array<Record<string, unknown>>;
-    expect(breadcrumbs.map((b) => b.id)).toEqual(['0:1', 'cand']);
+    expect(breadcrumbs.map((b) => b.id)).toEqual(hasPrefix ? ['0:1', 'cand'] : []);
+    if (hasPrefix) {
+      expect((breadcrumbs[1].children as Array<Record<string, unknown>>).map((child) => child.id)).toEqual(['c']);
+    }
+    expect(out.confirmed_prefix).toEqual(hasPrefix
+      ? [
+        { id: '0:1', name: 'Page', type: 'CANVAS' },
+        { id: 'cand', name: 'Cand', type: 'FRAME', w: 100, h: 100 },
+      ]
+      : []);
+    expect(out.next_call).toEqual({
+      tool: 'find_nodes',
+      arguments: {
+        file: 'ABC',
+        ...(hasPrefix ? { node_id: 'cand' } : {}),
+        query: 'Missing',
+        type: 'FRAME',
+        depth: 10,
+        limit: 20,
+      },
+      reason: 'target membership below the confirmed prefix is not proven',
+    });
   });
 
-  it('path=[] (no first-tier candidate) -> breadcrumbs:[] and ambiguous:true', async () => {
+  it('compound input keeps the normalized request and resolved target identity in a partial continuation', async () => {
     mockResult({
-      target: { id: 'lost', name: 'Lost', type: 'FRAME', w: 1, h: 1 },
-      path: [],
+      target: { id: '56:7890', name: 'Instance target', type: 'INSTANCE', w: 1, h: 1 },
+      path: [named('I12:362;56:7892', 'Instance parent', 'INSTANCE', { x: 0, y: 0, w: 10, h: 10 })],
       confirmed: false,
-      callsUsed: 2,
-      note: 'the target center falls into no top-level container — non-standard layout or a stale bbox',
+      callsUsed: 3,
+      note: 'containment chain broke (overflow/invisible) — target not found by geometry',
     });
-
     const call = install();
-    const out = parseOutput(await call({ file: 'ABC', node_id: 'lost' }));
-    expect(out.breadcrumbs).toEqual([]);
-    expect(out.ambiguous).toBe(true);
+    const out = parseOutput(await call({
+      file: 'https://www.figma.com/design/abc123/Instance?node-id=I12-340%3B56-7890',
+      node_id: 'I12-340;56-7890',
+    }));
+    expect(resolveAncestryMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'abc123',
+      'I12:340;56:7890',
+      expect.anything(),
+    );
+    expect(out.target).toMatchObject({ id: '56:7890', name: 'Instance target', type: 'INSTANCE' });
+    expect(out.next_call).toEqual({
+      tool: 'find_nodes',
+      arguments: {
+        file: 'abc123',
+        node_id: 'I12:362;56:7892',
+        query: 'Instance target',
+        type: 'INSTANCE',
+        depth: 10,
+        limit: 20,
+      },
+      reason: 'target membership below the confirmed prefix is not proven',
+    });
   });
 
   it('header-case killer: target inside card, section also has a headerFrame sibling — headerFrame is visible in the section breadcrumb\'s children', async () => {

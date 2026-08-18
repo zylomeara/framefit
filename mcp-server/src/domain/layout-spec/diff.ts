@@ -1873,8 +1873,8 @@ function iconColorRow(prop: string, fig: FigIconState, dom: DomIconState, src?: 
     return { prop, status: 'info', coverageSkipped: true,
       note: `the DOM icon paint was not comparable (${dom.reason}) - verify visually` };
   }
-  const v = colorVerdict(fig.token?.hex ?? fig.hex, fig.token, dom.hex, dom.domToken, false, undefined, evidence);
-  return { prop, figma: fig.token?.hex ?? fig.hex, dom: dom.hex, status: v.status,
+  const v = colorVerdict(fig.token ? fig.token.effectiveHex ?? undefined : fig.hex, fig.token, dom.hex, dom.domToken, false, undefined, evidence);
+  return { prop, figma: fig.token ? fig.token.effectiveHex : fig.hex, dom: dom.hex, status: v.status,
     ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}),
     ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
     ...(v.status === 'fail' && src ? { srcChannel: src } : {}) };
@@ -2610,8 +2610,8 @@ function typographyRows(
     // Verdict machine (colorVerdict): the hex axis is orthogonal to the token/mode axis. domToken is the REAL
     // DOM classification from the snapshot: literal → fail "tokenize it", token → review "both from a
     // token", unknown → review (a hex match of a bound token is not a silent pass); a hex discrepancy is not masked.
-    const v = colorVerdict(fig.colorToken?.hex ?? fig.colorHex, fig.colorToken, st.color, st.colorToken, fig.colorBoundVar !== undefined && fig.colorToken === undefined, fig.colorBoundVar, evidence);
-    rows.push(withNote({ prop: `color${suffix}`, figma: fig.colorToken?.hex ?? fig.colorHex ?? null, dom: st.color ?? null,
+    const v = colorVerdict(fig.colorToken ? fig.colorToken.effectiveHex ?? undefined : fig.colorHex, fig.colorToken, st.color, st.colorToken, fig.colorBoundVar !== undefined && fig.colorToken === undefined, fig.colorBoundVar, evidence);
+    rows.push(withNote({ prop: `color${suffix}`, figma: fig.colorToken ? fig.colorToken.effectiveHex : fig.colorHex ?? null, dom: st.color ?? null,
       status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
       ...(v.status === 'fail' && src ? { srcChannel: src } : {}) }));
   }
@@ -2633,23 +2633,23 @@ function colorVerdict(
 ): { status: DiffStatus; note?: string; token?: string; tokenReason?: string; domToken?: string } {
   // A1: DOM color unparseable (oklch/color()/transparent) — never fail (evaluated FIRST, do not change the order of the branches).
   if (domHex === undefined) return { status: 'info', note: 'DOM color not recognized (oklch/color()/transparent) — verify visually' };
-  if (figHex === undefined) return { status: 'review', note: 'Figma color not resolved — the token cannot be checked', tokenReason: 'fig-unresolved' };
   // A2: the color is bound to a variable, but the token is not resolved (variables unavailable / the shadow
   // token is deferred). Do NOT conflate with a raw literal (conflation = false-green). The gate is BEFORE the hex
   // comparison → review both ways (matched and diverged): not a green pass, not a red fail.
   if (figBoundUnresolved) return { status: 'review', note: 'the Figma color is bound to a variable, but the token is not resolved (variables unavailable / the shadow token is deferred) — nothing to check against; confirm the token under the mode', tokenReason: 'bound-unresolved' };
-  const eq = figHex.toLowerCase() === domHex.toLowerCase();
   // B0: a snapshot-resolved mode-blind default is NOT the same as a "pin on an
   // unloaded ancestor" (gate B below). A snapshot fundamentally does not know the node's modes — the honest
   // note must name ITS OWN mechanism, not mis-attribute a pin. Checked STRICTLY BEFORE
   // gate B, otherwise the old pin note would intercept the snapshot token (it too carries mode_dependent+default).
   if (figToken?.snapshot_default) {
-    return { status: 'review', note: `resolved via the default-mode snapshot — the modes are unknown to the snapshot; confirm the token visually`, token: figToken.token, tokenReason: 'snapshot-default' };
+    return { status: 'review', note: `resolved via the default-mode snapshot (${figToken.defaultHex ?? 'unknown'}) — the modes are unknown to the snapshot; confirm the token visually`, token: figToken.token, tokenReason: 'snapshot-default' };
   }
-  // B: mode unconfirmed on a mode-dependent token — never fail/green (the pin is probably on an unloaded ancestor).
-  if (figToken?.mode_dependent && figToken.mode_source !== 'node') {
-    return { status: 'review', note: `the node's mode is not confirmed (the pin is probably on an unloaded ancestor) — check under the mode; token ${figToken.token}`, token: figToken.token, tokenReason: 'mode-unconfirmed' };
+  // B: incomplete mode evidence never promotes a diagnostic default to an effective color.
+  if (figToken && (figToken.effectiveHex === null || figToken.effectiveModeSource === 'unverifiable')) {
+    return { status: 'review', note: `the node's effective mode is not confirmed; default ${figToken.defaultHex ?? 'unknown'} is diagnostic only — token ${figToken.token}`, token: figToken.token, tokenReason: 'mode-unconfirmed' };
   }
+  if (figHex === undefined) return { status: 'review', note: 'Figma color not resolved — the token cannot be checked', tokenReason: 'fig-unresolved' };
+  const eq = figHex.toLowerCase() === domHex.toLowerCase();
   // C: hex diverges — mode-mismatch (matched a DIFFERENT mode) otherwise diverged. A tokenized
   // fail carries token/tokenReason like every other branch: verification groups blocking items by
   // r.token, and the FAIL branch is exactly where a developer must act by name — a nameless fail
@@ -2657,7 +2657,7 @@ function colorVerdict(
   if (!eq) {
     const named = figToken ? { token: figToken.token, tokenReason: 'color-diverged' } : {};
     const other = figToken?.all_modes && Object.entries(figToken.all_modes).find(([, h]) => h.toLowerCase() === domHex.toLowerCase());
-    if (other) return { status: 'fail', note: `looks like mode ${other[0]} was applied, not ${figToken!.mode ?? 'the expected one'} — token ${figToken!.token}`, ...named };
+    if (other) return { status: 'fail', note: `looks like mode ${other[0]} was applied, not the expected effective mode — token ${figToken!.token}`, ...named };
     return { status: 'fail', note: figToken ? `color diverged — Figma token ${figToken.token}` : undefined, ...named };
   }
   // D: hex matches — token provenance (domToken state). domToken undefined → unknown.
@@ -2887,8 +2887,8 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
               note: 'the DOM element declares a paint the extractor cannot read (a CSS Color 4 background such as oklch()/color(), generated content, or an outline) — color equality was not checked on either side; verify visually before treating this as a match or a defect' }
           : { prop: 'fill', figma: spec.fillHex, dom: null, status: 'warn', note: 'the DOM element has no background — the background may be on a different element' });
     } else {
-      const v = colorVerdict(spec.fillToken?.hex ?? spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined, spec.fillBoundVar, opts.cssEvidence);
-      rows.push({ prop: 'fill', figma: spec.fillToken?.hex ?? spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
+      const v = colorVerdict(spec.fillToken ? spec.fillToken.effectiveHex ?? undefined : spec.fillHex, spec.fillToken, bg, sBgToken, spec.fillBoundVar !== undefined && spec.fillToken === undefined, spec.fillBoundVar, opts.cssEvidence);
+      rows.push({ prop: 'fill', figma: spec.fillToken ? spec.fillToken.effectiveHex : spec.fillHex, dom: bg, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
         ...(v.status === 'fail' ? { srcChannel: SRC_ANCHOR_PROP } : {}) });
     }
   } else if (opts.sides === 'dom-dom' && spec.fillUnparseable) {
@@ -2965,8 +2965,8 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
         // The terminal color-equality logic (the only replacement: the verdict machine).
         // All non-color branches above (presence-mismatch/partial-sides/someUndefined/non-uniform) — as-is.
         const domColor = activeColors[0]!;
-        const v = colorVerdict(spec.strokeToken?.hex ?? spec.strokeHex, spec.strokeToken, domColor, sBorderTok?.[activeSides[0]], spec.strokeBoundVar !== undefined && spec.strokeToken === undefined, spec.strokeBoundVar, opts.cssEvidence);
-        rows.push({ prop: 'border-color', figma: spec.strokeToken?.hex ?? spec.strokeHex!, dom: domColor, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
+        const v = colorVerdict(spec.strokeToken ? spec.strokeToken.effectiveHex ?? undefined : spec.strokeHex, spec.strokeToken, domColor, sBorderTok?.[activeSides[0]], spec.strokeBoundVar !== undefined && spec.strokeToken === undefined, spec.strokeBoundVar, opts.cssEvidence);
+        rows.push({ prop: 'border-color', figma: spec.strokeToken ? spec.strokeToken.effectiveHex : spec.strokeHex!, dom: domColor, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
           ...(v.status === 'fail' ? { srcChannel: SRC_ANCHOR_PROP } : {}) });
       }
       // width — only for a full perimeter (with a partial border presence is already in question,
@@ -3004,8 +3004,8 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
         // Verdict machine. fs.colorToken is DEFERRED (shadows bind via an effect, not a paint key) → always
         // undefined. If the shadow is bound (colorBoundVar present) → A2 gates it into review (bound-but-unresolved,
         // do not conflate with a literal). Without a binding — a literal: matched → pass, diverged → fail.
-        const v = colorVerdict(fs.colorToken?.hex ?? fs.colorHex, fs.colorToken, ds.colorHex, ds.colorToken, fs.colorBoundVar !== undefined && fs.colorToken === undefined, fs.colorBoundVar, opts.cssEvidence);
-        rows.push({ prop: 'shadow-color', figma: fs.colorToken?.hex ?? fs.colorHex, dom: ds.colorHex, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
+        const v = colorVerdict(fs.colorToken ? fs.colorToken.effectiveHex ?? undefined : fs.colorHex, fs.colorToken, ds.colorHex, ds.colorToken, fs.colorBoundVar !== undefined && fs.colorToken === undefined, fs.colorBoundVar, opts.cssEvidence);
+        rows.push({ prop: 'shadow-color', figma: fs.colorToken ? fs.colorToken.effectiveHex : fs.colorHex, dom: ds.colorHex, status: v.status, ...(v.note ? { note: v.note } : {}), ...(v.token ? { token: v.token } : {}), ...(v.tokenReason ? { tokenReason: v.tokenReason } : {}), ...(v.domToken ? { domToken: v.domToken } : {}),
           ...(v.status === 'fail' ? { srcChannel: SRC_ANCHOR_PROP } : {}) });
       } else if (fs.colorHex || ds.colorHex) {
         // never-false-green: exactly one side produced a color (DOM oklch()/color()/transparent → toHex undefined,

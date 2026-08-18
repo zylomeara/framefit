@@ -1,6 +1,6 @@
 # Tool reference
 
-The server exposes **26 tools** over MCP. Every description below is taken from the live
+The server exposes **27 tools** over MCP. Every description below is taken from the live
 `tools/list` output - the same text an MCP client sees. Tools are grouped into four pages:
 
 - [Design QA](design-qa.md) - deterministic Figma <-> DOM verification
@@ -15,9 +15,9 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
 
 | Tool | Summary |
 | --- | --- |
-| [`get_layout_spec`](design-qa.md#get_layout_spec) | Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Also ships the canonical DOM extractor. |
+| [`get_layout_spec`](design-qa.md#get_layout_spec) | Diff-ready layout spec plus the canonical DOM extractor; HTTP and stdio's loopback sidecar can upload snapshots and return compact `dom_ref`s, with an inline degraded fallback. |
 | [`suggest_pairs`](design-qa.md#suggest_pairs) | Propose Figma-node <-> DOM-element pairs (by text/size/order/role) with confidence, ambiguous flags and honest unmatched lists. |
-| [`compare_node_to_dom`](design-qa.md#compare_node_to_dom) | Deterministic metric diff between Figma nodes and DOM computed snapshots: sizes, gaps, paddings, cross-axis offsets, typography, colors, component identity. |
+| [`compare_node_to_dom`](design-qa.md#compare_node_to_dom) | Deterministic Figma/DOM metric diff; color verdicts use effective rendered mode evidence only, never a diagnostic default. |
 | [`compare_dom_to_dom`](design-qa.md#compare_dom_to_dom) | Deterministic metric diff between TWO DOM states of one screen (reference vs candidate): skeleton-vs-loaded, before/after an edit, breakpoint-vs-breakpoint. Zero Figma calls. |
 | [`find_breakpoint_variant`](design-qa.md#find_breakpoint_variant) | Resolve which breakpoint variant frame matches your rendered width, ranked by content-frame width. |
 | [`get_view`](design-qa.md#get_view) | Five pure lenses over one held frame (skeleton / branch / coverage / typography / spacing) sliced from a single deep fetch. |
@@ -28,12 +28,12 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
 | --- | --- |
 | [`get_metadata`](navigation.md#get_metadata) | A sparse map of a Figma file: id/name/type/position/size per node, depth-limited - cheap navigation, call it first. |
 | [`find_nodes`](navigation.md#find_nodes) | Find nodes by name or text content (substring or fuzzy) inside a file or subtree, without knowing node ids. |
-| [`get_node_ancestry`](navigation.md#get_node_ancestry) | Breadcrumbs from a node up to its page, plus the direct children of every ancestor. |
+| [`get_node_ancestry`](navigation.md#get_node_ancestry) | Breadcrumbs from a node up to its page; partial results add a confirmed prefix and one bounded `find_nodes` continuation. |
 | [`get_text_styles`](navigation.md#get_text_styles) | Extract only the typography of a node's subtree - fast spec verification without the full design tree. |
 | [`compare_breakpoints`](navigation.md#compare_breakpoints) | Compare one element's typography across several breakpoint frames in a single call. |
-| [`get_screenshot`](navigation.md#get_screenshot) | Render a Figma node to an image: signed URL, inline, preview, or a zoomed focus crop with a reticle. |
+| [`get_screenshot`](navigation.md#get_screenshot) | Render a node as URL/inline/preview/focus and optionally sample an evidenced PNG color probe from the main raster. |
 | [`export_assets`](navigation.md#export_assets) | Export Figma nodes as rendered images (PNG/SVG/JPG) and return signed URLs, optionally with original source images. |
-| [`get_design_context`](navigation.md#get_design_context) | Descriptive, code-oriented representation of a node: auto-layout, sizing, fills/strokes/effects, text + typography, component instances. |
+| [`get_design_context`](navigation.md#get_design_context) | Code-oriented node extraction with explicit mode evidence; empty component definitions add concrete rendered-instance candidates and one continuation. |
 
 ## Comments & review
 
@@ -52,7 +52,7 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
 
 | Tool | Summary |
 | --- | --- |
-| [`get_variables`](design-system.md#get_variables) | List design tokens (Figma variables): name, type, value, collection - whole-file catalog or only the tokens a node references. |
+| [`get_variables`](design-system.md#get_variables) | Whole-file or node-scoped variables; an exact node-scoped too-large 400 degrades to paginated binding rows with rendered evidence and definition status. |
 | [`search_design_system`](design-system.md#search_design_system) | Search published design-system libraries (components, component sets, styles) by name/description. |
 | [`get_libraries`](design-system.md#get_libraries) | List the design-system libraries a file publishes or consumes. |
 | [`get_code_connect_map`](design-system.md#get_code_connect_map) | Map Figma instance nodes to their Code Connect code snippets from CI-uploaded mappings. |
@@ -70,6 +70,8 @@ fix plan), see the [Design QA tutorial](../design-qa-tutorial.md).
   `find_nodes.node_id`, `get_text_styles.node_id` and
   `get_variables.node_id`. Every other node-id parameter is pinned to `^\d+[:\-]\d+$`
   and rejects the compound form with MCP error `-32602`.
+- `get_screenshot.probe.expected` is not a node id: it uses the separate six- or eight-digit hex
+  pattern `^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$`.
 - One node-id parameter is exempt from both rules: `export_assets.node_ids[]` declares no pattern
   at all. The tool body refuses a malformed id with the server's own message (before any Figma
   call); the nested-instance form is accepted there too.

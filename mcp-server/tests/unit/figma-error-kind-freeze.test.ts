@@ -597,7 +597,7 @@ describe('the populations this freeze is written against', () => {
     // only its union declaration is blanked - so a kind constant parked beside the type is an
     // unclassified site and fails here.
     expect(SITES.unclassified, 'unrecognised kind-literal sites - classify them or the map lies').toEqual([]);
-    expect(SITES.files, 'files mentioning FigmaApiError').toBe(18); // 17 -> 18: find-breakpoint-variant-tool joined the budgeted-walk consumers (feedback item 10)
+    expect(SITES.files, 'files mentioning FigmaApiError').toBe(19); // 18 -> 19: find-component-instances adds the bounded instance-scan hard-error gate
   });
 
   it('the producer population is frozen: a NEW producer has to be added to the table above', () => {
@@ -687,10 +687,11 @@ describe('the populations this freeze is written against', () => {
         'network',                 // :279 the timeout branch
       ],
       'adapters/driving/tools/search-design-system-tool.ts': ['auth', 'rate_limited', 'forbidden', 'auth'],
+      'application/find-component-instances.ts': ['auth', 'forbidden', 'rate_limited'],
       'application/node-ancestry.ts': ['auth', 'forbidden'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '52 branch sites across 15 files').toBe(52); // 51 -> 52: the variables escalation class gate (batch-2 item 5 remainder); earlier 50 -> 51: get_screenshot's transport-ladder trigger (batch-2 item 6)
+    expect(SITES.branches.length, '55 branch sites across 16 files').toBe(55); // 52 -> 55: find-component-instances adds auth/forbidden/rate_limited hard-error branches
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "

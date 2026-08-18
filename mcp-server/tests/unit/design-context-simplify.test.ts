@@ -109,7 +109,15 @@ describe('simplify', () => {
       strokes: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }], strokeWeight: 1.5,
       boundVariables: { strokes: [{ type: 'VARIABLE_ALIAS', id: 'V:1' }] },
     } as import('../../src/domain/figma-raw.js').RawSceneNode;
-    const token: ResolvedToken = { token: 'text color/accent', value: '#8b6afb', mode: 'Dusk', mode_dependent: true, mode_source: 'node' };
+    const token: ResolvedToken = {
+      token: 'text color/accent',
+      value: '#8b6afb',
+      default_value: '#a73afd',
+      effective_rendered_value: '#8b6afb',
+      effective_modes: { Theme: { mode: 'Dusk', source: 'explicit_node', node_id: '0' } },
+      effective_mode_source: 'explicit_node',
+      mode_dependent: true,
+    };
     const { node, globalVars } = simplify(n, { resolveTokenMode: (nd, key) => (key === 'strokes' && nd.id === '0' ? token : null) });
     expect(node.stroke).toBe('fill_0');
     expect(globalVars['fill_0']).toEqual(token);

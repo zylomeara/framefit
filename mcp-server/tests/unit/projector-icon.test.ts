@@ -127,10 +127,10 @@ describe('fig icon paint projection (phase 2)', () => {
   it('a bound carrier resolves through the injected resolver -> iconToken', () => {
     const bound = vec('#242429');
     const spec = buildLayoutSpec(frameWith([icon([bound])]), {
-      resolveColorToken: (n, key) => (n.id === bound.id && key === 'fills' ? { token: '--icon-neutral', hex: '#242429' } : undefined),
+      resolveColorToken: (n, key) => (n.id === bound.id && key === 'fills' ? { token: '--icon-neutral', effectiveHex: '#242429' } : undefined),
     });
     expect(spec.children[0].iconHex).toBe('#242429');
-    expect(spec.children[0].iconToken).toEqual({ token: '--icon-neutral', hex: '#242429' });
+    expect(spec.children[0].iconToken).toEqual({ token: '--icon-neutral', effectiveHex: '#242429' });
   });
   it('the pair ROOT itself an icon -> the same fields on the spec root', () => {
     const spec = buildLayoutSpec(icon([vec('#242429')]));
@@ -183,11 +183,11 @@ describe('fig icon paint projection (phase 2)', () => {
   it('the token hex folds the SAME alpha as iconHex (paint opacity x node chain)', () => {
     const bound = node('VECTOR', { fills: [{ ...solid('#242429'), opacity: 0.5 } as never], opacity: 0.8 });
     const spec = buildLayoutSpec(frameWith([icon([bound])]), {
-      resolveColorToken: (n, key) => (n.id === bound.id && key === 'fills' ? { token: '--icon-neutral', hex: '#242429' } : undefined),
+      resolveColorToken: (n, key) => (n.id === bound.id && key === 'fills' ? { token: '--icon-neutral', effectiveHex: '#242429' } : undefined),
     });
     // 0.5 * 0.8 = 0.4 -> 0x66 on BOTH the raw hex and the token hex
     expect(spec.children[0].iconHex).toBe('#24242966');
-    expect(spec.children[0].iconToken?.hex).toBe('#24242966');
+    expect(spec.children[0].iconToken?.effectiveHex).toBe('#24242966');
   });
   it('an ordinary text-bearing card carries NO icon fields (absence stays meaningful)', () => {
     const card = node('FRAME', { children: [node('TEXT'), node('RECTANGLE', { fills: [solid('#ffffff')] })] });

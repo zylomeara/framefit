@@ -1,14 +1,14 @@
 // MODE-AWARE public base URL chains. One resolve per mode, locked per mode:
-//   stdio            → undefined, ALWAYS (no HTTP endpoint exists in-process; a localhost
-//                      fallback — or even a configured PUBLIC_BASE_URL — would emit a DEAD
-//                      loader/upload URL, worse than honest absence).
+//   stdio            → the actual ephemeral loopback browser bridge origin; configured
+//                      PUBLIC_BASE_URL does not replace that process-owned endpoint.
 //   single-tenant http → config.PUBLIC_BASE_URL ?? http://127.0.0.1:${actual bound port}
 //                      (resolved in the http caller, NOT in the shared buildToolDeps).
 //   multi-tenant http  → env.publicBaseUrl (new optional PUBLIC_BASE_URL MT field) ??
 //                      https://${env.mcpHost} — prod without PUBLIC_BASE_URL stays byte-for-byte
 //                      (locked by the untouched mt-http-server.test.ts fixtures).
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { generateKeyPair, exportJWK, SignJWT, type JWK } from 'jose';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { loadConfig } from '../../src/infrastructure/config.js';
 import { createLogger } from '../../src/infrastructure/logger.js';
 import { startServer, type ServerHandle } from '../../src/infrastructure/server.js';
@@ -16,12 +16,59 @@ import { initJwt } from '../../src/multi-tenant/jwt.js';
 import { loadMultiTenantEnv, type MultiTenantEnv } from '../../src/multi-tenant/env.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import { DomSnapshotStore } from '../../src/infrastructure/dom-snapshot-store.js';
+import type { Logger } from '../../src/infrastructure/logger.js';
+import type { StdioBrowserBridge } from '../../src/infrastructure/stdio-browser-bridge.js';
 
 const logger = createLogger({ level: 'silent' });
 
 // ── deps capture (stdio lock): wrap the real registerAllTools so the ACTUAL wiring of every
 // started server records the ToolDeps it registered with — behavior stays real for http tests.
 const captured: ToolDeps[] = [];
+const bridgeControl = vi.hoisted(() => ({
+  start: undefined as undefined | ((logger: unknown) => Promise<unknown>),
+  last: undefined as unknown,
+}));
+const buildDepsControl = vi.hoisted(() => ({
+  errorOnce: undefined as unknown,
+}));
+const stdioControl = vi.hoisted(() => ({
+  startError: undefined as unknown,
+  closeCalls: 0,
+  closeError: undefined as unknown,
+}));
+
+vi.mock('../../src/infrastructure/stdio-browser-bridge.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../src/infrastructure/stdio-browser-bridge.js')>();
+  return {
+    ...orig,
+    startStdioBrowserBridge: async (logger: Logger) => {
+      const bridge = bridgeControl.start
+        ? await bridgeControl.start(logger) as StdioBrowserBridge
+        : await orig.startStdioBrowserBridge(logger);
+      bridgeControl.last = bridge;
+      return bridge;
+    },
+  };
+});
+
+vi.mock('../../src/infrastructure/cache-budget.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../src/infrastructure/cache-budget.js')>();
+  return {
+    ...orig,
+    CacheBudget: class extends orig.CacheBudget {
+      constructor(...args: ConstructorParameters<typeof orig.CacheBudget>) {
+        if (buildDepsControl.errorOnce) {
+          const err = buildDepsControl.errorOnce;
+          buildDepsControl.errorOnce = undefined;
+          throw err;
+        }
+        super(...args);
+      }
+    },
+  };
+});
+
 vi.mock('../../src/adapters/driving/tools/register-all.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../src/adapters/driving/tools/register-all.js')>();
   return {
@@ -39,9 +86,15 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
     onclose?: () => void;
     onerror?: (e: Error) => void;
     onmessage?: (m: unknown) => void;
-    async start(): Promise<void> {}
+    async start(): Promise<void> {
+      if (stdioControl.startError) throw stdioControl.startError;
+    }
     async send(_m: unknown): Promise<void> {}
-    async close(): Promise<void> { this.onclose?.(); }
+    async close(): Promise<void> {
+      stdioControl.closeCalls += 1;
+      if (stdioControl.closeError) throw stdioControl.closeError;
+      this.onclose?.();
+    }
   },
 }));
 
@@ -75,6 +128,15 @@ beforeAll(async () => {
 });
 
 afterAll(() => vi.unstubAllGlobals());
+afterEach(() => {
+  bridgeControl.start = undefined;
+  bridgeControl.last = undefined;
+  buildDepsControl.errorOnce = undefined;
+  stdioControl.startError = undefined;
+  stdioControl.closeCalls = 0;
+  stdioControl.closeError = undefined;
+  vi.restoreAllMocks();
+});
 
 async function jwt(sub: string): Promise<string> {
   return new SignJWT({}).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
@@ -102,22 +164,113 @@ async function callTool(base: string, name: string, args: unknown, auth?: string
   return { text: rpc.result.content[0].text as string, isError: rpc.result.isError };
 }
 
-describe('stdio: publicBaseUrl stays undefined — NO fallback, NO passthrough', () => {
-  it('deps.publicBaseUrl is undefined even with PUBLIC_BASE_URL configured (mutation "localhost in stdio" → RED)', async () => {
+describe('stdio: publicBaseUrl and snapshot store come from the loopback browser bridge', () => {
+  it('registers the actual bridge origin and store even when PUBLIC_BASE_URL is configured', async () => {
     captured.length = 0;
+    const configuredPublicBaseUrl = 'http://127.0.0.1:9999';
     const config = loadConfig({
       MCP_TRANSPORT: 'stdio', NODE_ENV: 'test', PORT: '3846',
-      PUBLIC_BASE_URL: 'http://127.0.0.1:9999', // even explicit config must NOT leak into stdio deps
+      PUBLIC_BASE_URL: configuredPublicBaseUrl, // even explicit config must NOT leak into stdio deps
     });
     const handle = await startServer(config, logger);
     try {
       expect(captured).toHaveLength(1);
-      expect(captured[0].publicBaseUrl).toBeUndefined();
-      // and no snapshot store either: upload_url can never be minted in stdio
-      expect(captured[0].snapshotStore).toBeUndefined();
+      expect(captured[0].publicBaseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(captured[0].publicBaseUrl).not.toBe(configuredPublicBaseUrl);
+      expect(captured[0].snapshotStore).toBeInstanceOf(DomSnapshotStore);
+      expect(captured[0].tenantId).toBe('local');
+      const extractor = await fetch(`${captured[0].publicBaseUrl}/api/dom-snapshots/extractor.js`);
+      expect(extractor.status).toBe(200);
     } finally {
       await handle.close();
     }
+  });
+
+  it('logs bridge startup failure and registers only the exact fail-soft receipt', async () => {
+    captured.length = 0;
+    bridgeControl.start = async () => { throw new Error('bind failed'); };
+    const warn = vi.spyOn(logger, 'warn');
+    const config = loadConfig({ MCP_TRANSPORT: 'stdio', NODE_ENV: 'test' });
+
+    const handle = await startServer(config, logger);
+    try {
+      expect(warn).toHaveBeenCalledWith(
+        { err: 'bind failed' },
+        'server.stdio_browser_bridge_unavailable',
+      );
+      expect(captured).toHaveLength(1);
+      expect(captured[0].snapshotStore).toBeUndefined();
+      expect(captured[0].publicBaseUrl).toBeUndefined();
+      expect(captured[0].browserBridgeDegraded).toEqual({
+        status: 'unavailable',
+        reason: 'loopback bridge could not start; using inline extractor',
+      });
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('does not degrade or mislog a dependency initialization failure after the bridge starts', async () => {
+    const initError = new Error('dependency initialization failed');
+    buildDepsControl.errorOnce = initError;
+    const warn = vi.spyOn(logger, 'warn');
+    const config = loadConfig({ MCP_TRANSPORT: 'stdio', NODE_ENV: 'test' });
+
+    const outcome = await startServer(config, logger).then(
+      (handle) => ({ handle, error: undefined }),
+      (error: unknown) => ({ handle: undefined, error }),
+    );
+    try {
+      expect(outcome.error).toBe(initError);
+      expect(outcome.handle).toBeUndefined();
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'server.stdio_browser_bridge_unavailable',
+      );
+    } finally {
+      if (outcome.handle) await outcome.handle.close().catch(() => {});
+      else await (bridgeControl.last as StdioBrowserBridge | undefined)?.close().catch(() => {});
+    }
+  });
+
+  it('closes the bound bridge before rethrowing a transport initialization failure', async () => {
+    const initError = new Error('transport initialization failed');
+    stdioControl.startError = initError;
+    const warn = vi.spyOn(logger, 'warn');
+    const config = loadConfig({ MCP_TRANSPORT: 'stdio', NODE_ENV: 'test' });
+
+    await expect(startServer(config, logger)).rejects.toBe(initError);
+    const bridge = bridgeControl.last as StdioBrowserBridge;
+    try {
+      await expect(fetch(`${bridge.publicBaseUrl}/api/dom-snapshots/extractor.js`)).rejects.toThrow();
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'server.stdio_browser_bridge_unavailable',
+      );
+    } finally {
+      await bridge.close().catch(() => {});
+    }
+  });
+
+  it('attempts transport, MCP server, and bridge close before surfacing a shutdown error', async () => {
+    const bridgeClose = vi.fn(async () => { throw new Error('bridge close failed'); });
+    bridgeControl.start = async () => ({
+      store: new DomSnapshotStore(),
+      publicBaseUrl: 'http://127.0.0.1:3846',
+      address: '127.0.0.1',
+      port: 3846,
+      close: bridgeClose,
+    });
+    stdioControl.closeError = new Error('transport close failed');
+    const mcpClose = vi.spyOn(McpServer.prototype, 'close')
+      .mockRejectedValueOnce(new Error('mcp close failed'));
+    const config = loadConfig({ MCP_TRANSPORT: 'stdio', NODE_ENV: 'test' });
+    const handle = await startServer(config, logger);
+
+    await expect(handle.close()).rejects.toThrow('transport close failed');
+    expect(stdioControl.closeCalls).toBe(1);
+    expect(mcpClose).toHaveBeenCalledTimes(1);
+    expect(bridgeClose).toHaveBeenCalledTimes(1);
   });
 });
 

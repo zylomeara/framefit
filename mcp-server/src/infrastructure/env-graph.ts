@@ -14,6 +14,8 @@ import {
 import { isMultiTenant } from '../multi-tenant/env.js';
 import type { FigmaApi } from '../ports/figma-api.js';
 import type { Logger } from './logger.js';
+import type { ModeEvidenceStack } from '../domain/mode-resolve.js';
+import type { ResolvedToken } from '../domain/design-context/resolved-token.js';
 
 /** Library/variable/skipped counts from the sync that produced the currently-served graph. */
 export interface EnvGraphStats { libraries: number; variables: number; skipped: number }
@@ -29,8 +31,8 @@ export interface EnvGraph {
   stats(): EnvGraphStats | undefined;
   resolve(key: string):
     { value: string; name?: string; sourceLibrary?: string; modesByName?: Record<string, string> } | undefined;
-  resolveInMode(key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean):
-    { token?: string; value: string; mode?: string; mode_dependent: boolean; mode_source: 'node' | 'default'; modes_applied?: Record<string, string>; pinned_axis_used: boolean; unconfirmed_default_used: boolean } | undefined;
+  resolveInMode(key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean, evidence?: ModeEvidenceStack):
+    (ResolvedToken & { pinned_axis_used: boolean; unconfirmed_default_used: boolean }) | undefined;
   isMultiMode(key: string): boolean;
   cssEvidence(referencedKeys: string[], excludeFileKey?: string): GraphCssView | undefined;
 }
@@ -166,9 +168,9 @@ export function createEnvGraph(opts: {
         ...(multi ? { modesByName: m!.modesByName } : {}),
       };
     },
-    resolveInMode(key, modeByCollection, coverageComplete) {
+    resolveInMode(key, modeByCollection, coverageComplete, evidence) {
       if (!graph) return undefined;
-      return resolveKeyInMode(graph, key, modeByCollection, coverageComplete);
+      return resolveKeyInMode(graph, key, modeByCollection, coverageComplete, evidence);
     },
     isMultiMode(key) {
       if (!graph) return false;

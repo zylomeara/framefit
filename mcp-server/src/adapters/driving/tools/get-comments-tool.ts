@@ -44,8 +44,8 @@ export type ToolDeps = {
     } | undefined;
     // coverageComplete (optional) tells the resolver whether the node's full ancestor chain was
     // discovered — consumed by the honest-label logic; existing impls may ignore it.
-    resolveInMode?(key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean):
-      { token?: string; value: string; mode?: string; mode_dependent: boolean; mode_source: 'node' | 'default'; modes_applied?: Record<string, string>; pinned_axis_used: boolean; unconfirmed_default_used: boolean } | undefined;
+    resolveInMode?(key: string, modeByCollection: Map<string, string>, coverageComplete?: boolean, evidence?: import('../../../domain/mode-resolve.js').ModeEvidenceStack):
+      (import('../../../domain/design-context/resolved-token.js').ResolvedToken & { pinned_axis_used: boolean; unconfirmed_default_used: boolean }) | undefined;
     // True iff the key's TOP collection is multi-mode (by mode EXISTENCE, not resolvability) — the
     // exact condition under which resolveInMode emits a mode-dependent object. Lets needsAncestors
     // gate ancestor discovery precisely; when absent, callers fall back to `resolve().modesByName`.
@@ -68,11 +68,16 @@ export type ToolDeps = {
    * (only "default_modes" can be emitted). */
   libraryFiles?: { has(fileKey: string): Promise<boolean> };
   /** dom-diff-dx browser-direct upload flow: mints capTokens that gate POST /api/dom-snapshots/:capToken.
-   * Undefined → get_layout_spec never emits upload_url (e.g. stdio with no public HTTP endpoint). */
+   * Undefined → get_layout_spec never emits upload_url (e.g. degraded stdio bridge startup). */
   snapshotStore?: import('../../../infrastructure/dom-snapshot-store.js').DomSnapshotStore;
   /** Public base URL the minted upload_url is built against (e.g. 'https://figma.mcp.example.com').
    * Undefined → get_layout_spec never emits upload_url (no public endpoint to point at). */
   publicBaseUrl?: string;
+  /** Stdio-only fail-soft receipt. Present when the loopback browser bridge could not start. */
+  browserBridgeDegraded?: {
+    status: 'unavailable';
+    reason: 'loopback bridge could not start; using inline extractor';
+  };
   /** Owner id passed to snapshotStore.mint() — scopes uploaded snapshots to this caller. Multi-tenant:
    * the JWT-authenticated userId of the current request. Single-tenant/stdio: 'local'. */
   tenantId?: string;

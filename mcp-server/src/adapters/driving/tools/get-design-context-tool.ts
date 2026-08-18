@@ -17,7 +17,10 @@ import { parseFileKey } from '../../../domain/parse-file-key.js';
 import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { simplify } from '../../../domain/design-context/simplify.js';
 import { buildVariableIndex, resolveBoundVariable, resolveBoundVariableInMode, boundVariableId, type VariableIndex } from '../../../domain/variables.js';
-import { collectSubtreeModes, collectSubtreeChains, buildModeByCollection, effectiveMode, type ModeStack } from '../../../domain/mode-resolve.js';
+import {
+  collectSubtreeModes, collectSubtreeChains, buildModeByCollection, buildExactModeEvidence, buildGraphModeEvidence,
+  modeIds, effectiveMode, type ModeEvidenceStack, type ModeStack,
+} from '../../../domain/mode-resolve.js';
 import { buildFileStructure, type RawDocumentNode, type FileStructure } from '../../../domain/file-structure.js';
 import { extractLibraryKey } from '../../../domain/variable-snapshot.js';
 import { FigmaApiError } from '../../../ports/errors.js';
@@ -28,6 +31,7 @@ import type { RawSceneNode, RawPaint, RawVariableAlias, PublishedComponentMeta }
 import type { DesignContext, ComponentDoc, SimplifiedNode } from '../../../domain/design-context/types.js';
 import { collectInstanceKeys, indexSnippetsByNodeId, buildComponentDocs, type CodeConnectSnippet } from '../../../domain/code-connect-enrich.js';
 import { fitToBudget } from '../../../domain/design-context/auto-degrade.js';
+import { findComponentInstances } from '../../../application/find-component-instances.js';
 
 // CSS var() name segment: escape chars that would prematurely close the function or
 // be read as the fallback separator. Figma names are free-form (e.g. "button(default)").
@@ -267,7 +271,7 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
   server.registerTool(
     'get_design_context',
     {
-      description: 'Extract a descriptive, code-oriented representation of a Figma node: layout (auto-layout), sizing, fills/strokes/effects (deduplicated into globalVars), text + typography, and component instances. A fill/stroke bound to a variable in a multi-mode collection (>1 mode) is resolved to an object in globalVars: { token, value (actual hex in the node\'s effective variable mode), mode, mode_dependent, mode_source }. mode_source:\'node\' means the node\'s mode was confirmed via explicitVariableModes; \'default\' means the mode could not be determined and the default-mode value is shown - do not treat it as the on-screen color, and such an object also carries a short `hint` pointing you to get_variables\' per-mode `modes` map for the actual value. When the value was decided by modes across MORE THAN ONE multi-mode collection (a cross-collection alias chain), the object also carries modes_applied - {collection name: "mode name (node|default)"} - every axis actually APPLIED to compute value: (node) = that axis was pinned via explicitVariableModes on the node or an ancestor; (default) = that collection\'s default mode was used. modes_applied explains the computation only - it makes NO on-screen claim (that is mode_source\'s job, for the composite). A top-level mode_context marker may be present: "library_default_modes" = this file is a registered component library rendered in its default variable modes - do NOT transfer these mode-dependent values to branded pages (the same tokens resolve differently there); "default_modes" = every shown mode-dependent value is its axis default. The marker appears only when the server has positive evidence (all bindings tracked, no pinned axes anywhere); its absence claims nothing. Mode and collection names are verbatim Figma names; casing can differ between collections. A fill/stroke bound to a single-mode (non-mode-dependent) variable keeps its inline form: the local token name, or var(--name, value) for a cross-library variable. Human-authored component descriptions/documentation are returned as a deduped `components` map keyed by component id (disable with include_component_docs:false). Set include_screenshot:true to also attach a short-lived signed PNG URL for visual context. Container nodes whose children were cut - by the requested depth, or by the size-budget auto-degrade when `degraded` is true - are marked `truncated:true` with `childCount`; request that node_id directly, raise `depth` (max 8, no effect when `degraded` is true), or use get_metadata to see them. The call runs under a server time budget: enrichment stages (variables resolution, ancestor-mode discovery, component docs, Code Connect, screenshot) that do not fit are skipped and listed in degraded_stages [{stage, reason}] - the core subtree is never time-degraded (the size budget\'s `degraded` flag is separate). If the subtree fetch itself exceeds the budget the call fails fast and suggests a lower depth. Use get_metadata first to pick a node_id.',
+      description: 'Extract a descriptive, code-oriented representation of a Figma node: layout, sizing, fills/strokes/effects (deduplicated into globalVars), text, typography, and component instances. A multi-mode bound variable emits {token, default_value, effective_rendered_value, value, effective_modes, effective_mode_source, mode_dependent}. value aliases effective_rendered_value. default_value is diagnostic only and is never substituted for a rendered color. effective_mode_source is explicit_node, ancestor_chain, confirmed_default, or unverifiable; when it is unverifiable, effective_rendered_value and value are null and the hint says not to use the default as the rendered color. Each effective_modes axis includes its mode and source, plus node_id for explicit or ancestor evidence. A top-level mode_context marker may be present: "library_default_modes" means this file is a registered component library rendered in its default variable modes; "default_modes" means every shown mode-dependent value is its confirmed axis default. The marker appears only with positive evidence; its absence claims nothing. Single-mode variables keep their compact inline form. Human-authored component documentation is returned as a deduped components map (disable with include_component_docs:false). Set include_screenshot:true to attach a short-lived signed PNG URL. Truncated containers carry truncated:true and childCount; request that node directly, raise depth (max 8), or use get_metadata. Enrichment stages that exceed the server time budget are listed in degraded_stages; the core subtree is never time-degraded. Use get_metadata first to pick a node_id.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },
@@ -469,7 +473,6 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
 
         // Does the subtree bind any fill/stroke whose mode the subtree alone can't pin down?
         // (a local multi-mode collection with no explicit mode in the subtree, or ANY cross-library binding)
-        let ancestorStack: ModeStack = new Map();
         // Raw above-root ancestor nodes (root→parent), lib-key-folded WITH the subtree chain below
         // to build the graph resolver's nearest-wins-by-library-key stack (see graphStackFor).
         let ancestorNodesRootToParent: RawSceneNode[] = [];
@@ -524,7 +527,6 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
             // already-built `coreApi` (rather than constructing a separate, genuinely unused plain
             // instance) avoids an extra dead buildApi call purely to satisfy the required parameter.
             const disc = await discoverAncestorModes(coreApi, parsed.value, id, deps.logger, { deadlineAt, makeCappedApi: (capMs) => deps.buildApi(token, capMs, deadlineAt) });
-            ancestorStack = disc.stack;
             ancestorNodesRootToParent = disc.nodesRootToParent;
             coverageComplete = disc.coverageComplete;
             // depth_cap/byte_budget stay log-only (pre-existing behavior); only the time budget
@@ -541,20 +543,15 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
         // overridden by the subtree chain. Local (in-file) collection ids have no "/" so they never
         // de-dupe by library key and a file's subscribed collection uses a consistent instance id —
         // an exact-id merge stays correct here. (effectiveMode does an exact stack.get(collectionId).)
-        const stackFor = (n: RawSceneNode): ModeStack => new Map([...ancestorStack, ...nodeStack(n.id)]);
-
-        // Effective stack for the GRAPH resolver, which matches a collection by LIBRARY KEY and, on
-        // that lib-key fallback, returns the FIRST map-order entry. A plain merge of two flattened
-        // maps (stackFor) lets two subscribed-instance suffixes of the SAME library collection BOTH
-        // survive — from an above-root ancestor AND a nearer subtree node, or from two subtree levels
-        // — and the FARTHER one, sitting first in map order, would win the lib-key scan → wrong hex.
-        // Fix: lib-key-fold the FULL ordered chain (root … request-root … node) so at most ONE entry
-        // per library key survives — the NEAREST node's — and it sits first in map order.
-        // buildModeByCollection walks its argument NEAREST→farthest (end→start), so we pass the chain
-        // in root→node order: [above-root ancestors (root→parent), request-root … node].
         const subtreeChains = collectSubtreeChains(doc);   // nodeId -> [request-root … node]
-        const graphStackFor = (n: RawSceneNode): ModeStack =>
-          buildModeByCollection([...ancestorNodesRootToParent, ...(subtreeChains.get(n.id) ?? [n])]);
+        const fullChainFor = (n: RawSceneNode): RawSceneNode[] =>
+          [...ancestorNodesRootToParent, ...(subtreeChains.get(n.id) ?? [n])];
+        const exactEvidenceFor = (n: RawSceneNode): ModeEvidenceStack =>
+          buildExactModeEvidence(fullChainFor(n), n.id);
+        const graphEvidenceFor = (n: RawSceneNode): ModeEvidenceStack =>
+          buildGraphModeEvidence(fullChainFor(n), n.id);
+        const stackFor = (n: RawSceneNode): ModeStack => modeIds(exactEvidenceFor(n));
+        const graphStackFor = (n: RawSceneNode): ModeStack => modeIds(graphEvidenceFor(n));
 
         // mode_context accumulators: positive-evidence tracking across ALL bindings.
         const modeCtxStats = { pinnedAxisUsed: false, untrackedBinding: false, unconfirmedDefaultUsed: false, untrackedKinds: [] as string[] };
@@ -621,14 +618,12 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
         };
         scanModeContextScope(doc);
 
-        // Tool boundary only: when a mode-dependent token could not be confirmed
-        // against the on-screen node (mode_source:'default'), attach a terse pointer so the
-        // consuming agent knows get_variables' per-mode `modes` map is the trustworthy fallback.
-        // 'node' (confirmed) gets no hint — keep the size budget for the case that needs it.
+        // Tool boundary only: when mode evidence is incomplete, attach the exact warning that
+        // prevents consumers from treating the diagnostic default as the rendered value.
         // Domain resolvers (resolveKeyInMode/resolveBoundVariableInMode) stay pure and never set this.
         const withModeHint = (t: ResolvedToken): ResolvedToken =>
-          t.mode_dependent && t.mode_source === 'default'
-            ? { ...t, hint: "⚠️ mode-default — do not port the hex; see get_variables 'modes' for the per-mode value" }
+          t.effective_mode_source === 'unverifiable'
+            ? { ...t, hint: 'mode evidence incomplete - default_value is diagnostic only; do not use it as the rendered color' }
             : t;
 
         // Emit a ResolvedToken OBJECT iff the resolved value is mode-dependent; otherwise
@@ -644,19 +639,23 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
           // stays null so the legacy resolveToken name path renders it inline.
           // Uses the exact-id stack — safe for local ids (no "/", never de-duped by library key).
           if (idx) {
-            const local = resolveBoundVariableInMode(bv, key, idx, stackFor(n), coverageComplete, modeCtxStats);
+            const local = resolveBoundVariableInMode(
+              bv, key, idx, stackFor(n), coverageComplete, exactEvidenceFor(n), modeCtxStats,
+            );
             if (local) return local.mode_dependent ? withModeHint(local) : null;   // resolved (tracked) → don't fall through
           }
           // cross-library: object ONLY when mode-dependent. pinned_axis_used is read
           // BEFORE the mode_dependent-gated discard and never copied onto the interned token.
           const libKey = extractLibraryKey(aliasId);
-          const inMode = libKey ? deps.variableGraph?.resolveInMode?.(libKey, graphStackFor(n), coverageComplete) : undefined;
+          const inMode = libKey ? deps.variableGraph?.resolveInMode?.(
+            libKey, graphStackFor(n), coverageComplete, graphEvidenceFor(n),
+          ) : undefined;
           if (inMode) {
             if (inMode.pinned_axis_used) modeCtxStats.pinnedAxisUsed = true;
             if (inMode.unconfirmed_default_used) modeCtxStats.unconfirmedDefaultUsed = true;
             if (inMode.mode_dependent) {
-              return withModeHint({ token: inMode.token, value: inMode.value, mode: inMode.mode, mode_dependent: true, mode_source: inMode.mode_source,
-                ...(inMode.modes_applied ? { modes_applied: inMode.modes_applied } : {}) });
+              const { pinned_axis_used: _pinned, unconfirmed_default_used: _unconfirmed, ...token } = inMode;
+              return withModeHint(token);
             }
             return null;   // single-mode cross-lib, TRACKED → legacy resolveSnapshot (var(--name, value))
           }
@@ -668,6 +667,43 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
         };
 
         const { node, globalVars } = simplify(doc, { resolveToken, resolveSnapshot, resolveTokenMode, truncatedChildCounts: boundaryChildCounts });
+
+        // A component definition with no rendered children is not useful design context by itself.
+        // Its root shape is authoritative only after simplify (which removes hidden children and
+        // carries the boundary truncation signal); a best-effort bounded scan may then point to a
+        // concrete INSTANCE without ever replacing the core response.
+        let concreteInstances: DesignContext['concrete_instances'];
+        let resolutionHints: DesignContext['resolution_hints'];
+        const rootWasTruncated = (doc as RawSceneNode & { truncated?: boolean }).truncated === true;
+        const isEmptyComponentDefinition = node.type === 'COMPONENT'
+          && !node.truncated && !rootWasTruncated && !(node.children?.length);
+        if (isEmptyComponentDefinition) {
+          resolutionHints = {
+            reason: 'definition_has_no_rendered_children',
+            next_call: {
+              tool: 'find_nodes',
+              arguments: { file: parsed.value, query: node.name, type: 'INSTANCE', depth: 8, limit: 20 },
+            },
+          };
+          const instanceApi = deps.buildApi(token, Math.max(1_000, Math.min(remaining(), 90_000)), deadlineAt);
+          const discovered = await findComponentInstances(instanceApi, parsed.value, node.id, { deadlineAt });
+          if (discovered.candidates.length) concreteInstances = discovered.candidates;
+          if (!discovered.partial && discovered.candidates.length === 1) {
+            resolutionHints = {
+              reason: 'definition_has_no_rendered_children',
+              next_call: {
+                tool: 'get_design_context',
+                arguments: { file: parsed.value, node_id: discovered.candidates[0].node_id, depth: args.depth },
+              },
+            };
+          }
+          if (discovered.partial) {
+            deps.logger.info(
+              { file_key_prefix: parsed.value.slice(0, 8), node_id: id, candidates: discovered.candidates.length },
+              'design_context.component_instance_scan_degraded',
+            );
+          }
+        }
 
         progress('component docs / code connect', 75);
         // Component-instance enrichment, shared by Code Connect snippets and component docs:
@@ -797,7 +833,7 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
         // the measured object (context / noShot / noDocs / lean), so no stub reserve is needed.
         const budget = deps.maxResultChars ?? 40000;
         const sizeOf = (n: typeof node): number =>
-          serializeForDelivery({ file: parsed.value, node: n, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(componentDocs ? { components: componentDocs } : {}), ...(screenshot ? { screenshot } : {}), depth: 0, degraded: false }).length;
+          serializeForDelivery({ file: parsed.value, node: n, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(componentDocs ? { components: componentDocs } : {}), ...(screenshot ? { screenshot } : {}), ...(concreteInstances ? { concrete_instances: concreteInstances } : {}), ...(resolutionHints ? { resolution_hints: resolutionHints } : {}), depth: 0, degraded: false }).length;
 
         const fit = fitToBudget(node, args.depth, budget, sizeOf, (out, count) => { out.childCount = count; });
 
@@ -844,6 +880,8 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
           ...(codeConnect ? { codeConnect } : {}),
           ...(componentDocs ? { components: componentDocs } : {}),
           ...(screenshot ? { screenshot } : {}),
+          ...(concreteInstances ? { concrete_instances: concreteInstances } : {}),
+          ...(resolutionHints ? { resolution_hints: resolutionHints } : {}),
           depth: fit.depth, degraded: fit.degraded,
           ...(modeContext ? { mode_context: modeContext } : {}),
           ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
@@ -856,16 +894,18 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
           // node can still be marked truncated:true after shedding enrichment, and without the hint
           // here the caller would lose the pointer to it.
           if (screenshot) {
-            const noShot = { file: parsed.value, node: fit.node, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(componentDocs ? { components: componentDocs } : {}), depth: fit.depth, degraded: true, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
+            const noShot = { file: parsed.value, node: fit.node, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(componentDocs ? { components: componentDocs } : {}), ...(concreteInstances ? { concrete_instances: concreteInstances } : {}), ...(resolutionHints ? { resolution_hints: resolutionHints } : {}), depth: fit.depth, degraded: true, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
             if (serializeForDelivery(noShot).length <= budget) return jsonResult(noShot);
           }
           if (componentDocs) {
-            const noDocs = { file: parsed.value, node: fit.node, globalVars, ...(codeConnect ? { codeConnect } : {}), depth: fit.depth, degraded: true, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
+            const noDocs = { file: parsed.value, node: fit.node, globalVars, ...(codeConnect ? { codeConnect } : {}), ...(concreteInstances ? { concrete_instances: concreteInstances } : {}), ...(resolutionHints ? { resolution_hints: resolutionHints } : {}), depth: fit.depth, degraded: true, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
             if (serializeForDelivery(noDocs).length <= budget) return jsonResult(noDocs);
           }
-          const lean = { file: parsed.value, node: fit.node, depth: fit.depth, degraded: true, globalVars, ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
+          const lean = { file: parsed.value, node: fit.node, depth: fit.depth, degraded: true, globalVars, ...(concreteInstances ? { concrete_instances: concreteInstances } : {}), ...(resolutionHints ? { resolution_hints: resolutionHints } : {}), ...(modeContext ? { mode_context: modeContext } : {}), ...(degradedStages.length ? { degraded_stages: degradedStages } : {}), ...(truncationHint ? { hint: truncationHint } : {}) };
           if (serializeForDelivery(lean).length <= budget) return jsonResult(lean);
           return jsonResult({ file: parsed.value, node: fit.node, depth: fit.depth, degraded: true,
+            ...(concreteInstances ? { concrete_instances: concreteInstances } : {}),
+            ...(resolutionHints ? { resolution_hints: resolutionHints } : {}),
             ...(degradedStages.length ? { degraded_stages: degradedStages } : {}),
             note: 'Result exceeded the size budget even at minimum depth; globalVars omitted — style refs (fill_0, text_0, …) are unresolved. Request a deeper child node directly for full detail.' });
         }

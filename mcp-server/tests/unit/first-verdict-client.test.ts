@@ -137,6 +137,18 @@ describe("the client's tool calls are parsed by the schemas the server registers
     }
   });
 
+  it('requests a self-contained inline extractor before its stdio server is closed', async () => {
+    // figmaSide awaits withServer(), whose finally block closes the spawned stdio process before
+    // serve-extractor/prepare use the returned artifact. A default loader would fetch lazily from
+    // that process's now-dead loopback sidecar, so this runnable example must opt into the full
+    // self-contained script. The server's default loader behavior is covered by its own tool tests.
+    const { TOOL_ARGS } = await loadClient();
+    expect(TOOL_ARGS.get_layout_spec(ARGS, SNAPSHOTS)).toMatchObject({
+      include_extractor: true,
+      extractor_mode: 'inline',
+    });
+  });
+
   it('is not vacuous: a renamed argument, and a dropped one, are both red', async () => {
     // The mutation this file was written against, run here so the row cannot go green by checking an
     // empty set. Each of the three calls is mutated in turn -- a check that only ever exercised

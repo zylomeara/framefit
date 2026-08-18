@@ -242,6 +242,23 @@ describe('get_layout_spec tool', () => {
   describe('extractor_mode (loader/inline)', () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: doc } } }));
 
+    it('bridge-shaped deps return the short loader, upload URL, and dom_ref instructions', async () => {
+      const snapshotStore = { mint: vi.fn(() => 'stdio-cap-token') } as unknown as ToolDeps['snapshotStore'];
+      const run = harness({ getNodesRaw }, {
+        snapshotStore,
+        publicBaseUrl: 'http://127.0.0.1:3846',
+        tenantId: 'local',
+      });
+      const out = JSON.parse((await run({
+        file: 'abc', node_ids: ['1:1'], include_extractor: true,
+      })).content[0].text);
+
+      expect(out.extractor_js).toContain('/api/dom-snapshots/extractor.js');
+      expect(out.extractor_js).not.toContain('pruneToBudget');
+      expect(out.upload_url).toBe('http://127.0.0.1:3846/api/dom-snapshots/stdio-cap-token');
+      expect(out.upload_hint).toContain('dom_ref');
+    });
+
     it('default mode (loader) + publicBaseUrl → thunk pointing at /api/dom-snapshots/extractor.js, not the full script', async () => {
       const run = harness({ getNodesRaw }, { publicBaseUrl: 'https://figma.test' });
       const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
@@ -263,6 +280,25 @@ describe('get_layout_spec tool', () => {
       const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], include_extractor: true })).content[0].text);
       expect(out.extractor_js).toContain('pruneToBudget');
       expect(out.extractor_note).toBe('loader unavailable without public base URL — inline returned');
+    });
+
+    it('bridge startup failure adds the exact receipt only when the extractor is requested', async () => {
+      const browserBridgeDegraded = {
+        status: 'unavailable' as const,
+        reason: 'loopback bridge could not start; using inline extractor' as const,
+      };
+      const run = harness({ getNodesRaw }, { browserBridgeDegraded } as Partial<ToolDeps>);
+
+      const withExtractor = JSON.parse((await run({
+        file: 'abc', node_ids: ['1:1'], include_extractor: true,
+      })).content[0].text);
+      expect(withExtractor.extractor_js).toContain('pruneToBudget');
+      expect(withExtractor.browser_bridge).toEqual(browserBridgeDegraded);
+
+      const withoutExtractor = JSON.parse((await run({
+        file: 'abc', node_ids: ['1:1'], include_extractor: false,
+      })).content[0].text);
+      expect(withoutExtractor.browser_bridge).toBeUndefined();
     });
   });
 
@@ -590,13 +626,18 @@ describe('get_layout_spec — bound colors resolve to token names (shared resolv
     return { run: (a: any): Promise<any> => call('get_layout_spec', a), getVariablesLocal, caps };
   };
 
-  it('paint-level bound fill → fillToken {token, hex, mode_source:default}; raw fillHex unchanged; all_modes omitted; fetch capped', async () => {
+  it('paint-level bound fill keeps the default diagnostic but does not claim an effective ancestor mode', async () => {
     const { run, getVariablesLocal, caps } = tokenHarness(boundDoc());
     const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
     const spec = out.specs[0].spec;
     expect(spec.fillHex).toBe('#ffffff');                       // RAW snapshot, documented as raw
     expect(spec.fillBoundVar).toBe('V:1');
-    expect(spec.fillToken).toMatchObject({ token: 'color/brand/primary', hex: '#7b61f6', mode_source: 'default' });
+    expect(spec.fillToken).toMatchObject({
+      token: 'color/brand/primary',
+      defaultHex: '#7b61f6',
+      effectiveHex: null,
+      effectiveModeSource: 'unverifiable',
+    });
     expect(spec.fillToken.all_modes).toBeUndefined();           // compare's confirm payload, not navigation data
     expect(out.degraded_stages).toBeUndefined();
     expect(getVariablesLocal).toHaveBeenCalledTimes(1);
@@ -616,10 +657,16 @@ describe('get_layout_spec — bound colors resolve to token names (shared resolv
     expect(out.specs[0].spec.fillBoundVar).toBe('V:1');
   });
 
-  it('a subtree explicitVariableModes pin → mode-resolved value + mode_source:node', async () => {
+  it('a subtree explicitVariableModes pin produces an explicit effective value', async () => {
     const { run } = tokenHarness(boundDoc({ explicitVariableModes: { 'VC:1': 'm2' } } as Partial<RawSceneNode>));
     const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
-    expect(out.specs[0].spec.fillToken).toMatchObject({ token: 'color/brand/primary', hex: '#9980ff', mode: 'Dark', mode_source: 'node' });
+    expect(out.specs[0].spec.fillToken).toMatchObject({
+      token: 'color/brand/primary',
+      defaultHex: '#7b61f6',
+      effectiveHex: '#9980ff',
+      effectiveModeSource: 'explicit_node',
+      effectiveModes: { Brand: { mode: 'Dark', source: 'explicit_node', node_id: '1:1' } },
+    });
   });
 
   it('demand gate: a batch that binds no colour never fetches variables', async () => {
