@@ -9,15 +9,15 @@ import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 
 const logger = createLogger({ level: 'silent' });
 
-const frame = {
+const frame: RawSceneNode = {
   id: '1:5', name: 'Hero', type: 'FRAME',
   absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 80 },
   fills: [{ type: 'SOLID', color: { r: 0.482, g: 0.380, b: 0.965 } }],
   boundVariables: { fills: { type: 'VARIABLE_ALIAS', id: 'V:1' } },
 };
 
-function harness(over: Partial<FigmaApi> = {}, maxResultChars = 40000) {
-  const { server, call } = makeFakeMcpServer();
+function harness(over: Partial<FigmaApi> = {}, maxResultChars = 40000, parseSchema = false) {
+  const { server, call, callParsed } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
@@ -33,7 +33,7 @@ function harness(over: Partial<FigmaApi> = {}, maxResultChars = 40000) {
     defaultToken: 'figd_x', logger, maxResultChars,
   };
   registerGetDesignContextTool(server, deps);
-  return (a: any): Promise<any> => call('get_design_context', a);
+  return (a: any): Promise<any> => (parseSchema ? callParsed : call)('get_design_context', a);
 }
 
 describe('get_design_context tool', () => {
@@ -98,6 +98,16 @@ describe('get_design_context tool', () => {
     expect(text).toContain('"name":"Hero"');
     expect(text).toContain('color/brand/primary'); // token name, not hex
     expect(text).toContain('"size"');
+  });
+
+  it('uses the production depth default when the fake invokes the registered schema', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '1:5': { document: frame } } }));
+    const run = harness({ getNodesRaw }, 40000, true);
+
+    const res = await run({ file: 'abc', node_id: '1-5', include_component_docs: false });
+
+    expect(res.isError).toBeFalsy();
+    expect(getNodesRaw).toHaveBeenCalledWith('abc', ['1:5'], 5);
   });
 
   it('falls back to raw hex when variables are forbidden (non-Enterprise)', async () => {

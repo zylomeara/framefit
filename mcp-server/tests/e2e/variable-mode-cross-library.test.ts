@@ -54,7 +54,7 @@ async function libFromFile(api: FigmaApi, fileKey: string): Promise<Lib> {
 describe.skipIf(!enabled)('nested-menu case — cross-library mode resolution', () => {
   it('resolves 24/Stroke/menu stroke with confirmed ancestor evidence and a separate diagnostic default', async () => {
     const logger = createLogger({ level: 'silent' });
-    const { server, call } = makeFakeMcpServer();
+    const { server, callParsed } = makeFakeMcpServer();
 
     // Build the cross-library graph live, then wire resolve/resolveInMode exactly like server.ts.
     const graphApi = new FigmaRestAdapter(TOKEN!, logger);
@@ -87,7 +87,7 @@ describe.skipIf(!enabled)('nested-menu case — cross-library mode resolution', 
     };
     registerGetDesignContextTool(server, deps);
 
-    const res = await call('get_design_context', {
+    const res = await callParsed('get_design_context', {
       file: E2E_FILE,
       node_id: E2E_NODE,
       include_component_docs: false,

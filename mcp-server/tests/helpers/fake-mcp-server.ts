@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 /**
@@ -145,5 +146,20 @@ export function makeFakeMcpServer() {
     return r.handler(args);
   };
 
-  return { server, call, get, registrations };
+  const callParsed = async (name: string, args: Record<string, unknown> = {}) => {
+    const r = registrations.get(name);
+    if (!r) {
+      throw new Error(
+        `Tool ${name} not registered (registered: ${[...registrations.keys()].join(', ') || 'none'})`,
+      );
+    }
+    if (r.inputSchema === undefined) return r.handler(args);
+    const schema = r.inputSchema instanceof z.ZodType
+      ? r.inputSchema
+      : z.object(r.inputSchema as z.ZodRawShape);
+    const parsed = await schema.parseAsync(args);
+    return r.handler(parsed as Record<string, unknown>);
+  };
+
+  return { server, call, callParsed, get, registrations };
 }
