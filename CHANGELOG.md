@@ -3,6 +3,61 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.30.0
+
+Design QA now keeps rendered variable values behind positive effective-mode evidence, supplies direct
+recovery steps for incomplete navigation and empty component definitions, and can sample pixels from
+the exact PNG returned by `get_screenshot`. Stdio clients also gain a loopback browser bridge, so the
+canonical DOM extractor and snapshot upload flow no longer require repeatedly moving large inline
+payloads through the MCP conversation.
+
+**Output compatibility.** This release changes public tool schemas and response fields; reconnect so
+the client refreshes `tools/list`. DOM snapshot schema v7 and the extractor's captured shape are
+unchanged, so existing v7 snapshots do not require re-capture. Consumers of resolved design tokens
+must distinguish diagnostic defaults from evidence-backed rendered values: a mode-dependent token
+with incomplete mode evidence now has a null effective value instead of presenting its default as the
+rendered result.
+
+### Added
+
+**Evidence-bearing variable resolution.** Resolved tokens separate `default_value` from
+`effective_rendered_value`, describe every applied axis in `effective_modes`, and summarize its proof
+in `effective_mode_source`. Explicit node modes, inherited ancestor modes, confirmed defaults, and
+unverifiable axes remain distinct through local and cross-library resolution. Duplicate, empty, and
+prototype-shaped collection display names are emitted without dropping an axis. Color comparison
+uses only the effective rendered value, so an unproven library default cannot produce a false match.
+
+**Executable recovery for incomplete design context.** `get_design_context` can return up to five
+rendered component instances plus one `resolution_hints` continuation when a component definition has
+no rendered children. Partial `get_node_ancestry` results now include their exact confirmed prefix and
+one bounded `find_nodes` continuation instead of leaving the caller to reconstruct the next search.
+
+**PNG color probes.** `get_screenshot` accepts one optional normalized or pixel-space probe with a
+bounded radius, expected color, and tolerance. The receipt reports the sampled RGBA value, coverage,
+and optional match result from the primary PNG before preview, focus, or child renders are requested.
+Invalid or out-of-raster probes fail explicitly; SVG and JPEG keep their existing behavior and reject
+the PNG-only option.
+
+**Stdio DOM snapshot bridge.** Stdio startup now creates an ephemeral loopback-only browser endpoint
+backed by the same bounded snapshot store as HTTP mode. `get_layout_spec` can therefore return a short
+extractor loader, an upload URL, and the existing dom reference flow in stdio sessions. Bridge startup
+is transactional: a failed sidecar is closed, reported as a degradation receipt, and falls back to the
+full inline extractor. Server shutdown attempts every close operation even if one fails.
+
+### Changed
+
+**Large variable files degrade to node-scoped evidence.** When Figma returns its exact oversized-file
+error for the full variable catalog, `get_variables` scans variable bindings from the requested node,
+resolves only those keys through the graph and snapshot stages, and reports unavailable definitions
+without failing the whole call. Graph/bootstrap and snapshot lookup are isolated fail-soft stages, so
+one source can still recover misses from the other. Other Figma errors keep their existing taxonomy.
+
+**Design QA guidance follows the delivered transports.** Tool registrations, generated surface
+fixtures, response captures, navigation documentation, and the runnable first-verdict example now
+describe the loopback stdio upload path, token evidence, color probes, and continuation receipts. The
+example keeps an explicit inline/file seam because it intentionally closes its stdio child before the
+browser step; long-lived MCP clients can use the sidecar flow directly.
+
 ## 0.29.1
 
 Two response-budget fixes. Tools using the configurable result budget now measure the exact envelope
