@@ -42,28 +42,46 @@ export function recordApplied(applied: AppliedMode[] | undefined, entry: Applied
   applied.push(entry);
 }
 
-/** Fold applied picks into the emitted evidence map. Empty names are skipped; if two different
- * collections share a display name, the first axis encountered wins. */
+/** Fold applied picks into the emitted evidence map without losing an axis. Ordinary unique
+ * collection names remain byte-compatible. Duplicate names use the deterministic ASCII suffix
+ * " [2]", " [3]", ...; an empty display name uses "[unnamed]". Generated labels never take a
+ * label that another collection actually owns. A null-prototype record keeps prototype-key names
+ * such as "constructor" and "toString" ordinary own keys. */
 export function formatEffectiveModes(
-  applied: AppliedMode[] | undefined,
+  applied: readonly AppliedMode[] | undefined,
 ): Record<string, EffectiveModeAxis> | undefined {
   if (!applied || applied.length === 0) return undefined;
-  const out: Record<string, EffectiveModeAxis> = {};
+  const out = Object.create(null) as Record<string, EffectiveModeAxis>;
+  const used = new Set<string>();
+  const reserved = new Set(applied.map((axis) => axis.collection).filter((name) => name.length > 0));
   for (const a of applied) {
-    if (!a.collection || !a.mode || a.collection in out) continue;
-    out[a.collection] = {
+    const base = a.collection || '[unnamed]';
+    let label = base;
+    if (used.has(label) || (a.collection.length === 0 && reserved.has(label))) {
+      let suffix = 2;
+      do label = `${base} [${suffix++}]`;
+      while (used.has(label) || reserved.has(label));
+    }
+    used.add(label);
+    out[label] = {
       mode: a.mode,
       source: a.source,
       ...(a.nodeId !== undefined ? { node_id: a.nodeId } : {}),
     };
   }
-  return Object.keys(out).length > 0 ? out : undefined;
+  return out;
 }
 
+export function compositeModeSource(applied: readonly AppliedMode[]): EffectiveModeSource;
+export function compositeModeSource(axes: Record<string, EffectiveModeAxis>): EffectiveModeSource;
 export function compositeModeSource(
-  axes: Record<string, EffectiveModeAxis>,
+  input: readonly AppliedMode[] | Record<string, EffectiveModeAxis>,
 ): EffectiveModeSource {
-  const sources = Object.values(axes).map((axis) => axis.source);
+  // Resolvers pass AppliedMode[] so their safety decision precedes presentation. The record form
+  // remains supported for callers of the previously exported formatter-level helper.
+  const sources = Array.isArray(input)
+    ? (input as readonly AppliedMode[]).map((axis) => axis.source)
+    : Object.values(input as Record<string, EffectiveModeAxis>).map((axis) => axis.source);
   if (sources.includes('unverifiable')) return 'unverifiable';
   if (sources.includes('ancestor_chain')) return 'ancestor_chain';
   if (sources.includes('explicit_node')) return 'explicit_node';

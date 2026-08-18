@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest';
 import { diffPair, summarize, deriveCoverage } from '../../src/domain/layout-spec/diff.js';
 import { buildVerification } from '../../src/domain/layout-spec/verification.js';
 import type { LayoutSpec, DomSnapshotOk } from '../../src/domain/layout-spec/types.js';
+import { makeColorTokenResolver } from '../../src/adapters/driving/tools/color-token-resolver.js';
+import { buildVariableIndex } from '../../src/domain/variables.js';
 
 const baseSpec = (): LayoutSpec => ({
   node: { id: '1:1', name: 'item', type: 'INSTANCE' },
@@ -192,6 +194,50 @@ describe('diffPair — paddings, cross axis, typography, colors, component', () 
     d.styles = { ...d.styles!, backgroundColor: '#ff5722' };
     const f = row(diffPair(s, d, { tolerancePx: 1 }), 'fill');
     expect(f?.note).toBe("the node's effective mode is not confirmed; default #ff5722 is diagnostic only — token t");
+  });
+
+  it('duplicate Theme axes cannot leak a downstream default into an authored-token pass', () => {
+    const variableIndex = buildVariableIndex({ meta: {
+      variableCollections: {
+        A: { id: 'A', name: 'Theme', defaultModeId: 'a1',
+          modes: [{ modeId: 'a1', name: 'Light' }, { modeId: 'a2', name: 'Dark' }] },
+        B: { id: 'B', name: 'Theme', defaultModeId: 'b1',
+          modes: [{ modeId: 'b1', name: 'Light' }, { modeId: 'b2', name: 'Night' }] },
+      },
+      variables: {
+        'V:src': { id: 'V:src', name: 'src/accent', resolvedType: 'COLOR', variableCollectionId: 'A',
+          valuesByMode: { a1: { type: 'VARIABLE_ALIAS', id: 'V:tgt' }, a2: { type: 'VARIABLE_ALIAS', id: 'V:tgt' } },
+          codeSyntax: { WEB: '--src-accent' } },
+        'V:tgt': { id: 'V:tgt', name: 'target/base', resolvedType: 'COLOR', variableCollectionId: 'B',
+          valuesByMode: { b1: { r: 1, g: 1, b: 1, a: 1 }, b2: { r: 0, g: 0, b: 0, a: 1 } } },
+      },
+    } } as never);
+    const resolve = makeColorTokenResolver({
+      variableIndex,
+      stackFor: () => new Map([['A', 'a2']]),
+      graphStackFor: () => new Map(),
+      exactEvidenceFor: () => new Map([['A', { modeId: 'a2', source: 'explicit_node', nodeId: '1:1' }]]),
+      graphEvidenceFor: () => new Map(),
+      coverageComplete: false,
+    });
+    const boundNode = {
+      id: '1:1', name: 'n', type: 'FRAME',
+      fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 },
+        boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'V:src' } } }],
+    } as never;
+    const s = baseSpec();
+    s.fillBoundVar = 'V:src';
+    s.fillToken = resolve(boundNode, 'fills')!;
+    const d = baseSnap();
+    (d.styles as Record<string, unknown>).backgroundColorToken = { token: '--src-accent' };
+    const cssEvidence = {
+      nameOf: (id: string) => id === 'V:src' ? '--src-accent' : undefined,
+      idsByName: (name: string) => name === '--src-accent' ? ['V:src'] : [],
+      aliasRelation: (a: string, b: string) => a === b ? 'related' as const : 'unrelated' as const,
+    };
+    const f = row(diffPair(s, d, { tolerancePx: 1, cssEvidence }), 'fill');
+    expect(s.fillToken).toMatchObject({ defaultHex: '#ffffff', effectiveHex: null, effectiveModeSource: 'unverifiable' });
+    expect(f).toMatchObject({ figma: null, status: 'review', tokenReason: 'mode-unconfirmed' });
   });
 
   it('fill: hex equal (no token) → pass without a note; unbound mismatch → fail as before', () => {

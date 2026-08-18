@@ -34,6 +34,41 @@ describe('empty-name producers fall back to the library key', () => {
   });
 });
 
+describe('mode-safe local projection', () => {
+  it('never promotes a default when a duplicate-name downstream axis is unverifiable', () => {
+    const variableIndex = buildVariableIndex({ meta: {
+      variableCollections: {
+        A: { id: 'A', name: 'Theme', defaultModeId: 'a1',
+          modes: [{ modeId: 'a1', name: 'Light' }, { modeId: 'a2', name: 'Dark' }] },
+        B: { id: 'B', name: 'Theme', defaultModeId: 'b1',
+          modes: [{ modeId: 'b1', name: 'Light' }, { modeId: 'b2', name: 'Night' }] },
+      },
+      variables: {
+        'V:src': { id: 'V:src', name: 'src/accent', resolvedType: 'COLOR', variableCollectionId: 'A',
+          valuesByMode: { a1: { type: 'VARIABLE_ALIAS', id: 'V:tgt' }, a2: { type: 'VARIABLE_ALIAS', id: 'V:tgt' } } },
+        'V:tgt': { id: 'V:tgt', name: 'target/base', resolvedType: 'COLOR', variableCollectionId: 'B',
+          valuesByMode: { b1: { r: 1, g: 1, b: 1, a: 1 }, b2: { r: 0, g: 0, b: 0, a: 1 } } },
+      },
+    } } as never);
+    const resolve = makeColorTokenResolver({
+      variableIndex,
+      stackFor: () => new Map([['A', 'a2']]),
+      graphStackFor: () => new Map(),
+      exactEvidenceFor: () => new Map([['A', { modeId: 'a2', source: 'explicit_node', nodeId: '1:1' }]]),
+      graphEvidenceFor: () => new Map(),
+      coverageComplete: false,
+    });
+    expect(resolve(boundNode('V:src'), 'fills')).toMatchObject({
+      token: 'src/accent', defaultHex: '#ffffff', effectiveHex: null,
+      effectiveModeSource: 'unverifiable',
+      effectiveModes: {
+        Theme: { mode: 'Dark', source: 'explicit_node', node_id: '1:1' },
+        'Theme [2]': { mode: 'Light', source: 'unverifiable' },
+      },
+    });
+  });
+});
+
 // ── merged codeSyntax evidence (graph-css-evidence line) ──
 import { buildMergedCssEvidence } from '../../src/adapters/driving/tools/color-token-resolver.js';
 import { buildVariableIndex } from '../../src/domain/variables.js';

@@ -132,11 +132,13 @@ export function resolveBoundVariableInMode(
     // "No pins anywhere" is then NOT positive knowledge for this chain — the marker must not fire.
     if (track.applied?.some((a) => a.source === 'unverifiable')) stats.unconfirmedDefaultUsed = true;
   }
-  const effectiveModes = formatEffectiveModes(track.applied);
-  if (!effectiveModes) return { token: v.name, value };
+  const applied = track.applied ?? [];
+  if (applied.length === 0) return { token: v.name, value };
+  // Safety is computed from the identity-preserving axes before their display-name projection.
+  const effectiveModeSource = compositeModeSource(applied);
+  const effectiveModes = formatEffectiveModes(applied)!;
   const defaultResolved = resolveDefault(v, idx);
   if ('aliasOf' in defaultResolved) return null;
-  const effectiveModeSource = compositeModeSource(effectiveModes);
   const effectiveRenderedValue = effectiveModeSource === 'unverifiable' ? null : value;
   return {
     token: v.name,

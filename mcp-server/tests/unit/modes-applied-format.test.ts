@@ -32,9 +32,34 @@ describe('formatEffectiveModes', () => {
     expect(formatEffectiveModes([theme])).toEqual({ Theme: { mode: 'Light', source: 'confirmed_default' } });
   });
   it('uses the prescribed composite precedence', () => {
-    expect(compositeModeSource(formatEffectiveModes([theme, brand])!)).toBe('ancestor_chain');
-    expect(compositeModeSource({ Theme: { mode: 'Light', source: 'unverifiable' }, Brand: { mode: 'Solar', source: 'explicit_node' } }))
-      .toBe('unverifiable');
+    expect(compositeModeSource([theme, brand])).toBe('ancestor_chain');
+    expect(compositeModeSource([
+      { ...theme, source: 'unverifiable' },
+      { ...brand, source: 'explicit_node' },
+    ])).toBe('unverifiable');
+    expect(compositeModeSource({
+      Theme: { mode: 'Light', source: 'unverifiable' },
+      Brand: { mode: 'Solar', source: 'explicit_node' },
+    })).toBe('unverifiable');
+  });
+  it('preserves duplicate, empty, and prototype-key display labels without hiding unsafe axes', () => {
+    const applied: AppliedMode[] = [
+      { key: 'C1', collection: 'Theme', mode: 'Dark', source: 'explicit_node', nodeId: 'LEAF' },
+      { key: 'C2', collection: 'Theme', mode: 'Light', source: 'unverifiable' },
+      { key: 'C3', collection: 'constructor', mode: 'Safe', source: 'confirmed_default' },
+      { key: 'C4', collection: 'toString', mode: 'Inherited', source: 'ancestor_chain', nodeId: 'FRAME' },
+      { key: 'C5', collection: '', mode: '', source: 'confirmed_default' },
+    ];
+    const formatted = formatEffectiveModes(applied)!;
+    expect(Object.getPrototypeOf(formatted)).toBeNull();
+    expect(formatted).toEqual({
+      Theme: { mode: 'Dark', source: 'explicit_node', node_id: 'LEAF' },
+      'Theme [2]': { mode: 'Light', source: 'unverifiable' },
+      constructor: { mode: 'Safe', source: 'confirmed_default' },
+      toString: { mode: 'Inherited', source: 'ancestor_chain', node_id: 'FRAME' },
+      '[unnamed]': { mode: '', source: 'confirmed_default' },
+    });
+    expect(compositeModeSource(applied)).toBe('unverifiable');
   });
   it('returns undefined for undefined/empty input', () => {
     expect(formatEffectiveModes(undefined)).toBeUndefined();

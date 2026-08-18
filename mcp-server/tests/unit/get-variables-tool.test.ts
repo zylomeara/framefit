@@ -413,6 +413,96 @@ describe('get_variables tool', () => {
     ]);
   });
 
+  it('uses snapshots for every published miss when graph bootstrap fails inside too-large fallback', async () => {
+    const A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const lookup = vi.fn(async (keys: string[]) => new Map(keys.map((key) => [key, {
+      value: key === A ? '#aabbcc' : '18', resolved_type: key === A ? 'COLOR' : 'FLOAT',
+      name: key === A ? 'snapshot/color' : 'snapshot/space',
+    }])));
+    const resolve = vi.fn(() => undefined);
+    const run = depsHarness({
+      buildApi: () => ({
+        getNodesRaw: async () => ({ nodes: { '1:5': { document: {
+          id: '1:5', name: 'F', type: 'FRAME', paddingLeft: 8, itemSpacing: 18,
+          boundVariables: {
+            paddingLeft: { type: 'VARIABLE_ALIAS', id: `VariableID:${A}/1:1` },
+            itemSpacing: { type: 'VARIABLE_ALIAS', id: `VariableID:${B}/2:2` },
+          },
+        } } } }),
+        getVariablesLocal: async () => { throw new FigmaApiError('unknown_4xx', 400, 'Figma returned 400', undefined, 'Request too large'); },
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger,
+      variableGraph: { ensureReady: async () => { throw new Error('graph bootstrap down'); }, resolve },
+      variableSnapshot: { lookup },
+    });
+
+    const body = JSON.parse(textOf((await run({ file: 'abc', node_id: '1-5' })).content[0]));
+    expect(resolve).not.toHaveBeenCalled();
+    expect(lookup).toHaveBeenCalledWith([A, B]);
+    expect(body.tokens.map((row: any) => [row.resolved_via, row.value])).toEqual([
+      ['snapshot', '#aabbcc'], ['snapshot', 18],
+    ]);
+  });
+
+  it('continues snapshots for unresolved keys after graph resolution throws', async () => {
+    const A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const lookup = vi.fn(async (keys: string[]) => new Map([[B, {
+      value: '18', resolved_type: 'FLOAT', name: 'snapshot/space',
+    }]]));
+    const run = depsHarness({
+      buildApi: () => ({
+        getNodesRaw: async () => ({ nodes: { '1:5': { document: {
+          id: '1:5', name: 'F', type: 'FRAME', paddingLeft: 8, itemSpacing: 18,
+          boundVariables: {
+            paddingLeft: { type: 'VARIABLE_ALIAS', id: `VariableID:${A}/1:1` },
+            itemSpacing: { type: 'VARIABLE_ALIAS', id: `VariableID:${B}/2:2` },
+          },
+        } } } }),
+        getVariablesLocal: async () => { throw new FigmaApiError('unknown_4xx', 400, 'Figma returned 400', undefined, 'Request too large'); },
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger,
+      variableGraph: { resolve: (key) => {
+        if (key === A) return { value: '#aabbcc', name: 'graph/color' };
+        throw new Error('graph read down');
+      } },
+      variableSnapshot: { lookup },
+    });
+
+    const body = JSON.parse(textOf((await run({ file: 'abc', node_id: '1-5' })).content[0]));
+    expect(lookup).toHaveBeenCalledWith([B]);
+    expect(body.tokens.map((row: any) => [row.resolved_via, row.value])).toEqual([
+      ['graph', '#aabbcc'], ['snapshot', 18],
+    ]);
+  });
+
+  it('preserves graph hits when snapshot lookup fails for the remaining misses', async () => {
+    const A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const run = depsHarness({
+      buildApi: () => ({
+        getNodesRaw: async () => ({ nodes: { '1:5': { document: {
+          id: '1:5', name: 'F', type: 'FRAME', paddingLeft: 8, itemSpacing: 18,
+          boundVariables: {
+            paddingLeft: { type: 'VARIABLE_ALIAS', id: `VariableID:${A}/1:1` },
+            itemSpacing: { type: 'VARIABLE_ALIAS', id: `VariableID:${B}/2:2` },
+          },
+        } } } }),
+        getVariablesLocal: async () => { throw new FigmaApiError('unknown_4xx', 400, 'Figma returned 400', undefined, 'Request too large'); },
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger,
+      variableGraph: { resolve: (key) => key === A ? { value: '#aabbcc', name: 'graph/color' } : undefined },
+      variableSnapshot: { lookup: async () => { throw new Error('snapshot down'); } },
+    });
+
+    const body = JSON.parse(textOf((await run({ file: 'abc', node_id: '1-5' })).content[0]));
+    expect(body.degradation_receipt.definitions_unavailable).toBe(1);
+    expect(body.tokens.map((row: any) => [row.definition_status, row.resolved_via, row.value])).toEqual([
+      ['resolved', 'graph', '#aabbcc'], ['unavailable', undefined, null],
+    ]);
+  });
+
   it('uses fallback only for the exact evidenced too-large 400 in node scope', async () => {
     const cases: { label: string; node: boolean; error: FigmaApiError }[] = [
       { label: 'too-large whole file', node: false, error: new FigmaApiError('unknown_4xx', 400, 'Figma returned 400', undefined, 'Request too large') },

@@ -171,6 +171,31 @@ describe('get_design_context modes_applied', () => {
     });
   });
 
+  it('keeps a duplicate-name downstream unverifiable axis from exposing the default', async () => {
+    const duplicateDoc = { ...docTwoAxes, explicitVariableModes: { 'VC:A': 'a2' } };
+    const duplicateVars = { meta: {
+      variableCollections: {
+        ...varsTwoAxes.meta.variableCollections,
+        'VC:B': { ...varsTwoAxes.meta.variableCollections['VC:B'], name: 'Theme' },
+      },
+      variables: varsTwoAxes.meta.variables,
+    } };
+    const res = await handlerFor(duplicateDoc, duplicateVars, 'F')({
+      file: 'abc', node_id: 'F', include_component_docs: false,
+    });
+    const body = JSON.parse(res.content[0].text);
+    const strokeRef = body.node.children[0].stroke;
+    expect(body.globalVars[strokeRef]).toMatchObject({
+      token: 'src/accent', default_value: '#ffffff', effective_rendered_value: null, value: null,
+      effective_mode_source: 'unverifiable',
+      effective_modes: {
+        Theme: { mode: 'Dark', source: 'ancestor_chain', node_id: 'F' },
+        'Theme [2]': { mode: 'Light', source: 'unverifiable' },
+      },
+      hint: 'mode evidence incomplete - default_value is diagnostic only; do not use it as the rendered color',
+    });
+  });
+
   it('graph path: resolveInMode modes_applied passes through, hint interplay intact', async () => {
     const crossLibId = 'VariableID:' + 'a'.repeat(40) + '/1:1';
     const docCross = {

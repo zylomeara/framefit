@@ -101,24 +101,28 @@ async function resolveBindingRows(
   bindings: NodeVariableBinding[],
   deps: ToolDeps,
 ): Promise<NodeVariableBindingRow[]> {
-  await deps.variableGraph?.ensureReady?.();
   const keys = [...new Set(bindings.map((binding) => extractLibraryKey(binding.id)).filter((key): key is string => key !== null))];
   const graphHits = new Map<string, { value: string; name?: string; sourceLibrary?: string }>();
   const snapshotHits = new Map<string, { value: string; resolved_type: string; name: string }>();
-  try {
-    if (deps.variableGraph) {
+  if (deps.variableGraph) {
+    try {
+      await deps.variableGraph.ensureReady?.();
       for (const key of keys) {
         const hit = deps.variableGraph.resolve(key);
         if (hit) graphHits.set(key, { value: hit.value, name: hit.name, sourceLibrary: hit.sourceLibrary });
       }
+    } catch (err) {
+      deps.logger.info({ err: (err as Error).message }, 'get_variables.binding_graph_resolution_unavailable');
     }
-    const misses = keys.filter((key) => !graphHits.has(key));
-    if (deps.variableSnapshot && misses.length) {
+  }
+  const misses = keys.filter((key) => !graphHits.has(key));
+  if (deps.variableSnapshot && misses.length) {
+    try {
       const hits = await deps.variableSnapshot.lookup(misses);
       for (const [key, hit] of hits) snapshotHits.set(key, hit);
+    } catch (err) {
+      deps.logger.info({ err: (err as Error).message }, 'get_variables.binding_snapshot_resolution_unavailable');
     }
-  } catch (err) {
-    deps.logger.info({ err: (err as Error).message }, 'get_variables.binding_resolution_unavailable');
   }
 
   return bindings.map((binding) => {

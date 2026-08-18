@@ -566,6 +566,22 @@ describe('resolveKeyInMode modes_applied', () => {
       'sub-brand': { mode: 'default', source: 'unverifiable' },
     });
   });
+
+  it('keeps a duplicate-name downstream unverifiable axis safety-critical', () => {
+    const duplicateNames = crossLibs();
+    duplicateNames[1].colls[0].name = 'Theme';
+    const r = resolveKeyInMode(
+      buildGraph(duplicateNames), K('acc'), new Map([['CT', 't2']]), false,
+    )!;
+    expect(r).toMatchObject({
+      default_value: '#a73afd', effective_rendered_value: null, value: null,
+      effective_mode_source: 'unverifiable', mode_dependent: true,
+      effective_modes: {
+        Theme: { mode: 'Dark', source: 'explicit_node', node_id: 'LEAF' },
+        'Theme [2]': { mode: 'default', source: 'unverifiable' },
+      },
+    });
+  });
 });
 
 // Incident 2026-07-02: a consumer pin in subscribed form (<collKey>/<instance>) must join an

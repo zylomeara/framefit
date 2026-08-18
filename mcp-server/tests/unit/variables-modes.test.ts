@@ -202,6 +202,27 @@ describe('resolveBoundVariableInMode modes_applied (local path)', () => {
       Theme: { mode: 'Dusk', source: 'explicit_node', node_id: 'LEAF' },
     });
   });
+
+  it('keeps a duplicate-name downstream unverifiable axis safety-critical', () => {
+    const duplicateNames: RawVariablesResponse = { meta: {
+      variableCollections: {
+        ...crossResp.meta!.variableCollections,
+        'VC:B': { ...crossResp.meta!.variableCollections['VC:B'], name: 'Theme' },
+      },
+      variables: crossResp.meta!.variables,
+    } };
+    const idx = buildVariableIndex(duplicateNames);
+    const stack: ModeStack = new Map([['VC:A', 'a2']]);
+    const r = resolveBoundVariableInMode(bind, 'fills', idx, stack, false)!;
+    expect(r).toMatchObject({
+      default_value: '#ffffff', effective_rendered_value: null, value: null,
+      effective_mode_source: 'unverifiable', mode_dependent: true,
+      effective_modes: {
+        Theme: { mode: 'Dark', source: 'explicit_node', node_id: 'LEAF' },
+        'Theme [2]': { mode: 'Light', source: 'unverifiable' },
+      },
+    });
+  });
 });
 
 describe('listTokens attaches modes', () => {

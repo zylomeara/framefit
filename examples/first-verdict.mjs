@@ -29,12 +29,16 @@
 //      takes a `filePath` and writes its result there, so the snapshot never has to come back as a
 //      tool result and go out again as a tool argument.
 //
-// WHAT THIS DOES NOT CHANGE, said plainly because it is the honest limit: the MCP tool contract.
-// `compare_node_to_dom` still takes `pairs[].dom` inline and `suggest_pairs` still takes
-// `dom_snapshot` inline -- the snapshot crosses THIS client's memory on its way from the file to the
-// tool call. A different client, or an agent driving the tools directly with no client in between,
-// pays both costs in full. What is bought here is bought by the client standing in the middle, not
-// by the server asking for less.
+// WHY THIS CLIENT STILL USES THE INLINE/FILE SEAM. `serve-extractor` closes its spawned stdio
+// session (and that session's in-memory loopback sidecar) before the browser captures anything;
+// `verdict` starts a fresh session later. A ref minted by the first sidecar cannot survive that
+// boundary, so this short-lived client explicitly requests the inline extractor, serves it on its
+// own loopback socket, then passes `pairs[].dom` / `dom_snapshot` from the capture file.
+//
+// A direct client that keeps one stdio session alive does not pay either large crossing: it can use
+// get_layout_spec's short loader, let the page POST to upload_url, and pass the resulting dom_ref to
+// suggest_pairs / compare_node_to_dom. The explicit inline/file choice here is specific to this
+// client's two-process lifetime, not a limitation of direct tool clients or the MCP contract.
 //
 //   prepare -> the fallback: writes the extractor to a file for you to paste VERBATIM. Keep it for a
 //   page whose CSP forbids `eval`, where thunk 1 cannot run at all.

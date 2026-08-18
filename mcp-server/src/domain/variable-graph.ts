@@ -349,11 +349,13 @@ export function resolveKeyInMode(
   // Emit the mode-aware object whenever the top or a downstream alias hop reached a multi-mode
   // collection. The default composite is resolved independently and remains diagnostic when the
   // effective evidence is unverifiable.
-  const effectiveModes = formatEffectiveModes(track.applied);
-  if (!effectiveModes) return { token: node.name, value, pinned_axis_used, unconfirmed_default_used };
+  const applied = track.applied ?? [];
+  if (applied.length === 0) return { token: node.name, value, pinned_axis_used, unconfirmed_default_used };
+  // Safety is computed from the identity-preserving axes before their display-name projection.
+  const effectiveModeSource = compositeModeSource(applied);
+  const effectiveModes = formatEffectiveModes(applied)!;
   const defaultValue = resolveKey(g, key).value;
   if (defaultValue === undefined) return undefined;
-  const effectiveModeSource = compositeModeSource(effectiveModes);
   const effectiveRenderedValue = effectiveModeSource === 'unverifiable' ? null : value;
   return {
     token: node.name,
