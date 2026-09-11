@@ -328,7 +328,8 @@ The response to exactly that request, abridged (`/* ... */` marks an elided tail
         { "prop": "viewport",    "figma": 320,     "dom": 320,     "status": "pass" },
         { "prop": "size.w",      "figma": 288,     "dom": 288,     "status": "pass" },
         { "prop": "size.h",      "figma": 24,      "dom": 24,      "status": "pass" },
-        { "prop": "children",    "status": "skip", "note": "node without auto-layout — inter-element metrics are not computed" },
+        { "prop": "children",    "status": "skip", "coverageSkipped": true,
+          "note": "node without auto-layout — inter-element metrics are not computed" },
         { "prop": "font-size",   "figma": 16,      "dom": 16,      "status": "pass" },
         { "prop": "font-weight", "figma": 600,     "dom": 400,     "status": "fail",
           "srcChannel": { "kind": "root", "editKind": "property" } },
@@ -357,7 +358,7 @@ The response to exactly that request, abridged (`/* ... */` marks an elided tail
   /* successful pairs add a "hydration" receipt in get_layout_spec's shape; compare receipts also
      carry pair_index, the zero-based position in the submitted pairs array */
   "not_covered_by_tool": ["icon-glyph (shape/path geometry - verify visually or by screenshot crop)", "icon-font/mask-image icons (the color is visible but not compared)"],
-  "report_markdown": "<verification report markdown, 1964 chars - elided>"
+  "report_markdown": "<verification report markdown, 1740 chars - elided>"
 }
 ```
 
@@ -387,25 +388,23 @@ This is the receipt the step-4 run above returns:
 {
   "complete": false,
   "scope": "frame",
-  "pairs": { "checked": 3, "clean": 0 },
+  "pairs": { "checked": 3, "clean": 1 },
   "match_profile": "token-aware",
   "frame_coverage": { "worthy": 3, "covered": 2, "uncovered": ["12:350"], "partial": [],
     "enumeration_truncated": false, "enumeration_depth": 4, "enumeration_source": "pair_fetch" },
   "blocking": [
     { "kind": "uncovered_region", "node_id": "12:350", "action": "add_pair",
-      "detail": "frame region unpaired — the region's layout is not verified" },
-    { "node_id": "12:341", "selector": ".card__title", "kind": "skip", "action": "resolve_skip",
-      "detail": "node without auto-layout — inter-element metrics are not computed" }
-    /* ... and the same resolve_skip item for the "price" pair (12:344) */
+      "detail": "frame region unpaired — the region's layout is not verified" }
   ]
 }
 ```
 
-Read it against the request: three pairs went in, `pairs.checked` is 3 and `pairs.clean` is 0 —
-and each of the three is unclean for its own reason. The card root carries the `font-weight[title]`
-fail; the title pair carries **both** a fail of its own and a skipped `children` row; the price pair
-carries only the skip. A skip counts against `clean` even though nothing measured is wrong, which is
-why `clean` is 0 and not 1: `clean` means "measured and nothing left over", not "no failures".
+Read it against the request: three pairs went in, `pairs.checked` is 3 and `pairs.clean` is 1.
+The card root carries the `font-weight[title]` fail, and the title pair carries the same mismatch
+as a root `font-weight` fail. The price pair is clean. Both direct TEXT pairs retain a visible
+`children` skip with `coverageSkipped: true`: their proven leaf structure has no inter-element
+axis to verify. That inapplicable row does not count against `clean`; an unresolved coverage hole
+still does. The two fail rows and the uncovered list keep `complete: false`.
 
 The coverage fraction is `covered` **over `worthy`** — `worthy` is the denominator, the number of
 frame regions the tool considers worth verifying, and it is what `report_markdown` prints as
@@ -456,7 +455,9 @@ including fails.
     drift) — there is no Figma side there, so no Figma tool is involved; each item's `places[]`
     names the row (`fill`, `border-color`, `typography`, `fill-token-drift`).
   - `resolve_skip` — something could not be measured in this environment (a scroll container, a
-    transform, or a node with no auto-layout): fix the environment or verify that axis by eye.
+    transform, or a container with no auto-layout): fix the environment or verify that axis by eye.
+    A proven direct TEXT leaf has no inter-element axis; its visible children skip is inapplicable
+    and does not produce this action.
   - `run_token_aware` — you finished on a scope-narrowed profile — see step 7.
   <!-- blocking-actions:end -->
   The list is not decoration, and here is exactly how far that goes.

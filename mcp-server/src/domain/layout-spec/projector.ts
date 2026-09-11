@@ -628,7 +628,7 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
   }
 
   const fill = solidHex(raw.fills);
-  if (fill && !spec.gradient) {
+  if (raw.type !== 'TEXT' && fill && !spec.gradient) {
     spec.fillHex = fill;
     const bound = colorAliasId(raw, 'fills');
     if (bound) spec.fillBoundVar = bound;
@@ -676,6 +676,7 @@ export function buildLayoutSpec(raw: RawSceneNode, ctx: ProjectorContext = {},
 
   const text = typographyOf(raw, ctx);
   if (text) spec.text = text;
+  if (raw.type === 'TEXT' && hasImageFill(raw.fills)) spec.imageFill = true;
 
   assignIcon(spec, surveyFigIcon(raw, ctx));
 

@@ -2,8 +2,9 @@
 import { describe, it, expect } from 'vitest';
 import { diffPair, summarize, widthNoiseTolerance, deriveCoverage, coverageHoleRows } from '../../src/domain/layout-spec/diff.js';
 import { buildVerification } from '../../src/domain/layout-spec/verification.js';
+import { renderReport } from '../../src/domain/layout-spec/report.js';
 import { buildLayoutSpec } from '../../src/domain/layout-spec/projector.js';
-import type { LayoutSpec, DomSnapshotOk, SpecChild, DomChild } from '../../src/domain/layout-spec/types.js';
+import type { LayoutSpec, DomSnapshotOk, SpecChild, DomChild, GradientModel } from '../../src/domain/layout-spec/types.js';
 import { SNIPPET_CAP } from '../../src/domain/layout-spec/types.js';
 import { domContentUnknown } from '../../src/domain/layout-spec/pair-matcher.js';
 import { DOM_SNAPSHOT_SCHEMA_VERSION } from '../../src/adapters/driving/tools/dom-snapshot-schema.js';
@@ -199,6 +200,381 @@ describe('diffPair — guards & structure & gaps', () => {
   it('summarize counts unchecked separately from skip', () => {
     const s = summarize([{ prop: 'geometry', status: 'unchecked' }, { prop: 'size.h', status: 'skip' }]);
     expect(s).toEqual({ pass: 0, fail: 0, warn: 0, skip: 1, info: 0, demoted: 0, unchecked: 1, review: 0 });
+  });
+});
+
+describe('diffPair — direct TEXT leaf without an auto-layout axis', () => {
+  const textBox = { x: 0, y: 0, w: 64, h: 16 };
+  const textChild = (over: Partial<DomChild> = {}): DomChild => ({
+    kind: 'text', rect: textBox, text: 'Text', ...over,
+  });
+  const textRaw = (over: Partial<RawSceneNode> = {}): RawSceneNode => ({
+    id: '8:1', name: 'copy', type: 'TEXT', characters: 'Text',
+    absoluteBoundingBox: { x: 0, y: 0, width: 64, height: 16 },
+    style: { fontSize: 12, fontWeight: 400 },
+    ...over,
+  } as RawSceneNode);
+  const textDom = (over: Partial<DomSnapshotOk> = {}): DomSnapshotOk => ({
+    schema: 7, status: 'ok', selector: '.copy', innerWidth: 100,
+    rect: textBox,
+    borders: { top: 0, right: 0, bottom: 0, left: 0 },
+    paddings: { top: 0, right: 0, bottom: 0, left: 0 },
+    clientWidth: 64, clientHeight: 16, scrollHeight: 16,
+    scroll: { top: 0, left: 0 }, transformed: false,
+    styles: { fontSize: 12, fontWeight: 400 },
+    children: [textChild()],
+    ...over,
+  });
+  const gradient: GradientModel = {
+    kind: 'linear', angleDeg: 90, whole: { literal: true },
+    stops: [
+      { position: 0, hex: '#000000', token: { literal: true } },
+      { position: 1, hex: '#ffffff', token: { literal: true } },
+    ],
+  };
+  const runPair = (
+    fig = buildLayoutSpec(textRaw()),
+    dom = textDom(),
+    options: Partial<Parameters<typeof diffPair>[2]> = {},
+  ) => {
+    const rows = diffPair(fig, dom, { ...options, tolerancePx: 1 });
+    const coverage = deriveCoverage(rows);
+    const verification = buildVerification([
+      { node_id: fig.node.id, rows, summary: summarize(rows), coverage },
+    ], { depthLevels: 4 });
+    return { rows, coverage, verification };
+  };
+
+  it('keeps the children skip visible but treats it as inapplicable after real root typography was measured', () => {
+    const { rows, coverage, verification } = runPair();
+    const children = row(rows, 'children');
+
+    expect(children).toMatchObject({ prop: 'children', status: 'skip', coverageSkipped: true });
+    expect(coverageHoleRows(rows)).not.toContain(children);
+    expect(coverage.skipped.map((entry) => entry.dim)).not.toContain('children');
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ prop: 'font-size', status: 'pass' }),
+      expect.objectContaining({ prop: 'font-weight', status: 'pass' }),
+    ]));
+    expect(verification).toMatchObject({ complete: true, blocking: [] });
+  });
+
+  it('keeps a DOM-only solid background on Figma TEXT as a gating paint-presence review', () => {
+    const fig = buildLayoutSpec(textRaw({
+      fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } }],
+    }));
+    const { rows, verification } = runPair(fig, textDom({
+      styles: { fontSize: 12, fontWeight: 400, color: '#000000', backgroundColor: '#ffffff' },
+    }));
+
+    expect(row(rows, 'children')).toMatchObject({ status: 'skip', coverageSkipped: true });
+    expect(row(rows, 'color')).toMatchObject({ figma: '#000000', dom: '#000000', status: 'pass' });
+    expect(row(rows, 'fill')).toMatchObject({ figma: null, dom: '#ffffff', status: 'review' });
+    expect(verification.complete).toBe(false);
+    expect(verification.blocking).toContainEqual(expect.objectContaining({ action: 'confirm_token' }));
+  });
+
+  it('keeps a DOM-only gradient on Figma TEXT as a gating paint-presence review', () => {
+    const fig = buildLayoutSpec(textRaw({
+      fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } }],
+    }));
+    const { rows, verification } = runPair(fig, textDom({
+      styles: { fontSize: 12, fontWeight: 400, color: '#000000', gradient },
+    }));
+
+    expect(row(rows, 'gradient')).toMatchObject({ figma: null, dom: 'gradient', status: 'review' });
+    expect(verification.complete).toBe(false);
+    expect(verification.blocking).toContainEqual(expect.objectContaining({ action: 'confirm_token' }));
+  });
+
+  it('still compares a preserved Figma TEXT gradient with its DOM counterpart', () => {
+    const fig = buildLayoutSpec(textRaw({
+      fills: [{
+        type: 'GRADIENT_LINEAR',
+        gradientHandlePositions: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0, y: 1 }],
+        gradientStops: [
+          { position: 0, color: { r: 0, g: 0, b: 0, a: 1 } },
+          { position: 1, color: { r: 1, g: 1, b: 1, a: 1 } },
+        ],
+      }],
+    }));
+    const { rows, verification } = runPair(fig, textDom({
+      styles: { fontSize: 12, fontWeight: 400, gradient },
+    }));
+
+    const gradientRows = rows.filter((r) => r.prop.startsWith('gradient'));
+    expect(fig.gradient).toBeDefined();
+    expect(gradientRows.length).toBeGreaterThan(0);
+    expect(gradientRows.every((r) => r.status === 'pass')).toBe(true);
+    expect(verification).toMatchObject({ complete: true, blocking: [] });
+  });
+
+  it('keeps a DOM solid background with a matching transparent-stop Figma TEXT gradient as a gating review', () => {
+    const transparentGradient: GradientModel = {
+      ...gradient,
+      stops: [{ position: 0, hex: '#00000000', token: { literal: true } }, gradient.stops[1]],
+    };
+    const fig = buildLayoutSpec(textRaw({
+      fills: [{
+        type: 'GRADIENT_LINEAR',
+        gradientHandlePositions: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0, y: 1 }],
+        gradientStops: [
+          { position: 0, color: { r: 0, g: 0, b: 0, a: 0 } },
+          { position: 1, color: { r: 1, g: 1, b: 1, a: 1 } },
+        ],
+      }],
+    }));
+    const { rows, verification } = runPair(fig, textDom({
+      styles: { fontSize: 12, fontWeight: 400, gradient: transparentGradient, backgroundColor: '#ffffff' },
+    }));
+
+    expect(fig.gradient?.stops[0].hex).toBe('#00000000');
+    const gradientRows = rows.filter((r) => r.prop.startsWith('gradient'));
+    expect(gradientRows.length).toBeGreaterThan(0);
+    expect(gradientRows.every((r) => r.status === 'pass')).toBe(true);
+    expect(row(rows, 'fill')).toMatchObject({ figma: null, dom: '#ffffff', status: 'review' });
+    expect(verification.complete).toBe(false);
+    expect(verification.blocking).toContainEqual(expect.objectContaining({ action: 'confirm_token' }));
+  });
+
+  it.each([
+    {
+      name: 'the Figma root is a FRAME',
+      pair: () => ({ fig: buildLayoutSpec(textRaw({ type: 'FRAME' })) }),
+    },
+    {
+      name: 'no typography metric is present',
+      pair: () => ({ fig: buildLayoutSpec(textRaw({ style: {} })), dom: textDom({ styles: {} }) }),
+    },
+    {
+      name: 'only lineHeightUnit metadata is present',
+      pair: () => ({ fig: buildLayoutSpec(textRaw({ style: { lineHeightUnit: 'PIXELS' } })), dom: textDom({ styles: {} }) }),
+    },
+    {
+      name: 'the only font row is a best-effort line-height warning',
+      pair: () => ({
+        fig: buildLayoutSpec(textRaw({ style: { lineHeightPx: 16, lineHeightUnit: 'PIXELS' } })),
+        dom: textDom({ styles: { lineHeight: 'normal' } }),
+      }),
+    },
+    {
+      name: 'only foreground color is measurable',
+      pair: () => ({
+        fig: buildLayoutSpec(textRaw({
+          style: {}, fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } }],
+        })),
+        dom: textDom({ styles: { color: '#000000' } }),
+      }),
+    },
+    {
+      name: 'the Figma root has a child',
+      pair: () => ({ fig: buildLayoutSpec(textRaw({ children: [{
+        id: '8:2', name: 'child', type: 'FRAME',
+        absoluteBoundingBox: { x: 0, y: 0, width: 8, height: 8 },
+      }] })) }),
+    },
+    {
+      name: 'the Figma root is truncated',
+      pair: () => ({ fig: { ...buildLayoutSpec(textRaw()), childrenTruncated: true as const } }),
+    },
+    {
+      name: 'the Figma root dropped an out-of-flow child',
+      pair: () => ({ fig: buildLayoutSpec(textRaw({ children: [{
+        id: '8:2', name: 'overlay', type: 'FRAME', layoutPositioning: 'ABSOLUTE',
+        absoluteBoundingBox: { x: 0, y: 0, width: 8, height: 8 },
+      }] })) }),
+    },
+    {
+      name: 'the DOM text is nested',
+      pair: () => ({ dom: textDom({ styles: {}, children: [{
+        kind: 'element', tag: 'span', rect: textBox,
+        styles: { fontSize: 12, fontWeight: 400 }, children: [textChild()],
+      }] }) }),
+    },
+    {
+      name: 'the DOM root has no children',
+      pair: () => ({ dom: textDom({ children: [] }) }),
+    },
+    {
+      name: 'the DOM child is whitespace-only',
+      pair: () => ({ dom: textDom({ children: [textChild({ text: '  \n ' })] }) }),
+    },
+    {
+      name: 'the DOM root has multiple text children',
+      pair: () => ({ dom: textDom({ children: [textChild(), textChild({ rect: { ...textBox, x: 32 } })] }) }),
+    },
+    {
+      name: 'the DOM root is truncated',
+      pair: () => ({ dom: textDom({ childrenTruncated: true }) }),
+    },
+    {
+      name: 'the DOM child is truncated',
+      pair: () => ({ dom: textDom({ children: [textChild({ childrenTruncated: true })] }) }),
+    },
+    {
+      name: 'the DOM root dropped an out-of-flow child',
+      pair: () => ({ dom: textDom({ outOfFlow: 1 }) }),
+    },
+    {
+      name: 'the DOM text child dropped an out-of-flow child',
+      pair: () => ({ dom: textDom({ children: [textChild({ outOfFlow: 1 })] }) }),
+    },
+    {
+      name: 'the DOM root has an unreadable paint',
+      pair: () => ({ dom: textDom({ styles: { fontSize: 12, fontWeight: 400, paintUnknown: true } }) }),
+    },
+    {
+      name: 'the DOM text child has an unreadable paint',
+      pair: () => ({ dom: textDom({ children: [textChild({ styles: { paintUnknown: true } })] }) }),
+    },
+    {
+      name: 'the comparison is DOM-to-DOM',
+      pair: () => ({ options: { sides: 'dom-dom' as const } }),
+    },
+  ])('$name keeps resolve_skip', ({ pair }) => {
+    const input: {
+      fig?: LayoutSpec;
+      dom?: DomSnapshotOk;
+      options?: Partial<Parameters<typeof diffPair>[2]>;
+    } = pair();
+    const { rows, coverage, verification } = runPair(input.fig, input.dom, input.options);
+    const children = row(rows, 'children');
+
+    expect(children).toMatchObject({ prop: 'children', status: 'skip' });
+    expect(children?.coverageSkipped).not.toBe(true);
+    expect(coverageHoleRows(rows)).toContain(children);
+    expect(coverage.skipped.map((entry) => entry.dim)).not.toContain('children');
+    expect(verification.complete).toBe(false);
+    expect(verification.blocking).toContainEqual(expect.objectContaining({ action: 'resolve_skip' }));
+  });
+
+  it.each([
+    {
+      name: 'font size', prop: 'font-size', status: 'fail',
+      raw: textRaw(), dom: textDom({ styles: { fontSize: 14, fontWeight: 400 } }),
+    },
+    {
+      name: 'font weight', prop: 'font-weight', status: 'fail',
+      raw: textRaw(), dom: textDom({ styles: { fontSize: 12, fontWeight: 500 } }),
+    },
+    {
+      name: 'color', prop: 'color', status: 'fail',
+      raw: textRaw({ fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } }] }),
+      dom: textDom({ styles: { fontSize: 12, fontWeight: 400, color: '#ffffff' } }),
+    },
+  ])('a divergent $name remains incomplete even though children are inapplicable', ({ prop, status, raw, dom }) => {
+    const { rows, verification } = runPair(buildLayoutSpec(raw), dom);
+    expect(row(rows, 'children')).toMatchObject({ status: 'skip', coverageSkipped: true });
+    expect(row(rows, prop)).toMatchObject({ status });
+    expect(verification.complete).toBe(false);
+  });
+
+  it.each([
+    ['IMAGE', false], ['IMAGE', true], ['VIDEO', false], ['VIDEO', true],
+  ] as const)('keeps visible %s TEXT paint unverified (solid layer: %s)', (type, withSolid) => {
+    const fig = buildLayoutSpec(textRaw({
+      fills: [
+        ...(withSolid ? [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } }] : []),
+        { type },
+      ],
+    }));
+    const { rows, verification } = runPair(fig, textDom({
+      styles: { fontSize: 12, fontWeight: 400, ...(withSolid ? { color: '#000000' } : {}) },
+    }));
+
+    expect(summarize(rows)).toMatchObject({ fail: 0, demoted: 0, unchecked: 0, review: 0 });
+    expect(verification.complete).toBe(false);
+    expect(verification.pairs.clean).toBe(0);
+    expect(coverageHoleRows(rows)).toEqual([expect.objectContaining({ prop: 'children' })]);
+    expect(verification.blocking).toEqual([
+      expect.objectContaining({ action: 'resolve_skip', node_id: '8:1' }),
+    ]);
+  });
+
+  it.each(['IMAGE', 'VIDEO'])('ignores hidden %s TEXT paint', (type) => {
+    const { rows, verification } = runPair(buildLayoutSpec(textRaw({
+      fills: [
+        { type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } },
+        { type, visible: false },
+      ],
+    })), textDom({ styles: { fontSize: 12, fontWeight: 400, color: '#000000' } }));
+
+    expect(rows).toContainEqual(expect.objectContaining({ prop: 'color', status: 'pass' }));
+    expect(verification.complete).toBe(true);
+    expect(verification.blocking).toEqual([]);
+  });
+
+  it('requires token confirmation for an unresolved bound TEXT color even when hexes match', () => {
+    const fig = buildLayoutSpec(textRaw({
+      fills: [{
+        type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 },
+        boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:8:2' } },
+      }],
+    }));
+    const { rows, coverage, verification } = runPair(fig, textDom({
+      styles: { fontSize: 12, fontWeight: 400, color: '#000000' },
+    }));
+
+    expect(fig.text).toMatchObject({ colorHex: '#000000', colorBoundVar: 'VariableID:8:2' });
+    expect(fig.fillHex).toBeUndefined();
+    expect(rows.filter((r) => r.status === 'review')).toEqual([
+      expect.objectContaining({ prop: 'color', figma: '#000000', dom: '#000000', tokenReason: 'bound-unresolved' }),
+    ]);
+    expect(summarize(rows)).toMatchObject({ fail: 0, demoted: 0, unchecked: 0 });
+    expect(coverageHoleRows(rows)).toEqual([]);
+    expect(verification.complete).toBe(false);
+    expect(verification.pairs).toEqual({ checked: 1, clean: 0 });
+    expect(verification.blocking).toEqual([
+      expect.objectContaining({ kind: 'unconfirmed_token', action: 'confirm_token', node_id: '8:1' }),
+    ]);
+    const report = renderReport({
+      file: 'test', tolerancePx: 1,
+      pairs: [{ node_id: fig.node.id, rows, summary: summarize(rows), coverage }],
+      verification,
+    });
+    expect(report).toContain('awaiting token confirmation');
+    expect(report).not.toContain('no discrepancies');
+  });
+
+  it('a mode-unconfirmed foreground token remains incomplete even when its default hex matches', () => {
+    const fig = buildLayoutSpec(textRaw({
+      fills: [{
+        type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 },
+        boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:8:2' } },
+      }],
+    }), { resolveColorToken: () => ({
+      token: 'text/primary', defaultHex: '#000000', effectiveHex: null, effectiveModeSource: 'unverifiable',
+    }) });
+    const { rows, verification } = runPair(fig, textDom({
+      styles: { fontSize: 12, fontWeight: 400, color: '#000000' },
+    }));
+
+    expect(row(rows, 'children')).toMatchObject({ status: 'skip', coverageSkipped: true });
+    expect(row(rows, 'color')).toMatchObject({ status: 'review', figma: null, dom: '#000000', tokenReason: 'mode-unconfirmed' });
+    expect(verification.complete).toBe(false);
+    expect(verification.blocking).toContainEqual(expect.objectContaining({ action: 'confirm_token' }));
+  });
+
+  it('a positively divergent foreground token remains incomplete', () => {
+    const fig = buildLayoutSpec(textRaw({
+      fills: [{
+        type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 },
+        boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:8:2' } },
+      }],
+    }), { resolveColorToken: () => ({ token: 'text/primary', effectiveHex: '#000000' }) });
+    const { rows, verification } = runPair(fig, textDom({
+      styles: { fontSize: 12, fontWeight: 400, color: '#000000', colorToken: { token: '--other-text' } },
+    }), {
+      cssEvidence: {
+        nameOf: (id) => id === 'VariableID:8:2' ? '--primary-text' : undefined,
+        idsByName: (name) => name === '--other-text' ? ['VariableID:8:3'] : [],
+        aliasRelation: () => 'unrelated',
+      },
+    });
+
+    expect(row(rows, 'children')).toMatchObject({ status: 'skip', coverageSkipped: true });
+    expect(row(rows, 'color')).toMatchObject({ status: 'review', tokenReason: 'semantic-diverged' });
+    expect(verification.complete).toBe(false);
   });
 });
 

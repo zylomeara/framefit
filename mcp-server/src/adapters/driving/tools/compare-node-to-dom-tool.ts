@@ -364,8 +364,14 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
       'Token rows with status `review` carry `figma`/`dom` token names - judge them: return **same token** ' +
       '(-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote ' +
       'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
-      'rename), answer **unsure** and escalate - never call it wrong. `review` rows keep the verdict non-green until ' +
-      'resolved; a name that merely differs textually is not a defect. Exception: a `semantic-diverged` row was measured against the authored codeSyntax mappings (the file\'s own variables and its synced libraries\') - the DOM var is the authored name of a DIFFERENT variable - and blocks even when the hexes match; align the code with the authored var (or fix the mapping in Figma).',
+      'rename), answer **unsure** and escalate - never call it wrong. A matched `review` row with two concrete ' +
+      'values is advisory unless it is `semantic-diverged` or `bound-unresolved`: equal `mode-unconfirmed` and ' +
+      '`semantic-confirm` reviews stay visible but do not enter `blocking` or hold `complete` false. Missing values ' +
+      'still block. A `semantic-diverged` row was measured against the authored codeSyntax mappings (the file\'s ' +
+      'own variables and its synced libraries\') - the DOM var is the authored name of a DIFFERENT variable - and ' +
+      'blocks even when the hexes match; align the code with the authored var (or fix the mapping in Figma). A ' +
+      '`bound-unresolved` row cannot establish the Figma variable\'s identity or effective mode, so equal raw hexes ' +
+      'cannot confirm the token.',
       inputSchema: InputSchema,
       annotations: { readOnlyHint: true },
     },

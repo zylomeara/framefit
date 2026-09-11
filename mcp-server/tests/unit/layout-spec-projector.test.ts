@@ -1029,6 +1029,41 @@ describe('text color tokenizes on a fill-style (text-color = fill slot)', () => 
     const spec = buildLayoutSpec(textNode({ styles: { text: 'S:heading' } }), {});
     expect(spec.text?.colorToken).toBeUndefined();
   });
+  it('projects a solid TEXT fill only as foreground typography, not as a background', () => {
+    const spec = buildLayoutSpec(textNode({
+      opacity: 0.8,
+      fills: [{
+        type: 'SOLID', visible: true, opacity: 0.5,
+        color: { r: 0.2, g: 0.4, b: 0.6, a: 1 },
+        boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:8:1' } },
+      }],
+    }), { resolveColorToken: () => ({ token: 'text/primary', effectiveHex: '#336699' }) });
+
+    expect(spec).not.toHaveProperty('fillHex');
+    expect(spec).not.toHaveProperty('fillBoundVar');
+    expect(spec).not.toHaveProperty('fillToken');
+    expect(spec.text).toMatchObject({
+      colorHex: '#33669980',
+      colorBoundVar: 'VariableID:8:1',
+      colorToken: { token: 'text/primary', effectiveHex: '#33669980' },
+    });
+    expect(spec.opacity).toBe(0.8);
+  });
+  it('keeps a TEXT gradient on the generic gradient axis', () => {
+    const spec = buildLayoutSpec(textNode({
+      fills: [{
+        type: 'GRADIENT_LINEAR', visible: true,
+        gradientHandlePositions: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }],
+        gradientStops: [
+          { position: 0, color: { r: 0, g: 0, b: 0, a: 1 } },
+          { position: 1, color: { r: 1, g: 1, b: 1, a: 1 } },
+        ],
+      }],
+    }), {});
+
+    expect(spec.gradient).toBeDefined();
+    expect(spec.fillHex).toBeUndefined();
+  });
 });
 
 describe('salvage-nested: leaf-TEXT invariant', () => {

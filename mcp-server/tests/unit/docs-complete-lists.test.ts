@@ -1408,7 +1408,7 @@ const MARKED_QUOTES: Record<string, number> = {
  * more; there is no reason for this one to be looser than the marked count beside it.
  */
 const CANDIDATE_COUNT: Record<string, number> = {
-  'docs/agents/design-qa-skill.md': 52, // 50 -> 52: both no-detail guidance branches name code:"response_budget"
+  'docs/agents/design-qa-skill.md': 51, // The skip explanation no longer quotes unverified.
   'docs/coverage.md': 7, // 6 -> 7: the exclude_regions row quotes the excluded-by-the-caller line
 };
 

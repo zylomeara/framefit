@@ -246,8 +246,9 @@ export function renderReport(input: {
   if (total.demoted > 0) notVerified.push(`${total.demoted} not verified (demoted)`);
   if (total.unchecked > 0) notVerified.push(`${total.unchecked} not verified (out of reach)`);
   // Verdict ⟺ verification.complete BY CONSTRUCTION: both sides read the ONE shared predicate
-  // (gatingReviewRow, diff.ts) — matched-value reviews are advisory with the single
-  // semantic-diverged exemption. They stay visible: 📝 in the Total line and the rows themselves.
+  // (gatingReviewRow, diff.ts). Matched reviews with concrete values are advisory except
+  // semantic-diverged (conflicting authored wiring) and bound-unresolved (variable identity or
+  // effective mode is unknown even with equal raw hexes); missing values still gate. 📝 rows stay visible.
   const reviewGating = input.pairs.reduce((n, p) => n + p.rows.filter(gatingReviewRow).length, 0);
   if (reviewGating > 0) notVerified.push(`${reviewGating} awaiting token confirmation`);
   if (holes > 0) notVerified.push(`${holes} not verified (structure/truncation/environment)`);

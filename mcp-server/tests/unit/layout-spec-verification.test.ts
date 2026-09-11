@@ -1415,8 +1415,9 @@ describe('typography carrier notes gate the machine verdict', () => {
   });
 });
 
-// ── semantic-diverged: a POSITIVE codeSyntax collision gates even when the row values (hexes)
-// are byte-equal — the one review reason exempt from the rowValuesMatched advisory demotion.
+// ── semantic-diverged: one of two matched-value review reasons that gate; a POSITIVE
+// codeSyntax collision gates even when row values (hexes) are byte-equal. The other,
+// bound-unresolved, cannot establish variable identity or effective mode from equal raw hexes.
 describe('semantic-diverged gates through the matched-value demotion', () => {
   it('matched-value semantic-diverged row → blocking non-empty, complete false', () => {
     const v = buildVerification([pairFromRows([{ prop: 'fill', figma: '#111111', dom: '#111111',
