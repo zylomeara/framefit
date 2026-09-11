@@ -130,6 +130,7 @@ export interface LayoutSpec {
   opacity?: number;
   text?: SpecTypography;       // the node itself is TEXT
   textNode?: true;              // the pair root is a non-empty TEXT (same guard as SpecChild.textSnippet)
+  imageFill?: true;             // root TEXT has a visible IMAGE/VIDEO fill; typography does not verify this paint
   textFixedWidth?: true;        // the root is a TEXT with textAutoResize NONE|HEIGHT (not hug)
   hugWidth?: true;              // the pair root is a container with layoutSizingHorizontal HUG (width hugs content); gate for the hug-vs-fill demotion (E)
   component?: { id: string; name?: string; setName?: string; setUnresolved?: true; props?: Record<string, unknown> };

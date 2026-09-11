@@ -413,10 +413,11 @@ export function buildVerification(pairs: PairResult[], opts: {
   let diagnosedChildrenCapped = 0;
   for (const p of pairs) {
     const holes = coverageHoleRows(p.rows);
-    // Matched-value review rows are advisory (gatingReviewRow = rowValuesMatched + the ONE
-    // exemption, semantic-diverged): they neither hold complete=false nor enter blocking below,
-    // and they do not cost a pair its `clean` — a receipt saying complete:true over
-    // checked:1/clean:0 would contradict itself. The summary.review count and the 📝 rows stay visible.
+    // Matched-value review rows are advisory except semantic-diverged and bound-unresolved:
+    // the former measured conflicting authored wiring; the latter cannot establish variable
+    // identity or effective mode even with equal raw hexes. Equal mode-unconfirmed or
+    // semantic-confirm rows with concrete values stay advisory; missing values still gate. The
+    // summary.review count and the 📝 rows stay visible.
     const gatingReview = p.rows.some(gatingReviewRow);
     if (p.summary.fail === 0 && p.summary.demoted === 0 && p.summary.unchecked === 0 && !gatingReview && holes.length === 0) clean += 1;
     if (p.summary.fail > 0) anyFail = true;

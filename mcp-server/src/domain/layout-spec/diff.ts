@@ -382,12 +382,12 @@ export function rowValuesMatched(r: Pick<DiffRow, 'figma' | 'dom'>): boolean {
 
 // The ONE review-gating predicate, shared by verification (complete/blocking/clean) and report
 // (Verdict/notVerified) — Verdict ⟺ complete holds by construction, not by three synchronized
-// call sites. A matched-value review row is advisory (0.19.0) with ONE exemption:
-// `semantic-diverged` is a POSITIVE codeSyntax collision — the token axis was measured and
-// diverged, and equal hexes are exactly its false-green window (they separate under another
-// mode/theme) — so it gates regardless of the row values.
+// call sites. A matched-value review row is advisory except for `semantic-diverged`
+// (a positive codeSyntax collision) and `bound-unresolved` (the bound variable is not
+// resolved). Equal raw hexes establish neither compatible wiring nor the unresolved
+// variable's effective mode, so these reasons gate regardless of the row values.
 export function gatingReviewRow(r: Pick<DiffRow, 'status' | 'figma' | 'dom' | 'tokenReason'>): boolean {
-  return r.status === 'review' && (r.tokenReason === 'semantic-diverged' || !rowValuesMatched(r));
+  return r.status === 'review' && (r.tokenReason === 'semantic-diverged' || r.tokenReason === 'bound-unresolved' || !rowValuesMatched(r));
 }
 
 export function countCoverageHoles(rows: DiffRow[]): number {
@@ -695,6 +695,37 @@ interface TruncNode { childrenTruncated?: boolean; children?: readonly TruncNode
 const anyTruncDeep = (kids: readonly TruncNode[] | undefined): boolean =>
   (kids ?? []).some((k) => k.childrenTruncated === true || anyTruncDeep(k.children));
 
+const ROOT_TYPOGRAPHY_PROPS = new Set(['font-size', 'font-weight', 'font-family', 'line-height', 'letter-spacing']);
+function directTextLeafHasNoChildAxis(
+  spec: LayoutSpec,
+  d: DomSnapshotOk,
+  opts: DiffOptions,
+  descriptive: DiffRow[],
+): boolean {
+  const child = d.children[0];
+  return opts.sides !== 'dom-dom'
+    && spec.node?.type === 'TEXT'
+    && spec.textNode === true
+    && spec.imageFill !== true
+    && spec.children.length === 0
+    && spec.childrenTruncated !== true
+    && !anyTruncDeep(spec.children)
+    && (spec.outOfFlow ?? 0) === 0
+    && d.children.length === 1
+    && child.kind === 'text'
+    && (child.text ?? '').trim() !== ''
+    && (child.children?.length ?? 0) === 0
+    && d.childrenTruncated !== true
+    && !anyTruncDeep(d.children)
+    && (d.outOfFlow ?? 0) === 0
+    && (child.outOfFlow ?? 0) === 0
+    && d.styles?.paintUnknown !== true
+    && child.styles?.paintUnknown !== true
+    && descriptive.some((r) => ROOT_TYPOGRAPHY_PROPS.has(r.prop)
+      && (r.status === 'pass' || r.status === 'fail')
+      && r.figma !== undefined && r.figma !== null && r.dom !== undefined && r.dom !== null);
+}
+
 // The single exported entry point — the profile filter is applied to ANY output of
 // diffPairRows (including the early snapshot/structural returns: there all rows are pass-through category —
 // the filter is identity, but the guarantee is by CATEGORY, not by position).
@@ -777,7 +808,12 @@ function diffPairRows(spec: LayoutSpec, dom: DomSnapshot, opts: DiffOptions): Di
     rows.push(overlayWidthRow(opts.expectedOverlayWidth, d.innerWidth));
   }
 
-  rows.push(...descriptiveRows(spec, d, opts));
+  const descriptive = descriptiveRows(spec, d, opts);
+  const childrenSkip = rows.find((r) => r.prop === 'children' && r.status === 'skip');
+  if (childrenSkip && directTextLeafHasNoChildAxis(spec, d, opts, descriptive)) {
+    childrenSkip.coverageSkipped = true;
+  }
+  rows.push(...descriptive);
   return rows;
 }
 
@@ -2897,16 +2933,16 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     // UNCHECKED, not info (receipt-lens finding 1): 'not checked on either side' must hold the gate.
     rows.push({ prop: 'fill', figma: '(non-hex color)', dom: sBg ?? null, status: 'unchecked',
       note: 'the REFERENCE background is expressed in a non-hex color space (oklch()/color()) - color equality was not checked on either side; verify visually' });
-  } else if (opts.sides === 'dom-dom' && sBg !== undefined) {
-    // Presence symmetry (dom-dom): the spec-side gate above is correct for Figma (a frame always
-    // declares its fills) and false-green here - a transparent reference vs a painted candidate
-    // was total silence. REVIEW, not warn (wave finding 5): a warn is advisory and the done-gate
-    // stayed green over the asymmetry. The oklch caveat (wave finding 16): the canonical
-    // extractor emits NOTHING for a color it cannot reduce to hex, so 'reference has no
-    // background' and 'reference paints in oklch' arrive identically - the row must not claim
-    // the stronger of the two.
-    rows.push({ prop: 'fill', figma: null, dom: sBg, status: 'review',
-      note: 'the CANDIDATE declares a background the REFERENCE does not - the REFERENCE either paints none or paints in a color space the extractor cannot read (oklch()/color()); confirm which before treating this as a defect' });
+  } else if ((opts.sides === 'dom-dom'
+    || (spec.node?.type === 'TEXT' && spec.textNode === true))
+    && sBg !== undefined) {
+    // Presence symmetry: DOM-DOM keeps its reference/candidate wording; for a Figma TEXT pair,
+    // a solid fill is foreground color, so only the DOM's EXTRA background is reviewed here.
+    rows.push(opts.sides === 'dom-dom'
+      ? { prop: 'fill', figma: null, dom: sBg, status: 'review',
+          note: 'the CANDIDATE declares a background the REFERENCE does not - the REFERENCE either paints none or paints in a color space the extractor cannot read (oklch()/color()); confirm which before treating this as a defect' }
+      : { prop: 'fill', figma: null, dom: sBg, status: 'review',
+          note: 'the DOM element declares a background while the Figma TEXT has no background fill - confirm the extra paint is intended' });
   }
 
   if (spec.gradient || sGradient) {
@@ -2914,7 +2950,12 @@ function descriptiveRows(spec: LayoutSpec, d: DomSnapshotOk, opts: DiffOptions):
     // the channel is set here IN the row object before push (not an index coupling); info/warn/review/unchecked —
     // without a channel (soft carriers).
     rows.push(...gradientVerdict(spec.gradient, sGradient, sBg)
-      .map((r) => (r.status === 'fail' ? { ...r, srcChannel: SRC_ANCHOR_PROP } : r)));
+      .map((r) => opts.sides !== 'dom-dom'
+        && spec.node?.type === 'TEXT' && spec.textNode === true
+        && spec.gradient === undefined && sGradient !== undefined && r.prop === 'gradient'
+        ? { ...r, status: 'review' as const,
+            note: 'the DOM element declares a gradient while the Figma TEXT has none - confirm the extra paint is intended' }
+        : r.status === 'fail' ? { ...r, srcChannel: SRC_ANCHOR_PROP } : r));
     // The multiLayer info MUST surface BOTH sides: gradientVerdict checks only the FIRST layer of each side,
     // so ">1 layer" on EITHER side means "the other layers were not checked". Ignoring the Figma side = a silent
     // false-green (the projector was taught to emit spec.gradient.multiLayer; here we surface it — otherwise a 2nd

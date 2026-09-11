@@ -199,17 +199,27 @@ It is a GATE, not a footnote — do not report "verified against the design / ma
     `deep@8` / budget/breadth cuts you get an honest caveat in `frame_coverage.enumeration_note`
     instead.
   - `re_extract_dom` / `update_extractor` / `fix_pair` — snapshot/version/node problems: fix the pair's input.
-  - `resolve_skip` — environment (viewport/scroll/transform) or a node without auto-layout: fix it or verify by eye.
+  - `resolve_skip` — environment (viewport/scroll/transform) or unresolved child geometry, including
+    containers without auto-layout: fix it or verify by eye. In Figma-to-DOM only, a real TEXT leaf
+    with no Figma children and exactly one non-empty direct DOM text child keeps a visible inapplicable
+    `children` skip without this blocker when a root font metric has a measured `pass`/`fail` row and
+    neither side has truncation, out-of-flow children or unreadable DOM paint. Color alone or a
+    best-effort warning is insufficient; nested or otherwise uncertain structure still follows the
+    normal coverage gate.
   - `add_text_pair` — text deeper than max_depth=8: add a pair on the nested TEXT node.
   - `confirm_token` — `unconfirmed_token`: confirm the Figma token in the app. The aggregated entry
     carries `places[]` (ALL nodes with this token/reason; `node_id` is just the first place,
     `places_capped` — how many were cut) — confirm EVERY place in `places`; the reasons in `detail`
-    differ (e.g. `not-captured` = the DOM token was not read there). When the response also
-    carries `degraded_stages` with stage `variables` in an escalatable class (capped
-    timeout / too-large), the dead-resolve entries (no token name) name the escalation
-    road in their detail — run `get_variables {timeout_ms: 120000}` on the file first,
-    then re-run the compare; if the 120s call also fails, wait out its ~10-minute cache. In `compare_dom_to_dom` the
-    same kind/action mean: confirm the flagged change between the two captures (presence
+    differ (e.g. `not-captured` = the DOM token was not read there). If `degraded_stages` names
+    a capped variables timeout, run `get_variables {timeout_ms: 120000}` on the file, then re-run
+    the compare: a larger supported timeout bypasses a lower-cap cached failure. For `too-large`,
+    retry first; if it persists, use node-scoped partial evidence or split the source design-system
+    file. A larger timeout does not overcome Figma's server-side job limit, and partial evidence
+    does not establish a complete variables index. If the
+    index loads but the effective variable mode remains unknown, obtain mode evidence rather than
+    retrying for a pass; matching the default hex does not confirm the rendered color. Access errors
+    require restoring access, and missing library bindings require resolving the library source.
+    In `compare_dom_to_dom` the same kind/action mean: confirm the flagged change between the two captures (presence
     asymmetry / tokenization drift) — no Figma call is involved; `places[]` names the row.
   - `fix_viewport` — `kind: 'viewport'`: the window width you captured at and the `frame_node_id`
     frame's width disagree, so geometry was demoted to `unchecked` rather than reported as red.
@@ -339,7 +349,12 @@ not truth).
 The same edit (prop/expected/actual) in K places of one target = probably ONE reused class
 ("×K places, check") — a hint, not server-side auto-dedup.
 A `layout:` prefix (`kind:'layout'`, gap/size/offset-cross/padding) means "fix the layout RULE",
-do NOT hardcode a px literal; `kind:'property'` (color/font/border/…) — set the value as given.
+do NOT hardcode a px literal; `kind:'property'` (color/font/border/…) — check the expected value's
+source before applying it. Typography expectations come from the raw Figma `TEXT.style`; they are
+not proof that a bound font variable or library override was resolved. TEXT solid fills supply
+foreground `color`, not the element's background. If a font variable or the current library names a
+different family, compare those sources on the same node before editing the app; do not invent a
+font alias or suppress the mismatch. Color-token defaults are diagnostic, not effective-mode evidence.
 
 ## Finding pairs — when you don't know node_id
 
@@ -396,8 +411,10 @@ read ❌ as defects:
   Today that is the variables index: the token rows read unresolved rather than verified, the verdict
   stays incomplete, and the entry carries the ms. It is only fetched when a pair binds a colour to a
   variable, so its absence on a geometry-only compare means *not needed*, not *failed*. If the detail
-  starts with `cached:` the failure is being replayed from an earlier attempt — this call did not wait
-  and the next one will not retry; `get_variables` with a larger `timeout_ms` is what gets past it.
+  starts with `cached:` the failure is being replayed from an earlier attempt — this call did not wait;
+  at the same cap it will not retry until the cache expires. For a capped timeout/too-large failure,
+  `get_variables` with a larger supported `timeout_ms` bypasses that cached failure, not the underlying
+  cause; use the reason-specific recovery described under `confirm_token` above.
 - a `passes_condensed` row among a pair's rows — bulk-pass rows were folded for the response
   budget: individual pass axes are NOT in rows, take the count from `summary.pass` (signal rows
   fail/warn/info/review/unchecked and meta style_anchor/unwrapped are always complete). Both
@@ -455,14 +472,14 @@ read ❌ as defects:
   cut (raise `max_depth` to 8 OR add a pair on the nested TEXT) or the environment is not ready
   (viewport≠frame / transform≠none / rotated → fix the window / wait out the animation). NOT
   "all good" — verify by eye. In the summary verdict this counts as `"<N> not verified (out of reach)"`.
-- ⏭ skip — there is physically NOTHING to compare (inapplicable): a scroll container (frame
-  height uninformative) / a node without auto-layout (no inter-element metrics). Not a defect and
-  not "unverified" — reads clean.
+- ⏭ skip — a measurement was not performed. Some axes are inapplicable (e.g. inter-element
+  metrics on a proven direct TEXT leaf); others leave a coverage hole (e.g. child geometry in a
+  container without auto-layout). Read the note and `verification.blocking`, not the status alone.
 
-**"Is the pair fully verified?"** = `fail===0 && demoted===0 && unchecked===0`. `skip>0` (only
-inapplicable axes) does NOT block it. The summary is honest: `🟰N`/`👁N` in the header, and the
-verdict line carries `"<N> not verified (demoted)"` / `"<N> not verified (out of reach)"`
-⇒ green ≠ everything-visible-verified.
+**"Is the pair fully verified?"** Use `verification.complete`, not a formula over status counts.
+Inapplicable axes do not independently block completion; actual failures, demotes, unchecked
+measurements, gating token reviews and coverage holes still do. The summary shows `🟰N`/`👁N`, and the
+verdict line carries `"<N> not verified (demoted)"` / `"<N> not verified (out of reach)"`.
 **The machine readiness gate is `verification.complete` (Step 6):** it aggregates this across ALL
 pairs AND frame coverage (uncovered regions / unverified between-children spacing / truncation).
 Do not report "verified" until `complete !== true` is resolved; on `false` work the `blocking`

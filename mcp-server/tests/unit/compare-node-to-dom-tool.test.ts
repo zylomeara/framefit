@@ -252,6 +252,55 @@ const emptyVars: RawVariablesResponse = { meta: { variables: {}, variableCollect
 const boundVars = async (): Promise<RawVariablesResponse> => varsBoundFill;
 
 describe('compare_node_to_dom tool', () => {
+  it('reports a measured direct TEXT leaf as complete while keeping the children skip visible', async () => {
+    const directText: RawSceneNode = {
+      id: '8:1', name: 'copy', type: 'TEXT', characters: 'Text',
+      absoluteBoundingBox: { x: 0, y: 0, width: 64, height: 16 },
+      style: { fontSize: 12, fontWeight: 400 },
+      fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } }],
+    };
+    const directDom: DomSnapshotOk = {
+      schema: 7, status: 'ok', selector: '.copy', innerWidth: 100,
+      rect: { x: 0, y: 0, w: 64, h: 16 },
+      borders: { top: 0, right: 0, bottom: 0, left: 0 },
+      paddings: { top: 0, right: 0, bottom: 0, left: 0 },
+      clientWidth: 64, clientHeight: 16, scrollHeight: 16,
+      scroll: { top: 0, left: 0 }, transformed: false,
+      styles: { fontSize: 12, fontWeight: 400, color: '#000000' },
+      children: [{ kind: 'text', rect: { x: 0, y: 0, w: 64, h: 16 }, text: 'Text' }],
+    };
+    const getNodesRaw = vi.fn(async () => ({ nodes: { '8:1': { document: directText } } }));
+    const run = harness({ getNodesRaw });
+    const out = JSON.parse((await run({
+      file: 'abc', pairs: [{ node_id: '8:1', dom: directDom }],
+    })).content[0].text);
+    const children = out.pairs[0].rows.find((r: any) => r.prop === 'children');
+
+    expect(children).toMatchObject({ status: 'skip', coverageSkipped: true });
+    expect(out.pairs[0].rows.some((r: any) => r.prop === 'fill')).toBe(false);
+    expect(out.pairs[0].coverage.skipped.some((entry: any) => entry.dim === 'children')).toBe(false);
+    expect(out.verification).toMatchObject({ complete: true, blocking: [] });
+    expect(out.report_markdown).toContain('node without auto-layout — inter-element metrics are not computed');
+    expect(out.report_markdown).toContain('Check: COMPLETE');
+
+    const paintedDom: DomSnapshotOk = {
+      ...directDom,
+      styles: { ...directDom.styles, backgroundColor: '#ffffff' },
+    };
+    const painted = JSON.parse((await run({
+      file: 'abc', pairs: [{ node_id: '8:1', dom: paintedDom }],
+    })).content[0].text);
+    expect(painted.pairs[0].rows.find((r: any) => r.prop === 'fill'))
+      .toMatchObject({ figma: null, dom: '#ffffff', status: 'review' });
+    expect(painted.verification.complete).toBe(false);
+    expect(painted.verification.blocking).toContainEqual(expect.objectContaining({
+      node_id: '8:1', action: 'confirm_token',
+    }));
+    expect(painted.report_markdown).toContain('📝 fill');
+    expect(painted.report_markdown).toContain('[confirm_token]');
+    expect(painted.report_markdown).not.toContain('Check: COMPLETE');
+  });
+
   it('resolves a bound fill token mode-correctly into the spec (fetches variables + ancestor modes)', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
     const getVariablesLocal = vi.fn(async () => varsBoundFill);

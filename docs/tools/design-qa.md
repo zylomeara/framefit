@@ -314,12 +314,15 @@ Snapshots come from the canonical extractor
 Token rows with status `review` carry `figma`/`dom` token names - judge them: return **same
 token** (-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY
 when they denote clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be
-bridged either way (a possible rename), answer **unsure** and escalate - never call it wrong.
-`review` rows keep the verdict non-green until resolved; a name that merely differs textually is
-not a defect. Exception: a `semantic-diverged` row was measured against the authored codeSyntax
-mappings (the file's own variables and its synced libraries') - the DOM var is the authored name
-of a DIFFERENT variable - and blocks even when the hexes match; align the code with the authored
-var (or fix the mapping in Figma).
+bridged either way (a possible rename), answer **unsure** and escalate - never call it wrong. A
+matched `review` row with two concrete values is advisory unless it is `semantic-diverged` or
+`bound-unresolved`: equal `mode-unconfirmed` and `semantic-confirm` reviews stay visible but do
+not enter `blocking` or hold `complete` false. Missing values still block. A `semantic-diverged`
+row was measured against the authored codeSyntax mappings (the file's own variables and its synced
+libraries') - the DOM var is the authored name of a DIFFERENT variable - and blocks even when the
+hexes match; align the code with the authored var (or fix the mapping in Figma). A
+`bound-unresolved` row cannot establish the Figma variable's identity or effective mode, so equal
+raw hexes cannot confirm the token.
 
 The response also carries a `verification` receipt - a machine gate with `complete: true|false`
 and an actionable `blocking` list - plus per-pair `source` hints (CSS-module file candidates) and
@@ -332,16 +335,17 @@ libraries the compared subtrees actually reference; ambiguous names and alias ti
 library boundary never gate):
 a DOM custom property that exactly matches the bound variable's authored name (and no other
 variable mints that name) passes outright, and one that is the authored name of a DIFFERENT,
-non-alias-related variable becomes `semantic-diverged` - the one review row that blocks even when
-the two hexes match, because the wiring itself was measured against the DS's own mapping and
-diverged. Everything without such evidence keeps the value-based rule below. This evidence lives
-in the variables payload, so it is only as available as the fetch that carries it.
+non-alias-related variable becomes `semantic-diverged` - a matched-value exception that blocks
+even when the two hexes match, because the wiring itself was measured against the DS's own mapping
+and diverged. Everything without such evidence keeps the value-based rule above. This evidence
+lives in the variables payload, so it is only as available as the fetch that carries it.
 
 Colors are enriched from the file's variables, and that fetch is the slowest thing this tool does on
 a large file. When it fails or times out, the run degrades honestly - token rows read as unresolved
-and a `confirm_token` blocker appears for every row whose two values did not already match
-byte-for-byte (a matched pair stays a visible `review` row without blocking) - and the codeSyntax
-evidence above dies with the same fetch - and says so in two places a caller sees: a
+and a `confirm_token` blocker appears for every `bound-unresolved` row and every row whose two
+values did not already match byte-for-byte (an equal `mode-unconfirmed` or `semantic-confirm` pair
+stays a visible `review` row without blocking) - and the codeSyntax evidence above dies with the
+same fetch - and says so in two places a caller sees: a
 `degraded_stages: [{ stage, reason, ms, detail }]` key, and one `ℹ️` line in `report_markdown`. The
 unresolved-token blockers among them (no token name in the detail) name the escalation road when
 the failure class allows one - run `get_variables {timeout_ms: 120000}` on the file (the largest
@@ -356,12 +360,11 @@ feeds a `pass`, `fail`, or measured Figma value. When a bound token has `effecti
 `tokenReason:"mode-unconfirmed"` even when `defaultHex` happens to equal the DOM color. Confirm the
 node's effective mode; do not promote the diagnostic default to an on-screen value.
 
-The example below submits one pair out of the frame's three children, so its receipt reports
-`complete: false` and names what is still unchecked. That is the gate doing its job, not the tool
-failing: a `false` here means the run measured less than the whole frame, and `blocking` says which
-action closes the gap. Note that pairing all three would still report `false` - a text pair carries
-no auto-layout, and an unmeasurable property is a coverage hole by construction rather than
-something more pairs can fix.
+The example below submits one pair out of the frame's three children and measures a font-weight
+mismatch, so its receipt reports `complete: false`. `blocking` names the uncovered regions;
+`fix_plan` names the font-weight edit. The proven direct TEXT leaf keeps its visible `children`
+skip with `coverageSkipped: true`: inter-element geometry is inapplicable, not an unresolved
+coverage hole. Containers and uncertain text structure still follow the normal coverage gate.
 
 **Parameters**
 
@@ -429,7 +432,8 @@ Response (abridged — see the [tutorial](../design-qa-tutorial.md) for a full a
         { "prop": "viewport", "figma": 320, "dom": 320, "status": "pass" },
         { "prop": "size.w", "figma": 288, "dom": 288, "status": "pass" },
         { "prop": "size.h", "figma": 24, "dom": 24, "status": "pass" },
-        { "prop": "children", "status": "skip", "note": "node without auto-layout — inter-element metrics are not computed" },
+        { "prop": "children", "status": "skip", "coverageSkipped": true,
+          "note": "node without auto-layout — inter-element metrics are not computed" },
         { "prop": "font-size", "figma": 16, "dom": 16, "status": "pass" },
         { "prop": "font-weight", "figma": 600, "dom": 400, "status": "fail", "srcChannel": { "kind": "root", "editKind": "property" } },
         { "prop": "font-family", "figma": "inter", "dom": "inter", "status": "pass" }
@@ -455,14 +459,13 @@ Response (abridged — see the [tutorial](../design-qa-tutorial.md) for a full a
     "blocking": [
       { "kind": "uncovered_region", "node_id": "12:344", "action": "add_pair",
         "detail": "frame region unpaired — the region's layout is not verified" }
-      /* ... then the same for the "list" frame (12:350), and a resolve_skip item for the
-         skipped "children" row on 12:341 */
+      /* ... then the same for the "list" frame (12:350) */
     ]
   },
   /* successful pairs add a "hydration" receipt in get_layout_spec's shape; each also carries
      pair_index, the zero-based position in the submitted pairs array */
   "not_covered_by_tool": ["icon-glyph (shape/path geometry - verify visually or by screenshot crop)", "icon-font/mask-image icons (the color is visible but not compared)"],
-  "report_markdown": "<verification report markdown, 1431 chars - elided>"
+  "report_markdown": "<verification report markdown, 1319 chars - elided>"
 }
 ```
 
