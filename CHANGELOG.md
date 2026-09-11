@@ -3,6 +3,33 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.30.1
+
+Three design-QA fixes: direct TEXT leaves no longer require an inapplicable child-layout check,
+solid text color is no longer compared as an element background, and unresolved bound colors
+require confirmation even when their raw hex values match.
+
+**Output compatibility.** Request schemas, DOM snapshot schema v7, and the extractor are unchanged;
+this release does not require re-capture. Layout specs can now include `imageFill: true` on TEXT
+nodes with visible IMAGE/VIDEO paint. Reconnect to refresh the updated `compare_node_to_dom`
+guidance. Existing measurements, gating token reviews, and applicable coverage holes still affect
+`verification.complete`; this is not a blanket exemption for text pairs. No database migration.
+
+### Fixed
+
+- **Child-layout applicability for direct TEXT leaves.** With measured root typography and a single
+  nonempty direct DOM text child, a proven TEXT leaf keeps a visible `children: skip` row without
+  requiring child-layout recovery. Truncation, out-of-flow content, unknown paint, and
+  visible IMAGE/VIDEO text fills prevent that exemption. DOM-to-DOM applicability is unchanged.
+- **Foreground and background use separate carriers.** Solid Figma TEXT fills remain in typography
+  color fields instead of also populating generic background fields. Container backgrounds and
+  TEXT gradients remain projected. Additional solid or gradient DOM backgrounds stay under review,
+  including an extra solid underlay beneath a matching TEXT gradient.
+- **Equal hexes do not resolve a bound variable.** A `bound-unresolved` color review now retains
+  token confirmation and holds verification incomplete even when both raw colors match. Verification
+  and the report share this rule; other matched-value advisory reviews remain advisory, while the
+  existing `semantic-diverged` gate remains blocking.
+
 ## 0.30.0
 
 Design QA now keeps rendered variable values behind positive effective-mode evidence, supplies direct
