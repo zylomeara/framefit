@@ -7,9 +7,10 @@ handshake reports as `serverInfo.version` and what `framefit status` prints in i
 
 Three design-QA fixes: direct TEXT leaves no longer require an inapplicable child-layout check,
 solid text color is no longer compared as an element background, and unresolved bound colors
-require confirmation even when their raw hex values match.
+require confirmation even when their raw hex values match. The HTTP runtime and test tooling also
+receive security dependency updates.
 
-**Output compatibility.** Request schemas, DOM snapshot schema v7, and the extractor are unchanged;
+**Output compatibility.** MCP request schemas, DOM snapshot schema v7, and the extractor are unchanged;
 this release does not require re-capture. Layout specs can now include `imageFill: true` on TEXT
 nodes with visible IMAGE/VIDEO paint. Reconnect to refresh the updated `compare_node_to_dom`
 guidance. Existing measurements, gating token reviews, and applicable coverage holes still affect
@@ -29,6 +30,23 @@ guidance. Existing measurements, gating token reviews, and applicable coverage h
   token confirmation and holds verification incomplete even when both raw colors match. Verification
   and the report share this rule; other matched-value advisory reviews remain advisory, while the
   existing `semantic-diverged` gate remains blocking.
+
+### Security
+
+- **Runtime dependencies.** Locked resolutions now use fast-uri `3.1.6`, Hono `4.13.5`, and qs
+  `6.16.0`. The HTTP server uses Express `5.2.1` with native async-error forwarding instead of
+  `express-async-errors`.
+- **Test tooling.** Vitest is updated to `4.1.11` and its transitive Nano ID dependency to `3.3.18`.
+  These are development dependencies; the runtime Node >=20 requirement is unchanged.
+- **npm installations.** The repository's pnpm lockfile does not control npm consumers' lockfiles.
+  A fresh npm installation was verified with patched resolutions; audit existing consumer lockfiles
+  separately.
+
+### Changed
+
+- **HTTP query parsing.** Express 5's simple parser does not expand bracketed keys. For
+  `/accounts/audit`, use a scalar such as `limit=7`: `limit[]=7` no longer supplies `limit` and falls
+  back to the default of `50`. Duplicate `limit` values still use that default.
 
 ## 0.30.0
 
