@@ -46,7 +46,7 @@
     "pino-pretty": "^11.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.4.5",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.11"
   },
   "pnpm": {
     "overrides": {
