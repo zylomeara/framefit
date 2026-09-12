@@ -14,6 +14,7 @@ let handle: ServerHandle;
 let base: string;
 let privateKey: CryptoKey;
 let calls: { replace?: { userId: string; count: number }; created?: { userId: string; label: string } };
+let replaceFailure: Error | undefined;
 
 const mtEnv: MultiTenantEnv = {
   databaseUrl: 'postgresql://unused',
@@ -53,7 +54,10 @@ beforeAll(async () => {
     pingDb: async () => {},
     codeConnect: {
       resolveCiKey: async (k) => (k === 'fmcp_ci_good' ? 'u-ci' : null),
-      replaceMappings: async (userId, mappings) => { calls.replace = { userId, count: mappings.length }; },
+      replaceMappings: async (userId, mappings) => {
+        if (replaceFailure) throw replaceFailure;
+        calls.replace = { userId, count: mappings.length };
+      },
       createCiKey: async (userId, label) => { calls.created = { userId, label }; return { id: 7, plaintext: 'fmcp_ci_new' }; },
       listCiKeys: async () => [],
       revokeCiKey: async () => true,
@@ -88,6 +92,40 @@ describe('multi-tenant Code Connect wiring', () => {
       body: JSON.stringify({ docs: [] }),
     });
     expect(res.status).toBe(403);
+  });
+
+  it('POST /api/code-connect/mappings rejects a missing body with 400', async () => {
+    const res = await fetch(`${base}/api/code-connect/mappings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-ci-key': 'fmcp_ci_good' },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Body must be { docs: CodeConnectJSON[] } (output of `figma connect parse`)' });
+  });
+
+  it('POST /api/code-connect/mappings masks malformed JSON details', async () => {
+    const res = await fetch(`${base}/api/code-connect/mappings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-ci-key': 'fmcp_ci_good' },
+      body: '{"docs":private-parser-detail',
+    });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'internal error' });
+  });
+
+  it('POST /api/code-connect/mappings routes rejected dependencies to the final error handler', async () => {
+    replaceFailure = new Error('private dependency detail');
+    try {
+      const res = await fetch(`${base}/api/code-connect/mappings`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-ci-key': 'fmcp_ci_good' },
+        body: JSON.stringify({ docs: [] }),
+      });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'internal error' });
+    } finally {
+      replaceFailure = undefined;
+    }
   });
 
   it('POST /accounts/ci-keys creates a CI key under JWT', async () => {

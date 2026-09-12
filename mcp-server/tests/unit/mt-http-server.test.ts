@@ -119,6 +119,12 @@ describe('multi-tenant http server', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).status).toBe('ok');
   });
+
+  it('returns the JSON 404 contract for an unknown route', async () => {
+    const res = await fetch(`${base}/unknown`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not found' });
+  });
 });
 
 describe('multi-tenant http server: library registry + sync wiring', () => {

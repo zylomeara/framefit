@@ -1,4 +1,3 @@
-import 'express-async-errors';
 import express from 'express';
 import type { Server } from 'node:http';
 import { isIP, type AddressInfo } from 'node:net';
