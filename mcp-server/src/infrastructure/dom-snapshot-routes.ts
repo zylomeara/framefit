@@ -239,7 +239,7 @@ export function createDomSnapshotRoutes(deps: DomSnapshotRoutesDeps): Router {
   // GET /extractor.js above is untouched; `next()` falls through to the parser and the handler
   // below for a live token. The credential is the path segment, so this costs a Map lookup and
   // reads none of the body.
-  router.post('/:capToken', (req: Request, res: Response, next: NextFunction) => {
+  router.post('/:capToken', (req: Request<{ capToken: string }>, res: Response, next: NextFunction) => {
     if (store.hasToken(req.params.capToken)) {
       next();
       return;
@@ -264,7 +264,7 @@ export function createDomSnapshotRoutes(deps: DomSnapshotRoutesDeps): Router {
   router.use(express.text({ type: '*/*', limit: '2mb' }));
 
   // (4) POST handler.
-  router.post('/:capToken', (req: Request, res: Response) => {
+  router.post('/:capToken', (req: Request<{ capToken: string }>, res: Response) => {
     const capToken = req.params.capToken;
     const rawBody = typeof req.body === 'string' ? req.body : '';
     const bytes = Buffer.byteLength(rawBody);

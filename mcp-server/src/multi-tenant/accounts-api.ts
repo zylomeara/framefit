@@ -185,7 +185,7 @@ export function createAccountsRouter(deps: AccountsApiDeps): Router {
     });
   });
 
-  router.delete('/teams/:id', async (req: Request, res: Response) => {
+  router.delete('/teams/:id', async (req: Request<{ id: string }>, res: Response) => {
     if (!deps.registry) { res.status(404).json({ error: 'Team registry unavailable' }); return; }
     if (!TEAM_ID_RE.test(req.params.id)) { res.status(400).json({ error: 'bad team id' }); return; }
     const ok = await deps.registry.removeTeam(userId(res), req.params.id);
@@ -194,7 +194,7 @@ export function createAccountsRouter(deps: AccountsApiDeps): Router {
 
   // Per-team sync: kick off a background sync scoped to ONE registered team. Registered
   // among the /teams routes (BEFORE the generic /:label routes) so it does not collide.
-  router.post('/teams/:id/sync', async (req: Request, res: Response) => {
+  router.post('/teams/:id/sync', async (req: Request<{ id: string }>, res: Response) => {
     if (!deps.sync) { res.status(404).json({ error: 'Sync unavailable' }); return; }
     if (!TEAM_ID_RE.test(req.params.id)) { res.status(400).json({ error: 'bad team id' }); return; }
     const out = deps.sync.start(userId(res), req.params.id);
@@ -242,19 +242,19 @@ export function createAccountsRouter(deps: AccountsApiDeps): Router {
 
   // --- Generic /:label routes (AFTER named routes to avoid collision) ---
 
-  router.delete('/:label', async (req: Request, res: Response) => {
+  router.delete('/:label', async (req: Request<{ label: string }>, res: Response) => {
     const removed = await deps.db.removeToken(userId(res), req.params.label);
     if (removed) res.json({ ok: true });
     else res.status(404).json({ error: `Token "${req.params.label}" not found` });
   });
 
-  router.put('/:label/default', async (req: Request, res: Response) => {
+  router.put('/:label/default', async (req: Request<{ label: string }>, res: Response) => {
     const updated = await deps.db.setDefaultToken(userId(res), req.params.label);
     if (updated) res.json({ ok: true });
     else res.status(404).json({ error: `Token "${req.params.label}" not found` });
   });
 
-  router.post('/:label/validate', async (req: Request, res: Response) => {
+  router.post('/:label/validate', async (req: Request<{ label: string }>, res: Response) => {
     const found = await deps.db.getTokenWithPat(userId(res), req.params.label, deps.encryptionKey);
     if (!found) {
       res.status(404).json({ error: `Token "${req.params.label}" not found` });
@@ -287,7 +287,7 @@ export function createAccountsRouter(deps: AccountsApiDeps): Router {
     res.json(await deps.ciKeys.listCiKeys(userId(res)));
   });
 
-  router.delete('/ci-keys/:id', async (req: Request, res: Response) => {
+  router.delete('/ci-keys/:id', async (req: Request<{ id: string }>, res: Response) => {
     if (!deps.ciKeys) { res.status(404).json({ error: 'CI keys unavailable' }); return; }
     if (!/^\d+$/.test(req.params.id)) { res.status(400).json({ error: 'bad id' }); return; }
     const id = Number(req.params.id);

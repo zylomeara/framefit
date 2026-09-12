@@ -123,6 +123,20 @@ describe('accounts api', () => {
     expect((await res.json()).status).toBe('invalid');
     expect(calls.updateValidation).toEqual([1, 'invalid', 'u1']);
   });
+
+  it('GET /accounts/audit accepts a scalar limit and defaults duplicate values', async () => {
+    const limits: number[] = [];
+    deps.audit = {
+      record: async () => {},
+      list: async (_userId, { limit }) => { limits.push(limit); return []; },
+    };
+    for (const query of ['limit=7', 'limit=8&limit=9']) {
+      const res = await fetch(`${server.base}/accounts/audit?${query}`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ events: [] });
+    }
+    expect(limits).toEqual([7, 50]);
+  });
 });
 
 describe('daysLeft', () => {

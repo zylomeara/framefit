@@ -29,9 +29,9 @@ export function auditOutcomeFor(status: number): string {
   return 'error';
 }
 
-export function auditTargetFrom(params: Record<string, string>, body: unknown): string | null {
-  if (params.label) return params.label;
-  if (params.id) return params.id;
+export function auditTargetFrom(params: Record<string, string | string[]>, body: unknown): string | null {
+  if (typeof params.label === 'string' && params.label) return params.label;
+  if (typeof params.id === 'string' && params.id) return params.id;
   if (body && typeof body === 'object') {
     const b = body as Record<string, unknown>;
     if (typeof b.team_id === 'string') return b.team_id;

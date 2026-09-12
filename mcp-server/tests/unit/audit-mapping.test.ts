@@ -34,9 +34,16 @@ describe('audit-mapping', () => {
   it('auditTargetFrom prefers params, then body team_id/label, else null', () => {
     expect(auditTargetFrom({ label: 'work' }, undefined)).toBe('work');
     expect(auditTargetFrom({ id: '42' }, undefined)).toBe('42');
+    expect(auditTargetFrom({ label: ['wildcard'] }, { label: 'ci-prod' })).toBe('ci-prod');
     expect(auditTargetFrom({}, { team_id: '139' })).toBe('139');
     expect(auditTargetFrom({}, { label: 'ci-prod' })).toBe('ci-prod');
     expect(auditTargetFrom({}, undefined)).toBeNull();
     expect(auditTargetFrom({}, { other: 1 })).toBeNull();
+  });
+  it('auditTargetFrom skips an empty label in favor of a non-empty id', () => {
+    expect(auditTargetFrom({ label: '', id: 'id-a' }, undefined)).toBe('id-a');
+  });
+  it('auditTargetFrom skips an empty id in favor of a body label', () => {
+    expect(auditTargetFrom({ id: '' }, { label: 'body-label' })).toBe('body-label');
   });
 });
