@@ -126,6 +126,10 @@ CODES = {
     "DEPTH_LIMIT",
     "EXTERNAL_REFERENCE",
     "UNSUPPORTED_REFERENCE",
+    "INLINE_DATA_UNSUPPORTED",
+    "REFERRER_DISCOVERY_FAILED",
+    "MANIFEST_TYPE_UNSUPPORTED",
+    "REFERRER_TYPE_UNSUPPORTED",
     "OBJECT_MISSING",
     "OBJECT_SIZE_LIMIT",
     "DIGEST_MISMATCH",
@@ -911,7 +915,7 @@ def validate_descriptor(value: object, *, depth: int) -> dict[str, object]:
     if urls not in (None, []):
         raise AuditFailure("EXTERNAL_REFERENCE")
     if value.get("data") is not None:
-        raise AuditFailure("UNSUPPORTED_REFERENCE")
+        raise AuditFailure("INLINE_DATA_UNSUPPORTED")
     return {"mediaType": media_type, "digest": object_digest, "size": size}
 
 
@@ -1050,7 +1054,7 @@ def _discover_referrers(oras: Path, cwd: Path, env: dict[str, str], object_diges
         env=env,
     )
     if code != 0:
-        raise AuditFailure("UNSUPPORTED_REFERENCE")
+        raise AuditFailure("REFERRER_DISCOVERY_FAILED")
     value = _parse_json_bytes(stdout)
     if not isinstance(value, dict) or value.get("digest") != object_digest or not isinstance(value.get("referrers"), list):
         raise AuditFailure("INVALID_DESCRIPTOR")
@@ -1065,7 +1069,7 @@ def _manifest_children(value: object, expected_media: str | None, depth: int) ->
         raise AuditFailure("INVALID_JSON")
     media_type = value.get("mediaType")
     if not isinstance(media_type, str) or media_type not in MANIFEST_TYPES:
-        raise AuditFailure("UNSUPPORTED_REFERENCE")
+        raise AuditFailure("MANIFEST_TYPE_UNSUPPORTED")
     if expected_media is not None and expected_media != media_type:
         raise AuditFailure("DESCRIPTOR_CONFLICT")
     children: list[tuple[dict[str, object], str]] = []
@@ -1189,7 +1193,7 @@ def _acquire_graph(
                 state["counters"]["descriptor_edges"] = descriptor_count
                 register_descriptor(metadata, child)
                 if child["mediaType"] not in MANIFEST_TYPES:
-                    raise AuditFailure("UNSUPPORTED_REFERENCE")
+                    raise AuditFailure("REFERRER_TYPE_UNSUPPORTED")
                 queue.append((child, "manifest", depth + 1))
         else:
             if not isinstance(expected_media, str) or declared_size is None:
