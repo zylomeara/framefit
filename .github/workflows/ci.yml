@@ -178,7 +178,7 @@ jobs:
           gitleaks version
 
       - name: run pinned synthetic image-audit scanner controls
-        run: python3 -B scripts/tests/test_image_audit.py --real-gitleaks gitleaks
+        run: python3 -B scripts/tests/test_image_audit.py --real-gitleaks "$(command -v gitleaks)"
 
       # gitleaks-action was here and is deliberately gone. On a pull_request it derived its
       # own commit range from the GitHub API and never paginated, so it scanned the FIRST 30

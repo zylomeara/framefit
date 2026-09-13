@@ -129,8 +129,8 @@ describe('ordinary CI synthetic audit controls', () => {
     expect(install).toBeGreaterThanOrEqual(0);
     expect(control).toBeGreaterThan(install);
     expect(history).toBeGreaterThan(control);
-    expect(scan).toContain('python3 -B scripts/tests/test_image_audit.py --real-gitleaks gitleaks');
-    expect(scan).not.toMatch(/ghcr\\.io|GITHUB_TOKEN|packages:\\s*read/);
+    expect(scan).toMatch(/^\s+run: python3 -B scripts\/tests\/test_image_audit\.py --real-gitleaks "\$\(command -v gitleaks\)"$/m);
+    expect(scan).not.toMatch(/ghcr\.io|GITHUB_TOKEN|packages:\s*read/);
   });
 });
 
