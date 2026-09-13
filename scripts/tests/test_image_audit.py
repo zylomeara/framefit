@@ -204,6 +204,7 @@ def make_registry_stubs(
     *,
     raw_stderr: str = "",
     sleep_seconds: float = 0,
+    discover_exit: int = 0,
 ) -> Path:
     bindir = directory / "bin"
     bindir.mkdir(parents=True)
@@ -215,6 +216,7 @@ def make_registry_stubs(
         objects = json.loads({json.dumps(encoded_objects)!r})
         referrers = json.loads({json.dumps(referrers)!r})
         raw_stderr = {raw_stderr!r}
+        discover_exit = {discover_exit!r}
         if raw_stderr:
             sys.stderr.write(raw_stderr)
         if {sleep_seconds!r}:
@@ -251,6 +253,8 @@ def make_registry_stubs(
             raise SystemExit(0)
         if args and args[0] == 'discover':
             wanted = args[-1].rsplit('@', 1)[1]
+            if discover_exit:
+                raise SystemExit(discover_exit)
             children = referrers.get(wanted, [])
             print(json.dumps({{
                 'reference': args[-1], 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
@@ -354,6 +358,81 @@ class AcquisitionTests(unittest.TestCase):
             env_keys = json.loads((workspace / "private" / "cwd" / "env-keys.json").read_text())
             unknown_keys = [key for key in env_keys if key not in AUDIT.ACQUIRE_ENV_KEYS]
             self.assertEqual([], unknown_keys)
+
+    def test_acquire_reports_precise_reference_failures_without_raw_values(self):
+        cases = (
+            ("inline-manifest", "INLINE_DATA_UNSUPPORTED"),
+            ("inline-referrer", "INLINE_DATA_UNSUPPORTED"),
+            ("discover", "REFERRER_DISCOVERY_FAILED"),
+            ("manifest-type", "MANIFEST_TYPE_UNSUPPORTED"),
+            ("referrer-type", "REFERRER_TYPE_UNSUPPORTED"),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name, expected_code in cases:
+                with self.subTest(name=name):
+                    case_directory = base / name
+                    case_directory.mkdir()
+                    workspace = case_directory / "workspace"
+                    initialize(workspace)
+                    root, inventory, objects, referrers, root_manifest = self.make_graph()
+                    marker = runtime_canary(name)
+                    stderr_value = "stderr-" + marker
+                    sensitive_values = [stderr_value]
+                    stub_options: dict[str, object] = {"raw_stderr": stderr_value}
+
+                    if name in {"inline-manifest", "manifest-type"}:
+                        if name == "inline-manifest":
+                            value = "inline-" + marker
+                            root_manifest["config"]["data"] = value
+                        else:
+                            value = "application/x-" + marker
+                            root_manifest["mediaType"] = value
+                        sensitive_values.append(value)
+                        manifest = json.dumps(root_manifest, separators=(",", ":")).encode()
+                        replacement = digest(manifest)
+                        objects.pop(root)
+                        objects[replacement] = manifest
+                        inventory[0]["name"] = replacement
+                        referrers[replacement] = referrers.pop(root)
+                    elif name == "inline-referrer":
+                        value = "inline-" + marker
+                        referrers[root][0]["data"] = value
+                        sensitive_values.append(value)
+                    elif name == "referrer-type":
+                        value = "application/x-" + marker
+                        referrers[root][0]["mediaType"] = value
+                        sensitive_values.append(value)
+                    else:
+                        stub_options["discover_exit"] = 1
+
+                    bindir = make_registry_stubs(base / name / "tools", [inventory, inventory], objects, referrers, **stub_options)
+                    result = run_cli(
+                        ["acquire", "--workspace", str(workspace)],
+                        env={"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")},
+                    )
+                    self.assertEqual(1, result.returncode)
+                    phase = json.loads(result.stdout)
+                    self.assertEqual(("ACQUIRE", "FAILED", expected_code), (phase["stage"], phase["outcome"], phase["code"]))
+                    for value in sensitive_values:
+                        self.assertNotIn(value.encode(), result.stdout)
+
+                    state = AUDIT.load_state(workspace)
+                    self.assertEqual("failed", state["phases"]["acquire"])
+                    self.assertEqual(expected_code, state["primary_code"])
+                    self.assertEqual({expected_code: 1}, state["gap_counts"])
+                    self.assertTrue(state["auth_removed"])
+                    self.assertFalse((workspace / "auth").exists())
+
+                    final_code, final = AUDIT.finalize_workspace(workspace)
+                    self.assertEqual(3, final_code)
+                    self.assertEqual(("INCOMPLETE", expected_code), (final["status"], final["code"]))
+                    summary = base / name / "summary"
+                    summary.write_bytes(b"")
+                    with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}, clear=False):
+                        AUDIT._write_final_channels(final)
+                    for value in sensitive_values:
+                        self.assertNotIn(value.encode(), summary.read_bytes())
 
     def test_acquire_follows_multiplatform_index(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1061,11 +1140,38 @@ class WorkspaceAndOutputTests(unittest.TestCase):
                     AUDIT._write_final_channels(receipt)
             self.assertEqual(original, target.read_bytes())
 
+    def test_legacy_reference_code_remains_valid_public_and_persisted_state(self):
+        receipt = AUDIT.public_receipt("ACQUIRE", "FAILED", "UNSUPPORTED_REFERENCE", AUDIT.empty_counters())
+        AUDIT.validate_public_receipt(receipt)
+        AUDIT.validate_public_receipt(AUDIT.final_receipt("INCOMPLETE", "UNSUPPORTED_REFERENCE", AUDIT.empty_counters()))
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            state = AUDIT.load_state(workspace)
+            state["primary_code"] = "UNSUPPORTED_REFERENCE"
+            state["gap_counts"] = {"UNSUPPORTED_REFERENCE": 1}
+            state["counters"]["gaps"] = 1
+            AUDIT.save_state(workspace, state)
+            persisted = AUDIT.load_state(workspace)
+            self.assertEqual("UNSUPPORTED_REFERENCE", persisted["primary_code"])
+            self.assertEqual({"UNSUPPORTED_REFERENCE": 1}, persisted["gap_counts"])
+
+            for mutate in (
+                lambda value: value.update(primary_code="UNKNOWN_REFERENCE"),
+                lambda value: value.update(gap_counts={"UNKNOWN_REFERENCE": 1}),
+                lambda value: value.update(extra="unexpected"),
+            ):
+                invalid = AUDIT.load_state(workspace)
+                mutate(invalid)
+                with self.assertRaises(AUDIT.AuditFailure):
+                    AUDIT.save_state(workspace, invalid)
+
     def test_public_schema_rejects_unknown_types_values_and_large_counters(self):
         receipt = AUDIT.public_receipt("INIT", "OK", "NONE", AUDIT.empty_counters())
         AUDIT.validate_public_receipt(receipt)
         for mutate in (
             lambda value: value.update(extra=0),
+            lambda value: value.update(code="UNKNOWN_REFERENCE"),
             lambda value: value.update(stage="PRIVATE"),
             lambda value: value["counters"].update(versions=True),
             lambda value: value["counters"].update(versions=2**63),
