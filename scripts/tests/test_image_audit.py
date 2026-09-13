@@ -90,6 +90,12 @@ def descriptor(media_type: str, data: bytes) -> dict[str, object]:
     return {"mediaType": media_type, "digest": digest(data), "size": len(data)}
 
 
+def inline_descriptor(media_type: str, data: bytes) -> dict[str, object]:
+    result = descriptor(media_type, data)
+    result["data"] = base64.b64encode(data).decode("ascii")
+    return result
+
+
 def image_fixture(layers: list[bytes], *, annotation: str | None = None):
     diff_ids = []
     layer_descriptors = []
@@ -205,6 +211,8 @@ def make_registry_stubs(
     raw_stderr: str = "",
     sleep_seconds: float = 0,
     discover_exit: int = 0,
+    discover_fail_digests: set[str] | None = None,
+    forbidden_fetches: set[str] | None = None,
 ) -> Path:
     bindir = directory / "bin"
     bindir.mkdir(parents=True)
@@ -217,6 +225,8 @@ def make_registry_stubs(
         referrers = json.loads({json.dumps(referrers)!r})
         raw_stderr = {raw_stderr!r}
         discover_exit = {discover_exit!r}
+        discover_fail_digests = {sorted(discover_fail_digests or set())!r}
+        forbidden_fetches = {sorted(forbidden_fetches or set())!r}
         if raw_stderr:
             sys.stderr.write(raw_stderr)
         if {sleep_seconds!r}:
@@ -247,14 +257,14 @@ def make_registry_stubs(
         if args[:2] in (['manifest', 'fetch'], ['blob', 'fetch']):
             output = pathlib.Path(args[args.index('--output') + 1])
             wanted = args[-1].rsplit('@', 1)[1]
-            if wanted not in objects:
+            if wanted in forbidden_fetches or wanted not in objects:
                 raise SystemExit(1)
             output.write_bytes(base64.b64decode(objects[wanted]))
             raise SystemExit(0)
         if args and args[0] == 'discover':
             wanted = args[-1].rsplit('@', 1)[1]
-            if discover_exit:
-                raise SystemExit(discover_exit)
+            if discover_exit or wanted in discover_fail_digests:
+                raise SystemExit(discover_exit or 1)
             children = referrers.get(wanted, [])
             print(json.dumps({{
                 'reference': args[-1], 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
@@ -361,8 +371,8 @@ class AcquisitionTests(unittest.TestCase):
 
     def test_acquire_reports_precise_reference_failures_without_raw_values(self):
         cases = (
-            ("inline-manifest", "INLINE_DATA_UNSUPPORTED"),
-            ("inline-referrer", "INLINE_DATA_UNSUPPORTED"),
+            ("inline-manifest", "INVALID_DESCRIPTOR"),
+            ("inline-referrer", "INVALID_DESCRIPTOR"),
             ("discover", "REFERRER_DISCOVERY_FAILED"),
             ("manifest-type", "MANIFEST_TYPE_UNSUPPORTED"),
             ("referrer-type", "REFERRER_TYPE_UNSUPPORTED"),
@@ -434,6 +444,399 @@ class AcquisitionTests(unittest.TestCase):
                     for value in sensitive_values:
                         self.assertNotIn(value.encode(), summary.read_bytes())
 
+    def test_inline_objects_materialize_scan_and_keep_referrer_discovery(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name, blob in (("clean", b"clean\n"), ("marker", b"api_key=" + runtime_canary("inline").encode() + b"\n")):
+                with self.subTest(name=name):
+                    layer = tar_bytes([("app/clean.txt", b"clean\n")])
+                    config = json.dumps(
+                        {"rootfs": {"type": "layers", "diff_ids": [digest(layer)]}}, separators=(",", ":")
+                    ).encode()
+                    config_descriptor = inline_descriptor("application/vnd.oci.image.config.v1+json", config)
+                    layer_descriptor = inline_descriptor("application/vnd.oci.image.layer.v1.tar", layer)
+                    artifact_blob = inline_descriptor("application/vnd.example.payload", blob)
+                    artifact_value = {
+                        "schemaVersion": 2,
+                        "mediaType": "application/vnd.oci.artifact.manifest.v1+json",
+                        "artifactType": "application/vnd.example.attestation",
+                        "blobs": [artifact_blob],
+                    }
+                    artifact = json.dumps(artifact_value, separators=(",", ":")).encode()
+                    artifact_descriptor = inline_descriptor("application/vnd.oci.artifact.manifest.v1+json", artifact)
+                    root_value = {
+                        "schemaVersion": 2,
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "config": config_descriptor,
+                        "layers": [layer_descriptor],
+                    }
+                    root_data = json.dumps(root_value, separators=(",", ":")).encode()
+                    root = digest(root_data)
+                    inventory = [{"id": 1, "name": root, "metadata": {"container": {"tags": [name]}}}]
+                    objects = {root: root_data, artifact_descriptor["digest"]: artifact}
+                    referrers = {root: [artifact_descriptor], artifact_descriptor["digest"]: []}
+                    workspace = base / name / "workspace"
+                    workspace.parent.mkdir()
+                    initialize(workspace)
+                    bindir = make_registry_stubs(
+                        base / name / "tools",
+                        [inventory, inventory],
+                        objects,
+                        referrers,
+                        forbidden_fetches={
+                            config_descriptor["digest"],
+                            layer_descriptor["digest"],
+                            artifact_descriptor["digest"],
+                            artifact_blob["digest"],
+                        },
+                    )
+                    make_gitleaks_stub(bindir)
+                    acquire_env = {
+                        "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+                        "GITHUB_TOKEN": runtime_canary("token"),
+                    }
+                    with mock.patch.dict(os.environ, acquire_env, clear=False):
+                        self.assertEqual(0, AUDIT.run_phase("acquire", workspace))
+                    graph = AUDIT.read_graph(workspace)
+                    expected = {root: root_data, config_descriptor["digest"]: config, layer_descriptor["digest"]: layer,
+                                artifact_descriptor["digest"]: artifact, artifact_blob["digest"]: blob}
+                    self.assertEqual(set(expected), {item["digest"] for item in graph["objects"]})
+                    for object_digest, value in expected.items():
+                        self.assertEqual(value, AUDIT.object_path(workspace, object_digest).read_bytes())
+                    for item in graph["objects"]:
+                        self.assertNotIn("data", item)
+                    for manifest in graph["manifests"]:
+                        self.assertNotIn("data", json.dumps(manifest, sort_keys=True))
+                    self.assertIn(b'"data"', AUDIT.discovery_path(workspace, root).read_bytes())
+                    self.assertNotIn(b'"data"', (workspace / "private" / "graph.json").read_bytes())
+                    self.assertNotIn(b'"data"', (workspace / "state.json").read_bytes())
+                    offline_env = {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+                    with mock.patch.dict(os.environ, offline_env, clear=True), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
+                        self.assertEqual(0, AUDIT.run_phase("scan", workspace))
+                        self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                        self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                    final_code, final = AUDIT.finalize_workspace(workspace)
+                    self.assertEqual((0, "COMPLETE_NO_FINDINGS") if name == "clean" else (2, "COMPLETE_REVIEW_REQUIRED"),
+                                     (final_code, final["status"]))
+
+    def test_inline_manifest_still_fails_when_its_referrer_discovery_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            child_value = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": inline_descriptor("application/vnd.oci.image.config.v1+json", b"{}"),
+                "layers": [],
+            }
+            child = json.dumps(child_value, separators=(",", ":")).encode()
+            child_descriptor = inline_descriptor("application/vnd.oci.image.manifest.v1+json", child)
+            index_value = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [child_descriptor],
+            }
+            root_data = json.dumps(index_value, separators=(",", ":")).encode()
+            root = digest(root_data)
+            inventory = [{"id": 1, "name": root, "metadata": {"container": {"tags": []}}}]
+            workspace = base / "workspace"
+            initialize(workspace)
+            bindir = make_registry_stubs(
+                base / "tools",
+                [inventory, inventory],
+                {root: root_data, child_descriptor["digest"]: child},
+                {root: [], child_descriptor["digest"]: []},
+                discover_fail_digests={child_descriptor["digest"]},
+                forbidden_fetches={child_descriptor["digest"], child_value["config"]["digest"]},
+            )
+            with mock.patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")}, clear=False):
+                self.assertNotEqual(0, AUDIT.run_phase("acquire", workspace))
+            self.assertEqual("REFERRER_DISCOVERY_FAILED", AUDIT.load_state(workspace)["primary_code"])
+
+    def test_inline_manifest_priority_prevents_earlier_external_payload_fetch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            config = b"{}"
+            external_config = descriptor("application/vnd.oci.image.config.v1+json", config)
+            inline_config = inline_descriptor("application/vnd.oci.image.config.v1+json", config)
+            ready_value = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": inline_config,
+                "layers": [],
+            }
+            ready_data = json.dumps(ready_value, separators=(",", ":")).encode()
+            ready_descriptor = inline_descriptor("application/vnd.oci.image.manifest.v1+json", ready_data)
+            root_value = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": external_config,
+                "layers": [],
+                "subject": ready_descriptor,
+            }
+            root_data = json.dumps(root_value, separators=(",", ":")).encode()
+            root = digest(root_data)
+            inventory = [{"id": 1, "name": root, "metadata": {"container": {"tags": []}}}]
+            workspace = base / "workspace"
+            initialize(workspace)
+            bindir = make_registry_stubs(
+                base / "tools",
+                [inventory, inventory],
+                {root: root_data, ready_descriptor["digest"]: ready_data},
+                {root: [], ready_descriptor["digest"]: []},
+                forbidden_fetches={external_config["digest"], ready_descriptor["digest"]},
+            )
+            with mock.patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")}, clear=False):
+                self.assertEqual(0, AUDIT.run_phase("acquire", workspace))
+            state = AUDIT.load_state(workspace)
+            self.assertEqual(len(root_data) + len(ready_data) + len(config), state["counters"]["image_bytes"])
+            self.assertEqual(config, AUDIT.object_path(workspace, external_config["digest"]).read_bytes())
+
+    def test_unknown_root_uses_remaining_quota_not_metadata_cap(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            payloads = []
+            for name in ("first", "second"):
+                value = {
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.artifact.manifest.v1+json",
+                    "artifactType": "application/vnd.example.payload",
+                    "blobs": [],
+                    "annotations": {"org.example.padding": name * 32},
+                }
+                data = json.dumps(value, separators=(",", ":")).encode()
+                payloads.append((digest(data), data))
+            roots = [item[0] for item in payloads]
+            objects = dict(payloads)
+            inventory = [
+                {"id": index, "name": root, "metadata": {"container": {"tags": []}}}
+                for index, root in enumerate(roots, 1)
+            ]
+            workspace = base / "workspace"
+            initialize(workspace)
+            bindir = make_registry_stubs(base / "tools", [inventory, inventory], objects, {root: [] for root in roots})
+            metadata_cap = max(len(data) for _root, data in payloads) + 1
+            image_cap = sum(len(data) for _root, data in payloads)
+            with mock.patch.object(AUDIT, "MAX_METADATA_BYTES", metadata_cap), mock.patch.object(AUDIT, "MAX_IMAGE_BYTES", image_cap), mock.patch.dict(
+                os.environ,
+                {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")},
+                clear=False,
+            ):
+                self.assertEqual(0, AUDIT.run_phase("acquire", workspace))
+            self.assertEqual(image_cap, AUDIT.load_state(workspace)["counters"]["image_bytes"])
+
+    def test_unknown_root_over_remaining_quota_never_commits_canonical_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            payloads = []
+            for name in ("first", "second"):
+                value = {
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.artifact.manifest.v1+json",
+                    "artifactType": "application/vnd.example.payload",
+                    "blobs": [],
+                    "annotations": {"org.example.padding": name * 32},
+                }
+                data = json.dumps(value, separators=(",", ":")).encode()
+                payloads.append((digest(data), data))
+            roots = [item[0] for item in payloads]
+            objects = dict(payloads)
+            inventory = [
+                {"id": index, "name": root, "metadata": {"container": {"tags": []}}}
+                for index, root in enumerate(roots, 1)
+            ]
+            workspace = base / "workspace"
+            initialize(workspace)
+            bindir = make_registry_stubs(base / "tools", [inventory, inventory], objects, {root: [] for root in roots})
+            metadata_cap = max(len(data) for _root, data in payloads) + 1
+            image_cap = sum(len(data) for _root, data in payloads) - 1
+            with mock.patch.object(AUDIT, "MAX_METADATA_BYTES", metadata_cap), mock.patch.object(AUDIT, "MAX_IMAGE_BYTES", image_cap), mock.patch.dict(
+                os.environ,
+                {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")},
+                clear=False,
+            ):
+                self.assertNotEqual(0, AUDIT.run_phase("acquire", workspace))
+            self.assertFalse(AUDIT.object_path(workspace, roots[1]).exists())
+
+    def test_preexisting_valid_cache_is_charged_and_corruption_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            value = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.artifact.manifest.v1+json",
+                "artifactType": "application/vnd.example.payload",
+                "blobs": [],
+            }
+            data = json.dumps(value, separators=(",", ":")).encode()
+            root = digest(data)
+            inventory = [{"id": 1, "name": root, "metadata": {"container": {"tags": []}}}]
+            for name, cached, expected in (("valid", data, 0), ("corrupt", b"corrupt", 1)):
+                with self.subTest(name=name):
+                    workspace = base / name / "workspace"
+                    workspace.parent.mkdir()
+                    initialize(workspace)
+                    path = AUDIT.object_path(workspace, root)
+                    path.write_bytes(cached)
+                    path.chmod(0o600)
+                    bindir = make_registry_stubs(base / name / "tools", [inventory, inventory], {root: data}, {root: []}, forbidden_fetches={root})
+                    with mock.patch.dict(
+                        os.environ,
+                        {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")},
+                        clear=False,
+                    ):
+                        self.assertEqual(expected, AUDIT.run_phase("acquire", workspace))
+                    if expected == 0:
+                        self.assertEqual(len(data), AUDIT.load_state(workspace)["counters"]["image_bytes"])
+                    else:
+                        self.assertEqual("DIGEST_MISMATCH", AUDIT.load_state(workspace)["primary_code"])
+
+    def test_same_digest_is_charged_once_for_inline_cache_and_network_orders(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            config = b"{}"
+            config_external = descriptor("application/vnd.oci.image.config.v1+json", config)
+            config_inline = inline_descriptor("application/vnd.oci.image.config.v1+json", config)
+            inline_first = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": config_inline,
+                "layers": [],
+            }
+            inline_root_data = json.dumps(inline_first, separators=(",", ":")).encode()
+            inline_root = digest(inline_root_data)
+            later = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": config_inline,
+                "layers": [],
+            }
+            later_data = json.dumps(later, separators=(",", ":")).encode()
+            later_descriptor = descriptor("application/vnd.oci.image.manifest.v1+json", later_data)
+            network_first = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": config_external,
+                "layers": [],
+                "subject": later_descriptor,
+            }
+            network_root_data = json.dumps(network_first, separators=(",", ":")).encode()
+            network_root = digest(network_root_data)
+            cases = (
+                (
+                    "inline-cache",
+                    inline_root,
+                    inline_root_data,
+                    {inline_root: inline_root_data},
+                    {inline_root: []},
+                    {config_external["digest"]},
+                    True,
+                    len(inline_root_data) + len(config),
+                ),
+                (
+                    "network-inline",
+                    network_root,
+                    network_root_data,
+                    {network_root: network_root_data, config_external["digest"]: config, later_descriptor["digest"]: later_data},
+                    {network_root: [], later_descriptor["digest"]: []},
+                    set(),
+                    False,
+                    len(network_root_data) + len(later_data) + len(config),
+                ),
+            )
+            for name, root, root_data, objects, referrers, forbidden, cache_config, total in cases:
+                with self.subTest(name=name):
+                    workspace = base / name / "workspace"
+                    workspace.parent.mkdir()
+                    initialize(workspace)
+                    if cache_config:
+                        path = AUDIT.object_path(workspace, config_external["digest"])
+                        path.write_bytes(config)
+                        path.chmod(0o600)
+                    inventory = [{"id": 1, "name": root, "metadata": {"container": {"tags": []}}}]
+                    bindir = make_registry_stubs(base / name / "tools", [inventory, inventory], objects, referrers, forbidden_fetches=forbidden)
+                    with mock.patch.dict(
+                        os.environ,
+                        {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")},
+                        clear=False,
+                    ):
+                        self.assertEqual(0, AUDIT.run_phase("acquire", workspace))
+                    self.assertEqual(total, AUDIT.load_state(workspace)["counters"]["image_bytes"])
+
+    def test_inline_network_and_cache_quota_fail_before_new_canonical_writes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            config = b"{}"
+            external = descriptor("application/vnd.oci.image.config.v1+json", config)
+            inline = inline_descriptor("application/vnd.oci.image.config.v1+json", config)
+            for name, config_descriptor, cache_config in (
+                ("inline", inline, False),
+                ("network", external, False),
+                ("cache", external, True),
+            ):
+                with self.subTest(name=name):
+                    value = {
+                        "schemaVersion": 2,
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "config": config_descriptor,
+                        "layers": [],
+                    }
+                    root_data = json.dumps(value, separators=(",", ":")).encode()
+                    root = digest(root_data)
+                    workspace = base / name / "workspace"
+                    workspace.parent.mkdir()
+                    initialize(workspace)
+                    if cache_config:
+                        path = AUDIT.object_path(workspace, external["digest"])
+                        path.write_bytes(config)
+                        path.chmod(0o600)
+                    inventory = [{"id": 1, "name": root, "metadata": {"container": {"tags": []}}}]
+                    bindir = make_registry_stubs(base / name / "tools", [inventory, inventory], {root: root_data, external["digest"]: config}, {root: []})
+                    with mock.patch.object(AUDIT, "MAX_IMAGE_BYTES", len(root_data)), mock.patch.dict(
+                        os.environ,
+                        {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")},
+                        clear=False,
+                    ):
+                        self.assertNotEqual(0, AUDIT.run_phase("acquire", workspace))
+                    if cache_config:
+                        self.assertEqual("IMAGE_BYTES_LIMIT", AUDIT.load_state(workspace)["primary_code"])
+                    else:
+                        self.assertFalse(AUDIT.object_path(workspace, external["digest"]).exists())
+
+    def test_invalid_inline_duplicate_is_checked_after_cached_descriptor_was_visited(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            config = b"{}"
+            config_descriptor = descriptor("application/vnd.oci.image.config.v1+json", config)
+            invalid_duplicate = dict(config_descriptor, data="x")
+            later_value = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": invalid_duplicate,
+                "layers": [],
+            }
+            later_data = json.dumps(later_value, separators=(",", ":")).encode()
+            later_descriptor = descriptor("application/vnd.oci.image.manifest.v1+json", later_data)
+            root_value = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": config_descriptor,
+                "layers": [],
+                "subject": later_descriptor,
+            }
+            root_data = json.dumps(root_value, separators=(",", ":")).encode()
+            root = digest(root_data)
+            inventory = [{"id": 1, "name": root, "metadata": {"container": {"tags": []}}}]
+            workspace = base / "workspace"
+            initialize(workspace)
+            bindir = make_registry_stubs(
+                base / "tools", [inventory, inventory],
+                {root: root_data, config_descriptor["digest"]: config, later_descriptor["digest"]: later_data},
+                {root: [], later_descriptor["digest"]: []},
+            )
+            with mock.patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")}, clear=False):
+                self.assertNotEqual(0, AUDIT.run_phase("acquire", workspace))
+            self.assertTrue(AUDIT.object_path(workspace, config_descriptor["digest"]).exists())
+            self.assertEqual("INVALID_DESCRIPTOR", AUDIT.load_state(workspace)["primary_code"])
+
     def test_acquire_follows_multiplatform_index(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
@@ -468,26 +871,38 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(2, len(graph["manifests"]))
             self.assertEqual(7, AUDIT.load_state(workspace)["counters"]["descriptor_edges"])
 
-    def test_referrer_descriptor_metadata_is_scanned_after_auth_removal(self):
+    def test_referrer_discovery_retains_original_bytes_and_scans_annotation_data(self):
         with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            workspace = base / "workspace"
-            initialize(workspace)
-            root, inventory, objects, referrers, _ = self.make_graph()
-            marker = runtime_canary("referrer-annotation")
-            referrers[root][0]["annotations"] = {"org.example.note": "api_key=" + marker}
-            bindir = make_registry_stubs(base, [inventory, inventory], objects, referrers)
-            make_gitleaks_stub(bindir)
-            acquire_env = {
-                "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
-                "GITHUB_TOKEN": runtime_canary("token"),
-            }
-            with mock.patch.dict(os.environ, acquire_env, clear=False):
-                self.assertEqual(0, AUDIT.run_phase("acquire", workspace))
-            offline_env = {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
-            with mock.patch.dict(os.environ, offline_env, clear=True), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
-                self.assertEqual(0, AUDIT.run_phase("scan", workspace))
-            self.assertGreaterEqual(AUDIT.load_state(workspace)["counters"]["detections"], 1)
+            results = discovery_annotation_data_results(make_gitleaks_stub(Path(temp)))
+        self.assertEqual(
+            {
+                "raw_retained": True,
+                "normalized_metadata": True,
+                "scan": 0,
+                "fetch": 0,
+                "compare": 0,
+                "detections": 0,
+                "primary_code": "NONE",
+                "final_code": 0,
+                "final_status": "COMPLETE_NO_FINDINGS",
+            },
+            results["benign"],
+        )
+        marker = results["marker"]
+        self.assertTrue(marker["raw_retained"])
+        self.assertTrue(marker["normalized_metadata"])
+        self.assertEqual(
+            (0, 0, 0, "NONE", 2, "COMPLETE_REVIEW_REQUIRED"),
+            (
+                marker["scan"],
+                marker["fetch"],
+                marker["compare"],
+                marker["primary_code"],
+                marker["final_code"],
+                marker["final_status"],
+            ),
+        )
+        self.assertGreaterEqual(marker["detections"], 1)
 
     def test_acquire_detects_inventory_race_and_cleans_auth(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -545,6 +960,45 @@ class AcquisitionTests(unittest.TestCase):
             with self.assertRaisesRegex(AUDIT.AuditFailure, "IMAGE_BYTES_LIMIT"):
                 AUDIT.check_image_budget(0, 10)
 
+    def test_inline_decoder_accepts_canonical_empty_and_external_descriptors(self):
+        payload = b"inline payload"
+        source = inline_descriptor("application/vnd.example.payload", payload)
+        normalized = AUDIT.validate_descriptor(source, depth=0)
+        self.assertEqual({"mediaType", "digest", "size"}, set(normalized))
+        self.assertEqual(payload, AUDIT._decode_inline_data(source, normalized))
+        for external in (
+            descriptor("application/vnd.example.payload", payload),
+            dict(descriptor("application/vnd.example.payload", payload), data=None),
+        ):
+            self.assertIsNone(AUDIT._decode_inline_data(external, AUDIT.validate_descriptor(external, depth=0)))
+        empty = inline_descriptor("application/vnd.example.payload", b"")
+        self.assertEqual(b"", AUDIT._decode_inline_data(empty, AUDIT.validate_descriptor(empty, depth=0)))
+
+    def test_inline_decoder_rejects_invalid_or_mismatched_payload_before_queueing(self):
+        payload = b"x"
+        source = inline_descriptor("application/vnd.example.payload", payload)
+        normalized = AUDIT.validate_descriptor(source, depth=0)
+        bad_sources = (
+            dict(source, data=[source["data"]]),
+            dict(source, data="å"),
+            dict(source, data="x"),
+            dict(source, data="YR=="),
+        )
+        for bad in bad_sources:
+            with self.subTest(data=repr(bad["data"])):
+                with self.assertRaisesRegex(AUDIT.AuditFailure, "INVALID_DESCRIPTOR"):
+                    AUDIT._decode_inline_data(bad, normalized)
+        wrong_digest = inline_descriptor("application/vnd.example.payload", b"y")
+        wrong_digest["data"] = source["data"]
+        with self.assertRaisesRegex(AUDIT.AuditFailure, "DIGEST_MISMATCH"):
+            AUDIT._decode_inline_data(wrong_digest, AUDIT.validate_descriptor(wrong_digest, depth=0))
+        wrong_size = dict(source, size=2)
+        with self.assertRaisesRegex(AUDIT.AuditFailure, "SIZE_MISMATCH"):
+            AUDIT._decode_inline_data(wrong_size, AUDIT.validate_descriptor(wrong_size, depth=0))
+        with mock.patch.object(AUDIT, "MAX_METADATA_BYTES", 3):
+            with self.assertRaisesRegex(AUDIT.AuditFailure, "OBJECT_SIZE_LIMIT"):
+                AUDIT._decode_inline_data(source, normalized)
+
     def test_manifest_requires_schema_version_two(self):
         with self.assertRaisesRegex(AUDIT.AuditFailure, "INVALID_JSON"):
             AUDIT._manifest_children(
@@ -582,6 +1036,70 @@ def archive_regression_results(gitleaks: Path) -> dict[str, dict[str, object]]:
                 "primary_code": state["primary_code"],
                 "final_code": final_code,
                 "final_status": receipt["status"],
+            }
+    return results
+
+
+def discovery_annotation_data_results(gitleaks: Path) -> dict[str, dict[str, object]]:
+    results: dict[str, dict[str, object]] = {}
+    with tempfile.TemporaryDirectory() as temp:
+        base = Path(temp)
+        for name, annotation in (
+            ("benign", "ordinary annotation"),
+            ("marker", "api_key=" + runtime_canary("annotation-data")),
+        ):
+            case = base / name
+            case.mkdir()
+            workspace = case / "workspace"
+            initialize(workspace)
+            root, inventory, objects, referrers, _root_manifest = AcquisitionTests().make_graph()
+            referrers[root][0]["annotations"] = {"data": annotation}
+            bindir = make_registry_stubs(case / "tools", [inventory, inventory], objects, referrers)
+            expected = json.dumps(
+                {
+                    "reference": f"{AUDIT.PACKAGE}@{root}",
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": root,
+                    "size": len(objects[root]),
+                    "referrers": [
+                        dict(
+                            referrers[root][0],
+                            reference=f"{AUDIT.PACKAGE}@{referrers[root][0]['digest']}",
+                            referrers=[],
+                        )
+                    ],
+                }
+            ).encode() + b"\n"
+            with mock.patch.dict(
+                os.environ,
+                {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "GITHUB_TOKEN": runtime_canary("token")},
+                clear=False,
+            ):
+                if AUDIT.run_phase("acquire", workspace) != 0:
+                    raise AssertionError("acquire")
+            stored = AUDIT.discovery_path(workspace, root).read_bytes()
+            graph_bytes = (workspace / "private" / "graph.json").read_bytes()
+            state_bytes = (workspace / "state.json").read_bytes()
+            with mock.patch.dict(
+                os.environ,
+                {"PATH": str(gitleaks.parent) + os.pathsep + os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+                clear=True,
+            ), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
+                scan = AUDIT.run_phase("scan", workspace)
+                fetch = AUDIT.run_phase("fetch-vendor", workspace) if scan == 0 else 1
+                compare = AUDIT.run_phase("compare", workspace) if fetch == 0 else 1
+            state = AUDIT.load_state(workspace)
+            final_code, final = AUDIT.finalize_workspace(workspace)
+            results[name] = {
+                "raw_retained": stored == expected,
+                "normalized_metadata": b'"data"' not in graph_bytes and b'"data"' not in state_bytes,
+                "scan": scan,
+                "fetch": fetch,
+                "compare": compare,
+                "detections": state["counters"]["detections"],
+                "primary_code": state["primary_code"],
+                "final_code": final_code,
+                "final_status": final["status"],
             }
     return results
 
@@ -1140,6 +1658,22 @@ class WorkspaceAndOutputTests(unittest.TestCase):
                     AUDIT._write_final_channels(receipt)
             self.assertEqual(original, target.read_bytes())
 
+    def test_legacy_inline_data_unsupported_code_remains_valid_public_and_persisted_state(self):
+        code = "INLINE_DATA_UNSUPPORTED"
+        AUDIT.validate_public_receipt(AUDIT.public_receipt("ACQUIRE", "FAILED", code, AUDIT.empty_counters()))
+        AUDIT.validate_public_receipt(AUDIT.final_receipt("INCOMPLETE", code, AUDIT.empty_counters()))
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            state = AUDIT.load_state(workspace)
+            state["primary_code"] = code
+            state["gap_counts"] = {code: 1}
+            state["counters"]["gaps"] = 1
+            AUDIT.save_state(workspace, state)
+            persisted = AUDIT.load_state(workspace)
+            self.assertEqual(code, persisted["primary_code"])
+            self.assertEqual({code: 1}, persisted["gap_counts"])
+
     def test_legacy_reference_code_remains_valid_public_and_persisted_state(self):
         receipt = AUDIT.public_receipt("ACQUIRE", "FAILED", "UNSUPPORTED_REFERENCE", AUDIT.empty_counters())
         AUDIT.validate_public_receipt(receipt)
@@ -1265,6 +1799,20 @@ def run_real_gitleaks(binary: Path) -> int:
     with tempfile.TemporaryDirectory() as temp:
         result = AUDIT.run_gitleaks_controls(binary.resolve(), Path(temp) / "controls")
     if result["clean_findings"] != 0 or result["positive_findings"] < 4:
+        return 1
+    discovery = discovery_annotation_data_results(binary.resolve())
+    benign = discovery.get("benign", {})
+    marker = discovery.get("marker", {})
+    if (
+        benign.get("raw_retained") is not True
+        or benign.get("normalized_metadata") is not True
+        or (benign.get("scan"), benign.get("detections"), benign.get("final_status")) != (0, 0, "COMPLETE_NO_FINDINGS")
+        or marker.get("raw_retained") is not True
+        or marker.get("normalized_metadata") is not True
+        or (marker.get("scan"), marker.get("final_status")) != (0, "COMPLETE_REVIEW_REQUIRED")
+        or not isinstance(marker.get("detections"), int)
+        or marker["detections"] < 1
+    ):
         return 1
     results = archive_regression_results(binary.resolve())
     for name in ("gzip-metadata", "zip-metadata"):

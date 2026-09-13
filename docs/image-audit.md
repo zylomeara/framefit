@@ -14,10 +14,18 @@ The workflow inventories the package visible to its authorised GitHub Actions co
 
 ## Acquisition diagnostic codes
 
-- `INLINE_DATA_UNSUPPORTED` identifies a descriptor with non-null inline `data`.
-- `REFERRER_DISCOVERY_FAILED` identifies a failed referrer-discovery command.
+- `REFERRER_DISCOVERY_FAILED` identifies a failed mandatory referrer-discovery command, including for an inline manifest.
 - `MANIFEST_TYPE_UNSUPPORTED` identifies an acquired manifest with an unsupported media type.
 - `REFERRER_TYPE_UNSUPPORTED` identifies a discovered referrer with an unsupported media type.
+- `INVALID_DESCRIPTOR`, `OBJECT_SIZE_LIMIT`, `DIGEST_MISMATCH`, and `SIZE_MISMATCH` identify rejected inline-descriptor data or its metadata.
+
+OCI descriptor `data` may carry inline Base64 content. Missing or `null` data remains registry-backed; an empty string is inline zero bytes only when its declared digest and size match. Non-null data must be an ASCII string using strict, canonical Base64. Its encoded length is capped by both the metadata limit and the declared decoded size before it is decoded; decoded bytes are then verified against the descriptor digest and size.
+
+Verified inline objects use the same immutable workspace object store, graph, and scanner as fetched objects. The acquisition budget charges each digest once per run whether it was supplied inline, read from an already valid cache entry, or fetched. Inline data is not retained in graph/state records. Each bounded original private referrer-discovery response is retained as scanner input, including nested annotations and extensions; it is not normalized state or a public output. Cached objects are rechecked for owner, type, size, and digest; invalid entries stop the audit rather than being replaced.
+
+An already materialized inline manifest is parsed before ordinary unresolved queue entries, so its descendants can satisfy an earlier external descriptor without a payload fetch. This priority does not predict content hidden behind an unfetched manifest. Inline content also does not replace registry discovery: each manifest still requires referrer discovery, and failure leaves the audit incomplete.
+
+`INLINE_DATA_UNSUPPORTED` remains a recognized legacy receipt/state code; new supported inline data does not produce it.
 
 These codes identify the failure site only. They do not establish an HTTP status or a registry-side cause.
 

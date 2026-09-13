@@ -914,9 +914,30 @@ def validate_descriptor(value: object, *, depth: int) -> dict[str, object]:
     urls = value.get("urls")
     if urls not in (None, []):
         raise AuditFailure("EXTERNAL_REFERENCE")
-    if value.get("data") is not None:
-        raise AuditFailure("INLINE_DATA_UNSUPPORTED")
     return {"mediaType": media_type, "digest": object_digest, "size": size}
+
+
+def _decode_inline_data(source: object, descriptor: dict[str, object]) -> bytes | None:
+    if not isinstance(source, dict) or source.get("data") is None:
+        return None
+    encoded = source["data"]
+    if not isinstance(encoded, str):
+        raise AuditFailure("INVALID_DESCRIPTOR")
+    try:
+        encoded_bytes = encoded.encode("ascii")
+    except UnicodeEncodeError:
+        raise AuditFailure("INVALID_DESCRIPTOR") from None
+    size = descriptor["size"]
+    if len(encoded_bytes) > MAX_METADATA_BYTES or len(encoded_bytes) > 4 * ((size + 2) // 3):
+        raise AuditFailure("OBJECT_SIZE_LIMIT")
+    try:
+        decoded = base64.b64decode(encoded_bytes, validate=True)
+    except (ValueError, base64.binascii.Error):
+        raise AuditFailure("INVALID_DESCRIPTOR") from None
+    if base64.b64encode(decoded) != encoded_bytes:
+        raise AuditFailure("INVALID_DESCRIPTOR")
+    _verify_object(decoded, descriptor["digest"], size)
+    return decoded
 
 
 def register_descriptor(tracker: dict[str, tuple[int, str]], descriptor_value: dict[str, object]) -> bool:
@@ -1002,10 +1023,13 @@ def _oras_fetch(
     *,
     manifest: bool,
     declared_size: int | None,
+    remaining: int,
 ) -> bytes:
-    limit = declared_size if declared_size is not None else MAX_METADATA_BYTES
+    limit = declared_size if declared_size is not None else min(remaining, MAX_METADATA_BYTES)
     if limit > MAX_IMAGE_BYTES:
         raise AuditFailure("OBJECT_SIZE_LIMIT")
+    if limit > remaining:
+        raise AuditFailure("IMAGE_BYTES_LIMIT")
     _ensure_disk(root, limit)
     destination = object_path(root, object_digest)
     temporary = root / "private" / ("fetch-" + secrets.token_hex(8))
@@ -1029,6 +1053,8 @@ def _oras_fetch(
             raise AuditFailure("TOOL_FAILURE")
         data = _load_bounded_file(temporary, limit)
         _verify_object(data, object_digest, declared_size)
+        if len(data) > remaining:
+            raise AuditFailure("IMAGE_BYTES_LIMIT")
         os.replace(temporary, destination)
         destination.chmod(0o600)
         return data
@@ -1037,7 +1063,9 @@ def _oras_fetch(
             temporary.unlink()
 
 
-def _discover_referrers(oras: Path, cwd: Path, env: dict[str, str], object_digest: str) -> tuple[list[dict[str, object]], bytes]:
+def _discover_referrers(
+    oras: Path, cwd: Path, env: dict[str, str], object_digest: str
+) -> tuple[list[tuple[dict[str, object], dict[str, object]]], bytes]:
     code, stdout, _stderr = _run_bounded(
         [
             str(oras),
@@ -1058,13 +1086,20 @@ def _discover_referrers(oras: Path, cwd: Path, env: dict[str, str], object_diges
     value = _parse_json_bytes(stdout)
     if not isinstance(value, dict) or value.get("digest") != object_digest or not isinstance(value.get("referrers"), list):
         raise AuditFailure("INVALID_DESCRIPTOR")
-    result = []
+    result: list[tuple[dict[str, object], dict[str, object]]] = []
     for item in value["referrers"]:
-        result.append(validate_descriptor(item, depth=0))
+        descriptor = validate_descriptor(item, depth=0)
+        if not isinstance(item, dict):
+            raise AuditFailure("INVALID_DESCRIPTOR")
+        result.append((item, descriptor))
+    if len(stdout) > MAX_METADATA_BYTES:
+        raise AuditFailure("TOOL_OUTPUT_LIMIT")
     return result, stdout
 
 
-def _manifest_children(value: object, expected_media: str | None, depth: int) -> tuple[str, list[tuple[dict[str, object], str]], dict[str, object] | None]:
+def _manifest_children(
+    value: object, expected_media: str | None, depth: int
+) -> tuple[str, list[tuple[dict[str, object], dict[str, object], str]], dict[str, object] | None]:
     if not isinstance(value, dict) or value.get("schemaVersion") != 2 or isinstance(value.get("schemaVersion"), bool):
         raise AuditFailure("INVALID_JSON")
     media_type = value.get("mediaType")
@@ -1072,25 +1107,39 @@ def _manifest_children(value: object, expected_media: str | None, depth: int) ->
         raise AuditFailure("MANIFEST_TYPE_UNSUPPORTED")
     if expected_media is not None and expected_media != media_type:
         raise AuditFailure("DESCRIPTOR_CONFLICT")
-    children: list[tuple[dict[str, object], str]] = []
+
+    def child(source: object, kind: str) -> tuple[dict[str, object], dict[str, object], str]:
+        descriptor = validate_descriptor(source, depth=depth + 1)
+        if not isinstance(source, dict):
+            raise AuditFailure("INVALID_DESCRIPTOR")
+        return source, descriptor, kind
+
+    children: list[tuple[dict[str, object], dict[str, object], str]] = []
     record: dict[str, object] | None = None
     if media_type in INDEX_TYPES:
         manifests = value.get("manifests")
         if not isinstance(manifests, list):
             raise AuditFailure("INVALID_DESCRIPTOR")
         for item in manifests:
-            children.append((validate_descriptor(item, depth=depth + 1), "manifest"))
+            children.append(child(item, "manifest"))
     elif media_type in IMAGE_MANIFEST_TYPES:
-        config = validate_descriptor(value.get("config"), depth=depth + 1)
+        config_source = value.get("config")
+        config = validate_descriptor(config_source, depth=depth + 1)
+        if not isinstance(config_source, dict):
+            raise AuditFailure("INVALID_DESCRIPTOR")
         layers_raw = value.get("layers")
         if not isinstance(layers_raw, list):
             raise AuditFailure("INVALID_DESCRIPTOR")
-        layers = [validate_descriptor(item, depth=depth + 1) for item in layers_raw]
-        children.append((config, "config"))
-        children.extend((item, "layer") for item in layers)
-        subject = validate_descriptor(value["subject"], depth=depth + 1) if value.get("subject") is not None else None
-        if subject:
-            children.append((subject, "manifest"))
+        layer_children = [child(item, "layer") for item in layers_raw]
+        layers = [item[1] for item in layer_children]
+        children.append((config_source, config, "config"))
+        children.extend(layer_children)
+        subject_source = value["subject"] if value.get("subject") is not None else None
+        subject = validate_descriptor(subject_source, depth=depth + 1) if subject_source is not None else None
+        if subject_source is not None:
+            if not isinstance(subject_source, dict):
+                raise AuditFailure("INVALID_DESCRIPTOR")
+            children.append((subject_source, subject, "manifest"))
         artifact_type = value.get("artifactType")
         if artifact_type is not None and not isinstance(artifact_type, str):
             raise AuditFailure("INVALID_DESCRIPTOR")
@@ -1107,11 +1156,15 @@ def _manifest_children(value: object, expected_media: str | None, depth: int) ->
         blobs_raw = value.get("blobs")
         if not isinstance(blobs_raw, list):
             raise AuditFailure("INVALID_DESCRIPTOR")
-        blobs = [validate_descriptor(item, depth=depth + 1) for item in blobs_raw]
-        children.extend((item, "blob") for item in blobs)
-        subject = validate_descriptor(value["subject"], depth=depth + 1) if value.get("subject") is not None else None
-        if subject:
-            children.append((subject, "manifest"))
+        blob_children = [child(item, "blob") for item in blobs_raw]
+        blobs = [item[1] for item in blob_children]
+        children.extend(blob_children)
+        subject_source = value["subject"] if value.get("subject") is not None else None
+        subject = validate_descriptor(subject_source, depth=depth + 1) if subject_source is not None else None
+        if subject_source is not None:
+            if not isinstance(subject_source, dict):
+                raise AuditFailure("INVALID_DESCRIPTOR")
+            children.append((subject_source, subject, "manifest"))
         artifact_type = value.get("artifactType")
         if not isinstance(artifact_type, str) or not artifact_type:
             raise AuditFailure("INVALID_DESCRIPTOR")
@@ -1127,6 +1180,32 @@ def _manifest_children(value: object, expected_media: str | None, depth: int) ->
     return media_type, children, record
 
 
+def _load_cached_acquisition_object(
+    root: Path,
+    object_digest: str,
+    declared_size: int | None,
+    *,
+    manifest: bool,
+) -> tuple[int, bytes | None] | None:
+    path = object_path(root, object_digest)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise AuditFailure("OBJECT_MISSING") from None
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise AuditFailure("SIZE_MISMATCH")
+    if info.st_size > MAX_IMAGE_BYTES:
+        raise AuditFailure("OBJECT_SIZE_LIMIT")
+    if declared_size is not None and info.st_size != declared_size:
+        raise AuditFailure("SIZE_MISMATCH")
+    if _file_digest(path, limit=MAX_IMAGE_BYTES) != object_digest:
+        raise AuditFailure("DIGEST_MISMATCH")
+    data = _load_bounded_file(path, MAX_METADATA_BYTES) if manifest else None
+    return info.st_size, data
+
+
 def _acquire_graph(
     root: Path,
     roots: list[str],
@@ -1135,10 +1214,12 @@ def _acquire_graph(
     env: dict[str, str],
     state: dict[str, object],
 ) -> dict[str, object]:
-    queue = deque(
+    queue: deque[tuple[dict[str, object], str, int]] = deque(
         ({"digest": item, "mediaType": None, "size": None}, "manifest", 0) for item in roots
     )
+    ready_manifests: deque[tuple[dict[str, object], str, int]] = deque()
     visited: set[str] = set()
+    charged_digests: set[str] = set()
     metadata: dict[str, tuple[int, str]] = {}
     objects: list[dict[str, object]] = []
     manifests: list[dict[str, object]] = []
@@ -1147,8 +1228,41 @@ def _acquire_graph(
         descriptor_count = bump_descriptor_count(descriptor_count)
     state["counters"]["descriptor_edges"] = descriptor_count
     image_bytes = 0
-    while queue:
-        incoming, kind, depth = queue.popleft()
+
+    def charge(object_digest: str, size: int) -> None:
+        nonlocal image_bytes
+        if object_digest not in charged_digests:
+            image_bytes = check_image_budget(image_bytes, size)
+            charged_digests.add(object_digest)
+            state["counters"]["image_bytes"] = image_bytes
+
+    def materialize_inline(descriptor: dict[str, object], payload: bytes, kind: str) -> None:
+        cached = _load_cached_acquisition_object(
+            root, descriptor["digest"], descriptor["size"], manifest=kind == "manifest"
+        )
+        charge(descriptor["digest"], len(payload) if cached is None else cached[0])
+        if cached is None:
+            _ensure_disk(root, len(payload))
+            write_private_bytes(object_path(root, descriptor["digest"]), payload)
+
+    def enqueue(source: dict[str, object], descriptor: dict[str, object], kind: str, depth: int) -> None:
+        nonlocal descriptor_count
+        if depth > MAX_GRAPH_DEPTH:
+            raise AuditFailure("DEPTH_LIMIT")
+        payload = _decode_inline_data(source, descriptor)
+        descriptor_count = bump_descriptor_count(descriptor_count)
+        state["counters"]["descriptor_edges"] = descriptor_count
+        register_descriptor(metadata, descriptor)
+        item = _minimal_descriptor(descriptor)
+        if payload is not None:
+            materialize_inline(descriptor, payload, kind)
+            if kind == "manifest":
+                ready_manifests.append((item, kind, depth))
+                return
+        queue.append((item, kind, depth))
+
+    while ready_manifests or queue:
+        incoming, kind, depth = (ready_manifests.popleft() if ready_manifests else queue.popleft())
         if depth > MAX_GRAPH_DEPTH:
             raise AuditFailure("DEPTH_LIMIT")
         object_digest = _validate_digest(incoming["digest"])
@@ -1161,44 +1275,45 @@ def _acquire_graph(
             continue
         visited.add(object_digest)
         manifest = kind == "manifest"
-        data = _oras_fetch(
-            oras,
-            cwd,
-            env,
-            root,
-            object_digest,
-            manifest=manifest,
-            declared_size=declared_size,
-        )
-        image_bytes = check_image_budget(image_bytes, len(data))
-        state["counters"]["image_bytes"] = image_bytes
+        cached = _load_cached_acquisition_object(root, object_digest, declared_size, manifest=manifest)
+        if cached is None:
+            data = _oras_fetch(
+                oras,
+                cwd,
+                env,
+                root,
+                object_digest,
+                manifest=manifest,
+                declared_size=declared_size,
+                remaining=MAX_IMAGE_BYTES - image_bytes,
+            )
+            actual_size = len(data)
+        else:
+            actual_size, data = cached
+        charge(object_digest, actual_size)
         if manifest:
+            if data is None:
+                raise AuditFailure("INTERNAL_ERROR")
             value = _parse_json_bytes(data)
             media_type, children, record = _manifest_children(value, expected_media, depth)
-            actual_descriptor = {"digest": object_digest, "mediaType": media_type, "size": len(data)}
+            actual_descriptor = {"digest": object_digest, "mediaType": media_type, "size": actual_size}
             register_descriptor(metadata, actual_descriptor)
-            objects.append({"digest": object_digest, "size": len(data), "media_type": media_type, "kind": "manifest", "depth": depth})
+            objects.append({"digest": object_digest, "size": actual_size, "media_type": media_type, "kind": "manifest", "depth": depth})
             if record is not None:
                 record["digest"] = object_digest
                 manifests.append(record)
-            for child, child_kind in children:
-                descriptor_count = bump_descriptor_count(descriptor_count)
-                state["counters"]["descriptor_edges"] = descriptor_count
-                register_descriptor(metadata, child)
-                queue.append((child, child_kind, depth + 1))
+            for source, child, child_kind in children:
+                enqueue(source, child, child_kind, depth + 1)
             referrers, discovery = _discover_referrers(oras, cwd, env, object_digest)
             write_private_bytes(discovery_path(root, object_digest), discovery)
-            for child in referrers:
-                descriptor_count = bump_descriptor_count(descriptor_count)
-                state["counters"]["descriptor_edges"] = descriptor_count
-                register_descriptor(metadata, child)
+            for source, child in referrers:
                 if child["mediaType"] not in MANIFEST_TYPES:
                     raise AuditFailure("REFERRER_TYPE_UNSUPPORTED")
-                queue.append((child, "manifest", depth + 1))
+                enqueue(source, child, "manifest", depth + 1)
         else:
             if not isinstance(expected_media, str) or declared_size is None:
                 raise AuditFailure("INVALID_DESCRIPTOR")
-            objects.append({"digest": object_digest, "size": len(data), "media_type": expected_media, "kind": kind, "depth": depth})
+            objects.append({"digest": object_digest, "size": actual_size, "media_type": expected_media, "kind": kind, "depth": depth})
     if not objects:
         raise AuditFailure("INVENTORY_EMPTY")
     objects.sort(key=lambda item: item["digest"])
