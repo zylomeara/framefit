@@ -392,7 +392,7 @@ const NEUTRAL_TEAM_IDS = ['1234567890123456789', '9876543210987654321'];
 /** Real hosts this project legitimately names. Project-specific, so it can rot: every entry is
  *  asserted to match at least one live occurrence -- in a URL OR bare, since R7 sees bare ones and
  *  ghcr.io (the image registry, 8 occurrences) is only ever written without a scheme. */
-const ALLOWED_HOSTS = ['figma.com', 'www.figma.com', 'api.figma.com', 'developers.figma.com', 'github.com', 'pnpm.io', 'ghcr.io', 'www.npmjs.com'];
+const ALLOWED_HOSTS = ['figma.com', 'www.figma.com', 'api.figma.com', 'developers.figma.com', 'github.com', 'pnpm.io', 'ghcr.io', 'www.npmjs.com', 'registry.npmjs.org'];
 
 /** Loopback ports that belong to THIS stack. Same no-dead-entry assertion as ALLOWED_HOSTS. */
 const ALLOWED_PORTS = [3846, 8080, 5432];
@@ -1013,6 +1013,15 @@ describe('no real Figma, customer or deployment identifier is in the tracked tre
     // ...including the shapes R1 must not confuse with an id.
     expect(scanText('docs/deployment.md', 'ssh -L 3846:127.0.0.1:3846 user@host  # 2001:db8::1'),
       'a false positive on a port forward or an IPv6 documentation prefix').toEqual([]);
+  });
+
+  it('allows the exact public npm registry host but not a lookalike', () => {
+    expect(scanText('docs/x.md', 'https://registry.npmjs.org/package'),
+      'the fixed public npm registry host is rejected').toEqual([]);
+    expect(scanText('docs/x.md', 'https://registry.npmjs.org.evil/package'),
+      'a lookalike inherits the public npm registry exception').toEqual([
+      expect.stringContaining('R6-url-host -- registry.npmjs.org.evil'),
+    ]);
   });
 
   it.skipIf(OUTSIDE_GIT)('holds no stale exception, and no dead reason or allowlist entry', () => {

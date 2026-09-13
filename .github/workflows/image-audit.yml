@@ -1,0 +1,114 @@
+name: Manual GHCR image audit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: verify trusted manual dispatch
+        env:
+          EVENT_REPOSITORY: ${{ github.repository }}
+          EVENT_IS_FORK: ${{ github.event.repository.fork }}
+          EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_REPOSITORY" = 'zylomeara/framefit'
+          test "$EVENT_IS_FORK" = false
+          test "$EVENT_DEFAULT_BRANCH" = main
+          test "$EVENT_REF" = refs/heads/main
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: install verified audit tools
+        run: |
+          set -euo pipefail
+          TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          install -d -m 700 "$TOOL_DIR/bin" "$TOOL_DIR/downloads"
+
+          ORAS_VERSION=1.3.3
+          ORAS_ARCHIVE="$TOOL_DIR/downloads/oras.tar.gz"
+          ORAS_SHA256=9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59
+          curl --fail --location --silent --show-error \
+            --output "$ORAS_ARCHIVE" \
+            "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$ORAS_SHA256" "$ORAS_ARCHIVE" | sha256sum -c -
+          tar --no-same-owner --no-same-permissions -xzf "$ORAS_ARCHIVE" -C "$TOOL_DIR/bin" oras
+          test -x "$TOOL_DIR/bin/oras"
+          "$TOOL_DIR/bin/oras" version | grep -Fq "$ORAS_VERSION"
+
+          GITLEAKS_VERSION="$(grep -oE '^GITLEAKS_VERSION=[0-9.]+' scripts/secrets-scan.sh | cut -d= -f2)"
+          test "$GITLEAKS_VERSION" = 8.30.1
+          GITLEAKS_ARCHIVE="$TOOL_DIR/downloads/gitleaks.tar.gz"
+          GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl --fail --location --silent --show-error \
+            --output "$GITLEAKS_ARCHIVE" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          printf '%s  %s\n' "$GITLEAKS_SHA256" "$GITLEAKS_ARCHIVE" | sha256sum -c -
+          tar --no-same-owner --no-same-permissions -xzf "$GITLEAKS_ARCHIVE" -C "$TOOL_DIR/bin" gitleaks
+          test -x "$TOOL_DIR/bin/gitleaks"
+          test "$("$TOOL_DIR/bin/gitleaks" version)" = "$GITLEAKS_VERSION"
+
+      - name: run pinned synthetic scanner controls
+        run: |
+          set -euo pipefail
+          TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 -B scripts/tests/test_image_audit.py --real-gitleaks "$TOOL_DIR/bin/gitleaks"
+
+      - name: initialize owned audit workspace
+        run: |
+          set -euo pipefail
+          WORKSPACE="$RUNNER_TEMP/image-audit-workspace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          umask 077
+          python3 -B scripts/image-audit.py init --workspace "$WORKSPACE"
+
+      - name: acquire images from ghcr.io/zylomeara/framefit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          WORKSPACE="$RUNNER_TEMP/image-audit-workspace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          PATH="$TOOL_DIR/bin:$PATH" python3 -B scripts/image-audit.py acquire --workspace "$WORKSPACE"
+
+      - name: scan acquired bytes without network
+        run: |
+          set -euo pipefail
+          TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          WORKSPACE="$RUNNER_TEMP/image-audit-workspace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          sudo unshare --net -- /usr/bin/setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs \
+            /usr/bin/env -i "PATH=$TOOL_DIR/bin:/usr/bin:/bin" "HOME=$RUNNER_TEMP/image-audit-offline-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            LANG=C.UTF-8 LC_ALL=C.UTF-8 /usr/bin/python3 -B scripts/image-audit.py scan --workspace "$WORKSPACE"
+
+      - name: fetch fixed public vendor references
+        run: |
+          set -euo pipefail
+          TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          WORKSPACE="$RUNNER_TEMP/image-audit-workspace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          /usr/bin/env -i "PATH=$TOOL_DIR/bin:/usr/bin:/bin" "HOME=$RUNNER_TEMP/image-audit-vendor-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            LANG=C.UTF-8 LC_ALL=C.UTF-8 /usr/bin/python3 -B scripts/image-audit.py fetch-vendor --workspace "$WORKSPACE"
+
+      - name: compare references without network
+        run: |
+          set -euo pipefail
+          TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          WORKSPACE="$RUNNER_TEMP/image-audit-workspace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          sudo unshare --net -- /usr/bin/setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs \
+            /usr/bin/env -i "PATH=$TOOL_DIR/bin:/usr/bin:/bin" "HOME=$RUNNER_TEMP/image-audit-offline-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            LANG=C.UTF-8 LC_ALL=C.UTF-8 /usr/bin/python3 -B scripts/image-audit.py compare --workspace "$WORKSPACE"
+
+      - name: finalize and publish the safe receipt
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          WORKSPACE="$RUNNER_TEMP/image-audit-workspace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 -B scripts/image-audit.py finalize --workspace "$WORKSPACE"
