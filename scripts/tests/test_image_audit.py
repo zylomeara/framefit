@@ -45,8 +45,9 @@ def digest(data: bytes) -> str:
 
 
 def runtime_canary(label: str = "fixture") -> str:
-    del label
-    return AUDIT.synthetic_scanner_control()
+    value = AUDIT.synthetic_scanner_control()
+    offset = sum(label.encode("utf-8")) % 16
+    return value[offset:] + value[:offset]
 
 
 def tar_bytes(entries: list[tuple[str, bytes]], *, pax: tuple[str, str] | None = None) -> bytes:
@@ -189,6 +190,7 @@ def make_gitleaks_stub(
     bulk_sleep_seconds: float = 0,
     child_pid_path: Path | None = None,
     raw_stderr: str = "",
+    detect: bool = True,
 ) -> Path:
     binary = directory / "gitleaks"
     binary.write_text(textwrap.dedent(f"""\
@@ -213,7 +215,7 @@ def make_gitleaks_stub(
         findings = []
         for path in sorted(target.glob('*.txt')):
             data = path.read_bytes()
-            for _ in re.finditer(rb'api_key\\s*=\\s*[0-9a-f]{{64}}', data):
+            for _ in (re.finditer(rb'api_key\\s*=\\s*[0-9a-f]{{64}}', data) if {detect!r} else ()):
                 findings.append({{'File': str(path), 'RuleID': 'generic-api-key', 'StartLine': 1}})
         if {malformed_report!r}:
             report.write_text('{{bad report')
@@ -340,6 +342,82 @@ def run_cli(args: list[str], *, env: dict[str, str] | None = None, timeout: floa
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
+        check=False,
+    )
+
+
+def run_real_gitleaks_subprocess(mode: str, raw_stderr: str, credential_marker: str) -> subprocess.CompletedProcess[bytes]:
+    code = textwrap.dedent(f"""\
+        import importlib.util
+        import pathlib
+
+        path = pathlib.Path({str(Path(__file__).resolve())!r})
+        spec = importlib.util.spec_from_file_location("image_audit_tests_subprocess", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        mode = {mode!r}
+        raw = {raw_stderr!r}
+        credential = {credential_marker!r}
+
+        def controls(_binary, _run):
+            if mode in {{"controls-run", "invalid-code"}}:
+                failure = module.AUDIT.AuditFailure("TOOL_FAILURE")
+                failure.args = (raw, credential)
+                if mode == "invalid-code":
+                    failure.code = raw
+                raise failure
+            if mode == "unrelated":
+                raise RuntimeError(raw)
+            if mode == "controls-result":
+                return {{"clean_findings": 1, "positive_findings": 4, "raw": raw, "credential": credential}}
+            return {{"clean_findings": 0, "positive_findings": 4, "raw": raw, "credential": credential}}
+
+        module.AUDIT.run_gitleaks_controls = controls
+
+        def discovery(_binary):
+            benign = {{
+                "raw_retained": True,
+                "normalized_metadata": True,
+                "scan": 0,
+                "detections": 0,
+                "final_status": "COMPLETE_NO_FINDINGS",
+                "raw": raw,
+                "credential": credential,
+            }}
+            marker = {{
+                "raw_retained": True,
+                "normalized_metadata": True,
+                "scan": 0,
+                "detections": 1,
+                "final_status": "COMPLETE_REVIEW_REQUIRED",
+                "raw": raw,
+                "credential": credential,
+            }}
+            if mode == "discovery-result":
+                marker["scan"] = 1
+            return {{"benign": benign, "marker": marker}}
+
+        module.discovery_annotation_data_results = discovery
+
+        def archives(_binary):
+            metadata = {{"scan": 0, "detections": 1, "final_status": "COMPLETE_REVIEW_REQUIRED", "raw": raw, "credential": credential}}
+            tail = {{"scan": 1, "primary_code": "ARCHIVE_TRAILING_DATA", "final_status": "INCOMPLETE", "raw": raw, "credential": credential}}
+            if mode == "archive-metadata":
+                metadata["detections"] = 0
+            if mode == "archive-tail":
+                tail["primary_code"] = "TOOL_FAILURE"
+            return {{"gzip-metadata": dict(metadata), "zip-metadata": dict(metadata), "bzip2-tail": dict(tail), "xz-tail": dict(tail)}}
+
+        module.archive_regression_results = archives
+        raise SystemExit(module.run_real_gitleaks(pathlib.Path("unused")))
+    """)
+    return subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        cwd=ROOT,
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", ""), "PYTHONDONTWRITEBYTECODE": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
         check=False,
     )
 
@@ -1177,6 +1255,7 @@ class ScanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             canaries = [runtime_canary(str(index)) for index in range(5)]
+            self.assertEqual(5, len(set(canaries)))
             first = tar_bytes(
                 [
                     ("app/removed.txt", f"api_key={canaries[0]}\n".encode()),
@@ -1196,6 +1275,8 @@ class ScanTests(unittest.TestCase):
             self.assertEqual("complete", state["phases"]["scan"])
             self.assertGreaterEqual(state["counters"]["detections"], 5)
             names = [path.name for path in (workspace / "spool").iterdir()]
+            spool = b"".join(path.read_bytes() for path in (workspace / "spool").iterdir())
+            self.assertTrue(all(canary.encode() in spool for canary in canaries))
             self.assertTrue(names)
             self.assertTrue(all(name[:-4].isdigit() and name.endswith(".txt") for name in names))
             self.assertFalse(any("removed" in name or "gitleaks" in name for name in names))
@@ -1896,15 +1977,17 @@ class WorkspaceAndOutputTests(unittest.TestCase):
     def test_blackbox_never_replays_canaries_on_error_timeout_or_cancel(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
-            canary = "::error::" + runtime_canary("public-output")
-            invalid = base / ("path-" + canary.replace(":", "x"))
+            raw_stderr = "raw-stderr-" + runtime_canary("public-output")
+            credential_marker = AUDIT.synthetic_scanner_control()
+            invalid = base / ("path-" + credential_marker)
             error = run_cli(["scan", "--workspace", str(invalid)])
-            self.assertNotIn(canary.encode(), error.stdout + error.stderr)
+            for value in (raw_stderr, credential_marker):
+                self.assertNotIn(value.encode(), error.stdout + error.stderr)
 
             root, inventory, objects, referrers, _ = AcquisitionTests().make_graph()
             timeout_workspace = base / "timeout"
             initialize(timeout_workspace)
-            bindir = make_registry_stubs(base / "timeout-tools", [inventory, inventory], objects, referrers, raw_stderr=canary, sleep_seconds=2)
+            bindir = make_registry_stubs(base / "timeout-tools", [inventory, inventory], objects, referrers, raw_stderr=raw_stderr, sleep_seconds=2)
             code = textwrap.dedent(f"""
                 import importlib.util, pathlib, sys
                 p = pathlib.Path({str(SCRIPT)!r})
@@ -1913,15 +1996,16 @@ class WorkspaceAndOutputTests(unittest.TestCase):
                 m.PROCESS_TIMEOUT = 0.1
                 raise SystemExit(m.main(['acquire', '--workspace', {str(timeout_workspace)!r}]))
             """)
-            env = {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "HOME": str(base), "GITHUB_TOKEN": runtime_canary("token")}
-            timeout_result = subprocess.run([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=False)
+            env = {"PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "HOME": str(base), "GITHUB_TOKEN": credential_marker}
+            timeout_result = subprocess.run([sys.executable, "-B", "-c", code], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=False)
             self.assertNotEqual(0, timeout_result.returncode)
-            self.assertNotIn(canary.encode(), timeout_result.stdout + timeout_result.stderr)
+            for value in (raw_stderr, credential_marker):
+                self.assertNotIn(value.encode(), timeout_result.stdout + timeout_result.stderr)
 
             cancel_workspace = base / "cancel"
             initialize(cancel_workspace)
             process = subprocess.Popen(
-                [sys.executable, str(SCRIPT), "acquire", "--workspace", str(cancel_workspace)],
+                [sys.executable, "-B", str(SCRIPT), "acquire", "--workspace", str(cancel_workspace)],
                 cwd=ROOT,
                 env=env,
                 stdout=subprocess.PIPE,
@@ -1937,7 +2021,8 @@ class WorkspaceAndOutputTests(unittest.TestCase):
                     process.kill()
                     process.wait()
             self.assertNotEqual(0, process.returncode)
-            self.assertNotIn(canary.encode(), stdout + stderr)
+            for value in (raw_stderr, credential_marker):
+                self.assertNotIn(value.encode(), stdout + stderr)
 
     def test_no_credentials_in_offline_phases(self):
         with mock.patch.dict(os.environ, {"SOME_SECRET": runtime_canary("env")}, clear=True):
@@ -1946,26 +2031,67 @@ class WorkspaceAndOutputTests(unittest.TestCase):
 
 
 class RealGitleaksControls(unittest.TestCase):
+    def test_runtime_canary_rotates_the_fixed_control_by_label(self):
+        marker = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        self.assertEqual(marker, AUDIT.synthetic_scanner_control())
+        self.assertEqual(marker[1:] + marker[:1], runtime_canary("1"))
+        self.assertEqual(marker[2:] + marker[:2], runtime_canary("2"))
+
+    def test_runtime_canary_has_sixteen_cyclic_rotations(self):
+        marker = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        self.assertEqual(
+            {marker[offset:] + marker[:offset] for offset in range(16)},
+            {runtime_canary(chr(offset)) for offset in range(16)},
+        )
+
     def test_runtime_canary_is_balanced_hex(self):
-        with mock.patch.object(os, "urandom", return_value=b"\0" * 12):
-            value = runtime_canary("compatibility")
+        value = runtime_canary("compatibility")
         self.assertEqual(
             {symbol: 4 for symbol in "0123456789abcdef"},
             {symbol: value.count(symbol) for symbol in "0123456789abcdef"},
         )
 
-    def test_control_runner_spools_balanced_positive_values(self):
+    def test_control_runner_spools_the_fixed_marker_in_each_positive_file(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
-            with mock.patch.object(AUDIT.secrets, "token_hex", return_value="0" * 64):
-                result = AUDIT.run_gitleaks_controls(make_gitleaks_stub(base), base / "run")
+            marker = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            result = AUDIT.run_gitleaks_controls(make_gitleaks_stub(base), base / "run")
             self.assertEqual({"clean_findings": 0, "positive_findings": 4}, result)
             for path in sorted((base / "run" / "positive").iterdir()):
                 value = path.read_bytes().split(b"=", 1)[1].split(maxsplit=1)[0].decode()
-                self.assertEqual(
-                    {symbol: 4 for symbol in "0123456789abcdef"},
-                    {symbol: value.count(symbol) for symbol in "0123456789abcdef"},
-                )
+                self.assertEqual(marker, value)
+
+    def test_control_runner_rejects_zero_positive_detections(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            with self.assertRaisesRegex(AUDIT.AuditFailure, "SCANNER_CONTROL_FAILED"):
+                AUDIT.run_gitleaks_controls(make_gitleaks_stub(base, detect=False), base / "run")
+
+    def test_real_runner_emits_one_fixed_redacted_diagnostic_for_handled_failures(self):
+        raw_stderr = "raw-stderr-sentinel"
+        credential_marker = AUDIT.synthetic_scanner_control()
+        cases = (
+            ("controls-run", b"gitleaks-control:controls-run:TOOL_FAILURE\n"),
+            ("controls-result", b"gitleaks-control:controls-result:SCANNER_CONTROL_FAILED\n"),
+            ("discovery-result", b"gitleaks-control:discovery-result:SCANNER_CONTROL_FAILED\n"),
+            ("archive-metadata", b"gitleaks-control:archive-metadata:SCANNER_CONTROL_FAILED\n"),
+            ("archive-tail", b"gitleaks-control:archive-tail:SCANNER_CONTROL_FAILED\n"),
+            ("invalid-code", b"gitleaks-control:controls-run:INTERNAL_ERROR\n"),
+        )
+        for mode, expected_stderr in cases:
+            with self.subTest(mode=mode):
+                result = run_real_gitleaks_subprocess(mode, raw_stderr, credential_marker)
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(b"", result.stdout)
+                self.assertEqual(expected_stderr, result.stderr)
+                self.assertNotIn(raw_stderr.encode(), result.stdout + result.stderr)
+                self.assertNotIn(credential_marker.encode(), result.stdout + result.stderr)
+        success = run_real_gitleaks_subprocess("success", raw_stderr, credential_marker)
+        self.assertEqual(0, success.returncode)
+        self.assertEqual(b"", success.stdout)
+        self.assertEqual(b"", success.stderr)
+        unrelated = run_real_gitleaks_subprocess("unrelated", raw_stderr, credential_marker)
+        self.assertNotEqual(0, unrelated.returncode)
 
     def test_control_runner_requires_requested_binary(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2328,11 +2454,20 @@ def run_real_oras(binary: Path) -> int:
 
 
 def run_real_gitleaks(binary: Path) -> int:
-    with tempfile.TemporaryDirectory() as temp:
-        result = AUDIT.run_gitleaks_controls(binary.resolve(), Path(temp) / "controls")
-    if result["clean_findings"] != 0 or result["positive_findings"] < 4:
+    def fail(stage: str, code: str) -> int:
+        print(f"gitleaks-control:{stage}:{code}", file=sys.stderr)
         return 1
-    discovery = discovery_annotation_data_results(binary.resolve())
+
+    resolved_binary = binary.resolve()
+    try:
+        with tempfile.TemporaryDirectory() as temp:
+            result = AUDIT.run_gitleaks_controls(resolved_binary, Path(temp) / "controls")
+    except AUDIT.AuditFailure as error:
+        code = getattr(error, "code", None)
+        return fail("controls-run", code if isinstance(code, str) and code in AUDIT.CODES else "INTERNAL_ERROR")
+    if result["clean_findings"] != 0 or result["positive_findings"] < 4:
+        return fail("controls-result", "SCANNER_CONTROL_FAILED")
+    discovery = discovery_annotation_data_results(resolved_binary)
     benign = discovery.get("benign", {})
     marker = discovery.get("marker", {})
     if (
@@ -2345,16 +2480,16 @@ def run_real_gitleaks(binary: Path) -> int:
         or not isinstance(marker.get("detections"), int)
         or marker["detections"] < 1
     ):
-        return 1
-    results = archive_regression_results(binary.resolve())
+        return fail("discovery-result", "SCANNER_CONTROL_FAILED")
+    results = archive_regression_results(resolved_binary)
     for name in ("gzip-metadata", "zip-metadata"):
         item = results[name]
         if item["scan"] != 0 or item["detections"] < 1 or item["final_status"] != "COMPLETE_REVIEW_REQUIRED":
-            return 1
+            return fail("archive-metadata", "SCANNER_CONTROL_FAILED")
     for name in ("bzip2-tail", "xz-tail"):
         item = results[name]
         if item["scan"] == 0 or item["primary_code"] != "ARCHIVE_TRAILING_DATA" or item["final_status"] != "INCOMPLETE":
-            return 1
+            return fail("archive-tail", "SCANNER_CONTROL_FAILED")
     return 0
 
 

@@ -2374,9 +2374,7 @@ def _gitleaks_scan(
 
 
 def synthetic_scanner_control() -> str:
-    chars = list("0123456789abcdef" * 4)
-    secrets.SystemRandom().shuffle(chars)
-    return "".join(chars)
+    return "0123456789abcdef" * 4
 
 
 def run_gitleaks_controls(binary: Path, run: Path) -> dict[str, int]:
