@@ -62,6 +62,7 @@ MAX_PROCESS_OUTPUT = 4 * 1024**2
 MAX_PUBLIC_COUNTER = 2**53 - 1
 MIN_FREE_BYTES = 512 * 1024**2
 PROCESS_TIMEOUT = 120.0
+BULK_SCAN_TIMEOUT = 900.0
 NETWORK_TIMEOUT = 30.0
 POLL_SECONDS = 0.025
 
@@ -2328,7 +2329,14 @@ def _validate_gitleaks_report(report: Path, target: Path) -> list[dict[str, obje
     return result
 
 
-def _gitleaks_scan(binary: Path, target: Path, run: Path, label: str) -> tuple[int, list[dict[str, object]]]:
+def _gitleaks_scan(
+    binary: Path,
+    target: Path,
+    run: Path,
+    label: str,
+    *,
+    timeout: float | None = None,
+) -> tuple[int, list[dict[str, object]]]:
     config, ignore = _scanner_config(run / (label + "-config"))
     cwd = run / (label + "-cwd")
     cwd.mkdir(mode=0o700)
@@ -2357,6 +2365,7 @@ def _gitleaks_scan(binary: Path, target: Path, run: Path, label: str) -> tuple[i
         env=env,
         output_path=report,
         output_limit=MAX_METADATA_BYTES,
+        timeout=timeout,
     )
     findings = _validate_gitleaks_report(report, target)
     if code not in (0, 1) or (code == 0 and findings) or (code == 1 and not findings):
@@ -2365,9 +2374,7 @@ def _gitleaks_scan(binary: Path, target: Path, run: Path, label: str) -> tuple[i
 
 
 def synthetic_scanner_control() -> str:
-    chars = list("0123456789abcdef" * 4)
-    secrets.SystemRandom().shuffle(chars)
-    return "".join(chars)
+    return "0123456789abcdef" * 4
 
 
 def run_gitleaks_controls(binary: Path, run: Path) -> dict[str, int]:
@@ -2466,7 +2473,13 @@ def _scan_phase(root: Path, state: dict[str, object]) -> None:
         raise hard_failure
     scan_run = root / "private" / "real-scan"
     try:
-        code, findings = _gitleaks_scan(gitleaks, root / "spool", scan_run, "image")
+        code, findings = _gitleaks_scan(
+            gitleaks,
+            root / "spool",
+            scan_run,
+            "image",
+            timeout=BULK_SCAN_TIMEOUT,
+        )
         del code
         _verify_staging(root, connection, state)
         retained_ids: set[int] = set()
