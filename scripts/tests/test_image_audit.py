@@ -1476,6 +1476,11 @@ class ScanTests(unittest.TestCase):
                     AUDIT._gitleaks_scan(gitleaks, ordinary_target, ordinary_run, "ordinary")
             self.assertEqual("complete", AUDIT.load_state(workspace)["phases"]["scan"])
 
+    def test_linux_network_guard_rejects_exposed_interface(self):
+        with mock.patch.object(AUDIT.platform, "system", return_value="Linux"), mock.patch.object(AUDIT.socket, "if_nameindex", return_value=[(1, "lo"), (2, "eth0")]):
+            with self.assertRaisesRegex(AUDIT.AuditFailure, "^NETWORK_ISOLATION_FAILED$"):
+                AUDIT.assert_linux_network_isolated()
+
     def test_bulk_overrun_is_incomplete_and_reaps_its_cooperative_child(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
@@ -1496,7 +1501,9 @@ class ScanTests(unittest.TestCase):
                 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
                 module.PROCESS_TIMEOUT = 3.0
                 module.BULK_SCAN_TIMEOUT = 6.0
-                raise SystemExit(module.main(['scan', '--workspace', {str(workspace)!r}]))
+                from unittest import mock
+                with mock.patch.object(module, 'assert_linux_network_isolated', return_value=None):
+                    raise SystemExit(module.main(['scan', '--workspace', {str(workspace)!r}]))
             """)
             env = {
                 "PATH": str(base) + os.pathsep + os.environ.get("PATH", ""),
