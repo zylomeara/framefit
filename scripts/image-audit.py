@@ -1070,8 +1070,6 @@ def _discover_referrers(
         [
             str(oras),
             "discover",
-            "--distribution-spec",
-            "v1.1-referrers-api",
             "--format",
             "json",
             "--depth",

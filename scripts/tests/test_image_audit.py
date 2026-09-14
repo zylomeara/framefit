@@ -7,12 +7,15 @@ import bz2
 import contextlib
 import gzip
 import hashlib
+import http.server
 import importlib.util
 import io
 import json
 import lzma
 import os
+import re
 import signal
+import socket
 import stat
 import struct
 import subprocess
@@ -20,7 +23,9 @@ import sys
 import tarfile
 import tempfile
 import textwrap
+import threading
 import unittest
+import urllib.parse
 import zipfile
 import zlib
 from pathlib import Path
@@ -281,6 +286,31 @@ def make_registry_stubs(
     return bindir
 
 
+def make_discover_stub(directory: Path) -> Path:
+    binary = directory / "oras"
+    binary.write_text(textwrap.dedent(f"""\
+        #!{sys.executable}
+        import json, os, sys
+        args = sys.argv[1:]
+        if args[:1] != ['discover'] or '--format' not in args or '--depth' not in args:
+            raise SystemExit(2)
+        if '--distribution-spec' in args:
+            raise SystemExit(47)
+        if os.environ.get('DISCOVER_STUB_MODE') == 'nonzero':
+            raise SystemExit(9)
+        if os.environ.get('DISCOVER_STUB_MODE') == 'malformed':
+            print('{{not-json')
+            raise SystemExit(0)
+        subject = args[-1].rsplit('@', 1)[1]
+        print(json.dumps({{
+            'digest': subject,
+            'referrers': [{json.dumps({'mediaType': 'application/vnd.oci.artifact.manifest.v1+json', 'digest': 'sha256:' + 'b' * 64, 'size': 17})}],
+        }}))
+    """))
+    binary.chmod(0o755)
+    return binary
+
+
 def run_cli(args: list[str], *, env: dict[str, str] | None = None, timeout: float = 10) -> subprocess.CompletedProcess[bytes]:
     clean_env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
     if env:
@@ -327,6 +357,22 @@ class InventoryTests(unittest.TestCase):
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_discover_referrers_uses_standard_negotiation_and_keeps_failure_guards(self):
+        subject = "sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            oras = make_discover_stub(base)
+            env = {"PATH": os.environ.get("PATH", ""), "HOME": str(base)}
+            referrers, raw = AUDIT._discover_referrers(oras, base, env, subject)
+            self.assertEqual(subject, json.loads(raw)["digest"])
+            self.assertEqual("sha256:" + "b" * 64, referrers[0][1]["digest"])
+            with mock.patch.dict(env, {"DISCOVER_STUB_MODE": "nonzero"}, clear=False):
+                with self.assertRaisesRegex(AUDIT.AuditFailure, "REFERRER_DISCOVERY_FAILED"):
+                    AUDIT._discover_referrers(oras, base, env, subject)
+            with mock.patch.dict(env, {"DISCOVER_STUB_MODE": "malformed"}, clear=False):
+                with self.assertRaisesRegex(AUDIT.AuditFailure, "INVALID_JSON"):
+                    AUDIT._discover_referrers(oras, base, env, subject)
+
     def make_graph(self):
         layer = tar_bytes([("app/clean.txt", b"clean\n")])
         root, _graph, objects = image_fixture([layer])
@@ -1795,6 +1841,360 @@ class RealGitleaksControls(unittest.TestCase):
                 AUDIT.run_gitleaks_controls(Path(temp) / "missing", Path(temp) / "run")
 
 
+class NativeOrasContractTests(unittest.TestCase):
+    def test_native_version_requires_an_exact_version_line(self):
+        self.assertTrue(native_oras_version_is_pinned(b"Version:\t1.3.3\t\n"))
+        for output in (
+            b"Version: 11.3.3\n",
+            b"Version: 1.3.3-rc.1\n",
+            b"Version: 1.3.3" + b".1\n",
+            b"Version:1.3.3\n",
+            b"1.3.3\n",
+            b"Version:\n1.3.3\n",
+        ):
+            with self.subTest(output=output):
+                self.assertFalse(native_oras_version_is_pinned(output))
+
+    def test_manual_controls_run_native_proof_before_acquisition(self):
+        workflow = (ROOT / ".github" / "workflows" / "image-audit.yml").read_text()
+        controls = re.search(
+            r"^\s*- name: run pinned synthetic scanner controls\s*$\n\s*run: \|\n(?P<body>.*?)(?=^\s*- name:|\Z)",
+            workflow,
+            re.MULTILINE | re.DOTALL,
+        )
+        acquire = re.search(r"^\s*- name: acquire images from ghcr\.io/zylomeara/framefit\s*$", workflow, re.MULTILINE)
+        self.assertIsNotNone(controls)
+        self.assertIsNotNone(acquire)
+        assert controls is not None and acquire is not None
+        self.assertIn(
+            'python3 -B scripts/tests/test_image_audit.py --real-oras "$TOOL_DIR/bin/oras"',
+            controls.group("body"),
+        )
+        self.assertLess(controls.start(), acquire.start())
+
+
+class NativeReferrerFixture:
+    def __init__(self):
+        self.config = json.dumps({"architecture": "amd64", "os": "linux"}, separators=(",", ":")).encode()
+        config = descriptor("application/vnd.oci.image.config.v1+json", self.config)
+        subject_value = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": config,
+            "layers": [],
+        }
+        self.subject_body = json.dumps(subject_value, separators=(",", ":")).encode()
+        self.subject = digest(self.subject_body)
+        self.artifacts: list[tuple[bytes, str]] = []
+        for name in ("first", "second"):
+            value = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "artifactType": "application/vnd.example.referrer",
+                "config": config,
+                "layers": [],
+                "subject": descriptor("application/vnd.oci.image.manifest.v1+json", self.subject_body),
+                "annotations": {"org.example.name": name},
+            }
+            body = json.dumps(value, separators=(",", ":")).encode()
+            self.artifacts.append((body, digest(body)))
+        self.descriptors = [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "artifactType": "application/vnd.example.referrer",
+                "digest": item_digest,
+                "size": len(body),
+            }
+            for body, item_digest in self.artifacts
+        ]
+        self.index = self._index(self.descriptors)
+        self.first_page = self._index(self.descriptors[:1])
+        self.second_page = self._index(self.descriptors[1:])
+
+    @staticmethod
+    def _index(manifests: list[dict[str, object]]) -> bytes:
+        return json.dumps(
+            {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": manifests,
+            },
+            separators=(",", ":"),
+        ).encode()
+
+
+class NativeReferrerServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, case: str, fixture: NativeReferrerFixture):
+        super().__init__(("127.0.0.1", 0), NativeReferrerHandler)
+        self.case = case
+        self.fixture = fixture
+        self.routes: list[tuple[str, str, str, int | str]] = []
+
+
+class NativeReferrerHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        pass
+
+    def do_HEAD(self) -> None:
+        self._handle(head=True)
+
+    def do_GET(self) -> None:
+        self._handle(head=False)
+
+    def _reply(
+        self,
+        path: str,
+        query: str,
+        status: int,
+        body: bytes = b"",
+        media_type: str = "application/vnd.oci.image.index.v1+json",
+        content_digest: str | None = None,
+        link: str | None = None,
+        *,
+        head: bool,
+    ) -> None:
+        self.server.routes.append((self.command, path, query, status))
+        self.send_response(status)
+        self.send_header("Docker-Distribution-API-Version", "registry/2.0")
+        self.send_header("Content-Length", str(len(body)))
+        if body:
+            self.send_header("Content-Type", media_type)
+            self.send_header("Docker-Content-Digest", content_digest or digest(body))
+        if link is not None:
+            self.send_header("Link", link)
+        self.end_headers()
+        if body and not head:
+            self.wfile.write(body)
+
+    def _close_transport(self, path: str, query: str) -> None:
+        self.server.routes.append((self.command, path, query, "closed"))
+        self.close_connection = True
+        with contextlib.suppress(OSError):
+            self.connection.shutdown(socket.SHUT_RDWR)
+        with contextlib.suppress(OSError):
+            self.connection.close()
+
+    def _handle(self, *, head: bool) -> None:
+        parsed = urllib.parse.urlsplit(self.path)
+        path, query = parsed.path, parsed.query
+        fixture = self.server.fixture
+        repository = "/v2/synthetic/repo"
+        if path == "/v2/":
+            self._reply(path, query, 200, head=head)
+            return
+        if path == f"{repository}/referrers/{fixture.subject}":
+            if query:
+                self._reply(path, query, 200, fixture.second_page, head=head)
+                return
+            if self.server.case == "transport":
+                self._close_transport(path, query)
+                return
+            if self.server.case in {"api_400", "api_401", "api_403", "api_429", "api_500"}:
+                self._reply(path, query, int(self.server.case[-3:]), head=head)
+                return
+            if self.server.case == "malformed_api":
+                self._reply(path, query, 200, b"{not-json", head=head)
+                return
+            if self.server.case == "pagination":
+                self._reply(
+                    path,
+                    query,
+                    200,
+                    fixture.first_page,
+                    link=f"<{repository}/referrers/{fixture.subject}?page=2>; rel=\"next\"",
+                    head=head,
+                )
+                return
+            if self.server.case != "api_200":
+                self._reply(path, query, 404, head=head)
+                return
+            self._reply(path, query, 200, fixture.index, head=head)
+            return
+        if path.startswith(f"{repository}/manifests/"):
+            reference = path.rsplit("/", 1)[1]
+            fallback = "sha256-" + fixture.subject.split(":", 1)[1]
+            if reference == fixture.subject:
+                self._reply(
+                    path,
+                    query,
+                    200,
+                    fixture.subject_body,
+                    "application/vnd.oci.image.manifest.v1+json",
+                    head=head,
+                )
+                return
+            if reference == fallback:
+                if self.server.case == "missing_fallback":
+                    self._reply(path, query, 404, head=head)
+                elif self.server.case == "fallback_500":
+                    self._reply(path, query, 500, head=head)
+                elif self.server.case == "malformed_fallback":
+                    self._reply(path, query, 200, b"{not-json", head=head)
+                elif self.server.case == "wrong_fallback_digest":
+                    self._reply(path, query, 200, fixture.index, content_digest="sha256:" + "f" * 64, head=head)
+                elif self.server.case == "non_index_fallback":
+                    self._reply(
+                        path,
+                        query,
+                        200,
+                        fixture.subject_body,
+                        "application/vnd.oci.image.manifest.v1+json",
+                        head=head,
+                    )
+                else:
+                    self._reply(path, query, 200, fixture.index, head=head)
+                return
+        self._reply(path, query, 404, head=head)
+
+
+@contextlib.contextmanager
+def native_referrer_registry(case: str):
+    fixture = NativeReferrerFixture()
+    server = NativeReferrerServer(case, fixture)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        yield server, fixture
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
+
+
+def native_referrer_case(binary: Path, case: str) -> dict[str, object]:
+    with native_referrer_registry(case) as (server, fixture):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            registry_config = home / "registry.json"
+            registry_config.write_text("{}")
+            package = f"127.0.0.1:{server.server_address[1]}/synthetic/repo"
+            env = AUDIT._sterile_env(
+                home,
+                {
+                    "XDG_CONFIG_HOME": str(home),
+                    "DOCKER_CONFIG": str(home),
+                    "HTTP_PROXY": "",
+                    "HTTPS_PROXY": "",
+                    "ALL_PROXY": "",
+                    "NO_PROXY": "*",
+                    "no_proxy": "*",
+                    "PATH": os.environ.get("PATH", ""),
+                },
+            )
+            original_run = AUDIT._run_bounded
+            captured: list[list[str]] = []
+
+            def run_loopback(argv: list[str], **kwargs: object) -> tuple[int, bytes, bytes]:
+                command = list(argv)
+                if command[:2] == [str(binary), "discover"]:
+                    captured.append(list(command))
+                    command[2:2] = ["--plain-http", "--registry-config", str(registry_config)]
+                    kwargs["timeout"] = 40.0
+                return original_run(command, **kwargs)
+
+            try:
+                with mock.patch.object(AUDIT, "PACKAGE", package), mock.patch.object(
+                    AUDIT, "_run_bounded", side_effect=run_loopback
+                ):
+                    referrers, raw = AUDIT._discover_referrers(binary, home, env, fixture.subject)
+                error = None
+            except AUDIT.AuditFailure as exc:
+                referrers, raw, error = [], b"", str(exc)
+    return {
+        "fixture": fixture,
+        "package": package,
+        "routes": server.routes,
+        "argv": captured,
+        "error": error,
+        "referrers": referrers,
+        "raw": raw,
+    }
+
+
+def native_oras_version_is_pinned(output: bytes) -> bool:
+    return re.search(rb"^Version:[ \t]+1\.3\.3[ \t]*$", output, re.MULTILINE) is not None
+
+
+def run_real_oras(binary: Path) -> int:
+    binary = binary.resolve()
+    version = subprocess.run(
+        [str(binary), "version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=5,
+    )
+    if version.returncode != 0 or not native_oras_version_is_pinned(version.stdout):
+        return 1
+    workflow = (ROOT / ".github" / "workflows" / "image-audit.yml").read_text()
+    match = re.search(r"^\s*ORAS_VERSION=([^\s]+)\s*$", workflow, re.MULTILINE)
+    if AUDIT.ORAS_VERSION != "1.3.3" or match is None or match.group(1) != AUDIT.ORAS_VERSION:
+        return 1
+    success_cases = {"api_200": 2, "fallback": 2, "pagination": 2}
+    empty_cases = {"missing_fallback", "non_index_fallback"}
+    failures = {
+        "api_400",
+        "api_401",
+        "api_403",
+        "api_429",
+        "api_500",
+        "transport",
+        "fallback_500",
+        "malformed_api",
+        "malformed_fallback",
+        "wrong_fallback_digest",
+    }
+    fallback_cases = {"fallback", *empty_cases, "fallback_500", "malformed_fallback", "wrong_fallback_digest"}
+    for case in (*success_cases, *empty_cases, *failures):
+        result = native_referrer_case(binary, case)
+        fixture = result["fixture"]
+        package = result["package"]
+        routes = result["routes"]
+        if not isinstance(fixture, NativeReferrerFixture) or not isinstance(package, str) or not isinstance(routes, list):
+            return 1
+        expected_argv = [
+            str(binary),
+            "discover",
+            "--format",
+            "json",
+            "--depth",
+            "1",
+            f"{package}@{fixture.subject}",
+        ]
+        if result["argv"] != [expected_argv]:
+            return 1
+        referrers_path = f"/v2/synthetic/repo/referrers/{fixture.subject}"
+        fallback_path = f"/v2/synthetic/repo/manifests/sha256-{fixture.subject.split(':', 1)[1]}"
+        if not any(path == referrers_path for _method, path, _query, _status in routes):
+            return 1
+        if any("/tags/list" in path for _method, path, _query, _status in routes):
+            return 1
+        if case in fallback_cases and not any(path == fallback_path for _method, path, _query, _status in routes):
+            return 1
+        if case == "pagination" and not any(path == referrers_path and query == "page=2" for _method, path, query, _status in routes):
+            return 1
+        if case in success_cases:
+            referrers = result["referrers"]
+            raw = result["raw"]
+            if result["error"] is not None or not isinstance(referrers, list) or not isinstance(raw, bytes):
+                return 1
+            if json.loads(raw).get("digest") != fixture.subject or len(referrers) != success_cases[case]:
+                return 1
+            if [item[1]["digest"] for item in referrers] != [item["digest"] for item in fixture.descriptors]:
+                return 1
+        elif case in empty_cases:
+            if result["error"] is not None or result["referrers"] != []:
+                return 1
+        elif result["error"] != "REFERRER_DISCOVERY_FAILED":
+            return 1
+    return 0
+
+
 def run_real_gitleaks(binary: Path) -> int:
     with tempfile.TemporaryDirectory() as temp:
         result = AUDIT.run_gitleaks_controls(binary.resolve(), Path(temp) / "controls")
@@ -1829,4 +2229,6 @@ def run_real_gitleaks(binary: Path) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--real-gitleaks":
         raise SystemExit(run_real_gitleaks(Path(sys.argv[2])))
+    if len(sys.argv) == 3 and sys.argv[1] == "--real-oras":
+        raise SystemExit(run_real_oras(Path(sys.argv[2])))
     unittest.main()
