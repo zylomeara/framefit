@@ -24,6 +24,7 @@ import tarfile
 import tempfile
 import textwrap
 import threading
+import time
 import unittest
 import urllib.parse
 import zipfile
@@ -181,17 +182,34 @@ def seed_acquired(root: Path, layers: list[bytes], *, annotation: str | None = N
     AUDIT.save_state(root, state)
 
 
-def make_gitleaks_stub(directory: Path, *, malformed_report: bool = False) -> Path:
+def make_gitleaks_stub(
+    directory: Path,
+    *,
+    malformed_report: bool = False,
+    bulk_sleep_seconds: float = 0,
+    child_pid_path: Path | None = None,
+    raw_stderr: str = "",
+) -> Path:
     binary = directory / "gitleaks"
     binary.write_text(textwrap.dedent(f"""\
         #!{sys.executable}
-        import json, pathlib, re, sys
+        import json, pathlib, re, subprocess, sys, time
+        bulk_sleep_seconds = {bulk_sleep_seconds!r}
+        child_pid_path = {str(child_pid_path) if child_pid_path is not None else None!r}
+        raw_stderr = {raw_stderr!r}
         args = sys.argv[1:]
         if args == ['version']:
             print('8.30.1')
             raise SystemExit(0)
         report = pathlib.Path(args[args.index('--report-path') + 1])
         target = pathlib.Path(args[-1])
+        if target.name == 'spool' and bulk_sleep_seconds:
+            if child_pid_path is not None:
+                child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+                pathlib.Path(child_pid_path).write_text(str(child.pid))
+            if raw_stderr:
+                sys.stderr.write(raw_stderr)
+            time.sleep(bulk_sleep_seconds)
         findings = []
         for path in sorted(target.glob('*.txt')):
             data = path.read_bytes()
@@ -1416,6 +1434,113 @@ class ScanTests(unittest.TestCase):
             gitleaks = make_gitleaks_stub(base, malformed_report=True)
             self.assertNotEqual(0, self.scan(workspace, gitleaks))
             self.assertEqual("SCANNER_REPORT_INVALID", AUDIT.load_state(workspace)["primary_code"])
+
+    def test_bulk_scan_routes_only_image_to_the_longer_deadline(self):
+        self.assertEqual(120.0, AUDIT.PROCESS_TIMEOUT)
+        self.assertEqual(900.0, AUDIT.BULK_SCAN_TIMEOUT)
+        self.assertLess(AUDIT.BULK_SCAN_TIMEOUT, 120 * 60)
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            workspace = base / "workspace"
+            seed_acquired(workspace, [tar_bytes([("clean", b"clean")])])
+            seen: list[tuple[str, float | None]] = []
+            original = AUDIT._gitleaks_scan
+
+            def observe(*args, **kwargs):
+                seen.append((args[3], kwargs.get("timeout")))
+                return original(*args, **kwargs)
+
+            with mock.patch.object(AUDIT, "_gitleaks_scan", side_effect=observe):
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+            self.assertEqual(
+                [("clean", None), ("positive", None), ("image", AUDIT.BULK_SCAN_TIMEOUT)],
+                seen,
+            )
+
+    def test_bulk_deadline_completes_without_relaxing_the_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            workspace = base / "workspace"
+            seed_acquired(workspace, [tar_bytes([("clean", b"clean")])])
+            gitleaks = make_gitleaks_stub(base, bulk_sleep_seconds=6.0)
+            with mock.patch.object(AUDIT, "PROCESS_TIMEOUT", 3.0), mock.patch.object(
+                AUDIT, "BULK_SCAN_TIMEOUT", 12.0, create=True
+            ):
+                self.assertEqual(0, self.scan(workspace, gitleaks))
+                ordinary_target = base / "spool"
+                ordinary_target.mkdir()
+                (ordinary_target / "000000000001.txt").write_bytes(b"clean\n")
+                ordinary_run = base / "ordinary-run"
+                ordinary_run.mkdir()
+                with self.assertRaisesRegex(AUDIT.AuditFailure, "TOOL_TIMEOUT"):
+                    AUDIT._gitleaks_scan(gitleaks, ordinary_target, ordinary_run, "ordinary")
+            self.assertEqual("complete", AUDIT.load_state(workspace)["phases"]["scan"])
+
+    def test_bulk_overrun_is_incomplete_and_reaps_its_cooperative_child(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            workspace = base / "workspace"
+            seed_acquired(workspace, [tar_bytes([("clean", b"clean")])])
+            pid_path = base / "bulk-child.pid"
+            raw = "synthetic-stderr-" + runtime_canary("bulk-timeout")
+            gitleaks = make_gitleaks_stub(
+                base,
+                bulk_sleep_seconds=20.0,
+                child_pid_path=pid_path,
+                raw_stderr=raw,
+            )
+            code = textwrap.dedent(f"""
+                import importlib.util, pathlib
+                path = pathlib.Path({str(SCRIPT)!r})
+                spec = importlib.util.spec_from_file_location('audit_timeout', path)
+                module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+                module.PROCESS_TIMEOUT = 3.0
+                module.BULK_SCAN_TIMEOUT = 6.0
+                raise SystemExit(module.main(['scan', '--workspace', {str(workspace)!r}]))
+            """)
+            env = {
+                "PATH": str(base) + os.pathsep + os.environ.get("PATH", ""),
+                "HOME": str(base),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            child: int | None = None
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-B", "-c", code],
+                    cwd=ROOT,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                    check=False,
+                )
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(
+                    ("SCAN", "FAILED", "TOOL_TIMEOUT"),
+                    tuple(json.loads(result.stdout)[key] for key in ("stage", "outcome", "code")),
+                )
+                self.assertNotIn(raw.encode(), result.stdout + result.stderr)
+                state = AUDIT.load_state(workspace)
+                self.assertEqual(("failed", "TOOL_TIMEOUT"), (state["phases"]["scan"], state["primary_code"]))
+                final_code, final = AUDIT.finalize_workspace(workspace)
+                self.assertEqual((3, "INCOMPLETE", "TOOL_TIMEOUT"), (final_code, final["status"], final["code"]))
+                self.assertTrue(pid_path.exists())
+                child = int(pid_path.read_text())
+                for _ in range(60):
+                    try:
+                        os.kill(child, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("cooperative bulk child survived timeout cleanup")
+            finally:
+                if child is None and pid_path.exists():
+                    with contextlib.suppress(OSError, ValueError):
+                        child = int(pid_path.read_text())
+                if child is not None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(os.getpgid(child), signal.SIGKILL)
 
 
 class ProvenanceTests(unittest.TestCase):
