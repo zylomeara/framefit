@@ -22,6 +22,14 @@ Offline namespaces, schema checks, and source verification are not a sandbox for
 - `COMPLETE_REVIEW_REQUIRED` means the scan completed but detections require review. A public-vendor match does not make a credential safe.
 - `INCOMPLETE` means a guard, acquisition, validation, isolation, cleanup, or public-output requirement failed. Treat it as no completed audit.
 
+## Optional unresolved diagnostics
+
+`COMPARE` and `FINALIZE` receipts may carry a versioned `diagnostics` block. It is explicitly unavailable as `{ "schema": 1, "availability": "unavailable" }`, or available as `{ "schema": 1, "availability": "available", "unresolved": { "rows": ..., "distinct_items": ..., "by_kind": ... } }`. Available diagnostics contain only bounded counts. `by_kind` always uses these fixed labels: `archive-header`, `archive-link`, `archive-name`, `archive-trailing`, `file`, `json-key`, `json-raw`, `json-value`, `opaque`, `pax-key`, `pax-value`, and `other`.
+
+`rows` counts unresolved detector rows. `distinct_items` counts distinct private staged items represented by those rows; it is not a file, package, or secret count. Unknown private kinds are aggregated into `other`. Paths, item identifiers, names, rule IDs, hashes, and detector values are never included. A completed comparison with no unresolved rows is available with zero counts; unavailable does not mean zero.
+
+A `COMPARE` receipt publishes available diagnostics only after that comparison succeeds and reaches its complete state. `FINALIZE` can retain already validated completed-comparison counts when later cleanup or summary output fails, while the audit remains `INCOMPLETE`. Pending, failed, interrupted, and rejected comparisons publish unavailable diagnostics. Receipts without this optional block remain legacy-compatible and mean unavailable. Strict readers written for the former exact receipt key set will reject extended `COMPARE` or `FINALIZE` receipts even though the outer schema remains `1`; the diagnostics version is not universal backward compatibility.
+
 ## Acquisition diagnostic codes
 
 - `REFERRER_DISCOVERY_FAILED` identifies a failed mandatory referrer-discovery command, including for an inline manifest.

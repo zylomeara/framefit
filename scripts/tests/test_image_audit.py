@@ -1797,11 +1797,19 @@ class ScanTests(unittest.TestCase):
 
 
 class ProvenanceTests(unittest.TestCase):
-    def prepare(self, base: Path, candidate: bytes, *, vendor_path: str = "app/node_modules/express/lib/item.js") -> tuple[Path, Path]:
+    def prepare(
+        self,
+        base: Path,
+        candidate: bytes,
+        *,
+        vendor_path: str = "app/node_modules/express/lib/item.js",
+        extra_entries: list[tuple[str, bytes]] | None = None,
+        annotation: str | None = None,
+    ) -> tuple[Path, Path]:
         package = json.dumps({"name": "express", "version": "5.2.1"}).encode()
-        layer = tar_bytes([(vendor_path, candidate), ("app/node_modules/express/package.json", package)])
+        layer = tar_bytes([(vendor_path, candidate), *(extra_entries or []), ("app/node_modules/express/package.json", package)])
         workspace = base / "workspace"
-        seed_acquired(workspace, [layer])
+        seed_acquired(workspace, [layer], annotation=annotation)
         gitleaks = make_gitleaks_stub(base)
         with mock.patch.dict(os.environ, {"PATH": str(base) + os.pathsep + os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}, clear=True), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
             self.assertEqual(0, AUDIT.run_phase("scan", workspace))
@@ -1815,14 +1823,27 @@ class ProvenanceTests(unittest.TestCase):
         catalog = json.dumps({"versions": {"5.2.1": {"dist": {"tarball": url, "integrity": integrity}}}}).encode()
         return catalog, tarball
 
-    def fetch_and_compare(self, workspace: Path, catalog: bytes, tarball: bytes) -> tuple[int, int]:
+    def fetch_only(self, workspace: Path, catalog: bytes, tarball: bytes) -> int:
         def download(url: str, limit: int) -> bytes:
             self.assertGreater(limit, 0)
-            return catalog if url == AUDIT.SOURCES[0 if AUDIT.SOURCES[0]["package"] == "express" else AUDIT.source_index("express")]["catalog"] else tarball
+            source = AUDIT.SOURCES[AUDIT.source_index("express")]["catalog"]
+            return catalog if url == source else tarball
+
         with mock.patch.object(AUDIT, "download_public", side_effect=download), mock.patch.dict(os.environ, {}, clear=True):
-            fetch_result = AUDIT.run_phase("fetch-vendor", workspace)
+            return AUDIT.run_phase("fetch-vendor", workspace)
+
+    def fetch_and_compare(self, workspace: Path, catalog: bytes, tarball: bytes) -> tuple[int, int]:
+        fetch_result = self.fetch_only(workspace, catalog, tarball)
+        with mock.patch.dict(os.environ, {}, clear=True):
             compare_result = AUDIT.run_phase("compare", workspace) if fetch_result == 0 else 1
         return fetch_result, compare_result
+
+    def prepare_unresolved_compare(self, base: Path, label: str) -> Path:
+        candidate = f"api_key={runtime_canary(label)}\n".encode()
+        workspace, _ = self.prepare(base, candidate, vendor_path=f"app/{label}.js")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+        return workspace
 
     def test_exact_public_file_match_remains_review(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1835,10 +1856,81 @@ class ProvenanceTests(unittest.TestCase):
             state = AUDIT.load_state(workspace)
             self.assertEqual(state["counters"]["detections"], state["counters"]["public_matches"])
             self.assertEqual(0, state["counters"]["unresolved_findings"])
+            diagnostics = state["diagnostics"]
+            self.assertEqual(("available", 0, 0), (
+                diagnostics["availability"], diagnostics["unresolved"]["rows"], diagnostics["unresolved"]["distinct_items"]
+            ))
+            self.assertTrue(all(bucket == {"rows": 0, "distinct_items": 0} for bucket in diagnostics["unresolved"]["by_kind"].values()))
+            self.assertEqual(diagnostics, AUDIT._phase_receipt(workspace, "compare", 0)["diagnostics"])
             code, receipt = AUDIT.finalize_workspace(workspace)
             self.assertEqual(2, code)
             self.assertEqual("COMPLETE_REVIEW_REQUIRED", receipt["status"])
+            self.assertEqual(diagnostics, receipt.get("diagnostics"))
             self.assertFalse(workspace.exists())
+
+    def test_compare_emits_real_count_only_unresolved_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            matched = f"api_key={runtime_canary('matched')}\n".encode()
+            duplicate = (
+                f"api_key={runtime_canary('duplicate-first')}\n"
+                f"api_key={runtime_canary('duplicate-second')}\n"
+            ).encode()
+            separate = f"api_key={runtime_canary('separate')}\n".encode()
+            unknown_value = runtime_canary("unknown-value")
+            unknown = f"api_key={unknown_value}\n".encode()
+            raw_kind = "synthetic-unknown-kind-sentinel"
+            workspace, _ = self.prepare(
+                base,
+                matched,
+                extra_entries=[
+                    ("app/duplicate.txt", duplicate),
+                    ("app/separate.txt", separate),
+                    ("app/unknown.txt", unknown),
+                ],
+                annotation="api_key=" + runtime_canary("annotation"),
+            )
+            connection = AUDIT._ledger(workspace)
+            try:
+                unknown_ids = []
+                for (item_id,) in connection.execute(
+                    "SELECT DISTINCT i.id FROM findings f JOIN items i ON i.id=f.item_id ORDER BY i.id"
+                ):
+                    if unknown_value.encode() in (workspace / "spool" / f"{item_id:012d}.txt").read_bytes():
+                        unknown_ids.append(item_id)
+                self.assertEqual(1, len(unknown_ids))
+                connection.execute("UPDATE items SET kind=? WHERE id=?", (raw_kind, unknown_ids[0]))
+                connection.commit()
+            finally:
+                connection.close()
+
+            catalog, tarball = self.catalog_and_tarball(matched)
+            self.assertEqual(0, self.fetch_only(workspace, catalog, tarball))
+            compare = run_cli(["compare", "--workspace", str(workspace)])
+            self.assertEqual(0, compare.returncode)
+            emitted = json.loads(compare.stdout)
+            state = AUDIT.load_state(workspace)
+            self.assertEqual((7, 1, 6), tuple(state["counters"][key] for key in (
+                "detections", "public_matches", "unresolved_findings"
+            )))
+            by_kind = {kind: {"rows": 0, "distinct_items": 0} for kind in AUDIT.UNRESOLVED_KINDS}
+            by_kind.update({
+                "file": {"rows": 3, "distinct_items": 2},
+                "json-raw": {"rows": 1, "distinct_items": 1},
+                "json-value": {"rows": 1, "distinct_items": 1},
+                "other": {"rows": 1, "distinct_items": 1},
+            })
+            expected = {
+                "schema": 1,
+                "availability": "available",
+                "unresolved": {"rows": 6, "distinct_items": 5, "by_kind": by_kind},
+            }
+            self.assertEqual(expected, state["diagnostics"])
+            self.assertEqual(expected, emitted["diagnostics"])
+            self.assertEqual(("COMPARE", "OK", "NONE"), tuple(emitted[key] for key in ("stage", "outcome", "code")))
+            serialized = json.dumps(emitted, sort_keys=True)
+            self.assertNotIn(raw_kind, serialized)
+            self.assertNotIn(unknown_value, serialized)
 
     def test_modified_reference_is_not_a_match(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1859,6 +1951,131 @@ class ProvenanceTests(unittest.TestCase):
             queue = AUDIT.read_private_json(workspace / "private" / "vendor-queue.json")
             self.assertEqual({"schema": 1, "requests": []}, queue)
 
+    def test_missing_version_and_reference_fail_with_unavailable_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name in ("missing-version", "missing-reference"):
+                with self.subTest(name=name):
+                    case = base / name
+                    case.mkdir()
+                    candidate = f"api_key={runtime_canary(name)}\n".encode()
+                    workspace, _ = self.prepare(case, candidate)
+                    catalog, tarball = self.catalog_and_tarball(candidate)
+                    self.assertEqual(0, self.fetch_only(workspace, catalog, tarball))
+                    if name == "missing-version":
+                        connection = AUDIT._ledger(workspace)
+                        try:
+                            connection.execute(
+                                "UPDATE items SET version=NULL WHERE id IN (SELECT item_id FROM findings)"
+                            )
+                            connection.commit()
+                        finally:
+                            connection.close()
+                    else:
+                        AUDIT.write_private_json(
+                            workspace / "private" / "references.json",
+                            {"schema": 1, "references": []},
+                        )
+                    with mock.patch.dict(os.environ, {}, clear=True):
+                        self.assertEqual(1, AUDIT.run_phase("compare", workspace))
+                    state = AUDIT.load_state(workspace)
+                    self.assertEqual(("failed", "VENDOR_SOURCE_UNAVAILABLE"), (
+                        state["phases"]["compare"], state["primary_code"]
+                    ))
+                    self.assertNotIn("diagnostics", state)
+                    if name == "missing-version":
+                        self.assertEqual((1, 0, 1), tuple(state["counters"][key] for key in (
+                            "detections", "public_matches", "unresolved_findings"
+                        )))
+                    self.assertEqual(
+                        {"schema": 1, "availability": "unavailable"},
+                        AUDIT._phase_receipt(workspace, "compare", 1)["diagnostics"],
+                    )
+
+    def test_compare_sum_guard_persists_counters_before_failing_without_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = self.prepare_unresolved_compare(Path(temp), "sum-guard")
+            original_save = AUDIT.save_state
+            disrupted = False
+
+            def disrupt_after_counter_save(root: Path, state: dict[str, object]) -> None:
+                nonlocal disrupted
+                original_save(root, state)
+                if (
+                    not disrupted
+                    and root == workspace
+                    and state["phases"]["compare"] == "pending"
+                    and state["counters"]["unresolved_findings"] == 1
+                    and "diagnostics" not in state
+                ):
+                    disrupted = True
+                    state["counters"]["detections"] += 1
+
+            with mock.patch.object(AUDIT, "save_state", side_effect=disrupt_after_counter_save), mock.patch.dict(
+                os.environ, {}, clear=True
+            ):
+                self.assertEqual(1, AUDIT.run_phase("compare", workspace))
+            self.assertTrue(disrupted)
+            state = AUDIT.load_state(workspace)
+            self.assertEqual(("failed", "STAGING_MISMATCH"), (
+                state["phases"]["compare"], state["primary_code"]
+            ))
+            self.assertEqual((1, 0, 1), tuple(state["counters"][key] for key in (
+                "detections", "public_matches", "unresolved_findings"
+            )))
+            self.assertNotIn("diagnostics", state)
+
+    def test_interruption_after_diagnostics_save_stays_failed_and_publicly_unavailable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = self.prepare_unresolved_compare(Path(temp), "interrupted")
+            original_save = AUDIT.save_state
+            interrupted = False
+
+            def interrupt_phase_commit(root: Path, state: dict[str, object]) -> None:
+                nonlocal interrupted
+                if not interrupted and root == workspace and state["phases"]["compare"] == "complete":
+                    interrupted = True
+                    raise KeyboardInterrupt()
+                original_save(root, state)
+
+            with mock.patch.object(AUDIT, "save_state", side_effect=interrupt_phase_commit), mock.patch.dict(
+                os.environ, {}, clear=True
+            ):
+                self.assertEqual(1, AUDIT.run_phase("compare", workspace))
+            self.assertTrue(interrupted)
+            state = AUDIT.load_state(workspace)
+            self.assertEqual(("failed", True, "INTERNAL_ERROR", "available"), (
+                state["phases"]["compare"], state["incomplete"], state["primary_code"], state["diagnostics"]["availability"]
+            ))
+            self.assertEqual(
+                {"schema": 1, "availability": "unavailable"},
+                AUDIT._phase_receipt(workspace, "compare", 1)["diagnostics"],
+            )
+            code, receipt = AUDIT.finalize_workspace(workspace)
+            self.assertEqual((3, "INCOMPLETE", "INTERNAL_ERROR"), (code, receipt["status"], receipt["code"]))
+            self.assertEqual({"schema": 1, "availability": "unavailable"}, receipt["diagnostics"])
+
+    def test_rejected_repeat_durably_invalidates_public_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = self.prepare_unresolved_compare(Path(temp), "repeat")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                completed = AUDIT.load_state(workspace)["diagnostics"]
+                self.assertEqual("available", completed["availability"])
+                self.assertEqual(1, AUDIT.run_phase("compare", workspace))
+            state = AUDIT.load_state(workspace)
+            self.assertEqual(("failed", True, "PHASE_ORDER"), (
+                state["phases"]["compare"], state["incomplete"], state["primary_code"]
+            ))
+            self.assertEqual(completed, state["diagnostics"])
+            self.assertEqual(
+                {"schema": 1, "availability": "unavailable"},
+                AUDIT._phase_receipt(workspace, "compare", 1)["diagnostics"],
+            )
+            code, receipt = AUDIT.finalize_workspace(workspace)
+            self.assertEqual((3, "INCOMPLETE", "PHASE_ORDER"), (code, receipt["status"], receipt["code"]))
+            self.assertEqual({"schema": 1, "availability": "unavailable"}, receipt["diagnostics"])
+
     def test_hostile_catalog_url_integrity_and_credential_env_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
@@ -1875,6 +2092,278 @@ class ProvenanceTests(unittest.TestCase):
                     result = AUDIT.run_phase("fetch-vendor", workspace)
                 self.assertNotEqual(0, result, name)
                 self.assertTrue(AUDIT.load_state(workspace)["incomplete"])
+
+
+class UnresolvedDiagnosticsTests(unittest.TestCase):
+    def diagnostics(self, rows: list[tuple[int, str]]) -> dict[str, object]:
+        buckets = {kind: {"rows": 0, "item_ids": set()} for kind in AUDIT.UNRESOLVED_KINDS}
+        for item_id, raw_kind in rows:
+            bucket = buckets[raw_kind if raw_kind in buckets else "other"]
+            bucket["rows"] += 1
+            bucket["item_ids"].add(item_id)
+        by_kind = {
+            kind: {"rows": bucket["rows"], "distinct_items": len(bucket["item_ids"])}
+            for kind, bucket in buckets.items()
+        }
+        return {
+            "schema": 1,
+            "availability": "available",
+            "unresolved": {
+                "rows": sum(bucket["rows"] for bucket in by_kind.values()),
+                "distinct_items": sum(bucket["distinct_items"] for bucket in by_kind.values()),
+                "by_kind": by_kind,
+            },
+        }
+
+    def available_counters(self, diagnostics: dict[str, object]) -> dict[str, int]:
+        counters = AUDIT.empty_counters()
+        unresolved = diagnostics["unresolved"]
+        counters["unresolved_findings"] = unresolved["rows"]
+        counters["detections"] = unresolved["rows"]
+        return counters
+
+    def test_diagnostics_schema_rejects_bool_and_float_at_state_and_public_boundaries(self):
+        available = self.diagnostics([(1, "file")])
+        cases = (
+            ("available", available, self.available_counters(available)),
+            ("unavailable", AUDIT.unavailable_diagnostics(), AUDIT.empty_counters()),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            for availability, diagnostics, counters in cases:
+                for schema in (True, 1.0):
+                    invalid = json.loads(json.dumps(diagnostics))
+                    invalid["schema"] = schema
+                    for boundary in ("public", "state"):
+                        with self.subTest(availability=availability, schema=repr(schema), boundary=boundary):
+                            if boundary == "public":
+                                receipt = {
+                                    "schema": 1,
+                                    "stage": "COMPARE",
+                                    "outcome": "OK",
+                                    "code": "NONE",
+                                    "counters": counters,
+                                    "diagnostics": invalid,
+                                }
+                                with self.assertRaises(AUDIT.AuditFailure):
+                                    AUDIT.validate_public_receipt(receipt)
+                            else:
+                                state = AUDIT.load_state(workspace)
+                                state["counters"] = counters
+                                state["diagnostics"] = invalid
+                                with self.assertRaises(AUDIT.AuditFailure):
+                                    AUDIT.save_state(workspace, state)
+
+    def test_available_diagnostics_require_complete_successful_compare(self):
+        diagnostics = self.diagnostics([(7, "file")])
+        counters = self.available_counters(diagnostics)
+        unavailable = {"schema": 1, "availability": "unavailable"}
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            state = AUDIT.load_state(workspace)
+            state["counters"] = counters
+            AUDIT.save_state(workspace, state)
+            self.assertEqual(unavailable, AUDIT._phase_receipt(workspace, "compare", 0)["diagnostics"])
+            state["phases"]["compare"] = "complete"
+            AUDIT.save_state(workspace, state)
+            self.assertEqual(unavailable, AUDIT._phase_receipt(workspace, "compare", 0)["diagnostics"])
+            state["diagnostics"] = diagnostics
+            AUDIT.save_state(workspace, state)
+            self.assertEqual(diagnostics, AUDIT._phase_receipt(workspace, "compare", 0)["diagnostics"])
+            self.assertEqual(unavailable, AUDIT._phase_receipt(workspace, "compare", 1)["diagnostics"])
+            state["phases"]["compare"] = "failed"
+            AUDIT.save_state(workspace, state)
+            self.assertEqual(unavailable, AUDIT._phase_receipt(workspace, "compare", 0)["diagnostics"])
+
+    def test_pending_available_diagnostics_are_unavailable_in_compare_and_finalize(self):
+        diagnostics = self.diagnostics([(7, "file")])
+        unavailable = AUDIT.unavailable_diagnostics()
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            state = AUDIT.load_state(workspace)
+            state["counters"] = self.available_counters(diagnostics)
+            state["diagnostics"] = diagnostics
+            AUDIT.save_state(workspace, state)
+            self.assertEqual(unavailable, AUDIT._phase_receipt(workspace, "compare", 0)["diagnostics"])
+            code, receipt = AUDIT.finalize_workspace(workspace)
+            self.assertEqual((3, "INCOMPLETE"), (code, receipt["status"]))
+            self.assertEqual(unavailable, receipt["diagnostics"])
+
+    def test_pending_retry_evicts_stale_diagnostics_before_missing_version_guard(self):
+        diagnostics = self.diagnostics([(1, "file")])
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = ProvenanceTests()
+            workspace = fixture.prepare_unresolved_compare(Path(temp), "stale-diagnostics")
+            connection = AUDIT._ledger(workspace)
+            try:
+                connection.execute(
+                    "UPDATE items SET source_index=?,version=NULL WHERE id IN (SELECT item_id FROM findings)",
+                    (AUDIT.source_index("express"),),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            state = AUDIT.load_state(workspace)
+            self.assertEqual(1, state["counters"]["detections"])
+            state["counters"]["unresolved_findings"] = diagnostics["unresolved"]["rows"]
+            state["diagnostics"] = diagnostics
+            AUDIT.save_state(workspace, state)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(1, AUDIT.run_phase("compare", workspace))
+            state = AUDIT.load_state(workspace)
+            self.assertEqual(("failed", True, "VENDOR_SOURCE_UNAVAILABLE"), (
+                state["phases"]["compare"], state["incomplete"], state["primary_code"]
+            ))
+            self.assertEqual((1, 0, 1), tuple(state["counters"][key] for key in (
+                "detections", "public_matches", "unresolved_findings"
+            )))
+            self.assertNotIn("diagnostics", state)
+
+    def test_state_and_receipt_reject_malformed_diagnostics(self):
+        diagnostics = self.diagnostics([(1, "file")])
+        counters = self.available_counters(diagnostics)
+        receipt = AUDIT.public_receipt("COMPARE", "OK", "NONE", counters, diagnostics=diagnostics)
+        invalid_cases = (
+            ("extra-root", lambda value: value.update(extra=0)),
+            ("missing-schema", lambda value: value.pop("schema")),
+            ("unknown-schema", lambda value: value.update(schema=2)),
+            ("missing-availability", lambda value: value.pop("availability")),
+            ("unknown-availability", lambda value: value.update(availability="unknown")),
+            ("missing-unresolved", lambda value: value.pop("unresolved")),
+            ("extra-unresolved", lambda value: value["unresolved"].update(extra=0)),
+            ("missing-total", lambda value: value["unresolved"].pop("distinct_items")),
+            ("nonobject-kinds", lambda value: value["unresolved"].update(by_kind=[])),
+            ("missing-kind", lambda value: value["unresolved"]["by_kind"].pop("file")),
+            ("unknown-kind", lambda value: value["unresolved"]["by_kind"].update(raw_kind={"rows": 0, "distinct_items": 0})),
+            ("nonobject-bucket", lambda value: value["unresolved"]["by_kind"].update(file=[])),
+            ("missing-bucket-key", lambda value: value["unresolved"]["by_kind"]["file"].pop("rows")),
+            ("extra-bucket-key", lambda value: value["unresolved"]["by_kind"]["file"].update(extra=0)),
+            ("bool-count", lambda value: value["unresolved"].update(rows=True)),
+            ("float-count", lambda value: value["unresolved"].update(distinct_items=1.0)),
+            ("string-count", lambda value: value["unresolved"]["by_kind"]["file"].update(rows="1")),
+            ("negative-count", lambda value: value["unresolved"]["by_kind"]["file"].update(distinct_items=-1)),
+            ("overflow-count", lambda value: value["unresolved"]["by_kind"]["file"].update(rows=AUDIT.MAX_PUBLIC_COUNTER + 1)),
+            ("unequal-row-sum", lambda value: value["unresolved"].update(rows=2)),
+            ("unequal-item-sum", lambda value: value["unresolved"].update(distinct_items=2)),
+            ("zero-mismatch", lambda value: value["unresolved"]["by_kind"]["file"].update(distinct_items=0)),
+            ("items-exceed-rows", lambda value: value["unresolved"]["by_kind"]["file"].update(distinct_items=2)),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            for name, mutate in invalid_cases:
+                with self.subTest(name=name):
+                    bad = json.loads(json.dumps(diagnostics))
+                    mutate(bad)
+                    bad_receipt = json.loads(json.dumps(receipt))
+                    bad_receipt["diagnostics"] = bad
+                    with self.assertRaises(AUDIT.AuditFailure):
+                        AUDIT.validate_public_receipt(bad_receipt)
+                    state = AUDIT.load_state(workspace)
+                    state["counters"] = counters
+                    state["diagnostics"] = bad
+                    with self.assertRaises(AUDIT.AuditFailure):
+                        AUDIT.save_state(workspace, state)
+
+            unavailable_with_payload = {
+                "schema": 1,
+                "availability": "unavailable",
+                "unresolved": diagnostics["unresolved"],
+            }
+            for stage in ("INIT", "ACQUIRE", "SCAN", "FETCH_VENDOR"):
+                with self.subTest(stage=stage):
+                    bad_receipt = json.loads(json.dumps(receipt))
+                    bad_receipt["stage"] = stage
+                    with self.assertRaises(AUDIT.AuditFailure):
+                        AUDIT.validate_public_receipt(bad_receipt)
+            bad_receipt = json.loads(json.dumps(receipt))
+            bad_receipt["diagnostics"] = unavailable_with_payload
+            with self.assertRaises(AUDIT.AuditFailure):
+                AUDIT.validate_public_receipt(bad_receipt)
+            failed = json.loads(json.dumps(receipt))
+            failed["outcome"] = "FAILED"
+            with self.assertRaises(AUDIT.AuditFailure):
+                AUDIT.validate_public_receipt(failed)
+
+            state = AUDIT.load_state(workspace)
+            state["counters"] = counters
+            state["diagnostics"] = diagnostics
+            state["phases"]["compare"] = "failed"
+            AUDIT.save_state(workspace, state)
+            state["diagnostics"]["unresolved"]["by_kind"]["file"]["distinct_items"] = 0
+            with self.assertRaises(AUDIT.AuditFailure):
+                AUDIT.save_state(workspace, state)
+
+    def test_finalize_preserves_only_completed_diagnostics_through_cleanup_failure(self):
+        diagnostics = self.diagnostics([(1, "file")])
+        counters = self.available_counters(diagnostics)
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            state = AUDIT.load_state(workspace)
+            state["counters"] = counters
+            state["diagnostics"] = diagnostics
+            for phase in state["phases"]:
+                state["phases"][phase] = "complete"
+            AUDIT.save_state(workspace, state)
+            with mock.patch.object(AUDIT.shutil, "rmtree", side_effect=OSError("cleanup failure")):
+                code, receipt = AUDIT.finalize_workspace(workspace)
+            self.assertEqual((3, "INCOMPLETE", "CLEANUP_FAILED"), (code, receipt["status"], receipt["code"]))
+            self.assertEqual(diagnostics, receipt.get("diagnostics"))
+            state = AUDIT.load_state(workspace)
+            state["phases"]["compare"] = "failed"
+            AUDIT.save_state(workspace, state)
+            code, receipt = AUDIT.finalize_workspace(workspace)
+            self.assertEqual(3, code)
+            self.assertEqual({"schema": 1, "availability": "unavailable"}, receipt["diagnostics"])
+    def test_main_public_output_failure_keeps_validated_diagnostics(self):
+        diagnostics = self.diagnostics([(1, "file")])
+        counters = self.available_counters(diagnostics)
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            workspace = base / "workspace"
+            initialize(workspace)
+            state = AUDIT.load_state(workspace)
+            state["counters"] = counters
+            state["diagnostics"] = diagnostics
+            for phase in state["phases"]:
+                state["phases"][phase] = "complete"
+            AUDIT.save_state(workspace, state)
+            summary = base / "summary-directory"
+            summary.mkdir()
+            result = run_cli(["finalize", "--workspace", str(workspace)], env={"GITHUB_STEP_SUMMARY": str(summary)})
+            self.assertEqual(3, result.returncode)
+            receipt = json.loads(result.stdout)
+            self.assertEqual(("INCOMPLETE", "PUBLIC_OUTPUT_FAILED"), (receipt["status"], receipt["code"]))
+            self.assertEqual(diagnostics, receipt.get("diagnostics"))
+
+    def test_zero_diagnostics_are_available_and_summary_uses_only_fixed_labels(self):
+        diagnostics = self.diagnostics([])
+        counters = self.available_counters(diagnostics)
+        receipt = AUDIT.final_receipt("COMPLETE_NO_FINDINGS", "NONE", counters, diagnostics=diagnostics)
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            summary = base / "available-summary"
+            summary.write_bytes(b"")
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}, clear=True):
+                AUDIT._write_final_channels(receipt)
+            rendered = summary.read_text()
+            unavailable_summary = base / "unavailable-summary"
+            unavailable_summary.write_bytes(b"")
+            unavailable = AUDIT.final_receipt(
+                "INCOMPLETE", "PHASE_ORDER", AUDIT.empty_counters(), diagnostics=AUDIT.unavailable_diagnostics()
+            )
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(unavailable_summary)}, clear=True):
+                AUDIT._write_final_channels(unavailable)
+            unavailable_rendered = unavailable_summary.read_text()
+        self.assertIn("| file | 0 | 0 |", rendered)
+        self.assertNotIn("Unresolved diagnostics: unavailable", rendered)
+        self.assertEqual(12, sum(1 for kind in AUDIT.UNRESOLVED_KINDS if f"| {kind} |" in rendered))
+        self.assertIn("Unresolved diagnostics: unavailable", unavailable_rendered)
+        self.assertNotIn("| Kind | Rows |", unavailable_rendered)
 
 
 class SourceSelectionTests(unittest.TestCase):
