@@ -4,7 +4,17 @@
 
 After reviewing the workflow and its scope, open **Actions > Manual GHCR image audit > Run workflow** and select `main`. Do not use the separate **CI** workflow for this audit: its manual trigger can publish an image.
 
-The workflow inventories the package visible to its authorised GitHub Actions context, validates immutable OCI objects, scans bounded staged content with pinned tools, and compares detected dependency files with a fixed public-vendor catalog. Ordinary tool calls, including scanner controls, are bounded to 2 minutes; the staged-image bulk scanner is bounded to 15 minutes. The outer workflow job remains bounded to 120 minutes. These deadlines do not guarantee completion or authorize publication. The public result is limited to fixed statuses and counters in the workflow summary. If summary publication fails, the helper emits an `INCOMPLETE` JSON receipt in the log instead. Detailed reports are not downloadable.
+## Source modes and review
+
+The default **main mode** leaves both UI inputs empty. It runs the trusted controller and auditor code at the dispatched `main` SHA, retaining the established collaborator-compatible manual workflow policy.
+
+**Candidate mode** is an explicit owner-reviewed exception for auditing a reviewed, immutable auditor-code commit before that commit is merged. In the Run workflow UI, set both `pull_request_number` and `candidate_sha`; the latter is a full lowercase 40-character SHA. The owner must review the candidate code and its same-repository open PR to `main`. Both the original actor and the user who triggers a rerun must be the repository owner. Each rerun validates the PR and exact SHA again, so an earlier approval does not authorize a moved PR head, a branch name, or a short SHA.
+
+The workflow definition, trusted selector/controller, and tool pins always come from `main`. In candidate mode, the auditor helper and its native control tests execute from the validated, owner-reviewed SHA. The source-verification step records the validated public workflow SHA, code SHA, mode, and PR number in its own workflow-step summary. This provenance is separate from the final audit receipt and is not an audit verdict. Results apply to the exact selected SHA, not to a later PR head or later `main` head. No PR check, comment, artifact, or automatic retry is created.
+
+The workflow inventories the complete package history currently visible to its authorised GitHub Actions context; it does not build, select, or execute a PR image. It validates immutable OCI objects, scans bounded staged content with pinned tools, and compares detected dependency files with a fixed public-vendor catalog. Ordinary tool calls, including scanner controls, are bounded to 2 minutes; the staged-image bulk scanner is bounded to 15 minutes. The outer workflow job remains bounded to 120 minutes. These deadlines do not guarantee completion or authorize publication. Audit receipts are limited to fixed statuses, diagnostic codes, and counters; the validated source provenance described above is separate public metadata. If summary publication fails, the helper emits an `INCOMPLETE` JSON receipt in the log instead. Detailed reports are not downloadable.
+
+Offline namespaces, schema checks, and source verification are not a sandbox for hostile code. Candidate mode is available only because an owner has reviewed and explicitly selected that code.
 
 ## Statuses
 

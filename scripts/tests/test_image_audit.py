@@ -1712,6 +1712,242 @@ class ProvenanceTests(unittest.TestCase):
                 self.assertTrue(AUDIT.load_state(workspace)["incomplete"])
 
 
+class SourceSelectionTests(unittest.TestCase):
+    workflow_sha = "a" * 40
+    candidate_sha = "b" * 40
+
+    def event(self, inputs: object = None, *, repository: object | None = None) -> dict[str, object]:
+        event: dict[str, object] = {
+            "repository": repository if repository is not None else {
+                "full_name": "zylomeara/framefit",
+                "fork": False,
+                "default_branch": "main",
+            },
+        }
+        if inputs is not None:
+            event["inputs"] = inputs
+        return event
+
+    def pull(self, *, number: object = 7, state: object = "open", base_repo: object = "zylomeara/framefit", base_ref: object = "main", head_repo: object = "zylomeara/framefit", head_fork: object = False, head_sha: object | None = None) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": state,
+            "draft": True,
+            "base": {"repo": {"full_name": base_repo}, "ref": base_ref},
+            "head": {
+                "repo": None if head_repo is None else {"full_name": head_repo, "fork": head_fork},
+                "sha": self.candidate_sha if head_sha is None else head_sha,
+            },
+        }
+
+    def test_select_source_main_is_stable_and_never_fetches(self):
+        fetch_pull = mock.Mock()
+        result = AUDIT.select_audit_source(
+            self.event(), "external", "external", self.workflow_sha, fetch_pull
+        )
+        self.assertEqual(
+            {
+                "IMAGE_AUDIT_MODE": "main",
+                "IMAGE_AUDIT_WORKFLOW_SHA": self.workflow_sha,
+                "IMAGE_AUDIT_CODE_SHA": self.workflow_sha,
+                "IMAGE_AUDIT_PR_NUMBER": "",
+                "IMAGE_AUDIT_CODE_DIR": "trusted",
+            },
+            result,
+        )
+        fetch_pull.assert_not_called()
+
+    def test_select_source_candidate_requires_exact_open_same_repo_metadata(self):
+        fetch_pull = mock.Mock(return_value=self.pull())
+        result = AUDIT.select_audit_source(
+            self.event({"pull_request_number": "7", "candidate_sha": self.candidate_sha}),
+            "zylomeara",
+            "zylomeara",
+            self.workflow_sha,
+            fetch_pull,
+        )
+        self.assertEqual(
+            {
+                "IMAGE_AUDIT_MODE": "pr",
+                "IMAGE_AUDIT_WORKFLOW_SHA": self.workflow_sha,
+                "IMAGE_AUDIT_CODE_SHA": self.candidate_sha,
+                "IMAGE_AUDIT_PR_NUMBER": "7",
+                "IMAGE_AUDIT_CODE_DIR": "candidate",
+            },
+            result,
+        )
+        fetch_pull.assert_called_once_with("7")
+
+    def test_select_source_rejects_context_and_inputs_before_api(self):
+        cases = {
+            "foreign-repository": self.event(repository={"full_name": "other/repo", "fork": False, "default_branch": "main"}),
+            "forked-event": self.event(repository={"full_name": "zylomeara/framefit", "fork": True, "default_branch": "main"}),
+            "wrong-default-branch": self.event(repository={"full_name": "zylomeara/framefit", "fork": False, "default_branch": "dev"}),
+            "nonobject-inputs": self.event([]),
+            "unknown-input": self.event({"pull_request_number": "7", "candidate_sha": self.candidate_sha, "extra": "x"}),
+            "partial-input": self.event({"pull_request_number": "7"}),
+            "whitespace-number": self.event({"pull_request_number": " 7", "candidate_sha": self.candidate_sha}),
+            "leading-zero": self.event({"pull_request_number": "07", "candidate_sha": self.candidate_sha}),
+            "uppercase-sha": self.event({"pull_request_number": "7", "candidate_sha": self.candidate_sha.upper()}),
+        }
+        for name, event in cases.items():
+            with self.subTest(name=name):
+                fetch_pull = mock.Mock()
+                with self.assertRaises(AUDIT.SourceSelectionFailure):
+                    AUDIT.select_audit_source(event, "zylomeara", "zylomeara", self.workflow_sha, fetch_pull)
+                fetch_pull.assert_not_called()
+        for actor, triggering_actor in (("external", "zylomeara"), ("zylomeara", "external")):
+            with self.subTest(actor=actor, triggering_actor=triggering_actor):
+                fetch_pull = mock.Mock()
+                with self.assertRaises(AUDIT.SourceSelectionFailure) as failure:
+                    AUDIT.select_audit_source(
+                        self.event({"pull_request_number": "7", "candidate_sha": self.candidate_sha}),
+                        actor,
+                        triggering_actor,
+                        self.workflow_sha,
+                        fetch_pull,
+                    )
+                self.assertEqual("ACTOR_INVALID", failure.exception.code)
+                fetch_pull.assert_not_called()
+
+    def test_select_source_rejects_malformed_or_untrusted_pull_metadata(self):
+        invalid_metadata = (
+            None,
+            self.pull(number=True),
+            self.pull(number=8),
+            self.pull(state="closed"),
+            self.pull(base_repo="other/repo"),
+            self.pull(base_ref="release"),
+            self.pull(head_repo=None),
+            self.pull(head_repo="fork/repo"),
+            self.pull(head_fork=True),
+            self.pull(head_sha="c" * 40),
+        )
+        event = self.event({"pull_request_number": "7", "candidate_sha": self.candidate_sha})
+        for metadata in invalid_metadata:
+            with self.subTest(metadata=metadata):
+                with self.assertRaises(AUDIT.SourceSelectionFailure):
+                    AUDIT.select_audit_source(event, "zylomeara", "zylomeara", self.workflow_sha, lambda _number: metadata)
+
+    def test_select_source_rejects_unbounded_numbers_and_nonstring_values(self):
+        invalid_inputs = (
+            {"pull_request_number": str(AUDIT.MAX_PUBLIC_COUNTER + 1), "candidate_sha": self.candidate_sha},
+            {"pull_request_number": 7, "candidate_sha": self.candidate_sha},
+            {"pull_request_number": "7", "candidate_sha": None},
+            {"pull_request_number": "0", "candidate_sha": self.candidate_sha},
+        )
+        for inputs in invalid_inputs:
+            with self.subTest(inputs=inputs):
+                with self.assertRaises(AUDIT.SourceSelectionFailure):
+                    AUDIT.select_audit_source(self.event(inputs), "zylomeara", "zylomeara", self.workflow_sha, mock.Mock())
+
+    def _write_gh_stub(self, directory: Path, body: object, *, exit_code: int = 0, stderr: str = "") -> tuple[Path, Path]:
+        directory.mkdir()
+        tracker = directory / "tracker"
+        binary = directory / "gh"
+        binary.write_text(textwrap.dedent(f"""\
+            #!{sys.executable}
+            import json, os, pathlib, sys
+            pathlib.Path({str(tracker)!r}).write_text(json.dumps({{"argv": sys.argv[1:], "env": sorted(os.environ)}}, sort_keys=True))
+            sys.stderr.write({stderr!r})
+            if {exit_code!r}:
+                raise SystemExit({exit_code!r})
+            print(json.dumps({body!r}))
+        """))
+        binary.chmod(0o755)
+        return binary, tracker
+
+    def _source_env(self, event_path: Path, env_path: Path, *, path: str) -> dict[str, str]:
+        return {
+            "GITHUB_EVENT_PATH": str(event_path),
+            "GITHUB_ENV": str(env_path),
+            "GITHUB_REPOSITORY": "zylomeara/framefit",
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_SHA": self.workflow_sha,
+            "GITHUB_ACTOR": "zylomeara",
+            "GITHUB_TRIGGERING_ACTOR": "zylomeara",
+            "GH_TOKEN": "source-token-sentinel",
+            "UNRELATED_TOKEN": "must-not-reach-gh",
+            "PATH": path,
+        }
+
+    def test_select_source_cli_is_silent_and_writes_only_validated_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            event_path = base / "event.json"
+            event_path.write_text(json.dumps(self.event({"pull_request_number": "7", "candidate_sha": self.candidate_sha})))
+            environment = base / "github-env"
+            environment.write_bytes(b"")
+            binary, tracker = self._write_gh_stub(base / "bin", self.pull())
+            result = run_cli(["select-source"], env=self._source_env(event_path, environment, path=str(binary.parent)))
+            self.assertEqual(0, result.returncode)
+            self.assertEqual(b"", result.stdout + result.stderr)
+            self.assertEqual(
+                (
+                    f"IMAGE_AUDIT_MODE=pr\n"
+                    f"IMAGE_AUDIT_WORKFLOW_SHA={self.workflow_sha}\n"
+                    f"IMAGE_AUDIT_CODE_SHA={self.candidate_sha}\n"
+                    "IMAGE_AUDIT_PR_NUMBER=7\n"
+                    "IMAGE_AUDIT_CODE_DIR=candidate\n"
+                ).encode(),
+                environment.read_bytes(),
+            )
+            seen = json.loads(tracker.read_text())
+            self.assertEqual(
+                ["api", "--hostname", "github.com", "repos/zylomeara/framefit/pulls/7"],
+                seen["argv"],
+            )
+            self.assertIn("GH_TOKEN", seen["env"])
+            self.assertNotIn("GITHUB_TOKEN", seen["env"])
+            self.assertNotIn("UNRELATED_TOKEN", seen["env"])
+
+    def test_select_source_cli_errors_are_fixed_redacted_and_leave_environment_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            marker = "raw-source-sentinel"
+            event_path = base / "event.json"
+            event_path.write_text(json.dumps(self.event({"pull_request_number": "7", "candidate_sha": self.candidate_sha, "extra": marker})))
+            environment = base / "github-env"
+            original = b"unchanged=value\n"
+            environment.write_bytes(original)
+            result = run_cli(["select-source"], env=self._source_env(event_path, environment, path=""))
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(b"", result.stdout)
+            self.assertEqual(b"image-audit-source:INPUT_INVALID\n", result.stderr)
+            self.assertEqual(original, environment.read_bytes())
+            self.assertNotIn(marker.encode(), result.stdout + result.stderr)
+
+            extra = run_cli(["select-source", marker], env=self._source_env(event_path, environment, path=""))
+            self.assertNotEqual(0, extra.returncode)
+            self.assertEqual(b"", extra.stdout)
+            self.assertEqual(b"image-audit-source:INVALID_ARGUMENT\n", extra.stderr)
+            self.assertNotIn(marker.encode(), extra.stdout + extra.stderr)
+
+    def test_select_source_cli_api_and_output_failures_cannot_succeed_or_disclose_raw_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            event_path = base / "event.json"
+            event_path.write_text(json.dumps(self.event({"pull_request_number": "7", "candidate_sha": self.candidate_sha})))
+            environment = base / "github-env"
+            original = b"existing=value\n"
+            environment.write_bytes(original)
+            raw_stderr = "tool-stderr-sentinel"
+            binary, _tracker = self._write_gh_stub(base / "bin", self.pull(), exit_code=17, stderr=raw_stderr)
+            failed_api = run_cli(["select-source"], env=self._source_env(event_path, environment, path=str(binary.parent)))
+            self.assertEqual((b"", b"image-audit-source:API_FAILURE\n"), (failed_api.stdout, failed_api.stderr))
+            self.assertEqual(original, environment.read_bytes())
+            self.assertNotIn(raw_stderr.encode(), failed_api.stdout + failed_api.stderr)
+
+            output_directory = base / "github-env-directory"
+            output_directory.mkdir()
+            main_event = base / "main-event.json"
+            main_event.write_text(json.dumps(self.event()))
+            failed_output = run_cli(["select-source"], env=self._source_env(main_event, output_directory, path=""))
+            self.assertEqual((b"", b"image-audit-source:OUTPUT_FAILURE\n"), (failed_output.stdout, failed_output.stderr))
+            self.assertTrue(output_directory.is_dir())
+
+
 class WorkspaceAndOutputTests(unittest.TestCase):
     def test_cli_contract_and_preexisting_symlink_guards(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2116,7 +2352,7 @@ class NativeOrasContractTests(unittest.TestCase):
     def test_manual_controls_run_native_proof_before_acquisition(self):
         workflow = (ROOT / ".github" / "workflows" / "image-audit.yml").read_text()
         controls = re.search(
-            r"^\s*- name: run pinned synthetic scanner controls\s*$\n\s*run: \|\n(?P<body>.*?)(?=^\s*- name:|\Z)",
+            r"^\s*- name: run pinned synthetic scanner controls\s*$\n\s*working-directory: \$\{\{ env\.IMAGE_AUDIT_CODE_DIR \}\}\n\s*run: \|\n(?P<body>.*?)(?=^\s*- name:|\Z)",
             workflow,
             re.MULTILINE | re.DOTALL,
         )

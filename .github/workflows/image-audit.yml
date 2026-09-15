@@ -2,6 +2,13 @@ name: Manual GHCR image audit
 
 on:
   workflow_dispatch:
+    inputs:
+      pull_request_number:
+        required: false
+        type: string
+      candidate_sha:
+        required: false
+        type: string
 
 jobs:
   audit:
@@ -10,6 +17,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      pull-requests: read
     steps:
       - name: verify trusted manual dispatch
         env:
@@ -27,9 +35,33 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
+          path: trusted
           persist-credentials: false
 
+      - name: verify trusted auditor controller
+        run: |
+          set -euo pipefail
+          TRUSTED_DIR="$GITHUB_WORKSPACE/trusted"
+          test -d "$TRUSTED_DIR"
+          test ! -L "$TRUSTED_DIR"
+          for file in scripts/image-audit.py scripts/secrets-scan.sh; do
+            test ! -L "$TRUSTED_DIR/$file"
+            test -f "$TRUSTED_DIR/$file"
+          done
+          git -C "$TRUSTED_DIR" ls-files --error-unmatch -- scripts/image-audit.py scripts/secrets-scan.sh
+          test "$(git -C "$TRUSTED_DIR" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$TRUSTED_DIR" diff --quiet
+          git -C "$TRUSTED_DIR" diff --cached --quiet
+
+      - name: select trusted auditor source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted/scripts/image-audit.py select-source
+
       - name: install verified audit tools
+        working-directory: trusted
         run: |
           set -euo pipefail
           TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -46,7 +78,7 @@ jobs:
           test -x "$TOOL_DIR/bin/oras"
           "$TOOL_DIR/bin/oras" version | grep -Fq "$ORAS_VERSION"
 
-          GITLEAKS_VERSION="$(grep -oE '^GITLEAKS_VERSION=[0-9.]+' scripts/secrets-scan.sh | cut -d= -f2)"
+          GITLEAKS_VERSION="$(grep -oE '^GITLEAKS_VERSION=[0-9.]+' "$GITHUB_WORKSPACE/trusted/scripts/secrets-scan.sh" | cut -d= -f2)"
           test "$GITLEAKS_VERSION" = 8.30.1
           GITLEAKS_ARCHIVE="$TOOL_DIR/downloads/gitleaks.tar.gz"
           GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -58,7 +90,48 @@ jobs:
           test -x "$TOOL_DIR/bin/gitleaks"
           test "$("$TOOL_DIR/bin/gitleaks" version)" = "$GITLEAKS_VERSION"
 
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: ${{ env.IMAGE_AUDIT_MODE == 'pr' }}
+        with:
+          ref: ${{ env.IMAGE_AUDIT_CODE_SHA }}
+          path: candidate
+          persist-credentials: false
+
+      - name: verify selected auditor source
+        id: verify_source
+        run: |
+          set -euo pipefail
+          case "$IMAGE_AUDIT_MODE:$IMAGE_AUDIT_CODE_DIR" in
+            main:trusted|pr:candidate) ;;
+            *) exit 1 ;;
+          esac
+          printf '%s\n' "$IMAGE_AUDIT_WORKFLOW_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s\n' "$IMAGE_AUDIT_CODE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          case "$IMAGE_AUDIT_MODE" in
+            main) test "$IMAGE_AUDIT_CODE_SHA" = "$IMAGE_AUDIT_WORKFLOW_SHA"; test -z "$IMAGE_AUDIT_PR_NUMBER" ;;
+            pr) printf '%s\n' "$IMAGE_AUDIT_PR_NUMBER" | grep -Eq '^[1-9][0-9]*$' ;;
+          esac
+          SOURCE_DIR="$GITHUB_WORKSPACE/$IMAGE_AUDIT_CODE_DIR"
+          test -d "$SOURCE_DIR"
+          test ! -L "$SOURCE_DIR"
+          for file in scripts/image-audit.py scripts/tests/test_image_audit.py; do
+            test ! -L "$SOURCE_DIR/$file"
+            test -f "$SOURCE_DIR/$file"
+          done
+          git -C "$SOURCE_DIR" ls-files --error-unmatch -- scripts/image-audit.py scripts/tests/test_image_audit.py
+          test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$IMAGE_AUDIT_CODE_SHA"
+          git -C "$SOURCE_DIR" diff --quiet
+          git -C "$SOURCE_DIR" diff --cached --quiet
+          {
+            printf '%s\n\n' '### Image audit source'
+            printf -- '- Workflow SHA: `%s`\n' "$IMAGE_AUDIT_WORKFLOW_SHA"
+            printf -- '- Code SHA: `%s`\n' "$IMAGE_AUDIT_CODE_SHA"
+            printf -- '- Mode: `%s`\n' "$IMAGE_AUDIT_MODE"
+            printf -- '- PR number: `%s`\n' "$IMAGE_AUDIT_PR_NUMBER"
+          } > "$GITHUB_STEP_SUMMARY"
+
       - name: run pinned synthetic scanner controls
+        working-directory: ${{ env.IMAGE_AUDIT_CODE_DIR }}
         run: |
           set -euo pipefail
           TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -66,6 +139,7 @@ jobs:
           python3 -B scripts/tests/test_image_audit.py --real-gitleaks "$TOOL_DIR/bin/gitleaks"
 
       - name: initialize owned audit workspace
+        working-directory: ${{ env.IMAGE_AUDIT_CODE_DIR }}
         run: |
           set -euo pipefail
           WORKSPACE="$RUNNER_TEMP/image-audit-workspace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -73,6 +147,7 @@ jobs:
           python3 -B scripts/image-audit.py init --workspace "$WORKSPACE"
 
       - name: acquire images from ghcr.io/zylomeara/framefit
+        working-directory: ${{ env.IMAGE_AUDIT_CODE_DIR }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -82,6 +157,7 @@ jobs:
           PATH="$TOOL_DIR/bin:$PATH" python3 -B scripts/image-audit.py acquire --workspace "$WORKSPACE"
 
       - name: scan acquired bytes without network
+        working-directory: ${{ env.IMAGE_AUDIT_CODE_DIR }}
         run: |
           set -euo pipefail
           TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -91,6 +167,7 @@ jobs:
             LANG=C.UTF-8 LC_ALL=C.UTF-8 /usr/bin/python3 -B scripts/image-audit.py scan --workspace "$WORKSPACE"
 
       - name: fetch fixed public vendor references
+        working-directory: ${{ env.IMAGE_AUDIT_CODE_DIR }}
         run: |
           set -euo pipefail
           TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -99,6 +176,7 @@ jobs:
             LANG=C.UTF-8 LC_ALL=C.UTF-8 /usr/bin/python3 -B scripts/image-audit.py fetch-vendor --workspace "$WORKSPACE"
 
       - name: compare references without network
+        working-directory: ${{ env.IMAGE_AUDIT_CODE_DIR }}
         run: |
           set -euo pipefail
           TOOL_DIR="$RUNNER_TEMP/image-audit-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -109,7 +187,33 @@ jobs:
 
       - name: finalize and publish the safe receipt
         if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        env:
+          VERIFY_SOURCE_OUTCOME: ${{ steps.verify_source.outcome }}
         run: |
           set -euo pipefail
           WORKSPACE="$RUNNER_TEMP/image-audit-workspace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          python3 -B scripts/image-audit.py finalize --workspace "$WORKSPACE"
+          if [ "$VERIFY_SOURCE_OUTCOME" = success ]; then
+            case "$IMAGE_AUDIT_MODE:$IMAGE_AUDIT_CODE_DIR" in
+              main:trusted|pr:candidate) ;;
+              *) exit 1 ;;
+            esac
+            HELPER="$GITHUB_WORKSPACE/$IMAGE_AUDIT_CODE_DIR/scripts/image-audit.py"
+          else
+            TRUSTED_DIR="$GITHUB_WORKSPACE/trusted"
+            if ! (
+              test -d "$TRUSTED_DIR" &&
+              test ! -L "$TRUSTED_DIR" &&
+              test ! -L "$TRUSTED_DIR/scripts/image-audit.py" &&
+              test -f "$TRUSTED_DIR/scripts/image-audit.py" &&
+              git -C "$TRUSTED_DIR" ls-files --error-unmatch -- scripts/image-audit.py &&
+              test "$(git -C "$TRUSTED_DIR" rev-parse HEAD)" = "$GITHUB_SHA" &&
+              git -C "$TRUSTED_DIR" diff --quiet &&
+              git -C "$TRUSTED_DIR" diff --cached --quiet
+            ) >/dev/null 2>&1; then
+              printf '%s\n' 'audit did not start' >&2
+              exit 1
+            fi
+            HELPER="$TRUSTED_DIR/scripts/image-audit.py"
+          fi
+          python3 -B "$HELPER" finalize --workspace "$WORKSPACE"
