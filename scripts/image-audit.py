@@ -39,7 +39,7 @@ import zipfile
 import zlib
 from collections import deque
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Callable, Iterable
+from typing import BinaryIO, Callable
 
 PACKAGE = "ghcr.io/zylomeara/framefit"
 VERSIONS_ENDPOINT = "/users/zylomeara/packages/container/framefit/versions"
@@ -263,6 +263,23 @@ STATE_KEYS = {
     "inventory_start",
     "inventory_end",
 }
+DIAGNOSTICS_KEY = "diagnostics"
+DIAGNOSTICS_SCHEMA = 1
+UNRESOLVED_KINDS = (
+    "archive-header",
+    "archive-link",
+    "archive-name",
+    "archive-trailing",
+    "file",
+    "json-key",
+    "json-raw",
+    "json-value",
+    "opaque",
+    "pax-key",
+    "pax-value",
+    "other",
+)
+UNRESOLVED_KIND_SET = frozenset(UNRESOLVED_KINDS)
 GRAPH_KEYS = {"schema", "roots", "objects", "manifests"}
 OBJECT_KEYS = {"digest", "size", "media_type", "kind", "depth"}
 MANIFEST_RECORD_KEYS = {"digest", "media_type", "artifact_type", "config", "layers", "blobs", "subject"}
@@ -302,6 +319,78 @@ def _bounded_int(value: object, maximum: int = MAX_PUBLIC_COUNTER) -> bool:
 
 def empty_counters() -> dict[str, int]:
     return {key: 0 for key in COUNTER_KEYS}
+
+
+def unavailable_diagnostics() -> dict[str, object]:
+    return {"schema": DIAGNOSTICS_SCHEMA, "availability": "unavailable"}
+
+
+def _diagnostic_buckets() -> dict[str, dict[str, object]]:
+    return {kind: {"rows": 0, "item_ids": set()} for kind in UNRESOLVED_KINDS}
+
+
+def _record_unresolved_diagnostic(buckets: dict[str, dict[str, object]], item_id: int, kind: str) -> None:
+    bucket = buckets[kind if kind in UNRESOLVED_KIND_SET else "other"]
+    bucket["rows"] += 1
+    bucket["item_ids"].add(item_id)
+
+
+def _unresolved_diagnostics_from_buckets(buckets: dict[str, dict[str, object]]) -> dict[str, object]:
+    by_kind = {
+        kind: {"rows": buckets[kind]["rows"], "distinct_items": len(buckets[kind]["item_ids"])}
+        for kind in UNRESOLVED_KINDS
+    }
+    return {
+        "schema": DIAGNOSTICS_SCHEMA,
+        "availability": "available",
+        "unresolved": {
+            "rows": sum(bucket["rows"] for bucket in by_kind.values()),
+            "distinct_items": sum(bucket["distinct_items"] for bucket in by_kind.values()),
+            "by_kind": by_kind,
+        },
+    }
+
+
+def _validate_diagnostics(diagnostics: object, counters: dict[str, object]) -> None:
+    if (
+        not isinstance(diagnostics, dict)
+        or not _is_int(diagnostics.get("schema"))
+        or diagnostics["schema"] != DIAGNOSTICS_SCHEMA
+    ):
+        raise AuditFailure("INTERNAL_ERROR")
+    availability = diagnostics.get("availability")
+    if availability == "unavailable":
+        if set(diagnostics) != {"schema", "availability"}:
+            raise AuditFailure("INTERNAL_ERROR")
+        return
+    if availability != "available" or set(diagnostics) != {"schema", "availability", "unresolved"}:
+        raise AuditFailure("INTERNAL_ERROR")
+    unresolved = diagnostics["unresolved"]
+    if not isinstance(unresolved, dict) or set(unresolved) != {"rows", "distinct_items", "by_kind"}:
+        raise AuditFailure("INTERNAL_ERROR")
+    rows = unresolved["rows"]
+    distinct_items = unresolved["distinct_items"]
+    by_kind = unresolved["by_kind"]
+    if not _bounded_int(rows) or not _bounded_int(distinct_items) or not isinstance(by_kind, dict) or set(by_kind) != set(UNRESOLVED_KINDS):
+        raise AuditFailure("INTERNAL_ERROR")
+    total_rows = 0
+    total_items = 0
+    for kind in UNRESOLVED_KINDS:
+        bucket = by_kind[kind]
+        if not isinstance(bucket, dict) or set(bucket) != {"rows", "distinct_items"}:
+            raise AuditFailure("INTERNAL_ERROR")
+        bucket_rows = bucket["rows"]
+        bucket_items = bucket["distinct_items"]
+        if not _bounded_int(bucket_rows) or not _bounded_int(bucket_items):
+            raise AuditFailure("INTERNAL_ERROR")
+        if (bucket_rows == 0) != (bucket_items == 0) or (bucket_rows and not 1 <= bucket_items <= bucket_rows):
+            raise AuditFailure("INTERNAL_ERROR")
+        total_rows += bucket_rows
+        total_items += bucket_items
+    if total_rows != rows or total_items != distinct_items or (rows == 0) != (distinct_items == 0) or (rows and not 1 <= distinct_items <= rows):
+        raise AuditFailure("INTERNAL_ERROR")
+    if counters.get("unresolved_findings") != rows or counters.get("detections") != counters.get("public_matches", 0) + rows:
+        raise AuditFailure("INTERNAL_ERROR")
 
 
 def source_index(package: str) -> int:
@@ -475,7 +564,7 @@ def _validate_inventory_protocol(value: object) -> None:
 
 def _validate_state(root: Path, state: object, *, verify_ledger: bool = True) -> dict[str, object]:
     info = _validate_workspace_root(root)
-    if not isinstance(state, dict) or set(state) != STATE_KEYS:
+    if not isinstance(state, dict) or set(state) not in (STATE_KEYS, STATE_KEYS | {DIAGNOSTICS_KEY}):
         raise AuditFailure("WORKSPACE_INVALID")
     if state["schema"] != SCHEMA or not isinstance(state["invocation"], str) or not INVOCATION_RE.fullmatch(state["invocation"]):
         raise AuditFailure("WORKSPACE_INVALID")
@@ -496,6 +585,11 @@ def _validate_state(root: Path, state: object, *, verify_ledger: bool = True) ->
     counters = state["counters"]
     if not isinstance(counters, dict) or set(counters) != set(COUNTER_KEYS) or any(not _bounded_int(value) for value in counters.values()):
         raise AuditFailure("WORKSPACE_INVALID")
+    if DIAGNOSTICS_KEY in state:
+        try:
+            _validate_diagnostics(state[DIAGNOSTICS_KEY], counters)
+        except AuditFailure:
+            raise AuditFailure("WORKSPACE_INVALID") from None
     _validate_inventory_protocol(state["inventory_start"])
     _validate_inventory_protocol(state["inventory_end"])
     if verify_ledger:
@@ -566,14 +660,22 @@ def _prepare_phase(root: Path, phase: str) -> dict[str, object]:
     return state
 
 
-def public_receipt(stage: str, outcome: str, code: str, counters: dict[str, int]) -> dict[str, object]:
-    receipt = {"schema": SCHEMA, "stage": stage, "outcome": outcome, "code": code, "counters": dict(counters)}
+def public_receipt(
+    stage: str, outcome: str, code: str, counters: dict[str, int], *, diagnostics: dict[str, object] | None = None
+) -> dict[str, object]:
+    receipt: dict[str, object] = {"schema": SCHEMA, "stage": stage, "outcome": outcome, "code": code, "counters": dict(counters)}
+    if diagnostics is not None:
+        receipt[DIAGNOSTICS_KEY] = diagnostics
     validate_public_receipt(receipt)
     return receipt
 
 
-def final_receipt(status: str, code: str, counters: dict[str, int]) -> dict[str, object]:
-    receipt = {"schema": SCHEMA, "stage": "FINALIZE", "status": status, "code": code, "counters": dict(counters)}
+def final_receipt(
+    status: str, code: str, counters: dict[str, int], *, diagnostics: dict[str, object] | None = None
+) -> dict[str, object]:
+    receipt: dict[str, object] = {"schema": SCHEMA, "stage": "FINALIZE", "status": status, "code": code, "counters": dict(counters)}
+    if diagnostics is not None:
+        receipt[DIAGNOSTICS_KEY] = diagnostics
     validate_public_receipt(receipt)
     return receipt
 
@@ -583,7 +685,13 @@ def validate_public_receipt(receipt: object) -> None:
         raise AuditFailure("INTERNAL_ERROR")
     final = receipt.get("stage") == "FINALIZE"
     expected = {"schema", "stage", "status", "code", "counters"} if final else {"schema", "stage", "outcome", "code", "counters"}
-    if set(receipt) != expected or receipt.get("schema") != SCHEMA or receipt.get("stage") not in PUBLIC_STAGES:
+    stage = receipt.get("stage")
+    has_diagnostics = DIAGNOSTICS_KEY in receipt
+    if has_diagnostics:
+        if stage not in {"COMPARE", "FINALIZE"}:
+            raise AuditFailure("INTERNAL_ERROR")
+        expected = expected | {DIAGNOSTICS_KEY}
+    if set(receipt) != expected or receipt.get("schema") != SCHEMA or stage not in PUBLIC_STAGES:
         raise AuditFailure("INTERNAL_ERROR")
     if final:
         if receipt.get("status") not in FINAL_STATUSES:
@@ -597,6 +705,10 @@ def validate_public_receipt(receipt: object) -> None:
         raise AuditFailure("INTERNAL_ERROR")
     if any(not _bounded_int(value) for value in counters.values()):
         raise AuditFailure("INTERNAL_ERROR")
+    if has_diagnostics:
+        _validate_diagnostics(receipt[DIAGNOSTICS_KEY], counters)
+        if stage == "COMPARE" and receipt[DIAGNOSTICS_KEY]["availability"] == "available" and receipt.get("outcome") != "OK":
+            raise AuditFailure("INTERNAL_ERROR")
 
 
 def _safe_receipt_bytes(receipt: dict[str, object]) -> bytes:
@@ -628,6 +740,16 @@ def _write_final_channels(receipt: dict[str, object]) -> None:
     if not summary_path:
         _commit_final(lambda: _emit(receipt))
         return
+    diagnostics = receipt.get(DIAGNOSTICS_KEY)
+    if diagnostics is not None and diagnostics["availability"] == "available":
+        unresolved = diagnostics["unresolved"]
+        diagnostic_summary = "\nUnresolved diagnostics:\n\n| Kind | Rows | Distinct staged items |\n| --- | ---: | ---: |\n"
+        diagnostic_summary += "\n".join(
+            f"| {kind} | {unresolved['by_kind'][kind]['rows']} | {unresolved['by_kind'][kind]['distinct_items']} |"
+            for kind in UNRESOLVED_KINDS
+        ) + "\n"
+    else:
+        diagnostic_summary = "\nUnresolved diagnostics: unavailable\n"
     summary = (
         "## Container image audit\n\n"
         f"Status: `{receipt['status']}`\n\n"
@@ -635,6 +757,7 @@ def _write_final_channels(receipt: dict[str, object]) -> None:
         f"Public vendor file matches: {receipt['counters']['public_matches']}  \n"
         f"Unresolved findings: {receipt['counters']['unresolved_findings']}  \n"
         f"Coverage gaps: {receipt['counters']['gaps']}\n"
+        + diagnostic_summary
     ).encode("utf-8")
     target = Path(summary_path)
     temporary: Path | None = None
@@ -3023,19 +3146,20 @@ def _hash_file(path: Path, expected_size: int) -> bytes:
 
 
 def _compare_phase(root: Path, state: dict[str, object]) -> None:
+    state.pop(DIAGNOSTICS_KEY, None)
     assert_no_credentials()
     references = _validate_references(read_private_json(root / "private" / "references.json"))
     connection = _ledger(root)
     try:
         _verify_staging(root, connection, state)
         findings = connection.execute(
-            "SELECT f.rowid,i.id,i.size,i.source_index,i.version,i.relpath FROM findings f JOIN items i ON i.id=f.item_id ORDER BY f.rowid"
+            "SELECT f.rowid,i.id,i.kind,i.size,i.source_index,i.version,i.relpath FROM findings f JOIN items i ON i.id=f.item_id ORDER BY f.rowid"
         ).fetchall()
         if len(findings) != state["counters"]["detections"]:
             raise AuditFailure("STAGING_MISMATCH")
         wanted_by_reference: dict[tuple[int, str], set[str]] = {}
         missing_vendor_source = False
-        for _finding, _item, _size, source, version, relpath in findings:
+        for _finding, _item, _kind, _size, source, version, relpath in findings:
             if source is not None and version is None:
                 missing_vendor_source = True
             if source is not None and version is not None and relpath is not None:
@@ -3056,7 +3180,8 @@ def _compare_phase(root: Path, state: dict[str, object]) -> None:
         matches = 0
         unresolved = 0
         item_hashes: dict[int, bytes] = {}
-        for _finding, item_id, size, source, version, relpath in findings:
+        diagnostic_buckets = _diagnostic_buckets()
+        for _finding, item_id, kind, size, source, version, relpath in findings:
             matched = False
             if source is not None and version is not None and relpath is not None:
                 expected = reference_hashes.get((source, version), {}).get("package/" + relpath)
@@ -3070,6 +3195,7 @@ def _compare_phase(root: Path, state: dict[str, object]) -> None:
                 matches += 1
             else:
                 unresolved += 1
+                _record_unresolved_diagnostic(diagnostic_buckets, item_id, kind)
         state["counters"]["public_matches"] = matches
         state["counters"]["unresolved_findings"] = unresolved
         save_state(root, state)
@@ -3077,6 +3203,8 @@ def _compare_phase(root: Path, state: dict[str, object]) -> None:
             raise AuditFailure("STAGING_MISMATCH")
         if missing_vendor_source:
             raise AuditFailure("VENDOR_SOURCE_UNAVAILABLE")
+        state[DIAGNOSTICS_KEY] = _unresolved_diagnostics_from_buckets(diagnostic_buckets)
+        save_state(root, state)
     finally:
         connection.close()
 
@@ -3120,14 +3248,22 @@ def _validate_cleanup_target(root: Path, state: dict[str, object]) -> None:
             raise AuditFailure("WORKSPACE_INVALID")
 
 
+def _completed_diagnostics(state: dict[str, object]) -> dict[str, object]:
+    if state["phases"]["compare"] == "complete" and DIAGNOSTICS_KEY in state:
+        return state[DIAGNOSTICS_KEY]
+    return unavailable_diagnostics()
+
+
 def finalize_workspace(root: Path) -> tuple[int, dict[str, object]]:
     counters = empty_counters()
+    diagnostics = unavailable_diagnostics()
     status = "INCOMPLETE"
     code = "WORKSPACE_INVALID"
     state: dict[str, object] | None = None
     try:
         state = load_state(root)
         counters = dict(state["counters"])
+        diagnostics = _completed_diagnostics(state)
         if any(value != "complete" for value in state["phases"].values()):
             status = "INCOMPLETE"
             code = state["primary_code"] if state["primary_code"] != "NONE" else "PHASE_ORDER"
@@ -3140,7 +3276,7 @@ def finalize_workspace(root: Path) -> tuple[int, dict[str, object]]:
         else:
             status = "COMPLETE_NO_FINDINGS"
             code = "NONE"
-        provisional = final_receipt(status, code, counters)
+        provisional = final_receipt(status, code, counters, diagnostics=diagnostics)
         _validate_cleanup_target(root, state)
         shutil.rmtree(root)
         if root.exists() or root.is_symlink():
@@ -3148,25 +3284,28 @@ def finalize_workspace(root: Path) -> tuple[int, dict[str, object]]:
         receipt = provisional
     except AuditFailure as error:
         if error.code == "WORKSPACE_INVALID":
-            receipt = final_receipt("INCOMPLETE", "WORKSPACE_INVALID", counters)
+            receipt = final_receipt("INCOMPLETE", "WORKSPACE_INVALID", counters, diagnostics=diagnostics)
         else:
-            receipt = final_receipt("INCOMPLETE", "CLEANUP_FAILED" if error.code != "PUBLIC_OUTPUT_FAILED" else error.code, counters)
+            receipt = final_receipt("INCOMPLETE", "CLEANUP_FAILED" if error.code != "PUBLIC_OUTPUT_FAILED" else error.code, counters, diagnostics=diagnostics)
     except BaseException:
-        receipt = final_receipt("INCOMPLETE", "CLEANUP_FAILED", counters)
+        receipt = final_receipt("INCOMPLETE", "CLEANUP_FAILED", counters, diagnostics=diagnostics)
     exit_code = 0 if receipt["status"] == "COMPLETE_NO_FINDINGS" else 2 if receipt["status"] == "COMPLETE_REVIEW_REQUIRED" else 3
     return exit_code, receipt
 
 
 def _phase_receipt(root: Path, command: str, result: int) -> dict[str, object]:
+    diagnostics: dict[str, object] | None = unavailable_diagnostics() if command == "compare" else None
     try:
         state = load_state(root)
         counters = state["counters"]
         code = "NONE" if result == 0 else state["primary_code"]
+        if command == "compare" and result == 0:
+            diagnostics = _completed_diagnostics(state)
     except AuditFailure:
         counters = empty_counters()
         code = "WORKSPACE_INVALID" if result else "INTERNAL_ERROR"
         result = 1
-    return public_receipt(PHASE_STAGES[command], "OK" if result == 0 else "FAILED", code, counters)
+    return public_receipt(PHASE_STAGES[command], "OK" if result == 0 else "FAILED", code, counters, diagnostics=diagnostics)
 
 
 def _parse_cli(argv: list[str]) -> tuple[str, Path]:
@@ -3209,7 +3348,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 _write_final_channels(receipt)
             except AuditFailure:
-                _emit(final_receipt("INCOMPLETE", "PUBLIC_OUTPUT_FAILED", receipt["counters"]))
+                _emit(final_receipt("INCOMPLETE", "PUBLIC_OUTPUT_FAILED", receipt["counters"], diagnostics=receipt.get(DIAGNOSTICS_KEY)))
                 return 3
             return result
         result = run_phase(command, root)
