@@ -681,7 +681,7 @@ describe('manual GHCR image-audit workflow', () => {
     const mutations: Array<[string, (value: string) => string]> = [
       ['duplicate phase', (value) => insertBeforeFinalizer(value, duplicateFetch)],
       ['unnamed source-running step', (value) => insertBeforeFinalizer(value, `      - run: ${directFetch}\n\n`)],
-      ['quoted duplicate phase', (value) => insertBeforeFinalizer(value, duplicateFetch.replace('- name:', '- name:').replace('fetch fixed public vendor references', '"fetch fixed public vendor references"'))],
+      ['quoted duplicate phase', (value) => insertBeforeFinalizer(value, duplicateFetch.replace('fetch fixed public vendor references', '"fetch fixed public vendor references"'))],
       ['flow source-running step', (value) => insertBeforeFinalizer(value, `      - { run: '${directFetch}' }\n\n`)],
     ];
     for (const [name, mutate] of mutations) {
