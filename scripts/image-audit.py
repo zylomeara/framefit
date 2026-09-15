@@ -1762,8 +1762,12 @@ def _ledger(root: Path) -> sqlite3.Connection:
     return connection
 
 
+def _safe_archive_text(value: str) -> bool:
+    return bool(value) and "\x00" not in value and "\\" not in value and len(value.encode("utf-8", "surrogateescape")) <= 4096
+
+
 def _safe_archive_name(name: str) -> bool:
-    if not name or "\x00" in name or "\\" in name or len(name.encode("utf-8", "surrogateescape")) > 4096:
+    if not _safe_archive_text(name):
         return False
     path = PurePosixPath(name)
     return not path.is_absolute() and all(part not in ("", ".", "..") for part in path.parts)
@@ -2424,7 +2428,9 @@ class ArchiveScanner:
             with tarfile.open(path, mode="r:") as archive:
                 for member in archive:
                     safe_name = _safe_archive_name(member.name)
-                    safe_link = not member.linkname or _safe_archive_name(member.linkname)
+                    safe_link = not member.linkname or (
+                        _safe_archive_text(member.linkname) if member.issym() else _safe_archive_name(member.linkname)
+                    )
                     if not safe_name or not safe_link:
                         self.gap("UNSAFE_ARCHIVE_PATH")
                     if member.size > MAX_MEMBER_BYTES:

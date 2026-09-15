@@ -62,6 +62,30 @@ def tar_bytes(entries: list[tuple[str, bytes]], *, pax: tuple[str, str] | None =
     return output.getvalue()
 
 
+def tar_member_bytes(
+    name: str,
+    *,
+    member_type: bytes = tarfile.REGTYPE,
+    linkname: str = "",
+    payload: bytes = b"clean\n",
+    pax_headers: dict[str, str] | None = None,
+    tar_format: int = tarfile.PAX_FORMAT,
+) -> bytes:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w", format=tar_format) as archive:
+        member = tarfile.TarInfo(name)
+        member.type = member_type
+        member.linkname = linkname
+        if pax_headers:
+            member.pax_headers = pax_headers
+        if member.isfile():
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+        else:
+            archive.addfile(member)
+    return output.getvalue()
+
+
 def zip_bytes(entries: list[tuple[str, bytes]]) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -409,6 +433,14 @@ def run_real_gitleaks_subprocess(mode: str, raw_stderr: str, credential_marker: 
             return {{"gzip-metadata": dict(metadata), "zip-metadata": dict(metadata), "bzip2-tail": dict(tail), "xz-tail": dict(tail)}}
 
         module.archive_regression_results = archives
+
+        def link_targets(_binary):
+            result = {{"scan": 0, "phase": "complete", "detections": 3, "metadata_retained": True, "raw": raw, "credential": credential}}
+            if mode == "archive-link-target":
+                result["metadata_retained"] = False
+            return result
+
+        module.archive_link_target_result = link_targets
         raise SystemExit(module.run_real_gitleaks(pathlib.Path("unused")))
     """)
     return subprocess.run(
@@ -1182,6 +1214,41 @@ def archive_regression_results(gitleaks: Path) -> dict[str, dict[str, object]]:
     return results
 
 
+def archive_link_target_result(gitleaks: Path) -> dict[str, object]:
+    with tempfile.TemporaryDirectory() as temp:
+        base = Path(temp)
+        raw_marker = runtime_canary("pax-raw-link")
+        pax_marker = runtime_canary("pax-linkpath")
+        gnu_marker = AUDIT.synthetic_scanner_control()
+        assert len({raw_marker, pax_marker, gnu_marker}) == 3
+        pax_layer = tar_member_bytes(
+            "pax-link",
+            member_type=tarfile.SYMTYPE,
+            linkname="raw-api_key=" + raw_marker,
+            pax_headers={"linkpath": "../api_key=" + pax_marker},
+        )
+        gnu_target = "../" + "x" * 120 + "/api_key=" + gnu_marker
+        assert gnu_target.index("api_key=" + gnu_marker) >= 100
+        gnu_layer = tar_member_bytes(
+            "gnu-link",
+            member_type=tarfile.SYMTYPE,
+            linkname=gnu_target,
+            tar_format=tarfile.GNU_FORMAT,
+        )
+        workspace = base / "workspace"
+        seed_acquired(workspace, [pax_layer, gnu_layer])
+        with mock.patch.dict(os.environ, {"PATH": str(gitleaks.parent) + os.pathsep + os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}, clear=True), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
+            scan = AUDIT.run_phase("scan", workspace)
+        state = AUDIT.load_state(workspace)
+        staged = b"".join(path.read_bytes() for path in (workspace / "spool").iterdir())
+        return {
+            "scan": scan,
+            "phase": state["phases"]["scan"],
+            "detections": state["counters"]["detections"],
+            "metadata_retained": all(("api_key=" + marker).encode() in staged for marker in (raw_marker, pax_marker, gnu_marker)),
+        }
+
+
 def discovery_annotation_data_results(gitleaks: Path) -> dict[str, dict[str, object]]:
     results: dict[str, dict[str, object]] = {}
     with tempfile.TemporaryDirectory() as temp:
@@ -1375,6 +1442,104 @@ class ScanTests(unittest.TestCase):
             self.assertNotEqual(0, self.scan(workspace, gitleaks))
             self.assertFalse((base / "outside").exists())
             self.assertEqual("UNSAFE_ARCHIVE_PATH", AUDIT.load_state(workspace)["primary_code"])
+
+    def test_tar_symlink_targets_are_metadata_not_extraction_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            regular_marker, parent_marker, absolute_marker = (
+                runtime_canary(str(index)) for index in range(3)
+            )
+            self.assertEqual(3, len({regular_marker, parent_marker, absolute_marker}))
+            parent_target = base / ("api_key=" + parent_marker)
+            absolute_target = base / ("api_key=" + absolute_marker)
+            parent_sentinel = b"outside-parent-sentinel"
+            absolute_sentinel = b"outside-absolute-sentinel"
+            parent_target.write_bytes(parent_sentinel)
+            absolute_target.write_bytes(absolute_sentinel)
+            output = io.BytesIO()
+            with tarfile.open(fileobj=output, mode="w") as archive:
+                regular = tarfile.TarInfo("regular.txt")
+                regular.linkname = "relative-target"
+                regular_payload = ("api_key=" + regular_marker).encode()
+                regular.size = len(regular_payload)
+                archive.addfile(regular, io.BytesIO(regular_payload))
+                parent_link = tarfile.TarInfo("links/parent-link")
+                parent_link.type = tarfile.SYMTYPE
+                parent_link.linkname = "../" + parent_target.name
+                archive.addfile(parent_link)
+                absolute_link = tarfile.TarInfo("absolute-link")
+                absolute_link.type = tarfile.SYMTYPE
+                absolute_link.linkname = str(absolute_target)
+                archive.addfile(absolute_link)
+                empty_link = tarfile.TarInfo("empty-link")
+                empty_link.type = tarfile.SYMTYPE
+                archive.addfile(empty_link)
+            workspace = base / "workspace"
+            seed_acquired(workspace, [output.getvalue()])
+            extracted: list[str] = []
+            original = tarfile.TarFile.extractfile
+
+            def record_extract(archive, member, *args, **kwargs):
+                extracted.append(member.name if isinstance(member, tarfile.TarInfo) else member)
+                return original(archive, member, *args, **kwargs)
+
+            with mock.patch.object(tarfile.TarFile, "extractfile", autospec=True, side_effect=record_extract):
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+            state = AUDIT.load_state(workspace)
+            staged = b"".join(path.read_bytes() for path in (workspace / "spool").iterdir())
+            self.assertEqual("complete", state["phases"]["scan"])
+            self.assertGreaterEqual(state["counters"]["detections"], 3)
+            self.assertTrue(all(("api_key=" + marker).encode() in staged for marker in (regular_marker, parent_marker, absolute_marker)))
+            self.assertNotIn(parent_sentinel, staged)
+            self.assertNotIn(absolute_sentinel, staged)
+            self.assertEqual(["regular.txt"], extracted)
+            self.assertFalse(any(path.is_symlink() for path in workspace.rglob("*")))
+
+    def test_archive_member_and_hardlink_path_guards_stay_strict(self):
+        cases = (
+            ("tar-member", tar_member_bytes("../unsafe-member")),
+            ("zip-member", zip_bytes([("../unsafe-member", b"clean\n")])),
+            ("symlink-member", tar_member_bytes("../unsafe-link", member_type=tarfile.SYMTYPE, linkname="relative-target")),
+            ("hardlink-target", tar_member_bytes("safe-hardlink", member_type=tarfile.LNKTYPE, linkname="../unsafe-target")),
+            ("pax-member", tar_member_bytes("safe-member", pax_headers={"path": "../unsafe-member"})),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            gitleaks = make_gitleaks_stub(base)
+            for name, layer in cases:
+                with self.subTest(name=name):
+                    workspace = base / name
+                    seed_acquired(workspace, [layer])
+                    self.assertNotEqual(0, self.scan(workspace, gitleaks))
+                    self.assertEqual("UNSAFE_ARCHIVE_PATH", AUDIT.load_state(workspace)["primary_code"])
+
+    def test_tar_gnu_and_pax_link_targets_are_retained_and_scanned(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = archive_link_target_result(make_gitleaks_stub(Path(temp)))
+        self.assertEqual(0, result["scan"])
+        self.assertEqual("complete", result["phase"])
+        self.assertGreaterEqual(result["detections"], 3)
+        self.assertTrue(result["metadata_retained"])
+
+    def test_tar_symlink_target_raw_text_guards_keep_empty_and_byte_boundary_valid(self):
+        cases = (
+            ("empty", tar_member_bytes("empty-link", member_type=tarfile.SYMTYPE, linkname=""), 0),
+            ("multibyte-boundary", tar_member_bytes("multibyte-link", member_type=tarfile.SYMTYPE, linkname="é" * 2048), 0),
+            ("nul", tar_member_bytes("nul-link", member_type=tarfile.SYMTYPE, linkname="safe", pax_headers={"linkpath": "safe\x00target"}), 1),
+            ("backslash", tar_member_bytes("backslash-link", member_type=tarfile.SYMTYPE, linkname="safe\\target"), 1),
+            ("byte-limit", tar_member_bytes("byte-limit-link", member_type=tarfile.SYMTYPE, linkname="a" * 4097), 1),
+            ("multibyte-over-limit", tar_member_bytes("multibyte-over-limit-link", member_type=tarfile.SYMTYPE, linkname="é" * 2049), 1),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            gitleaks = make_gitleaks_stub(base)
+            for name, layer, expected_scan in cases:
+                with self.subTest(name=name):
+                    workspace = base / name
+                    seed_acquired(workspace, [layer])
+                    self.assertEqual(expected_scan, self.scan(workspace, gitleaks))
+                    state = AUDIT.load_state(workspace)
+                    self.assertEqual("complete" if expected_scan == 0 else "UNSAFE_ARCHIVE_PATH", state["phases"]["scan"] if expected_scan == 0 else state["primary_code"])
 
     def test_member_expanded_count_nesting_and_retained_caps(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2312,6 +2477,7 @@ class RealGitleaksControls(unittest.TestCase):
             ("discovery-result", b"gitleaks-control:discovery-result:SCANNER_CONTROL_FAILED\n"),
             ("archive-metadata", b"gitleaks-control:archive-metadata:SCANNER_CONTROL_FAILED\n"),
             ("archive-tail", b"gitleaks-control:archive-tail:SCANNER_CONTROL_FAILED\n"),
+            ("archive-link-target", b"gitleaks-control:archive-link-target:SCANNER_CONTROL_FAILED\n"),
             ("invalid-code", b"gitleaks-control:controls-run:INTERNAL_ERROR\n"),
         )
         for mode, expected_stderr in cases:
@@ -2726,6 +2892,9 @@ def run_real_gitleaks(binary: Path) -> int:
         item = results[name]
         if item["scan"] == 0 or item["primary_code"] != "ARCHIVE_TRAILING_DATA" or item["final_status"] != "INCOMPLETE":
             return fail("archive-tail", "SCANNER_CONTROL_FAILED")
+    targets = archive_link_target_result(resolved_binary)
+    if targets["scan"] != 0 or targets["phase"] != "complete" or targets["detections"] < 3 or targets["metadata_retained"] is not True:
+        return fail("archive-link-target", "SCANNER_CONTROL_FAILED")
     return 0
 
 
