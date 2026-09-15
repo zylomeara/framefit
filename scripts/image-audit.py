@@ -70,6 +70,22 @@ DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 SPOOL_RE = re.compile(r"^[0-9]{12}\.txt$")
 INVOCATION_RE = re.compile(r"^[0-9a-f]{32}$")
+SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SOURCE_PR_RE = re.compile(r"^[1-9][0-9]*$")
+
+SOURCE_REPOSITORY = "zylomeara/framefit"
+SOURCE_OWNER = "zylomeara"
+SOURCE_ERROR_CODES = {
+    "INVALID_ARGUMENT",
+    "CONTEXT_INVALID",
+    "INPUT_INVALID",
+    "ACTOR_INVALID",
+    "METADATA_INVALID",
+    "EVENT_FAILURE",
+    "API_FAILURE",
+    "OUTPUT_FAILURE",
+    "INTERNAL_ERROR",
+}
 
 IMAGE_MANIFEST_TYPES = {
     "application/vnd.oci.image.manifest.v1+json",
@@ -261,6 +277,14 @@ class AuditFailure(Exception):
             code = "INTERNAL_ERROR"
         self.code = code
         super().__init__(code)
+
+
+class SourceSelectionFailure(Exception):
+    """A fixed, non-receipt failure for trusted source selection."""
+
+    def __init__(self, code: str):
+        self.code = code if code in SOURCE_ERROR_CODES else "INTERNAL_ERROR"
+        super().__init__(self.code)
 
 
 class Cancelled(AuditFailure):
@@ -841,6 +865,257 @@ def _parse_json_bytes(data: bytes, code: str = "INVALID_JSON") -> object:
         return json.loads(data)
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise AuditFailure(code) from None
+
+
+def _source_sha(value: object, code: str) -> str:
+    if not isinstance(value, str) or not SOURCE_SHA_RE.fullmatch(value):
+        raise SourceSelectionFailure(code)
+    return value
+
+
+def _source_event_inputs(event: dict[str, object]) -> tuple[str, str]:
+    if "inputs" not in event:
+        return "", ""
+    inputs = event["inputs"]
+    if not isinstance(inputs, dict) or set(inputs) - {"pull_request_number", "candidate_sha"}:
+        raise SourceSelectionFailure("INPUT_INVALID")
+    number = inputs.get("pull_request_number", "")
+    candidate = inputs.get("candidate_sha", "")
+    if not isinstance(number, str) or not isinstance(candidate, str):
+        raise SourceSelectionFailure("INPUT_INVALID")
+    return number, candidate
+
+
+def _validate_source_event(event: object) -> dict[str, object]:
+    if not isinstance(event, dict):
+        raise SourceSelectionFailure("CONTEXT_INVALID")
+    repository = event.get("repository")
+    if not isinstance(repository, dict):
+        raise SourceSelectionFailure("CONTEXT_INVALID")
+    if (
+        repository.get("full_name") != SOURCE_REPOSITORY
+        or repository.get("fork") is not False
+        or repository.get("default_branch") != "main"
+    ):
+        raise SourceSelectionFailure("CONTEXT_INVALID")
+    return event
+
+
+def _validate_source_pull(metadata: object, number: str, candidate: str) -> None:
+    if not isinstance(metadata, dict) or not _is_int(metadata.get("number")) or metadata["number"] != int(number):
+        raise SourceSelectionFailure("METADATA_INVALID")
+    if metadata.get("state") != "open":
+        raise SourceSelectionFailure("METADATA_INVALID")
+    base = metadata.get("base")
+    head = metadata.get("head")
+    if not isinstance(base, dict) or not isinstance(head, dict):
+        raise SourceSelectionFailure("METADATA_INVALID")
+    base_repo = base.get("repo")
+    head_repo = head.get("repo")
+    if (
+        not isinstance(base_repo, dict)
+        or base_repo.get("full_name") != SOURCE_REPOSITORY
+        or base.get("ref") != "main"
+        or not isinstance(head_repo, dict)
+        or head_repo.get("full_name") != SOURCE_REPOSITORY
+        or head_repo.get("fork") is not False
+        or head.get("sha") != candidate
+    ):
+        raise SourceSelectionFailure("METADATA_INVALID")
+
+
+def select_audit_source(
+    event: object,
+    actor: object,
+    triggering_actor: object,
+    workflow_sha: object,
+    fetch_pull: Callable[[str], object],
+) -> dict[str, str]:
+    """Select one immutable auditor source from trusted dispatch context."""
+    validated_event = _validate_source_event(event)
+    workflow = _source_sha(workflow_sha, "CONTEXT_INVALID")
+    number, candidate = _source_event_inputs(validated_event)
+    if not number and not candidate:
+        return {
+            "IMAGE_AUDIT_MODE": "main",
+            "IMAGE_AUDIT_WORKFLOW_SHA": workflow,
+            "IMAGE_AUDIT_CODE_SHA": workflow,
+            "IMAGE_AUDIT_PR_NUMBER": "",
+            "IMAGE_AUDIT_CODE_DIR": "trusted",
+        }
+    if not number or not candidate or not SOURCE_PR_RE.fullmatch(number) or len(number) > len(str(MAX_PUBLIC_COUNTER)):
+        raise SourceSelectionFailure("INPUT_INVALID")
+    try:
+        parsed_number = int(number)
+    except ValueError:
+        raise SourceSelectionFailure("INPUT_INVALID") from None
+    if not _bounded_int(parsed_number) or not SOURCE_SHA_RE.fullmatch(candidate):
+        raise SourceSelectionFailure("INPUT_INVALID")
+    if actor != SOURCE_OWNER or triggering_actor != SOURCE_OWNER:
+        raise SourceSelectionFailure("ACTOR_INVALID")
+    try:
+        metadata = fetch_pull(number)
+    except SourceSelectionFailure:
+        raise
+    except BaseException:
+        raise SourceSelectionFailure("API_FAILURE") from None
+    _validate_source_pull(metadata, number, candidate)
+    return {
+        "IMAGE_AUDIT_MODE": "pr",
+        "IMAGE_AUDIT_WORKFLOW_SHA": workflow,
+        "IMAGE_AUDIT_CODE_SHA": candidate,
+        "IMAGE_AUDIT_PR_NUMBER": number,
+        "IMAGE_AUDIT_CODE_DIR": "candidate",
+    }
+
+
+def _fetch_pull_request(number: str, token: object) -> object:
+    if not isinstance(token, str) or not token:
+        raise SourceSelectionFailure("API_FAILURE")
+    try:
+        gh = _find_tool("gh")
+        with tempfile.TemporaryDirectory(prefix="image-audit-source-") as home:
+            result, stdout, _stderr = _run_bounded(
+                [str(gh), "api", "--hostname", "github.com", f"repos/{SOURCE_REPOSITORY}/pulls/{number}"],
+                cwd=home,
+                env=_sterile_env(Path(home), {"GH_TOKEN": token}),
+            )
+    except (AuditFailure, OSError, ValueError):
+        raise SourceSelectionFailure("API_FAILURE") from None
+    if result != 0:
+        raise SourceSelectionFailure("API_FAILURE")
+    try:
+        return _parse_json_bytes(stdout)
+    except AuditFailure:
+        raise SourceSelectionFailure("API_FAILURE") from None
+
+
+def _read_source_event(path_value: object) -> object:
+    if not isinstance(path_value, str) or not path_value or "\x00" in path_value:
+        raise SourceSelectionFailure("EVENT_FAILURE")
+    try:
+        path = Path(path_value)
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_size > MAX_METADATA_BYTES:
+            raise SourceSelectionFailure("EVENT_FAILURE")
+        with path.open("rb") as handle:
+            data = handle.read(MAX_METADATA_BYTES + 1)
+    except SourceSelectionFailure:
+        raise
+    except (OSError, ValueError):
+        raise SourceSelectionFailure("EVENT_FAILURE") from None
+    if len(data) > MAX_METADATA_BYTES:
+        raise SourceSelectionFailure("EVENT_FAILURE")
+    try:
+        return json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise SourceSelectionFailure("EVENT_FAILURE") from None
+
+
+def _source_context() -> tuple[object, object, object]:
+    if (
+        os.environ.get("GITHUB_REPOSITORY") != SOURCE_REPOSITORY
+        or os.environ.get("GITHUB_REF") != "refs/heads/main"
+        or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+    ):
+        raise SourceSelectionFailure("CONTEXT_INVALID")
+    return os.environ.get("GITHUB_ACTOR"), os.environ.get("GITHUB_TRIGGERING_ACTOR"), os.environ.get("GITHUB_SHA")
+
+
+def _source_metadata_lines(selection: dict[str, str]) -> bytes:
+    keys = (
+        "IMAGE_AUDIT_MODE",
+        "IMAGE_AUDIT_WORKFLOW_SHA",
+        "IMAGE_AUDIT_CODE_SHA",
+        "IMAGE_AUDIT_PR_NUMBER",
+        "IMAGE_AUDIT_CODE_DIR",
+    )
+    if set(selection) != set(keys):
+        raise SourceSelectionFailure("OUTPUT_FAILURE")
+    mode = selection["IMAGE_AUDIT_MODE"]
+    workflow = selection["IMAGE_AUDIT_WORKFLOW_SHA"]
+    code = selection["IMAGE_AUDIT_CODE_SHA"]
+    number = selection["IMAGE_AUDIT_PR_NUMBER"]
+    directory = selection["IMAGE_AUDIT_CODE_DIR"]
+    if (
+        mode not in {"main", "pr"}
+        or not SOURCE_SHA_RE.fullmatch(workflow)
+        or not SOURCE_SHA_RE.fullmatch(code)
+        or (mode == "main" and (code != workflow or number or directory != "trusted"))
+        or (mode == "pr" and (not SOURCE_PR_RE.fullmatch(number) or directory != "candidate"))
+    ):
+        raise SourceSelectionFailure("OUTPUT_FAILURE")
+    return b"".join(f"{key}={selection[key]}\n".encode("ascii") for key in keys)
+
+
+def _write_source_environment(selection: dict[str, str]) -> None:
+    data = _source_metadata_lines(selection)
+    target_value = os.environ.get("GITHUB_ENV")
+    if not isinstance(target_value, str) or not target_value or "\x00" in target_value:
+        raise SourceSelectionFailure("OUTPUT_FAILURE")
+    temporary: Path | None = None
+    try:
+        target = Path(target_value)
+        parent = target.parent
+        parent_info = parent.lstat()
+        if not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode) or parent_info.st_uid != os.getuid():
+            raise SourceSelectionFailure("OUTPUT_FAILURE")
+        try:
+            target_info = target.lstat()
+        except FileNotFoundError:
+            original = b""
+        else:
+            if not stat.S_ISREG(target_info.st_mode) or stat.S_ISLNK(target_info.st_mode) or target_info.st_uid != os.getuid() or target_info.st_size > MAX_METADATA_BYTES:
+                raise SourceSelectionFailure("OUTPUT_FAILURE")
+            with target.open("rb") as handle:
+                original = handle.read(MAX_METADATA_BYTES + 1)
+            if len(original) > MAX_METADATA_BYTES:
+                raise SourceSelectionFailure("OUTPUT_FAILURE")
+        if original and not original.endswith(b"\n"):
+            original += b"\n"
+        temporary = parent / (".image-audit-source-" + secrets.token_hex(8))
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            combined = original + data
+            if handle.write(combined) != len(combined):
+                raise OSError("short source metadata write")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except SourceSelectionFailure:
+        raise
+    except (OSError, ValueError):
+        raise SourceSelectionFailure("OUTPUT_FAILURE") from None
+    finally:
+        if temporary is not None:
+            with contextlib.suppress(FileNotFoundError):
+                temporary.unlink()
+
+
+def _run_source_selector(arguments: list[str]) -> int:
+    try:
+        if arguments != ["select-source"]:
+            raise SourceSelectionFailure("INVALID_ARGUMENT")
+        actor, triggering_actor, workflow_sha = _source_context()
+        event = _read_source_event(os.environ.get("GITHUB_EVENT_PATH"))
+        selection = select_audit_source(
+            event,
+            actor,
+            triggering_actor,
+            workflow_sha,
+            lambda number: _fetch_pull_request(number, os.environ.get("GH_TOKEN")),
+        )
+        _write_source_environment(selection)
+        return 0
+    except SourceSelectionFailure as error:
+        code = error.code
+    except BaseException:
+        code = "INTERNAL_ERROR"
+    try:
+        sys.stderr.write(f"image-audit-source:{code}\n")
+    except OSError:
+        pass
+    return 1
 
 
 def _validate_digest(value: object) -> str:
@@ -2909,6 +3184,8 @@ def main(argv: list[str] | None = None) -> int:
     global _final_publication_committed
     _final_publication_committed = False
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "select-source":
+        return _run_source_selector(arguments)
     old_handlers: dict[int, object] = {}
     for signum in (signal.SIGINT, signal.SIGTERM):
         old_handlers[signum] = signal.signal(signum, _signal_handler)
