@@ -46,6 +46,7 @@ VERSIONS_ENDPOINT = "/users/zylomeara/packages/container/framefit/versions"
 ORAS_VERSION = "1.3.3"
 GITLEAKS_VERSION = "8.30.1"
 SCHEMA = 1
+LEDGER_SCHEMA = 2
 
 MAX_VERSIONS = 1_000
 MAX_DESCRIPTORS = 25_000
@@ -58,6 +59,8 @@ MAX_RETAINED_BYTES = 1024**3
 MAX_NESTING = 4
 MAX_METADATA_BYTES = 32 * 1024**2
 MAX_CATALOG_BYTES = 32 * 1024**2
+PUBLIC_CATALOG_LENGTH = 1_053_543
+PUBLIC_CATALOG_SHA256 = "299e2b6b1a23eeb21340a020d8dd154da2aee674be5b5026f187076418f43514"
 MAX_PROCESS_OUTPUT = 4 * 1024**2
 MAX_PUBLIC_COUNTER = 2**53 - 1
 MIN_FREE_BYTES = 512 * 1024**2
@@ -67,6 +70,12 @@ NETWORK_TIMEOUT = 30.0
 POLL_SECONDS = 0.025
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+NPM_NAME_RE = re.compile(r"^(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$")
+NPM_VERSION_RE = re.compile(
+    r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$"
+)
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 SPOOL_RE = re.compile(r"^[0-9]{12}\.txt$")
 INVOCATION_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -478,6 +487,7 @@ def _initialize_ledger(root: Path, invocation: str) -> None:
                 id INTEGER PRIMARY KEY,
                 kind TEXT NOT NULL,
                 size INTEGER NOT NULL,
+                content_sha256 BLOB NOT NULL,
                 layer_digest TEXT,
                 package_root TEXT,
                 source_index INTEGER,
@@ -489,7 +499,7 @@ def _initialize_ledger(root: Path, invocation: str) -> None:
             CREATE INDEX finding_item ON findings(item_id);
             """
         )
-        connection.execute("INSERT INTO meta VALUES (?, ?)", (SCHEMA, invocation))
+        connection.execute("INSERT INTO meta VALUES (?, ?)", (LEDGER_SCHEMA, invocation))
         connection.commit()
     finally:
         connection.close()
@@ -603,7 +613,7 @@ def _validate_state(root: Path, state: object, *, verify_ledger: bool = True) ->
         finally:
             if connection is not None:
                 connection.close()
-        if row != (SCHEMA, state["invocation"]):
+        if row != (LEDGER_SCHEMA, state["invocation"]):
             raise AuditFailure("WORKSPACE_INVALID")
     return state
 
@@ -754,7 +764,7 @@ def _write_final_channels(receipt: dict[str, object]) -> None:
         "## Container image audit\n\n"
         f"Status: `{receipt['status']}`\n\n"
         f"Detections: {receipt['counters']['detections']}  \n"
-        f"Public vendor file matches: {receipt['counters']['public_matches']}  \n"
+        f"Public reference matches: {receipt['counters']['public_matches']}  \n"
         f"Unresolved findings: {receipt['counters']['unresolved_findings']}  \n"
         f"Coverage gaps: {receipt['counters']['gaps']}\n"
         + diagnostic_summary
@@ -1896,11 +1906,202 @@ def _safe_archive_name(name: str) -> bool:
     return not path.is_absolute() and all(part not in ("", ".", "..") for part in path.parts)
 
 
-def _package_parts(name: str) -> tuple[str, int, str, str] | None:
+def _catalog_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate catalog key")
+        result[key] = value
+    return result
+
+
+def _catalog_path(value: object) -> str:
+    if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value or "\x00" in value:
+        raise ValueError("invalid catalog path")
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts) or len(value.encode("utf-8")) > 4096:
+        raise ValueError("invalid catalog path")
+    return value
+
+
+def _catalog_descriptor(value: object) -> tuple[str, int]:
+    if not isinstance(value, dict) or set(value) != {"digest", "size"}:
+        raise ValueError("invalid catalog descriptor")
+    digest_value, size = value["digest"], value["size"]
+    if not isinstance(digest_value, str) or not DIGEST_RE.fullmatch(digest_value) or not _bounded_int(size):
+        raise ValueError("invalid catalog descriptor")
+    return digest_value, size
+
+
+def _load_public_catalog() -> tuple[dict[tuple[str, str, str], tuple[int, bytes]], frozenset[tuple[str, int, bytes]], frozenset[str]]:
+    path = Path(__file__).with_name("image-audit-public-catalog.json")
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size != PUBLIC_CATALOG_LENGTH or before.st_size > MAX_CATALOG_BYTES:
+            raise AuditFailure("CATALOG_INVALID")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or (info.st_dev, info.st_ino, info.st_size) != (before.st_dev, before.st_ino, before.st_size)
+            ):
+                raise AuditFailure("CATALOG_INVALID")
+            data = handle.read(MAX_CATALOG_BYTES + 1)
+    except AuditFailure:
+        raise
+    except (OSError, ValueError):
+        raise AuditFailure("CATALOG_INVALID") from None
+    if len(data) != info.st_size or hashlib.sha256(data).hexdigest() != PUBLIC_CATALOG_SHA256:
+        raise AuditFailure("CATALOG_INVALID")
+    try:
+        value = json.loads(data, object_pairs_hook=_catalog_pairs)
+        if not isinstance(value, dict) or set(value) != {"base", "npm", "provenance", "schema"}:
+            raise ValueError("invalid catalog root")
+        if not _is_int(value["schema"]) or value["schema"] != SCHEMA:
+            raise ValueError("invalid catalog schema")
+
+        provenance = value["provenance"]
+        if not isinstance(provenance, dict) or set(provenance) != {
+            "lockfile_sha256", "npm_artifacts", "npm_reference_manifest_sha256", "oci", "source_commit"
+        }:
+            raise ValueError("invalid catalog provenance")
+        if (
+            not isinstance(provenance["lockfile_sha256"], str)
+            or not HEX_RE.fullmatch(provenance["lockfile_sha256"])
+            or not isinstance(provenance["npm_reference_manifest_sha256"], str)
+            or not HEX_RE.fullmatch(provenance["npm_reference_manifest_sha256"])
+            or not isinstance(provenance["source_commit"], str)
+            or not SOURCE_SHA_RE.fullmatch(provenance["source_commit"])
+        ):
+            raise ValueError("invalid catalog provenance")
+
+        artifacts = provenance["npm_artifacts"]
+        if not isinstance(artifacts, list) or len(artifacts) > MAX_PUBLIC_COUNTER:
+            raise ValueError("invalid npm provenance")
+        artifact_pairs: set[tuple[str, str]] = set()
+        previous_artifact: tuple[str, str] | None = None
+        for record in artifacts:
+            if not isinstance(record, dict) or set(record) != {"integrity", "name", "sha256", "size", "version"}:
+                raise ValueError("invalid npm provenance")
+            name, version = record["name"], record["version"]
+            integrity, sha256, size = record["integrity"], record["sha256"], record["size"]
+            if (
+                not isinstance(name, str)
+                or not NPM_NAME_RE.fullmatch(name)
+                or not isinstance(version, str)
+                or not NPM_VERSION_RE.fullmatch(version)
+                or not isinstance(sha256, str)
+                or not HEX_RE.fullmatch(sha256)
+                or not _bounded_int(size)
+                or not isinstance(integrity, str)
+                or not integrity.startswith("sha512-")
+            ):
+                raise ValueError("invalid npm provenance")
+            decoded = base64.b64decode(integrity[7:], validate=True)
+            if len(decoded) != hashlib.sha512().digest_size or base64.b64encode(decoded).decode("ascii") != integrity[7:]:
+                raise ValueError("invalid npm provenance")
+            pair = (name, version)
+            if previous_artifact is not None and pair <= previous_artifact:
+                raise ValueError("invalid npm provenance order")
+            previous_artifact = pair
+            artifact_pairs.add(pair)
+
+        oci = provenance["oci"]
+        if not isinstance(oci, dict) or set(oci) != {"config", "index", "layers", "manifest", "platform"}:
+            raise ValueError("invalid OCI provenance")
+        for descriptor_value in (oci["config"], oci["index"], oci["manifest"]):
+            _catalog_descriptor(descriptor_value)
+        platform_value = oci["platform"]
+        if (
+            not isinstance(platform_value, dict)
+            or set(platform_value) != {"architecture", "os"}
+            or not isinstance(platform_value["architecture"], str)
+            or not platform_value["architecture"]
+            or not isinstance(platform_value["os"], str)
+            or not platform_value["os"]
+        ):
+            raise ValueError("invalid OCI platform")
+        layers = oci["layers"]
+        if not isinstance(layers, list) or len(layers) > MAX_PUBLIC_COUNTER:
+            raise ValueError("invalid OCI layers")
+        layer_digests: set[str] = set()
+        diff_ids: set[str] = set()
+        for record in layers:
+            if not isinstance(record, dict) or set(record) != {"diff_id", "digest", "size"}:
+                raise ValueError("invalid OCI layer")
+            layer_digest, _size = _catalog_descriptor({"digest": record["digest"], "size": record["size"]})
+            diff_id = record["diff_id"]
+            if not isinstance(diff_id, str) or not DIGEST_RE.fullmatch(diff_id):
+                raise ValueError("invalid OCI layer")
+            if layer_digest in layer_digests or diff_id in diff_ids:
+                raise ValueError("duplicate OCI layer")
+            layer_digests.add(layer_digest)
+            diff_ids.add(diff_id)
+
+        npm = value["npm"]
+        if not isinstance(npm, list) or len(npm) > MAX_PUBLIC_COUNTER:
+            raise ValueError("invalid npm catalog")
+        npm_lookup: dict[tuple[str, str, str], tuple[int, bytes]] = {}
+        previous_npm: tuple[str, str, str] | None = None
+        for record in npm:
+            if not isinstance(record, dict) or set(record) != {"name", "path", "sha256", "size", "version"}:
+                raise ValueError("invalid npm record")
+            name, version, relpath = record["name"], record["version"], _catalog_path(record["path"])
+            sha256, size = record["sha256"], record["size"]
+            if (
+                not isinstance(name, str)
+                or not NPM_NAME_RE.fullmatch(name)
+                or name in _SOURCE_PACKAGES
+                or not isinstance(version, str)
+                or not NPM_VERSION_RE.fullmatch(version)
+                or not isinstance(sha256, str)
+                or not HEX_RE.fullmatch(sha256)
+                or not _bounded_int(size)
+                or (name, version) not in artifact_pairs
+            ):
+                raise ValueError("invalid npm record")
+            key = (name, version, relpath)
+            if previous_npm is not None and key <= previous_npm:
+                raise ValueError("invalid npm order")
+            previous_npm = key
+            npm_lookup[key] = (size, bytes.fromhex(sha256))
+
+        base = value["base"]
+        if not isinstance(base, list) or len(base) > MAX_PUBLIC_COUNTER:
+            raise ValueError("invalid base catalog")
+        base_membership: set[tuple[str, int, bytes]] = set()
+        previous_base: tuple[str, int, str] | None = None
+        for record in base:
+            if not isinstance(record, dict) or set(record) != {"layer", "sha256", "size"}:
+                raise ValueError("invalid base record")
+            layer, sha256, size = record["layer"], record["sha256"], record["size"]
+            if (
+                not isinstance(layer, str)
+                or not DIGEST_RE.fullmatch(layer)
+                or layer not in layer_digests
+                or not isinstance(sha256, str)
+                or not HEX_RE.fullmatch(sha256)
+                or not _bounded_int(size)
+            ):
+                raise ValueError("invalid base record")
+            key = (layer, size, sha256)
+            if previous_base is not None and key <= previous_base:
+                raise ValueError("invalid base order")
+            previous_base = key
+            base_membership.add((layer, size, bytes.fromhex(sha256)))
+    except AuditFailure:
+        raise
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error):
+        raise AuditFailure("CATALOG_INVALID") from None
+    return npm_lookup, frozenset(base_membership), frozenset(name for name, _version, _path in npm_lookup)
+
+
+def _package_parts(name: str, fixed_package_names: frozenset[str]) -> tuple[str, int | None, str, str] | None:
     if not _safe_archive_name(name):
         return None
     parts = PurePosixPath(name).parts
-    matches: list[tuple[str, int, str, str]] = []
+    matches: list[tuple[str, int | None, str, str]] = []
     for offset, part in enumerate(parts):
         if part != "node_modules" or offset + 1 >= len(parts):
             continue
@@ -1918,10 +2119,50 @@ def _package_parts(name: str) -> tuple[str, int, str, str] | None:
         root = "/".join(parts[:end])
         if relpath:
             matches.append((root, source_index(package), package, relpath))
+    if matches:
+        return matches[-1]
+    for offset, part in enumerate(parts):
+        if part != "node_modules" or offset + 1 >= len(parts):
+            continue
+        if parts[offset + 1].startswith("@"):
+            if offset + 2 >= len(parts):
+                continue
+            package = parts[offset + 1] + "/" + parts[offset + 2]
+            end = offset + 3
+        else:
+            package = parts[offset + 1]
+            end = offset + 2
+        if package not in fixed_package_names:
+            continue
+        relpath = "/".join(parts[end:])
+        if relpath:
+            matches.append(("/".join(parts[:end]), None, package, relpath))
     return matches[-1] if matches else None
 
 
-def _bounded_copy(source: BinaryIO, destination: BinaryIO, limit: int, code: str) -> int:
+def _fixed_package_name(package_root: object, fixed_package_names: frozenset[str]) -> str | None:
+    if not isinstance(package_root, str):
+        return None
+    qualifier = package_root.split("/", 3)
+    if (
+        len(qualifier) != 4
+        or qualifier[:2] != ["", ".image-audit-archive"]
+        or re.fullmatch(r"[0-9]{12}", qualifier[2]) is None
+        or qualifier[2] == "000000000000"
+        or not _safe_archive_name(qualifier[3])
+    ):
+        return None
+    parts = PurePosixPath(qualifier[3]).parts
+    if len(parts) >= 2 and parts[-2] == "node_modules":
+        package = parts[-1]
+    elif len(parts) >= 3 and parts[-3] == "node_modules" and parts[-2].startswith("@"):
+        package = parts[-2] + "/" + parts[-1]
+    else:
+        return None
+    return package if package in fixed_package_names else None
+
+
+def _bounded_copy(source: BinaryIO, destination: BinaryIO, limit: int, code: str, hasher=None) -> int:
     total = 0
     while True:
         chunk = source.read(128 * 1024)
@@ -1930,6 +2171,8 @@ def _bounded_copy(source: BinaryIO, destination: BinaryIO, limit: int, code: str
         if total > limit - len(chunk):
             raise AuditFailure(code)
         destination.write(chunk)
+        if hasher is not None:
+            hasher.update(chunk)
         total += len(chunk)
 
 
@@ -2136,14 +2379,14 @@ class Stager:
         kind: str,
         *,
         layer_digest: str | None = None,
-        package: tuple[str, int, str, str] | None = None,
+        package: tuple[str, int | None, str, str] | None = None,
     ) -> int:
         identifier = self._reserve(len(data))
         path = self.root / "spool" / f"{identifier:012d}.txt"
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        self._insert(identifier, kind, len(data), layer_digest, package)
+        self._insert(identifier, kind, len(data), hashlib.sha256(data).digest(), layer_digest, package)
         return identifier
 
     def path(
@@ -2153,17 +2396,18 @@ class Stager:
         kind: str,
         *,
         layer_digest: str | None = None,
-        package: tuple[str, int, str, str] | None = None,
+        package: tuple[str, int | None, str, str] | None = None,
         maximum: int = MAX_MEMBER_BYTES,
     ) -> int:
         identifier = self._reserve(size, maximum)
         target = self.root / "spool" / f"{identifier:012d}.txt"
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        hasher = hashlib.sha256()
         with source.open("rb") as reader, os.fdopen(fd, "wb") as writer:
-            copied = _bounded_copy(reader, writer, size, "ARCHIVE_MEMBER_SIZE")
+            copied = _bounded_copy(reader, writer, size, "ARCHIVE_MEMBER_SIZE", hasher)
         if copied != size:
             raise AuditFailure("ARCHIVE_CORRUPT")
-        self._insert(identifier, kind, size, layer_digest, package)
+        self._insert(identifier, kind, size, hasher.digest(), layer_digest, package)
         return identifier
 
     def _insert(
@@ -2171,15 +2415,16 @@ class Stager:
         identifier: int,
         kind: str,
         size: int,
+        content_sha256: bytes,
         layer_digest: str | None,
-        package: tuple[str, int, str, str] | None,
+        package: tuple[str, int | None, str, str] | None,
     ) -> None:
         package_root = source = relpath = None
         if package is not None:
             package_root, source, _name, relpath = package
         self.connection.execute(
-            "INSERT INTO items(id,kind,size,layer_digest,package_root,source_index,version,relpath) VALUES(?,?,?,?,?,?,NULL,?)",
-            (identifier, kind, size, layer_digest, package_root, source, relpath),
+            "INSERT INTO items(id,kind,size,content_sha256,layer_digest,package_root,source_index,version,relpath) VALUES(?,?,?,?,?,?,?,NULL,?)",
+            (identifier, kind, size, content_sha256, layer_digest, package_root, source, relpath),
         )
 
 
@@ -2268,17 +2513,38 @@ def zip_entry_count(path: Path) -> int:
 
 
 class ArchiveScanner:
-    def __init__(self, root: Path, state: dict[str, object], connection: sqlite3.Connection):
+    def __init__(
+        self,
+        root: Path,
+        state: dict[str, object],
+        connection: sqlite3.Connection,
+        fixed_package_names: frozenset[str],
+    ):
         self.root = root
         self.state = state
         self.connection = connection
+        self.fixed_package_names = fixed_package_names
         self.stager = Stager(root, state, connection)
         self.gaps: list[str] = []
         self.package_versions: dict[tuple[str, str], str] = {}
+        self.fixed_version_conflicts: set[tuple[str, str]] = set()
+        self._archive_scope = 0
 
     def gap(self, code: str) -> None:
         if code not in self.gaps:
             self.gaps.append(code)
+
+    def _next_archive_scope(self) -> int:
+        if self._archive_scope >= 999_999_999_999:
+            raise AuditFailure("ARCHIVE_MEMBER_LIMIT")
+        self._archive_scope += 1
+        return self._archive_scope
+
+    def _archive_package(self, name: str, scope: int) -> tuple[str, int | None, str, str] | None:
+        package = _package_parts(name, self.fixed_package_names)
+        if package is None or package[1] is not None:
+            return package
+        return (f"/.image-audit-archive/{scope:012d}/{package[0]}", package[1], package[2], package[3])
 
     def _member(self) -> None:
         counters = self.state["counters"]
@@ -2361,7 +2627,7 @@ class ArchiveScanner:
         depth: int,
         *,
         layer_digest: str | None,
-        package: tuple[str, int, str, str] | None = None,
+        package: tuple[str, int | None, str, str] | None = None,
     ) -> None:
         kind = self._kind(path)
         object_maximum = MAX_IMAGE_BYTES if depth == 0 else MAX_MEMBER_BYTES
@@ -2382,6 +2648,7 @@ class ArchiveScanner:
             self.stager.path(path, path.stat().st_size, "file", layer_digest=layer_digest, package=package, maximum=object_maximum)
 
     def _zip(self, path: Path, depth: int, layer_digest: str | None) -> None:
+        scope = self._next_archive_scope()
         try:
             archive_comment, metadata = _zip_metadata(path)
             entries = len(metadata)
@@ -2406,6 +2673,11 @@ class ArchiveScanner:
                         self.gap("UNSAFE_ARCHIVE_PATH")
                     if item.file_size > MAX_MEMBER_BYTES:
                         raise AuditFailure("ARCHIVE_MEMBER_SIZE")
+                    mode = item.external_attr >> 16
+                    package = self._archive_package(item.filename, scope) if safe else None
+                    nonregular = item.is_dir() or stat.S_IFMT(mode) not in (0, stat.S_IFREG)
+                    if nonregular:
+                        self._note_package_version(None, layer_digest, package)
                     if item.flag_bits & 1 or item.compress_type not in {
                         zipfile.ZIP_STORED,
                         zipfile.ZIP_DEFLATED,
@@ -2424,9 +2696,7 @@ class ArchiveScanner:
                             copied = _bounded_copy(source, target, MAX_MEMBER_BYTES, "ARCHIVE_MEMBER_SIZE")
                         if copied != item.file_size:
                             self.gap("ARCHIVE_CORRUPT")
-                        mode = item.external_attr >> 16
-                        package = _package_parts(item.filename) if safe else None
-                        if stat.S_ISLNK(mode):
+                        if nonregular:
                             self.stager.path(temporary, copied, "archive-link", layer_digest=layer_digest)
                         else:
                             self._note_package_version(temporary, layer_digest, package)
@@ -2546,6 +2816,7 @@ class ArchiveScanner:
             self.gap("ARCHIVE_CORRUPT")
 
     def _tar(self, path: Path, depth: int, layer_digest: str | None) -> None:
+        scope = self._next_archive_scope()
         try:
             self._tar_metadata(path, layer_digest)
             with tarfile.open(path, mode="r:") as archive:
@@ -2558,7 +2829,9 @@ class ArchiveScanner:
                         self.gap("UNSAFE_ARCHIVE_PATH")
                     if member.size > MAX_MEMBER_BYTES:
                         raise AuditFailure("ARCHIVE_MEMBER_SIZE")
+                    package = self._archive_package(member.name, scope) if safe_name else None
                     if not member.isfile():
+                        self._note_package_version(None, layer_digest, package)
                         continue
                     source = archive.extractfile(member)
                     if source is None:
@@ -2572,7 +2845,6 @@ class ArchiveScanner:
                             copied = _bounded_copy(source, target, MAX_MEMBER_BYTES, "ARCHIVE_MEMBER_SIZE")
                         if copied != member.size:
                             self.gap("ARCHIVE_CORRUPT")
-                        package = _package_parts(member.name) if safe_name else None
                         self._note_package_version(temporary, layer_digest, package)
                         self.process(temporary, depth + 1, layer_digest=layer_digest, package=package)
                     finally:
@@ -2587,19 +2859,41 @@ class ArchiveScanner:
             self.gap("ARCHIVE_CORRUPT")
             self.stager.path(path, path.stat().st_size, "opaque", layer_digest=layer_digest)
 
-    def _note_package_version(self, path: Path, layer_digest: str | None, package: tuple[str, int, str, str] | None) -> None:
+    def _note_package_version(self, path: Path | None, layer_digest: str | None, package: tuple[str, int | None, str, str] | None) -> None:
         if layer_digest is None or package is None or package[3] != "package.json":
+            return
+        key = (layer_digest, package[0])
+        fixed = package[1] is None
+
+        def invalidate_fixed() -> None:
+            self.package_versions.pop(key, None)
+            self.fixed_version_conflicts.add(key)
+
+        if path is None:
+            if fixed:
+                invalidate_fixed()
             return
         try:
             value = json.loads(path.read_bytes())
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            if fixed:
+                invalidate_fixed()
             return
         version = value.get("version") if isinstance(value, dict) else None
         name = value.get("name") if isinstance(value, dict) else None
         if name != package[2] or not isinstance(version, str) or not VERSION_RE.fullmatch(version):
+            if fixed:
+                invalidate_fixed()
             return
-        key = (layer_digest, package[0])
         previous = self.package_versions.get(key)
+        if fixed:
+            if key in self.fixed_version_conflicts:
+                return
+            if previous is not None and previous != version:
+                invalidate_fixed()
+                return
+            self.package_versions[key] = version
+            return
         if previous is not None and previous != version:
             self.gap("VENDOR_SOURCE_UNAVAILABLE")
             return
@@ -2815,27 +3109,39 @@ def run_gitleaks_controls(binary: Path, run: Path) -> dict[str, int]:
     return {"clean_findings": len(clean_findings), "positive_findings": len(positive_findings)}
 
 
-def _verify_staging(root: Path, connection: sqlite3.Connection, state: dict[str, object]) -> None:
-    rows = connection.execute("SELECT id,size FROM items ORDER BY id").fetchall()
+def _verify_staging(
+    root: Path, connection: sqlite3.Connection, state: dict[str, object], finding_ids: set[int] | None = None
+) -> dict[int, bytes]:
+    rows = connection.execute("SELECT id,size,content_sha256 FROM items ORDER BY id").fetchall()
     files = sorted((root / "spool").iterdir())
-    expected_names = [f"{identifier:012d}.txt" for identifier, _size in rows]
+    expected_names = [f"{identifier:012d}.txt" for identifier, _size, _digest in rows]
     if [path.name for path in files] != expected_names:
         raise AuditFailure("STAGING_MISMATCH")
+    verified: dict[int, bytes] = {}
     total = 0
-    for path, (_identifier, wanted_size) in zip(files, rows):
+    for path, (identifier, wanted_size, wanted_digest) in zip(files, rows):
         try:
             info = path.lstat()
         except OSError:
             raise AuditFailure("STAGING_MISMATCH") from None
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size != wanted_size:
             raise AuditFailure("STAGING_MISMATCH")
+        if not isinstance(wanted_digest, bytes) or len(wanted_digest) != 32:
+            raise AuditFailure("STAGING_MISMATCH")
+        actual_digest = _hash_file(path, wanted_size)
+        if actual_digest != wanted_digest:
+            raise AuditFailure("STAGING_MISMATCH")
+        if finding_ids is not None and identifier in finding_ids:
+            verified[identifier] = actual_digest
         total += info.st_size
     counters = state["counters"]
     if len(files) != counters["staged_items"] or total != counters["staged_bytes"]:
         raise AuditFailure("STAGING_MISMATCH")
+    return verified
 
 
 def _scan_phase(root: Path, state: dict[str, object]) -> None:
+    fixed_package_names = _load_public_catalog()[2]
     assert_no_credentials()
     assert_linux_network_isolated()
     if not state["auth_removed"] or (root / "auth").exists() or (root / "auth").is_symlink():
@@ -2845,7 +3151,7 @@ def _scan_phase(root: Path, state: dict[str, object]) -> None:
     run_gitleaks_controls(gitleaks, controls)
     graph = read_graph(root)
     connection = _ledger(root)
-    scanner = ArchiveScanner(root, state, connection)
+    scanner = ArchiveScanner(root, state, connection, fixed_package_names)
     hard_failure: AuditFailure | None = None
     try:
         for item in graph["objects"]:
@@ -3147,19 +3453,21 @@ def _hash_file(path: Path, expected_size: int) -> bytes:
 
 def _compare_phase(root: Path, state: dict[str, object]) -> None:
     state.pop(DIAGNOSTICS_KEY, None)
+    npm_lookup, base_membership, fixed_package_names = _load_public_catalog()
     assert_no_credentials()
     references = _validate_references(read_private_json(root / "private" / "references.json"))
     connection = _ledger(root)
     try:
-        _verify_staging(root, connection, state)
         findings = connection.execute(
-            "SELECT f.rowid,i.id,i.kind,i.size,i.source_index,i.version,i.relpath FROM findings f JOIN items i ON i.id=f.item_id ORDER BY f.rowid"
+            "SELECT f.rowid,i.id,i.kind,i.size,i.layer_digest,i.package_root,i.source_index,i.version,i.relpath "
+            "FROM findings f JOIN items i ON i.id=f.item_id ORDER BY f.rowid"
         ).fetchall()
+        item_hashes = _verify_staging(root, connection, state, {item_id for _finding, item_id, *_rest in findings})
         if len(findings) != state["counters"]["detections"]:
             raise AuditFailure("STAGING_MISMATCH")
         wanted_by_reference: dict[tuple[int, str], set[str]] = {}
         missing_vendor_source = False
-        for _finding, _item, _kind, _size, source, version, relpath in findings:
+        for _finding, _item, _kind, _size, _layer, _package_root, source, version, relpath in findings:
             if source is not None and version is None:
                 missing_vendor_source = True
             if source is not None and version is not None and relpath is not None:
@@ -3179,18 +3487,19 @@ def _compare_phase(root: Path, state: dict[str, object]) -> None:
             reference_hashes[key] = _reference_hashes(path, wanted)
         matches = 0
         unresolved = 0
-        item_hashes: dict[int, bytes] = {}
         diagnostic_buckets = _diagnostic_buckets()
-        for _finding, item_id, kind, size, source, version, relpath in findings:
+        for _finding, item_id, kind, size, layer_digest, package_root, source, version, relpath in findings:
             matched = False
+            actual = item_hashes[item_id]
             if source is not None and version is not None and relpath is not None:
                 expected = reference_hashes.get((source, version), {}).get("package/" + relpath)
-                if expected is not None and expected[0] == size:
-                    actual = item_hashes.get(item_id)
-                    if actual is None:
-                        actual = _hash_file(root / "spool" / f"{item_id:012d}.txt", size)
-                        item_hashes[item_id] = actual
-                    matched = actual == expected[1]
+                matched = expected is not None and expected == (size, actual)
+            elif source is None:
+                package_name = _fixed_package_name(package_root, fixed_package_names)
+                if package_name is not None and version is not None and relpath is not None:
+                    matched = npm_lookup.get((package_name, version, relpath)) == (size, actual)
+                if not matched and kind == "file" and layer_digest is not None:
+                    matched = (layer_digest, size, actual) in base_membership
             if matched:
                 matches += 1
             else:

@@ -12,15 +12,23 @@ The default **main mode** leaves both UI inputs empty. It runs the trusted contr
 
 The workflow definition, trusted selector/controller, and tool pins always come from `main`. In candidate mode, the auditor helper and its native control tests execute from the validated, owner-reviewed SHA. The source-verification step records the validated public workflow SHA, code SHA, mode, and PR number in its own workflow-step summary. This provenance is separate from the final audit receipt and is not an audit verdict. Results apply to the exact selected SHA, not to a later PR head or later `main` head. No PR check, comment, artifact, or automatic retry is created.
 
-The workflow inventories the complete package history currently visible to its authorised GitHub Actions context; it does not build, select, or execute a PR image. It validates immutable OCI objects, scans bounded staged content with pinned tools, and compares detected dependency files with a fixed public-vendor catalog. Ordinary tool calls, including scanner controls, are bounded to 2 minutes; the staged-image bulk scanner is bounded to 15 minutes. The outer workflow job remains bounded to 120 minutes. These deadlines do not guarantee completion or authorize publication. Audit receipts are limited to fixed statuses, diagnostic codes, and counters; the validated source provenance described above is separate public metadata. If summary publication fails, the helper emits an `INCOMPLETE` JSON receipt in the log instead. Detailed reports are not downloadable.
+The workflow inventories the complete package history currently visible to its authorised GitHub Actions context; it does not build, select, or execute a PR image. It validates immutable OCI objects, scans bounded staged content with pinned tools, and compares detections with pinned public references. Ordinary tool calls, including scanner controls, are bounded to 2 minutes; the staged-image bulk scanner is bounded to 15 minutes. The outer workflow job remains bounded to 120 minutes. These deadlines do not guarantee completion or authorize publication. Audit receipts are limited to fixed statuses, diagnostic codes, and counters; the validated source provenance described above is separate public metadata. If summary publication fails, the helper emits an `INCOMPLETE` JSON receipt in the log instead. Detailed reports are not downloadable.
 
 Offline namespaces, schema checks, and source verification are not a sandbox for hostile code. Candidate mode is available only because an owner has reviewed and explicitly selected that code.
 
 ## Statuses
 
 - `COMPLETE_NO_FINDINGS` means the completed bounded scan recorded no detections.
-- `COMPLETE_REVIEW_REQUIRED` means the scan completed but detections require review. A public-vendor match does not make a credential safe.
+- `COMPLETE_REVIEW_REQUIRED` means the scan completed but detections require review. A public-reference match does not make a credential safe.
 - `INCOMPLETE` means a guard, acquisition, validation, isolation, cleanup, or public-output requirement failed. Treat it as no completed audit.
+
+## Public-reference matches
+
+`public_matches` counts exact matches from three routes: the established downloaded npm references, a locally pinned npm reference with the same package name, version, relative path, size, and verified content hash, or a locally pinned base-image reference with the same compressed layer digest, size, and verified content hash. The local catalog is hash-pinned auditor data and is never fetched at runtime.
+
+A base match proves layer-and-content membership only. It does not attribute the detection to an original path. Package names, paths, bytes from another layer, layer identity without matching content, and counters alone are not proof. `vendor_candidates` and `vendor_sources_fetched` retain their established downloaded-reference meanings and are not an upper bound on `public_matches`.
+
+Any detection still produces `COMPLETE_REVIEW_REQUIRED`, including a public-reference match. A match does not authorize changing GHCR visibility or access.
 
 ## Optional unresolved diagnostics
 
@@ -51,6 +59,6 @@ An already materialized inline manifest is parsed before ordinary unresolved que
 
 These codes identify the failure site only. They do not establish an HTTP status or a registry-side cause.
 
-The workflow neither establishes that a package may change visibility nor claims that credentials are valid or safe. Its scope excludes deleted versions and data unavailable to the authorised API, and detector coverage is limited to the supported bounded formats and fixed vendor references.
+The workflow neither establishes that a package may change visibility nor claims that credentials are valid or safe. Its scope excludes deleted versions and data unavailable to the authorised API, and detector coverage is limited to the supported bounded formats and pinned public references.
 
 No live private-registry verification is performed by ordinary CI or local synthetic tests. The first separately authorized dispatch still needs real Packages API access, pagination, referrer, and budget proof before it can establish its actual registry coverage.
