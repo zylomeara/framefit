@@ -27,6 +27,7 @@ import threading
 import time
 import unittest
 import urllib.parse
+import warnings
 import zipfile
 import zlib
 from pathlib import Path
@@ -34,14 +35,81 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "image-audit.py"
+CATALOG_GENERATOR_SCRIPT = ROOT / "scripts" / "build-image-audit-public-catalog.py"
+PUBLIC_CATALOG = ROOT / "scripts" / "image-audit-public-catalog.json"
 SPEC = importlib.util.spec_from_file_location("image_audit", SCRIPT)
 AUDIT = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(AUDIT)
+CATALOG_SPEC = importlib.util.spec_from_file_location("image_audit_catalog_generator", CATALOG_GENERATOR_SCRIPT)
+CATALOG_GENERATOR = importlib.util.module_from_spec(CATALOG_SPEC)
+assert CATALOG_SPEC.loader is not None
+CATALOG_SPEC.loader.exec_module(CATALOG_GENERATOR)
 
 
 def digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def public_catalog_bytes(
+    *,
+    npm: list[dict[str, object]] | None = None,
+    base: list[dict[str, object]] | None = None,
+    artifacts: list[dict[str, object]] | None = None,
+    layers: list[dict[str, object]] | None = None,
+) -> bytes:
+    npm = list(npm or [])
+    base = list(base or [])
+    if artifacts is None:
+        artifacts = []
+        for name, version in sorted({(row["name"], row["version"]) for row in npm}):
+            payload = f"{name}@{version}".encode()
+            artifacts.append({
+                "integrity": "sha512-" + base64.b64encode(hashlib.sha512(payload).digest()).decode("ascii"),
+                "name": name,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+                "version": version,
+            })
+    if layers is None:
+        layer_digests = sorted({row["layer"] for row in base})
+        layers = [
+            {"diff_id": digest(("diff:" + layer).encode()), "digest": layer, "size": 1}
+            for layer in layer_digests
+        ]
+    value = {
+        "base": base,
+        "npm": npm,
+        "provenance": {
+            "lockfile_sha256": hashlib.sha256(b"lockfile").hexdigest(),
+            "npm_artifacts": artifacts,
+            "npm_reference_manifest_sha256": hashlib.sha256(b"manifest").hexdigest(),
+            "oci": {
+                "config": {"digest": digest(b"config"), "size": 1},
+                "index": {"digest": digest(b"index"), "size": 1},
+                "layers": layers,
+                "manifest": {"digest": digest(b"oci-manifest"), "size": 1},
+                "platform": {"architecture": "amd64", "os": "linux"},
+            },
+            "source_commit": "1" * 40,
+        },
+        "schema": 1,
+    }
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+@contextlib.contextmanager
+def use_public_catalog(base: Path, data: bytes):
+    scripts = base / "auditor-code" / "scripts"
+    scripts.mkdir(parents=True)
+    script = scripts / "image-audit.py"
+    catalog = scripts / "image-audit-public-catalog.json"
+    script.write_bytes(b"")
+    catalog.write_bytes(data)
+    with mock.patch.object(AUDIT, "__file__", str(script)), mock.patch.object(
+        AUDIT, "PUBLIC_CATALOG_LENGTH", len(data)
+    ), mock.patch.object(AUDIT, "PUBLIC_CATALOG_SHA256", hashlib.sha256(data).hexdigest()):
+        yield catalog
 
 
 def runtime_canary(label: str = "fixture") -> str:
@@ -1313,6 +1381,1096 @@ def discovery_annotation_data_results(gitleaks: Path) -> dict[str, dict[str, obj
     return results
 
 
+class PublicCatalogRuntimeTests(unittest.TestCase):
+    def load(self, base: Path, data: bytes):
+        with use_public_catalog(base, data):
+            return AUDIT._load_public_catalog()
+
+    def test_loads_committed_catalog_with_reviewed_pin_and_schema(self):
+        self.assertTrue(hasattr(AUDIT, "_load_public_catalog"))
+        npm_lookup, base_membership, fixed_names = AUDIT._load_public_catalog()
+        self.assertEqual(3851, len(npm_lookup))
+        self.assertEqual(2235, len(base_membership))
+        self.assertEqual(169, len(fixed_names))
+        self.assertTrue(fixed_names.isdisjoint(AUDIT._SOURCE_PACKAGES))
+        self.assertEqual(1_053_543, AUDIT.PUBLIC_CATALOG_LENGTH)
+        self.assertEqual(32 * 1024**2, AUDIT.MAX_CATALOG_BYTES)
+
+    def test_runtime_import_does_not_read_sibling_catalog(self):
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "image-audit.py"
+            script.write_bytes(SCRIPT.read_bytes())
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    "import importlib.util, pathlib; p=pathlib.Path(__import__('sys').argv[1]); "
+                    "s=importlib.util.spec_from_file_location('isolated_image_audit', p); "
+                    "m=importlib.util.module_from_spec(s); s.loader.exec_module(m)",
+                    str(script),
+                ],
+                cwd=temp,
+                env={"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual((0, b"", b""), (result.returncode, result.stdout, result.stderr))
+
+    def test_loader_uses_explicit_pin_without_reader_uid_requirement(self):
+        data = public_catalog_bytes()
+        with tempfile.TemporaryDirectory() as temp:
+            with use_public_catalog(Path(temp), data), mock.patch.object(
+                AUDIT.os, "getuid", side_effect=AssertionError("catalog owner must not be consulted")
+            ):
+                self.assertEqual(({}, frozenset(), frozenset()), AUDIT._load_public_catalog())
+
+    def test_loader_rejects_missing_symlink_oversize_and_wrong_pin(self):
+        data = public_catalog_bytes()
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name in ("missing", "symlink", "oversize", "pin"):
+                with self.subTest(name=name):
+                    case = base / name
+                    case.mkdir()
+                    with use_public_catalog(case, data) as catalog:
+                        stack = contextlib.ExitStack()
+                        with stack:
+                            if name == "missing":
+                                catalog.unlink()
+                            elif name == "symlink":
+                                target = case / "target.json"
+                                target.write_bytes(data)
+                                catalog.unlink()
+                                catalog.symlink_to(target)
+                            elif name == "oversize":
+                                stack.enter_context(mock.patch.object(AUDIT, "MAX_CATALOG_BYTES", len(data) - 1))
+                            else:
+                                stack.enter_context(mock.patch.object(AUDIT, "PUBLIC_CATALOG_SHA256", "0" * 64))
+                            with self.assertRaisesRegex(AUDIT.AuditFailure, "^CATALOG_INVALID$"):
+                                AUDIT._load_public_catalog()
+
+    def test_loader_rejects_symlink_swap_between_metadata_check_and_read(self):
+        data = public_catalog_bytes()
+        with tempfile.TemporaryDirectory() as temp:
+            with use_public_catalog(Path(temp), data) as catalog:
+                moved = catalog.with_name("moved-catalog.json")
+                original_lstat = Path.lstat
+                swapped = False
+
+                def swap_after_lstat(path: Path):
+                    nonlocal swapped
+                    info = original_lstat(path)
+                    if path == catalog and not swapped:
+                        swapped = True
+                        path.rename(moved)
+                        path.symlink_to(moved)
+                    return info
+
+                with mock.patch.object(AUDIT.Path, "lstat", autospec=True, side_effect=swap_after_lstat):
+                    with self.assertRaisesRegex(AUDIT.AuditFailure, "^CATALOG_INVALID$"):
+                        AUDIT._load_public_catalog()
+                self.assertTrue(swapped)
+
+    def test_loader_rejects_duplicate_json_keys(self):
+        data = public_catalog_bytes().replace(b'"base":[]', b'"base":[],"base":[]', 1)
+        with tempfile.TemporaryDirectory() as temp:
+            with use_public_catalog(Path(temp), data):
+                with self.assertRaisesRegex(AUDIT.AuditFailure, "^CATALOG_INVALID$"):
+                    AUDIT._load_public_catalog()
+
+    def test_loader_rejects_invalid_types_order_duplicates_paths_and_crosslinks(self):
+        file_hash = hashlib.sha256(b"member").hexdigest()
+        layer = digest(b"layer")
+        row = {"name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js", "size": 6, "sha256": file_hash}
+        base_row = {"layer": layer, "size": 6, "sha256": file_hash}
+        valid = json.loads(public_catalog_bytes(npm=[row], base=[base_row]))
+        cases: dict[str, dict[str, object]] = {}
+        value = json.loads(json.dumps(valid)); value["schema"] = True; cases["boolean-schema"] = value
+        value = json.loads(json.dumps(valid)); value["npm"][0]["size"] = True; cases["boolean-size"] = value
+        value = json.loads(json.dumps(valid)); value["npm"][0]["path"] = "lib//item.js"; cases["noncanonical-path"] = value
+        value = json.loads(json.dumps(valid)); value["npm"].append(dict(value["npm"][0])); cases["duplicate-lookup"] = value
+        value = json.loads(json.dumps(valid)); value["npm"] = [
+            {**value["npm"][0], "name": "z-fixed"}, {**value["npm"][0], "name": "a-fixed"}
+        ]; value["provenance"]["npm_artifacts"] = [
+            {**value["provenance"]["npm_artifacts"][0], "name": name} for name in ("a-fixed", "z-fixed")
+        ]; cases["npm-order"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["source_commit"] = None; cases["null-provenance"] = value
+        value = json.loads(json.dumps(valid)); value["npm"][0].pop("sha256"); cases["missing-hash"] = value
+        value = json.loads(json.dumps(valid)); value["npm"][0]["sha256"] = "f" * 63; cases["malformed-hash"] = value
+        value = json.loads(json.dumps(valid)); value["base"].append(dict(value["base"][0])); cases["duplicate-base"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["npm_artifacts"].append(
+            dict(value["provenance"]["npm_artifacts"][0])
+        ); cases["duplicate-provenance"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["npm_artifacts"] = []; cases["npm-crosslink"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["oci"]["layers"] = []; cases["base-crosslink"] = value
+        for name, value in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+                with use_public_catalog(Path(temp), data):
+                    with self.assertRaisesRegex(AUDIT.AuditFailure, "^CATALOG_INVALID$"):
+                        AUDIT._load_public_catalog()
+
+    def test_catalog_is_not_loaded_by_public_receipts_init_acquire_fetch_or_finalize(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            scripts = base / "auditor-code" / "scripts"
+            scripts.mkdir(parents=True)
+            script = scripts / "image-audit.py"
+            script.write_bytes(b"")
+            with mock.patch.object(AUDIT, "__file__", str(script)), mock.patch.object(
+                AUDIT, "_load_public_catalog", side_effect=AssertionError("catalog load outside scan/compare")
+            ):
+                AUDIT.public_receipt("INIT", "OK", "NONE", AUDIT.empty_counters())
+
+                init_workspace = base / "init-workspace"
+                AUDIT.initialize_workspace(init_workspace)
+                code, receipt = AUDIT.finalize_workspace(init_workspace)
+                self.assertEqual((3, "INCOMPLETE"), (code, receipt["status"]))
+
+                acquire_workspace = base / "acquire-workspace"
+                AUDIT.initialize_workspace(acquire_workspace)
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(1, AUDIT.run_phase("acquire", acquire_workspace))
+                self.assertEqual("CREDENTIALS_PRESENT", AUDIT.load_state(acquire_workspace)["primary_code"])
+
+                fetch_workspace = base / "fetch-workspace"
+                AUDIT.initialize_workspace(fetch_workspace)
+                state = AUDIT.load_state(fetch_workspace)
+                state["phases"]["acquire"] = "complete"
+                state["phases"]["scan"] = "complete"
+                state["auth_removed"] = True
+                AUDIT.save_state(fetch_workspace, state)
+                AUDIT.write_private_json(
+                    fetch_workspace / "private" / "vendor-queue.json", {"schema": 1, "requests": []}
+                )
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("empty fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", fetch_workspace))
+                code, receipt = AUDIT.finalize_workspace(fetch_workspace)
+                self.assertEqual((3, "INCOMPLETE"), (code, receipt["status"]))
+
+
+class PackageIdentityTests(unittest.TestCase):
+    def test_package_parser_accepts_explicit_fixed_name_set(self):
+        self.assertEqual(2, AUDIT._package_parts.__code__.co_argcount)
+
+    def test_all_legacy_packages_keep_exact_tuple_and_nested_fixed_ancestor_priority(self):
+        fixed_names = frozenset({"fixed-lib"})
+        for package in AUDIT._SOURCE_PACKAGES:
+            parts = package.split("/")
+            root = "/".join(("app", "node_modules", *parts))
+            path = root + "/lib/item.js"
+            with self.subTest(package=package):
+                self.assertEqual(
+                    (root, AUDIT.source_index(package), package, "lib/item.js"),
+                    AUDIT._package_parts(path, fixed_names),
+                )
+        self.assertEqual(
+            ("app/node_modules/express", AUDIT.source_index("express"), "express", "node_modules/fixed-lib/lib/item.js"),
+            AUDIT._package_parts("app/node_modules/express/node_modules/fixed-lib/lib/item.js", fixed_names),
+        )
+
+    def test_fixed_identity_is_nullable_scoped_and_does_not_guess_unknown_or_malformed_roots(self):
+        names = frozenset({"fixed-lib", "@scope/fixed-lib"})
+        self.assertEqual(
+            ("app/node_modules/fixed-lib", None, "fixed-lib", "lib/item.js"),
+            AUDIT._package_parts("app/node_modules/fixed-lib/lib/item.js", names),
+        )
+        self.assertEqual(
+            ("app/node_modules/@scope/fixed-lib", None, "@scope/fixed-lib", "lib/item.js"),
+            AUDIT._package_parts("app/node_modules/@scope/fixed-lib/lib/item.js", names),
+        )
+        for path in (
+            "app/node_modules/unknown/lib/item.js",
+            "app/node_modules/@scope/lib/item.js",
+            "app/node_modules/@scope/fixed-lib",
+            "../app/node_modules/fixed-lib/lib/item.js",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(AUDIT._package_parts(path, names))
+
+    def test_compare_name_recovery_requires_one_valid_private_qualifier(self):
+        names = frozenset({"fixed-lib", "@scope/fixed-lib"})
+        prefix = "/.image-audit-archive/000000000001/"
+        self.assertEqual("fixed-lib", AUDIT._fixed_package_name(prefix + "app/node_modules/fixed-lib", names))
+        self.assertEqual(
+            "@scope/fixed-lib",
+            AUDIT._fixed_package_name(prefix + "app/node_modules/@scope/fixed-lib", names),
+        )
+        lookalike = ".image-audit-archive/000000000002/app/node_modules/fixed-lib"
+        self.assertEqual("fixed-lib", AUDIT._fixed_package_name(prefix + lookalike, names))
+        suffix = "/node_modules/fixed-lib"
+        boundary_root = "a" * (4096 - len(suffix)) + suffix
+        self.assertEqual("fixed-lib", AUDIT._fixed_package_name(prefix + boundary_root, names))
+        for root in (
+            "app/node_modules/fixed-lib",
+            "/.image-audit-archive/000000000000/app/node_modules/fixed-lib",
+            "/.image-audit-archive/00000000001/app/node_modules/fixed-lib",
+            "/.image-audit-archive/0000000000001/app/node_modules/fixed-lib",
+            "/.image-audit-archive/00000000000x/app/node_modules/fixed-lib",
+            "/.image-audit-archive/000000000001//app/node_modules/fixed-lib",
+            prefix + "/.image-audit-archive/000000000002/app/node_modules/fixed-lib",
+            prefix + boundary_root + "a",
+            prefix + "app/node_modules/unknown",
+            prefix + "app/node_modules/@scope",
+            prefix + "app/node_modules/@scope/fixed-lib/extra",
+            None,
+        ):
+            with self.subTest(root=root):
+                self.assertIsNone(AUDIT._fixed_package_name(root, names))
+
+
+class PublicCatalogIntegrationTests(unittest.TestCase):
+    def scan(self, root: Path, gitleaks: Path) -> int:
+        with mock.patch.dict(
+            os.environ,
+            {"PATH": str(gitleaks.parent) + os.pathsep + os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+            clear=True,
+        ), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
+            return AUDIT.run_phase("scan", root)
+
+    def test_actual_scan_empty_fetch_and_compare_match_normal_and_scoped_fixed_packages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            members = []
+            npm_rows = []
+            expected = []
+            for package, version, label in (
+                ("fixed-lib", "1.2.3", "fixed-normal"),
+                ("@scope/fixed-lib", "2.3.4", "fixed-scoped"),
+            ):
+                candidate = f"api_key={runtime_canary(label)}\n".encode()
+                package_parts = package.split("/")
+                root = "/".join(("app", "node_modules", *package_parts))
+                members.extend([
+                    (root + "/lib/item.js", candidate),
+                    (root + "/package.json", json.dumps({"name": package, "version": version}).encode()),
+                ])
+                npm_rows.append({
+                    "name": package,
+                    "path": "lib/item.js",
+                    "sha256": hashlib.sha256(candidate).hexdigest(),
+                    "size": len(candidate),
+                    "version": version,
+                })
+                expected.append((f"/.image-audit-archive/000000000001/{root}", None, version, "lib/item.js"))
+            npm_rows.sort(key=lambda row: (row["name"], row["version"], row["path"]))
+            layer = tar_bytes(members)
+            layer_digest = digest(layer)
+            catalog = public_catalog_bytes(
+                npm=npm_rows,
+                layers=[{"diff_id": digest(b"fixed-diff"), "digest": layer_digest, "size": len(layer)}],
+            )
+            with use_public_catalog(base, catalog):
+                workspace = base / "workspace"
+                seed_acquired(workspace, [layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+                queue = AUDIT.read_private_json(workspace / "private" / "vendor-queue.json")
+                self.assertEqual({"schema": 1, "requests": []}, queue)
+                connection = AUDIT._ledger(workspace)
+                try:
+                    rows = connection.execute(
+                        "SELECT i.package_root,i.source_index,i.version,i.relpath FROM findings f "
+                        "JOIN items i ON i.id=f.item_id ORDER BY i.package_root"
+                    ).fetchall()
+                finally:
+                    connection.close()
+                self.assertEqual(sorted(expected), rows)
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("fixed-only fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                counters = AUDIT.load_state(workspace)["counters"]
+                self.assertEqual((2, 0, 0, 2, 0), tuple(counters[key] for key in (
+                    "detections", "vendor_candidates", "vendor_sources_fetched", "public_matches", "unresolved_findings"
+                )))
+                code, receipt = AUDIT.finalize_workspace(workspace)
+                self.assertEqual((2, "COMPLETE_REVIEW_REQUIRED", "FINDINGS_PRESENT"), (
+                    code, receipt["status"], receipt["code"]
+                ))
+
+    def test_invalid_catalog_fails_scan_and_zero_finding_compare(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            layer = tar_bytes([("app/clean.txt", b"clean\n")])
+            catalog_data = public_catalog_bytes(
+                layers=[{"diff_id": digest(b"clean-diff"), "digest": digest(layer), "size": len(layer)}]
+            )
+            for point in ("scan", "compare"):
+                with self.subTest(point=point):
+                    case = base / point
+                    case.mkdir()
+                    with use_public_catalog(case, catalog_data) as catalog:
+                        workspace = case / "workspace"
+                        seed_acquired(workspace, [layer])
+                        if point == "compare":
+                            self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(case)))
+                            with mock.patch.object(
+                                AUDIT, "download_public", side_effect=AssertionError("empty fetch must stay offline")
+                            ), mock.patch.dict(os.environ, {}, clear=True):
+                                self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                        catalog.write_bytes(b"x" * len(catalog_data))
+                        if point == "scan":
+                            result = self.scan(workspace, make_gitleaks_stub(case))
+                        else:
+                            with mock.patch.dict(os.environ, {}, clear=True):
+                                result = AUDIT.run_phase("compare", workspace)
+                        self.assertEqual(1, result)
+                        state = AUDIT.load_state(workspace)
+                        self.assertEqual(("failed", "CATALOG_INVALID", 0, 0), (
+                            state["phases"][point], state["primary_code"],
+                            state["counters"]["public_matches"], state["counters"]["unresolved_findings"],
+                        ))
+                        code, receipt = AUDIT.finalize_workspace(workspace)
+                        self.assertEqual((3, "INCOMPLETE", "CATALOG_INVALID"), (
+                            code, receipt["status"], receipt["code"]
+                        ))
+
+    def test_fixed_invalid_manifests_tombstone_before_or_after_valid_and_never_recover(self):
+        valid = b'{"name":"fixed-lib","version":"1.2.3"}'
+        invalid_payloads = (
+            ("malformed", "tar", b"{"),
+            ("version-null", "zip", b'{"name":"fixed-lib","version":null}'),
+            ("name-mismatch", "tar", b'{"name":"other-lib","version":"1.2.3"}'),
+            ("version-number", "zip", b'{"name":"fixed-lib","version":123}'),
+            ("invalid-version", "tar", b'{"name":"fixed-lib","version":"invalid"}'),
+        )
+
+        def run_case(case: Path, archive_kind: str, manifests: list[bytes], read_failure_at: int | None = None) -> None:
+            candidate = f"api_key={runtime_canary(case.name)}\n".encode()
+            root = "app/node_modules/fixed-lib"
+            if archive_kind == "tar":
+                layer = tar_bytes([
+                    (root + "/lib/item.js", candidate),
+                    *((root + "/package.json", manifest) for manifest in manifests),
+                ])
+            else:
+                entries = [(root + "/lib/item.js", candidate)]
+                entries.extend((root + "/package.json", manifest) for manifest in manifests)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    nested = zip_bytes(entries)
+                layer = tar_bytes([("package.zip", nested)])
+            catalog_data = public_catalog_bytes(
+                npm=[{
+                    "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+                    "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                }],
+                layers=[{"diff_id": digest((case.name + "-diff").encode()), "digest": digest(layer), "size": len(layer)}],
+            )
+            with use_public_catalog(case, catalog_data):
+                workspace = case / "workspace"
+                seed_acquired(workspace, [layer])
+                original_read = Path.read_bytes
+                calls = 0
+
+                def read_manifest(path: Path) -> bytes:
+                    nonlocal calls
+                    calls += 1
+                    if calls == read_failure_at:
+                        raise OSError("synthetic package manifest read failure")
+                    return original_read(path)
+
+                patch = (
+                    mock.patch.object(AUDIT.Path, "read_bytes", autospec=True, side_effect=read_manifest)
+                    if read_failure_at is not None
+                    else contextlib.nullcontext()
+                )
+                with patch:
+                    self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(case)))
+                connection = AUDIT._ledger(workspace)
+                try:
+                    row = connection.execute(
+                        "SELECT i.source_index,i.version FROM findings f JOIN items i ON i.id=f.item_id"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual((None, None), row)
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("invalid fixed manifest fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                state = AUDIT.load_state(workspace)
+                self.assertEqual((0, 1, 0), (
+                    state["counters"]["public_matches"], state["counters"]["unresolved_findings"], state["counters"]["gaps"]
+                ))
+
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name, archive_kind, invalid in invalid_payloads:
+                case = base / ("valid-invalid-valid-" + name)
+                case.mkdir()
+                with self.subTest(order="valid-invalid-valid", invalid=name, archive=archive_kind):
+                    run_case(case, archive_kind, [valid, invalid, valid])
+            for name, archive_kind, manifests, failure_at in (
+                ("malformed", "tar", [b"{", valid, valid], None),
+                ("read-failure", "zip", [valid, valid, valid], 1),
+                ("read-failure-after-valid", "zip", [valid, valid, valid], 2),
+            ):
+                case = base / ("invalid-valid-valid-" + name)
+                case.mkdir()
+                with self.subTest(order="invalid-valid-valid", invalid=name, archive=archive_kind):
+                    run_case(case, archive_kind, manifests, failure_at)
+
+    def test_nonregular_fixed_manifest_sticky_invalidates_both_orders(self):
+        valid = b'{"name":"fixed-lib","version":"1.2.3"}'
+        root = "app/node_modules/fixed-lib"
+        cases = (
+            ("tar-symlink", "tar", tarfile.SYMTYPE, ("valid", "nonregular", "valid")),
+            ("tar-hardlink", "tar", tarfile.LNKTYPE, ("valid", "nonregular", "valid")),
+            ("tar-directory", "tar", tarfile.DIRTYPE, ("valid", "nonregular", "valid")),
+            ("tar-fifo", "tar", tarfile.FIFOTYPE, ("valid", "nonregular", "valid")),
+            ("zip-symlink", "zip", stat.S_IFLNK, ("nonregular", "valid")),
+            ("zip-directory", "zip", stat.S_IFDIR, ("nonregular", "valid")),
+            ("zip-fifo", "zip", stat.S_IFIFO, ("nonregular", "valid")),
+        )
+
+        def archive_bytes(kind: str, member_type: bytes | int, order: tuple[str, ...], candidate: bytes) -> bytes:
+            if kind == "tar":
+                output = io.BytesIO()
+                with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
+                    item = tarfile.TarInfo(root + "/lib/item.js")
+                    item.size = len(candidate)
+                    archive.addfile(item, io.BytesIO(candidate))
+                    for entry in order:
+                        item = tarfile.TarInfo(root + "/package.json")
+                        if entry == "valid":
+                            item.size = len(valid)
+                            archive.addfile(item, io.BytesIO(valid))
+                        else:
+                            item.type = member_type
+                            if item.issym() or item.islnk():
+                                item.linkname = "manifest-target"
+                            archive.addfile(item)
+                return output.getvalue()
+            output = io.BytesIO()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+                    archive.writestr(root + "/lib/item.js", candidate)
+                    for entry in order:
+                        if entry == "valid":
+                            archive.writestr(root + "/package.json", valid)
+                            continue
+                        directory = member_type == stat.S_IFDIR
+                        item = zipfile.ZipInfo(root + "/package.json" + ("/" if directory else ""))
+                        item.create_system = 3
+                        item.external_attr = (member_type | (0o755 if directory else 0o644)) << 16
+                        archive.writestr(item, valid if member_type == stat.S_IFIFO else b"manifest-target")
+            return output.getvalue()
+
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name, kind, member_type, order in cases:
+                with self.subTest(name=name):
+                    case = base / name
+                    case.mkdir()
+                    candidate = f"api_key={runtime_canary(name)}\n".encode()
+                    archive = archive_bytes(kind, member_type, order, candidate)
+                    layer = archive if kind == "tar" else tar_bytes([("package.zip", archive)])
+                    catalog_data = public_catalog_bytes(npm=[{
+                        "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+                        "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                    }])
+                    with use_public_catalog(case, catalog_data):
+                        workspace = case / "workspace"
+                        seed_acquired(workspace, [layer])
+                        self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(case)))
+                        connection = AUDIT._ledger(workspace)
+                        try:
+                            row = connection.execute(
+                                "SELECT i.source_index,i.version FROM findings f JOIN items i ON i.id=f.item_id"
+                            ).fetchone()
+                        finally:
+                            connection.close()
+                        self.assertEqual((None, None), row)
+                        with mock.patch.object(
+                            AUDIT, "download_public", side_effect=AssertionError("fixed-only fetch must stay offline")
+                        ), mock.patch.dict(os.environ, {}, clear=True):
+                            self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                            self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                        counters = AUDIT.load_state(workspace)["counters"]
+                        self.assertEqual((0, 1, 0), tuple(counters[key] for key in (
+                            "public_matches", "unresolved_findings", "gaps"
+                        )))
+
+    def test_fixed_identity_isolated_between_sibling_tar_and_zip_archives(self):
+        root = "app/node_modules/fixed-lib"
+        manifest = b'{"name":"fixed-lib","version":"1.2.3"}'
+
+        def nested(kind: str, entries: list[tuple[str, bytes]]) -> bytes:
+            return tar_bytes(entries) if kind == "tar" else zip_bytes(entries)
+
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for kind in ("tar", "zip"):
+                with self.subTest(kind=kind):
+                    case = base / kind
+                    case.mkdir()
+                    candidate = f"api_key={runtime_canary('sibling-' + kind)}\n".encode()
+                    layer = tar_bytes([
+                        ("left." + kind, nested(kind, [(root + "/package.json", manifest)])),
+                        ("right." + kind, nested(kind, [(root + "/lib/item.js", candidate)])),
+                    ])
+                    catalog_data = public_catalog_bytes(npm=[{
+                        "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+                        "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                    }])
+                    with use_public_catalog(case, catalog_data):
+                        workspace = case / "workspace"
+                        seed_acquired(workspace, [layer])
+                        self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(case)))
+                        connection = AUDIT._ledger(workspace)
+                        try:
+                            package_root, version = connection.execute(
+                                "SELECT i.package_root,i.version FROM findings f JOIN items i ON i.id=f.item_id"
+                            ).fetchone()
+                        finally:
+                            connection.close()
+                        self.assertEqual(
+                            ("/.image-audit-archive/000000000003/" + root, None),
+                            (package_root, version),
+                        )
+                        with mock.patch.object(
+                            AUDIT, "download_public", side_effect=AssertionError("fixed-only fetch must stay offline")
+                        ), mock.patch.dict(os.environ, {}, clear=True):
+                            self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                            self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                        counters = AUDIT.load_state(workspace)["counters"]
+                        self.assertEqual((0, 1), (counters["public_matches"], counters["unresolved_findings"]))
+
+    def test_same_zip_and_parent_child_archives_keep_distinct_coherent_fixed_identities(self):
+        root = "app/node_modules/fixed-lib"
+        manifest = b'{"name":"fixed-lib","version":"1.2.3"}'
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name in ("same-zip", "parent-child"):
+                with self.subTest(name=name):
+                    case = base / name
+                    case.mkdir()
+                    candidate = f"api_key={runtime_canary(name)}\n".encode()
+                    if name == "same-zip":
+                        inner = zip_bytes([
+                            (root + "/lib/item.js", candidate),
+                            (root + "/package.json", manifest),
+                        ])
+                        layer = tar_bytes([("package.zip", inner)])
+                        expected_roots = ["/.image-audit-archive/000000000002/" + root]
+                    else:
+                        inner = tar_bytes([
+                            (root + "/lib/item.js", candidate),
+                            (root + "/package.json", manifest),
+                        ])
+                        layer = tar_bytes([
+                            (root + "/lib/item.js", candidate),
+                            ("nested.tar", inner),
+                            (root + "/package.json", manifest),
+                        ])
+                        expected_roots = [
+                            "/.image-audit-archive/000000000001/" + root,
+                            "/.image-audit-archive/000000000002/" + root,
+                        ]
+                    catalog_data = public_catalog_bytes(npm=[{
+                        "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+                        "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                    }])
+                    with use_public_catalog(case, catalog_data):
+                        workspace = case / "workspace"
+                        seed_acquired(workspace, [layer])
+                        self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(case)))
+                        connection = AUDIT._ledger(workspace)
+                        try:
+                            rows = connection.execute(
+                                "SELECT i.package_root,i.version FROM findings f JOIN items i ON i.id=f.item_id "
+                                "ORDER BY i.package_root"
+                            ).fetchall()
+                        finally:
+                            connection.close()
+                        self.assertEqual([(item, "1.2.3") for item in expected_roots], rows)
+                        with mock.patch.object(
+                            AUDIT, "download_public", side_effect=AssertionError("fixed-only fetch must stay offline")
+                        ), mock.patch.dict(os.environ, {}, clear=True):
+                            self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                            self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                        counters = AUDIT.load_state(workspace)["counters"]
+                        self.assertEqual((len(expected_roots), 0), (
+                            counters["public_matches"], counters["unresolved_findings"]
+                        ))
+
+    def test_archive_scope_counter_rejects_overflow(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            connection = AUDIT._ledger(workspace)
+            try:
+                scanner = AUDIT.ArchiveScanner(workspace, AUDIT.load_state(workspace), connection, frozenset())
+                scanner._archive_scope = 999_999_999_999
+                with self.assertRaisesRegex(AUDIT.AuditFailure, "^ARCHIVE_MEMBER_LIMIT$"):
+                    scanner._next_archive_scope()
+            finally:
+                connection.close()
+
+    def test_fixed_version_conflict_is_sticky_without_gap_while_legacy_conflict_stays_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidate = f"api_key={runtime_canary('fixed-conflict')}\n".encode()
+            fixed_root = "app/node_modules/fixed-lib"
+            fixed_layer = tar_bytes([
+                (fixed_root + "/lib/item.js", candidate),
+                (fixed_root + "/package.json", b'{"name":"fixed-lib","version":"1.2.3"}'),
+                (fixed_root + "/package.json", b'{"name":"fixed-lib","version":"2.0.0"}'),
+                (fixed_root + "/package.json", b'{"name":"fixed-lib","version":"1.2.3"}'),
+            ])
+            npm = [{
+                "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+                "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+            }]
+            fixed_catalog = public_catalog_bytes(
+                npm=npm,
+                layers=[{"diff_id": digest(b"conflict-diff"), "digest": digest(fixed_layer), "size": len(fixed_layer)}],
+            )
+            fixed_case = base / "fixed"
+            fixed_case.mkdir()
+            with use_public_catalog(fixed_case, fixed_catalog):
+                workspace = fixed_case / "workspace"
+                seed_acquired(workspace, [fixed_layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(fixed_case)))
+                connection = AUDIT._ledger(workspace)
+                try:
+                    row = connection.execute(
+                        "SELECT i.source_index,i.version FROM findings f JOIN items i ON i.id=f.item_id"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual((None, None), row)
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("fixed conflict fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                state = AUDIT.load_state(workspace)
+                self.assertEqual((0, 1, 0), (
+                    state["counters"]["public_matches"], state["counters"]["unresolved_findings"], state["counters"]["gaps"]
+                ))
+
+            legacy_case = base / "legacy"
+            legacy_case.mkdir()
+            legacy_layer = tar_bytes([
+                ("app/node_modules/express/lib/item.js", candidate),
+                ("app/node_modules/express/package.json", b'{"name":"express","version":"5.2.1"}'),
+                ("app/node_modules/express/package.json", b'{"name":"express","version":"6.0.0"}'),
+            ])
+            legacy_catalog = public_catalog_bytes(
+                layers=[{"diff_id": digest(b"legacy-conflict-diff"), "digest": digest(legacy_layer), "size": len(legacy_layer)}]
+            )
+            with use_public_catalog(legacy_case, legacy_catalog):
+                workspace = legacy_case / "workspace"
+                seed_acquired(workspace, [legacy_layer])
+                self.assertEqual(1, self.scan(workspace, make_gitleaks_stub(legacy_case)))
+                state = AUDIT.load_state(workspace)
+                self.assertEqual(("failed", "VENDOR_SOURCE_UNAVAILABLE"), (
+                    state["phases"]["scan"], state["primary_code"]
+                ))
+
+    def test_transformed_fixed_npm_member_does_not_inherit_package_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidate = f"api_key={runtime_canary('transformed-fixed')}\n".encode()
+            compressed = gzip.compress(candidate)
+            root = "app/node_modules/fixed-lib"
+            layer = tar_bytes([
+                (root + "/lib/item.js.gz", compressed),
+                (root + "/package.json", b'{"name":"fixed-lib","version":"1.2.3"}'),
+            ])
+            catalog_data = public_catalog_bytes(
+                npm=[{
+                    "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js.gz",
+                    "size": len(compressed), "sha256": hashlib.sha256(compressed).hexdigest(),
+                }],
+                layers=[{"diff_id": digest(b"transformed-diff"), "digest": digest(layer), "size": len(layer)}],
+            )
+            with use_public_catalog(base, catalog_data):
+                workspace = base / "workspace"
+                seed_acquired(workspace, [layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+                connection = AUDIT._ledger(workspace)
+                try:
+                    row = connection.execute(
+                        "SELECT i.package_root,i.source_index,i.version,i.relpath FROM findings f "
+                        "JOIN items i ON i.id=f.item_id"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual((None, None, None, None), row)
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("transformed fixed fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                state = AUDIT.load_state(workspace)
+                self.assertEqual((0, 1), (
+                    state["counters"]["public_matches"], state["counters"]["unresolved_findings"]
+                ))
+
+    def test_mixed_legacy_fixed_base_and_duplicate_unresolved_rows_keep_partition_and_review(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            legacy = f"api_key={runtime_canary('mixed-legacy')}\n".encode()
+            fixed = f"api_key={runtime_canary('mixed-fixed')}\n".encode()
+            base_member = f"api_key={runtime_canary('mixed-base')}\n".encode()
+            unresolved = (
+                f"api_key={runtime_canary('mixed-unresolved-one')}\n"
+                f"api_key={runtime_canary('mixed-unresolved-two')}\n"
+            ).encode()
+            layer = tar_bytes([
+                ("app/node_modules/express/lib/legacy.js", legacy),
+                ("app/node_modules/express/package.json", b'{"name":"express","version":"5.2.1"}'),
+                ("app/node_modules/fixed-lib/lib/fixed.js", fixed),
+                ("app/node_modules/fixed-lib/package.json", b'{"name":"fixed-lib","version":"1.2.3"}'),
+                ("usr/lib/base.txt", base_member),
+                ("app/unresolved.txt", unresolved),
+            ])
+            layer_digest = digest(layer)
+            catalog_data = public_catalog_bytes(
+                npm=[{
+                    "name": "fixed-lib", "version": "1.2.3", "path": "lib/fixed.js",
+                    "size": len(fixed), "sha256": hashlib.sha256(fixed).hexdigest(),
+                }],
+                base=[{
+                    "layer": layer_digest, "size": len(base_member), "sha256": hashlib.sha256(base_member).hexdigest(),
+                }],
+            )
+            tarball = gzip.compress(tar_bytes([("package/lib/legacy.js", legacy)]))
+            integrity = "sha512-" + base64.b64encode(hashlib.sha512(tarball).digest()).decode()
+            registry = json.dumps({
+                "versions": {"5.2.1": {"dist": {
+                    "tarball": "https://registry.npmjs.org/express/-/express-5.2.1.tgz", "integrity": integrity,
+                }}}
+            }).encode()
+            with use_public_catalog(base, catalog_data):
+                workspace = base / "workspace"
+                seed_acquired(workspace, [layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+
+                def download(url: str, _limit: int) -> bytes:
+                    return registry if url == AUDIT.SOURCES[AUDIT.source_index("express")]["catalog"] else tarball
+
+                with mock.patch.object(AUDIT, "download_public", side_effect=download), mock.patch.dict(
+                    os.environ, {}, clear=True
+                ):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                state = AUDIT.load_state(workspace)
+                counters = state["counters"]
+                self.assertEqual((5, 1, 1, 3, 2), tuple(counters[key] for key in (
+                    "detections", "vendor_candidates", "vendor_sources_fetched", "public_matches", "unresolved_findings"
+                )))
+                self.assertEqual({"rows": 2, "distinct_items": 1}, state["diagnostics"]["unresolved"]["by_kind"]["file"])
+                code, receipt = AUDIT.finalize_workspace(workspace)
+                self.assertEqual((2, "COMPLETE_REVIEW_REQUIRED", "FINDINGS_PRESENT"), (
+                    code, receipt["status"], receipt["code"]
+                ))
+
+    def test_fixed_npm_compare_requires_recovered_name_when_two_names_are_recognized(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidate = f"api_key={runtime_canary('fixed-name-key')}\n".encode()
+            layer = tar_bytes([
+                ("app/node_modules/fixed-a/lib/item.js", candidate),
+                ("app/node_modules/fixed-a/package.json", b'{"name":"fixed-a","version":"1.2.3"}'),
+            ])
+            catalog_data = public_catalog_bytes(
+                npm=[
+                    {
+                        "name": "fixed-a", "version": "1.2.3", "path": "lib/recognition.js",
+                        "size": 1, "sha256": hashlib.sha256(b"r").hexdigest(),
+                    },
+                    {
+                        "name": "fixed-b", "version": "1.2.3", "path": "lib/item.js",
+                        "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                    },
+                ],
+                layers=[{"diff_id": digest(b"fixed-name-diff"), "digest": digest(layer), "size": len(layer)}],
+            )
+            with use_public_catalog(base, catalog_data):
+                workspace = base / "workspace"
+                seed_acquired(workspace, [layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+                connection = AUDIT._ledger(workspace)
+                try:
+                    identity = connection.execute(
+                        "SELECT i.package_root,i.source_index,i.version,i.relpath FROM findings f "
+                        "JOIN items i ON i.id=f.item_id"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual((
+                    "/.image-audit-archive/000000000001/app/node_modules/fixed-a",
+                    None,
+                    "1.2.3",
+                    "lib/item.js",
+                ), identity)
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("fixed name-key fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                state = AUDIT.load_state(workspace)
+                self.assertEqual(("complete", "NONE", 0, 1), (
+                    state["phases"]["compare"], state["primary_code"],
+                    state["counters"]["public_matches"], state["counters"]["unresolved_findings"],
+                ))
+
+    def test_base_compare_requires_same_hash_size_and_file_kind_after_staging_verifies(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name in ("hash", "size", "kind"):
+                with self.subTest(name=name):
+                    case = base / name
+                    case.mkdir()
+                    candidate = f"api_key={runtime_canary('base-' + name)}\n".encode()
+                    if name == "kind":
+                        zipped = io.BytesIO()
+                        info = zipfile.ZipInfo("link-target")
+                        info.create_system = 3
+                        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                        with zipfile.ZipFile(zipped, "w", zipfile.ZIP_STORED) as archive:
+                            archive.writestr(info, candidate)
+                        layer = tar_bytes([("payload.zip", zipped.getvalue())])
+                        expected_kind = "archive-link"
+                    else:
+                        layer = tar_bytes([("usr/lib/item.txt", candidate)])
+                        expected_kind = "file"
+                    layer_digest = digest(layer)
+                    record = {
+                        "layer": layer_digest,
+                        "size": len(candidate),
+                        "sha256": hashlib.sha256(candidate).hexdigest(),
+                    }
+                    if name == "hash":
+                        record["sha256"] = hashlib.sha256(b"x" * len(candidate)).hexdigest()
+                    elif name == "size":
+                        record["size"] = len(candidate) + 1
+                    catalog_data = public_catalog_bytes(base=[record])
+                    with use_public_catalog(case, catalog_data):
+                        workspace = case / "workspace"
+                        seed_acquired(workspace, [layer])
+                        self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(case)))
+                        connection = AUDIT._ledger(workspace)
+                        try:
+                            staged = connection.execute(
+                                "SELECT i.kind,i.size,i.layer_digest,length(i.content_sha256) FROM findings f "
+                                "JOIN items i ON i.id=f.item_id"
+                            ).fetchone()
+                        finally:
+                            connection.close()
+                        self.assertEqual((expected_kind, len(candidate), layer_digest, 32), staged)
+                        with mock.patch.object(
+                            AUDIT, "download_public", side_effect=AssertionError("base negative fetch must stay offline")
+                        ), mock.patch.dict(os.environ, {}, clear=True):
+                            self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                            self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                        state = AUDIT.load_state(workspace)
+                        self.assertEqual(("complete", "NONE", 0, 1), (
+                            state["phases"]["compare"], state["primary_code"],
+                            state["counters"]["public_matches"], state["counters"]["unresolved_findings"],
+                        ))
+
+    def test_fixed_missing_version_stays_unresolved_for_npm_but_can_match_base(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidate = f"api_key={runtime_canary('fixed-base-without-version')}\n".encode()
+            layer = tar_bytes([
+                ("app/node_modules/fixed-lib/lib/item.js", candidate),
+                ("app/node_modules/fixed-lib/package.json", b'{"name":"fixed-lib"}'),
+            ])
+            layer_digest = digest(layer)
+            catalog_data = public_catalog_bytes(
+                npm=[{
+                    "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+                    "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                }],
+                base=[{
+                    "layer": layer_digest, "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                }],
+            )
+            with use_public_catalog(base, catalog_data):
+                workspace = base / "workspace"
+                seed_acquired(workspace, [layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+                connection = AUDIT._ledger(workspace)
+                try:
+                    row = connection.execute(
+                        "SELECT i.source_index,i.version FROM findings f JOIN items i ON i.id=f.item_id"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual((None, None), row)
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("missing fixed version fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                counters = AUDIT.load_state(workspace)["counters"]
+                self.assertEqual((1, 0), (counters["public_matches"], counters["unresolved_findings"]))
+
+    def test_fixed_npm_and_base_require_exact_fields_and_same_layer(self):
+        candidate = f"api_key={runtime_canary('exact-fields')}\n".encode()
+        actual_layer = tar_bytes([
+            ("app/node_modules/fixed-lib/lib/item.js", candidate),
+            ("app/node_modules/fixed-lib/package.json", b'{"name":"fixed-lib","version":"1.2.3"}'),
+        ])
+        actual_layer_digest = digest(actual_layer)
+        exact = {
+            "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+            "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+        }
+        mutations = {
+            "name": {**exact, "name": "other-lib"},
+            "version": {**exact, "version": "9.9.9"},
+            "path": {**exact, "path": "lib/other.js"},
+            "size": {**exact, "size": len(candidate) + 1},
+            "hash": {**exact, "sha256": hashlib.sha256(b"different").hexdigest()},
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for name, npm_row in mutations.items():
+                with self.subTest(name=name):
+                    case = base / name
+                    case.mkdir()
+                    catalog_data = public_catalog_bytes(
+                        npm=[npm_row],
+                        layers=[{"diff_id": digest((name + "-diff").encode()), "digest": actual_layer_digest, "size": len(actual_layer)}],
+                    )
+                    with use_public_catalog(case, catalog_data):
+                        workspace = case / "workspace"
+                        seed_acquired(workspace, [actual_layer])
+                        self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(case)))
+                        with mock.patch.object(
+                            AUDIT, "download_public", side_effect=AssertionError("fixed mismatch fetch must stay offline")
+                        ), mock.patch.dict(os.environ, {}, clear=True):
+                            self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                            self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                        counters = AUDIT.load_state(workspace)["counters"]
+                        self.assertEqual((0, 1), (counters["public_matches"], counters["unresolved_findings"]))
+
+            base_candidate = f"api_key={runtime_canary('wrong-layer')}\n".encode()
+            base_layer = tar_bytes([("usr/lib/item.txt", base_candidate)])
+            wrong_layer = digest(b"other compressed layer")
+            catalog_data = public_catalog_bytes(
+                base=[{
+                    "layer": wrong_layer, "size": len(base_candidate), "sha256": hashlib.sha256(base_candidate).hexdigest(),
+                }]
+            )
+            case = base / "layer"
+            case.mkdir()
+            with use_public_catalog(case, catalog_data):
+                workspace = case / "workspace"
+                seed_acquired(workspace, [base_layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(case)))
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("base fallback fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                counters = AUDIT.load_state(workspace)["counters"]
+                self.assertEqual((0, 1), (counters["public_matches"], counters["unresolved_findings"]))
+
+    def test_new_fallbacks_require_null_source_index(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidate = f"api_key={runtime_canary('source-null-gate')}\n".encode()
+            layer = tar_bytes([
+                ("app/node_modules/fixed-lib/lib/item.js", candidate),
+                ("app/node_modules/fixed-lib/package.json", b'{"name":"fixed-lib","version":"1.2.3"}'),
+            ])
+            layer_digest = digest(layer)
+            catalog_data = public_catalog_bytes(
+                npm=[{
+                    "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+                    "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                }],
+                base=[{
+                    "layer": layer_digest, "size": len(candidate), "sha256": hashlib.sha256(candidate).hexdigest(),
+                }],
+            )
+            with use_public_catalog(base, catalog_data):
+                workspace = base / "workspace"
+                seed_acquired(workspace, [layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+                connection = AUDIT._ledger(workspace)
+                try:
+                    connection.execute(
+                        "UPDATE items SET source_index=? WHERE id IN (SELECT item_id FROM findings)",
+                        (AUDIT.source_index("express"),),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                reference = gzip.compress(tar_bytes([("package/lib/item.js", b"x" * len(candidate))]))
+                reference_path = workspace / "references" / "000001.tgz"
+                reference_path.write_bytes(reference)
+                reference_path.chmod(0o600)
+                AUDIT.write_private_json(workspace / "private" / "references.json", {
+                    "schema": 1,
+                    "references": [{
+                        "source_index": AUDIT.source_index("express"), "version": "1.2.3",
+                        "file": "000001.tgz", "size": len(reference),
+                    }],
+                })
+                state = AUDIT.load_state(workspace)
+                state["phases"]["fetch_vendor"] = "complete"
+                state["counters"]["vendor_sources_fetched"] = 1
+                AUDIT.save_state(workspace, state)
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+                counters = AUDIT.load_state(workspace)["counters"]
+                self.assertEqual((0, 1), (counters["public_matches"], counters["unresolved_findings"]))
+
+    def test_same_size_public_replacement_after_scan_fails_staging_integrity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            original = f"api_key={runtime_canary('replacement-old')}\n".encode()
+            replacement = f"api_key={runtime_canary('replacement-new')}\n".encode()
+            self.assertEqual(len(original), len(replacement))
+            layer = tar_bytes([
+                ("app/node_modules/fixed-lib/lib/item.js", original),
+                ("app/node_modules/fixed-lib/package.json", b'{"name":"fixed-lib","version":"1.2.3"}'),
+            ])
+            catalog_data = public_catalog_bytes(
+                npm=[{
+                    "name": "fixed-lib", "version": "1.2.3", "path": "lib/item.js",
+                    "size": len(replacement), "sha256": hashlib.sha256(replacement).hexdigest(),
+                }],
+                layers=[{"diff_id": digest(b"replacement-diff"), "digest": digest(layer), "size": len(layer)}],
+            )
+            with use_public_catalog(base, catalog_data):
+                workspace = base / "workspace"
+                seed_acquired(workspace, [layer])
+                self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+                with mock.patch.object(
+                    AUDIT, "download_public", side_effect=AssertionError("replacement fetch must stay offline")
+                ), mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+                connection = AUDIT._ledger(workspace)
+                try:
+                    item_id = connection.execute("SELECT item_id FROM findings").fetchone()[0]
+                finally:
+                    connection.close()
+                (workspace / "spool" / f"{item_id:012d}.txt").write_bytes(replacement)
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(1, AUDIT.run_phase("compare", workspace))
+                state = AUDIT.load_state(workspace)
+                self.assertEqual(("STAGING_MISMATCH", 0, 0), (
+                    state["primary_code"], state["counters"]["public_matches"], state["counters"]["unresolved_findings"]
+                ))
+
+
 class ScanTests(unittest.TestCase):
     def scan(self, root: Path, gitleaks: Path) -> int:
         with mock.patch.dict(os.environ, {"PATH": str(gitleaks.parent) + os.pathsep + os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}, clear=True), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
@@ -1794,6 +2952,207 @@ class ScanTests(unittest.TestCase):
                 if child is not None:
                     with contextlib.suppress(ProcessLookupError, PermissionError):
                         os.killpg(os.getpgid(child), signal.SIGKILL)
+
+
+class StagingIntegrityTests(unittest.TestCase):
+    def scan(self, root: Path, gitleaks: Path) -> int:
+        with mock.patch.dict(
+            os.environ,
+            {"PATH": str(gitleaks.parent) + os.pathsep + os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+            clear=True,
+        ), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
+            return AUDIT.run_phase("scan", root)
+
+    def test_stager_records_exact_digests_for_bytes_and_stream_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            workspace = base / "workspace"
+            initialize(workspace)
+            source = base / "source"
+            streamed = b"streamed staged bytes\n"
+            source.write_bytes(streamed)
+            connection = AUDIT._ledger(workspace)
+            try:
+                stager = AUDIT.Stager(workspace, AUDIT.load_state(workspace), connection)
+                byte_id = stager.bytes(b"direct staged bytes\n", "fixture")
+                stream_id = stager.path(source, len(streamed), "fixture")
+                connection.commit()
+                self.assertIn("content_sha256", [column[1] for column in connection.execute("PRAGMA table_info(items)")])
+                rows = connection.execute("SELECT id,content_sha256 FROM items ORDER BY id").fetchall()
+            finally:
+                connection.close()
+            self.assertEqual(
+                [(byte_id, hashlib.sha256(b"direct staged bytes\n").digest()), (stream_id, hashlib.sha256(streamed).digest())],
+                rows,
+            )
+            self.assertTrue(all(isinstance(value, bytes) and len(value) == 32 for _identifier, value in rows))
+            self.assertEqual(streamed, (workspace / "spool" / f"{stream_id:012d}.txt").read_bytes())
+
+    def test_verifier_returns_only_requested_digest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            state = AUDIT.load_state(workspace)
+            connection = AUDIT._ledger(workspace)
+            try:
+                stager = AUDIT.Stager(workspace, state, connection)
+                first = stager.bytes(b"first staged item\n", "fixture")
+                requested = stager.bytes(b"requested staged item\n", "fixture")
+                connection.commit()
+                verified = AUDIT._verify_staging(workspace, connection, state, {requested})
+            finally:
+                connection.close()
+            self.assertEqual({requested}, set(verified))
+            self.assertEqual(hashlib.sha256(b"requested staged item\n").digest(), verified[requested])
+            self.assertNotIn(first, verified)
+
+    def test_verifier_rejects_missing_or_malformed_digest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            state = AUDIT.load_state(workspace)
+            for digest_value in (None, b"short"):
+                with self.subTest(digest_value=digest_value):
+                    fixture = AUDIT.sqlite3.connect(":memory:")
+                    try:
+                        fixture.execute("CREATE TABLE items (id INTEGER, size INTEGER, content_sha256 BLOB)")
+                        fixture.execute("INSERT INTO items VALUES (1, ?, ?)", (len(b"content\n"), digest_value))
+                        path = workspace / "spool" / "000000000001.txt"
+                        path.write_bytes(b"content\n")
+                        with self.assertRaisesRegex(AUDIT.AuditFailure, "^STAGING_MISMATCH$"):
+                            AUDIT._verify_staging(workspace, fixture, state)
+                    finally:
+                        fixture.close()
+
+    def test_old_ledger_schema_is_workspace_invalid(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            initialize(workspace)
+            connection = AUDIT._ledger(workspace)
+            try:
+                connection.execute("UPDATE meta SET schema=?", (AUDIT.SCHEMA,))
+                connection.commit()
+            finally:
+                connection.close()
+            with self.assertRaisesRegex(AUDIT.AuditFailure, "^WORKSPACE_INVALID$"):
+                AUDIT.load_state(workspace)
+
+    def test_scan_rejects_same_size_replacement_before_and_after_scanner(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            gitleaks = make_gitleaks_stub(base)
+            original_apply = AUDIT.ArchiveScanner.apply_package_versions
+            original_scan = AUDIT._gitleaks_scan
+
+            def replace_one(root: Path) -> None:
+                target = sorted((root / "spool").iterdir())[0]
+                data = target.read_bytes()
+                target.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+
+            for point in ("before", "after"):
+                with self.subTest(point=point):
+                    workspace = base / point
+                    seed_acquired(workspace, [tar_bytes([("clean", b"clean\n")])])
+                    if point == "before":
+                        def alter_after_stage(scanner):
+                            original_apply(scanner)
+                            replace_one(scanner.root)
+
+                        patch = mock.patch.object(AUDIT.ArchiveScanner, "apply_package_versions", new=alter_after_stage)
+                    else:
+                        def alter_after_scan(*args, **kwargs):
+                            result = original_scan(*args, **kwargs)
+                            if args[3] == "image":
+                                replace_one(args[1].parent)
+                            return result
+
+                        patch = mock.patch.object(AUDIT, "_gitleaks_scan", side_effect=alter_after_scan)
+                    if point == "before":
+                        with patch, mock.patch.object(AUDIT, "_gitleaks_scan", wraps=original_scan) as gitleaks_scan:
+                            self.assertEqual(1, self.scan(workspace, gitleaks))
+                        self.assertFalse(
+                            any(call.args[3] == "image" for call in gitleaks_scan.call_args_list if len(call.args) > 3)
+                        )
+                    else:
+                        with patch:
+                            self.assertEqual(1, self.scan(workspace, gitleaks))
+                    state = AUDIT.load_state(workspace)
+                    self.assertEqual(("failed", "STAGING_MISMATCH"), (state["phases"]["scan"], state["primary_code"]))
+                    code, receipt = AUDIT.finalize_workspace(workspace)
+                    self.assertEqual((3, "INCOMPLETE", "STAGING_MISMATCH"), (code, receipt["status"], receipt["code"]))
+
+    def test_compare_hashes_each_staged_item_once_for_duplicate_findings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidate = (
+                f"api_key={runtime_canary('duplicate-cache-one')}\n"
+                f"api_key={runtime_canary('duplicate-cache-two')}\n"
+            ).encode()
+            package = json.dumps({"name": "express", "version": "5.2.1"}).encode()
+            workspace = base / "workspace"
+            seed_acquired(
+                workspace,
+                [tar_bytes([("app/node_modules/express/lib/item.js", candidate), ("app/node_modules/express/package.json", package)])],
+            )
+            self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+            tarball = gzip.compress(tar_bytes([("package/lib/item.js", candidate), ("package/package.json", b"{}")]))
+            integrity = "sha512-" + base64.b64encode(hashlib.sha512(tarball).digest()).decode()
+            catalog = json.dumps({"versions": {"5.2.1": {"dist": {"tarball": "https://registry.npmjs.org/express/-/express-5.2.1.tgz", "integrity": integrity}}}}).encode()
+
+            def download(url: str, _limit: int) -> bytes:
+                return catalog if url == AUDIT.SOURCES[AUDIT.source_index("express")]["catalog"] else tarball
+
+            with mock.patch.object(AUDIT, "download_public", side_effect=download), mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+            staged_items = AUDIT.load_state(workspace)["counters"]["staged_items"]
+            with mock.patch.object(AUDIT, "_hash_file", wraps=AUDIT._hash_file) as hash_file, mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(0, AUDIT.run_phase("compare", workspace))
+            state = AUDIT.load_state(workspace)
+            self.assertEqual((2, 2, 0), tuple(state["counters"][key] for key in (
+                "detections", "public_matches", "unresolved_findings"
+            )))
+            self.assertEqual(staged_items, hash_file.call_count)
+
+    def test_compare_rejects_same_size_reference_replacement_before_counters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidate = f"api_key={runtime_canary('staging-compare')}\n".encode()
+            replacement = candidate[:-1] + b"\r"
+            package = json.dumps({"name": "express", "version": "5.2.1"}).encode()
+            workspace = base / "workspace"
+            seed_acquired(
+                workspace,
+                [tar_bytes([("app/node_modules/express/lib/item.js", candidate), ("app/node_modules/express/package.json", package)])],
+            )
+            self.assertEqual(0, self.scan(workspace, make_gitleaks_stub(base)))
+            tarball = gzip.compress(tar_bytes([("package/lib/item.js", replacement), ("package/package.json", b"{}")]))
+            integrity = "sha512-" + base64.b64encode(hashlib.sha512(tarball).digest()).decode()
+            catalog = json.dumps({"versions": {"5.2.1": {"dist": {"tarball": "https://registry.npmjs.org/express/-/express-5.2.1.tgz", "integrity": integrity}}}}).encode()
+
+            def download(url: str, _limit: int) -> bytes:
+                return catalog if url == AUDIT.SOURCES[AUDIT.source_index("express")]["catalog"] else tarball
+
+            with mock.patch.object(AUDIT, "download_public", side_effect=download), mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(0, AUDIT.run_phase("fetch-vendor", workspace))
+            connection = AUDIT._ledger(workspace)
+            try:
+                target = next(
+                    workspace / "spool" / f"{item_id:012d}.txt"
+                    for (item_id,) in connection.execute(
+                        "SELECT i.id FROM findings f JOIN items i ON i.id=f.item_id ORDER BY f.rowid"
+                    )
+                    if (workspace / "spool" / f"{item_id:012d}.txt").read_bytes() == candidate
+                )
+            finally:
+                connection.close()
+            target.write_bytes(replacement)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(1, AUDIT.run_phase("compare", workspace))
+            state = AUDIT.load_state(workspace)
+            self.assertEqual(("failed", "STAGING_MISMATCH"), (state["phases"]["compare"], state["primary_code"]))
+            self.assertEqual((0, 0), (state["counters"]["public_matches"], state["counters"]["unresolved_findings"]))
+            code, receipt = AUDIT.finalize_workspace(workspace)
+            self.assertEqual((3, "INCOMPLETE", "STAGING_MISMATCH"), (code, receipt["status"], receipt["code"]))
 
 
 class ProvenanceTests(unittest.TestCase):
@@ -2689,7 +4048,10 @@ class WorkspaceAndOutputTests(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode)
             self.assertEqual(b"", result.stdout)
-            self.assertIn(b"Status: `COMPLETE_NO_FINDINGS`", summary.read_bytes())
+            summary_bytes = summary.read_bytes()
+            self.assertIn(b"Status: `COMPLETE_NO_FINDINGS`", summary_bytes)
+            self.assertIn(b"Public reference matches: 0", summary_bytes)
+            self.assertNotIn(b"Public vendor file matches", summary_bytes)
 
     def test_finalize_summary_failure_does_not_write_github_output(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -3385,6 +4747,652 @@ def run_real_gitleaks(binary: Path) -> int:
     if targets["scan"] != 0 or targets["phase"] != "complete" or targets["detections"] < 3 or targets["metadata_retained"] is not True:
         return fail("archive-link-target", "SCANNER_CONTROL_FAILED")
     return 0
+
+
+def make_public_catalog_fixture(base: Path) -> dict[str, object]:
+    npm_blobs = base / "npm-blobs"
+    npm_blobs.mkdir()
+    references = []
+    member_rows = []
+    npm_members = (
+        ("express", "5.2.1", "package", (("package.json", b""), ("legacy.txt", b"legacy\n"))),
+        ("dep-one", "1.2.3", "node", (("package.json", b""), ("lib/value.js", b"value\n"))),
+    )
+    expanded_bytes = 0
+    largest_member = 0
+    for artifact_id, (name, version, root, members) in enumerate(npm_members, 1):
+        package_json = json.dumps({"name": name, "version": version}, separators=(",", ":")).encode()
+        resolved = tuple((path, package_json if path == "package.json" else payload) for path, payload in members)
+        archive_data = tar_bytes([(f"{root}/{path}", payload) for path, payload in resolved])
+        expanded_bytes += len(archive_data)
+        blob = gzip.compress(archive_data, mtime=0)
+        (npm_blobs / f"{artifact_id:03d}.tgz").write_bytes(blob)
+        references.append({
+            "class": "current-catalog" if name == "express" else "outside-catalog",
+            "duplicate_member_paths": 0,
+            "id": artifact_id,
+            "identity_verified": False,
+            "integrity": "sha512-" + base64.b64encode(hashlib.sha512(blob).digest()).decode("ascii"),
+            "name": name,
+            "sha256": hashlib.sha256(blob).hexdigest(),
+            "size": len(blob),
+            "snapshot_keys": [f"{name}@{version}"],
+            "sri_verified": False,
+            "url": f"https://registry.npmjs.org/{name}/-/{name}-{version}.tgz",
+            "version": version,
+        })
+        for ordinal, (path, payload) in enumerate(resolved, 1):
+            largest_member = max(largest_member, len(payload))
+            member_rows.append({
+                "artifact_id": artifact_id,
+                "identity": f"{name}@{version}",
+                "kind": "file",
+                "ordinal": ordinal,
+                "path": f"{root}/{path}",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+            })
+    member_index = base / "member-index.jsonl"
+    member_index_data = b"".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n" for row in member_rows
+    )
+    member_index.write_bytes(member_index_data)
+    npm_manifest = {
+        "schema": 1,
+        "source": {
+            "git_commit": "cc1af0b382f30ad355abf2348ea2134963736f22",
+            "inputs_sha256": {"pnpm-lock.yaml": "a75c27e2d06e84d430eaae8be7846840408d7f0dca169da79fee90ef87a0f88d"},
+        },
+        "member_index": {
+            "path": "member-index.jsonl",
+            "sha256": hashlib.sha256(member_index_data).hexdigest(),
+            "index_bytes": len(member_index_data),
+            "members": len(member_rows),
+            "declared_member_bytes": sum(row["size"] for row in member_rows),
+            "duplicate_member_paths": 0,
+        },
+        "references": references,
+    }
+    npm_manifest_path = base / "reference-manifest.json"
+    npm_manifest_data = json.dumps(npm_manifest, sort_keys=True, separators=(",", ":")).encode()
+    npm_manifest_path.write_bytes(npm_manifest_data)
+
+    base_blobs = base / "base-blobs"
+    base_blobs.mkdir()
+    layer_specs = (
+        (("first", b"shared\n"), ("duplicate", b"shared\n")),
+        (("second", b"shared\n"), ("unique", b"unique\n")),
+    )
+    layers = []
+    diff_ids = []
+    base_control = base / "base-control"
+    base_control.mkdir()
+    summary_layers = []
+    for ordinal, entries in enumerate(layer_specs, 1):
+        archive_data = tar_bytes(list(entries))
+        expanded_bytes += len(archive_data)
+        layer_blob = gzip.compress(archive_data, mtime=0)
+        layer_hex = hashlib.sha256(layer_blob).hexdigest()
+        layer_digest = "sha256:" + layer_hex
+        layer_name = f"layer-{ordinal:02d}-{layer_hex}.blob"
+        (base_blobs / layer_name).write_bytes(layer_blob)
+        layers.append({
+            "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+            "digest": layer_digest,
+            "size": len(layer_blob),
+        })
+        diff_id = "sha256:" + hashlib.sha256(archive_data).hexdigest()
+        diff_ids.append(diff_id)
+        rows = []
+        for member_ordinal, (path, payload) in enumerate(entries, 1):
+            largest_member = max(largest_member, len(payload))
+            rows.append({
+                "ordinal": member_ordinal,
+                "path": path,
+                "schema": 1,
+                "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+                "type": "regular",
+                "whiteout": None,
+                "whiteout_target": None,
+            })
+        index_name = f"layer-{ordinal:02d}.jsonl"
+        index_data = b"".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n" for row in rows
+        )
+        (base_control / index_name).write_bytes(index_data)
+        summary_layers.append({
+            "compressed_bytes": len(layer_blob),
+            "diff_id": diff_id,
+            "index_bytes": len(index_data),
+            "index_file": index_name,
+            "index_sha256": "sha256:" + hashlib.sha256(index_data).hexdigest(),
+            "layer_digest": layer_digest,
+            "layer_media_type": "application/vnd.oci.image.layer.v1.tar+gzip",
+            "members": len(rows),
+            "ordinal": ordinal,
+            "regular_member_bytes": sum(row["size"] for row in rows),
+            "types": {"regular": len(rows)},
+            "uncompressed_tar_bytes": len(archive_data),
+            "whiteout_markers": 0,
+        })
+    config = json.dumps({
+        "architecture": "amd64",
+        "os": "linux",
+        "rootfs": {"type": "layers", "diff_ids": diff_ids},
+    }, sort_keys=True, separators=(",", ":")).encode()
+    config_hex = hashlib.sha256(config).hexdigest()
+    (base_blobs / f"config-{config_hex}.blob").write_bytes(config)
+    child = json.dumps({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": "sha256:" + config_hex,
+            "size": len(config),
+        },
+        "layers": layers,
+    }, sort_keys=True, separators=(",", ":")).encode()
+    child_digest = "sha256:" + hashlib.sha256(child).hexdigest()
+    child_path = base / "node-manifest.json"
+    child_path.write_bytes(child)
+    index = json.dumps({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [{
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": child_digest,
+            "size": len(child),
+            "platform": {"architecture": "amd64", "os": "linux"},
+        }],
+    }, sort_keys=True, separators=(",", ":")).encode()
+    index_path = base / "node-index.json"
+    index_path.write_bytes(index)
+    summary = {
+        "schema": 1,
+        "layers": summary_layers,
+        "totals": {
+            "layers": len(summary_layers),
+            "members": sum(item["members"] for item in summary_layers),
+            "regular_member_bytes": sum(item["regular_member_bytes"] for item in summary_layers),
+            "index_bytes": sum(item["index_bytes"] for item in summary_layers),
+            "whiteout_markers": 0,
+        },
+    }
+    summary_path = base / "layer-index-summary.json"
+    summary_path.write_text(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+    return {
+        "paths": {
+            "npm_manifest": npm_manifest_path,
+            "npm_blobs": npm_blobs,
+            "npm_member_index": member_index,
+            "oci_index": index_path,
+            "oci_manifest": child_path,
+            "base_blobs": base_blobs,
+            "base_index_summary": summary_path,
+            "base_layer_indexes": base_control,
+        },
+        "pins": {
+            "NPM_REFERENCE_MANIFEST_SHA256": hashlib.sha256(npm_manifest_data).hexdigest(),
+            "OCI_INDEX_DIGEST": "sha256:" + hashlib.sha256(index).hexdigest(),
+            "OCI_MANIFEST_DIGEST": child_digest,
+            "EXPECTED_NPM_ARTIFACTS": 2,
+            "EXPECTED_NPM_EXPORTS": 1,
+            "EXPECTED_BASE_LAYERS": 2,
+        },
+        "expanded_bytes": expanded_bytes,
+        "largest_member": largest_member,
+    }
+
+
+class PublicCatalogGeneratorTests(unittest.TestCase):
+    def repin_npm_manifest(self, fixture: dict[str, object], mutate) -> dict[str, object]:
+        path = fixture["paths"]["npm_manifest"]
+        value = json.loads(path.read_bytes())
+        mutate(value)
+        data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        path.write_bytes(data)
+        fixture["pins"]["NPM_REFERENCE_MANIFEST_SHA256"] = hashlib.sha256(data).hexdigest()
+        return value
+
+    def replace_npm_blob(self, fixture: dict[str, object], artifact_id: int, entries: list[tuple[str, bytes]]) -> None:
+        path = fixture["paths"]["npm_blobs"] / f"{artifact_id:03d}.tgz"
+        blob = gzip.compress(tar_bytes(entries), mtime=0)
+        path.write_bytes(blob)
+
+        def update(value):
+            reference = value["references"][artifact_id - 1]
+            reference.update(
+                integrity="sha512-" + base64.b64encode(hashlib.sha512(blob).digest()).decode("ascii"),
+                sha256=hashlib.sha256(blob).hexdigest(),
+                size=len(blob),
+            )
+
+        self.repin_npm_manifest(fixture, update)
+
+    def repin_oci_index(self, fixture: dict[str, object], mutate) -> None:
+        path = fixture["paths"]["oci_index"]
+        value = json.loads(path.read_bytes())
+        mutate(value)
+        data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        path.write_bytes(data)
+        fixture["pins"]["OCI_INDEX_DIGEST"] = "sha256:" + hashlib.sha256(data).hexdigest()
+
+    def test_build_catalog_normalizes_nonstandard_root_and_deduplicates_base_triples(self):
+        self.assertTrue(hasattr(CATALOG_GENERATOR, "build_catalog"))
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = make_public_catalog_fixture(Path(temp))
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                data = CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+        catalog = json.loads(data)
+        self.assertEqual({"schema", "provenance", "npm", "base"}, set(catalog))
+        self.assertEqual(1, catalog["schema"])
+        self.assertEqual(
+            [("dep-one", "1.2.3", "lib/value.js"), ("dep-one", "1.2.3", "package.json")],
+            [(row["name"], row["version"], row["path"]) for row in catalog["npm"]],
+        )
+        self.assertEqual(3, len(catalog["base"]))
+        self.assertEqual(sorted(catalog["base"], key=lambda row: (row["layer"], row["size"], row["sha256"])), catalog["base"])
+        self.assertEqual(b"{", data[:1])
+        self.assertEqual(b"}", data[-1:])
+        self.assertEqual(
+            {"lockfile_sha256", "npm_artifacts", "npm_reference_manifest_sha256", "oci", "source_commit"},
+            set(catalog["provenance"]),
+        )
+        self.assertTrue(all(set(row) == {"name", "version", "path", "size", "sha256"} for row in catalog["npm"]))
+        self.assertTrue(all(set(row) == {"layer", "size", "sha256"} for row in catalog["base"]))
+        npm_artifacts = catalog["provenance"]["npm_artifacts"]
+        self.assertTrue(
+            all(set(row) == {"integrity", "name", "sha256", "size", "version"} for row in npm_artifacts)
+        )
+        self.assertEqual(sorted(npm_artifacts, key=lambda row: (row["name"], row["version"])), npm_artifacts)
+        oci = catalog["provenance"]["oci"]
+        self.assertEqual({"config", "index", "layers", "manifest", "platform"}, set(oci))
+        self.assertEqual({"digest", "size"}, set(oci["config"]))
+        self.assertEqual({"digest", "size"}, set(oci["index"]))
+        self.assertEqual({"digest", "size"}, set(oci["manifest"]))
+        self.assertTrue(all(set(row) == {"diff_id", "digest", "size"} for row in oci["layers"]))
+        self.assertEqual({"architecture", "os"}, set(oci["platform"]))
+        sized = catalog["npm"] + catalog["base"] + npm_artifacts + oci["layers"] + [oci["config"], oci["index"], oci["manifest"]]
+        self.assertTrue(all(type(row["size"]) is int for row in sized))
+        self.assertNotIn(None, list(self.walk_values(catalog)))
+
+    def walk_values(self, value):
+        if isinstance(value, dict):
+            for item in value.values():
+                yield from self.walk_values(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from self.walk_values(item)
+        else:
+            yield value
+
+    def test_rejects_npm_source_sri_artifact_identity_and_duplicate_member_failures(self):
+        cases = ("manifest-pin", "source", "sri", "artifact", "identity", "duplicate")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                fixture = make_public_catalog_fixture(Path(temp))
+                if case == "manifest-pin":
+                    fixture["paths"]["npm_manifest"].write_bytes(fixture["paths"]["npm_manifest"].read_bytes() + b" ")
+                elif case == "source":
+                    self.repin_npm_manifest(fixture, lambda value: value["source"].update(git_commit="0" * 40))
+                elif case == "sri":
+                    self.repin_npm_manifest(
+                        fixture,
+                        lambda value: value["references"][1].update(
+                            integrity="sha512-" + base64.b64encode(b"\0" * 64).decode("ascii")
+                        ),
+                    )
+                elif case == "artifact":
+                    path = fixture["paths"]["npm_blobs"] / "002.tgz"
+                    data = bytearray(path.read_bytes())
+                    data[-1] ^= 1
+                    path.write_bytes(data)
+                elif case == "identity":
+                    wrong = json.dumps({"name": "other", "version": "1.2.3"}, separators=(",", ":")).encode()
+                    self.replace_npm_blob(
+                        fixture, 2, [("node/package.json", wrong), ("node/lib/value.js", b"value\n")]
+                    )
+                else:
+                    package = json.dumps({"name": "dep-one", "version": "1.2.3"}, separators=(",", ":")).encode()
+                    self.replace_npm_blob(
+                        fixture,
+                        2,
+                        [("node/package.json", package), ("node/lib/value.js", b"one"), ("node/lib/value.js", b"two")],
+                    )
+                with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                    with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                        CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+
+    def test_rejects_raw_npm_duplicate_path_across_regular_and_symlink_members(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = make_public_catalog_fixture(Path(temp))
+            package = json.dumps({"name": "dep-one", "version": "1.2.3"}, separators=(",", ":")).encode()
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w", format=tarfile.PAX_FORMAT) as tar:
+                identity = tarfile.TarInfo("node/package.json")
+                identity.size = len(package)
+                tar.addfile(identity, io.BytesIO(package))
+                duplicate = tarfile.TarInfo("node/package.json")
+                duplicate.type = tarfile.SYMTYPE
+                duplicate.linkname = "manifest-target"
+                tar.addfile(duplicate)
+                value = tarfile.TarInfo("node/lib/value.js")
+                value.size = 6
+                tar.addfile(value, io.BytesIO(b"value\n"))
+            blob = gzip.compress(archive.getvalue(), mtime=0)
+            (fixture["paths"]["npm_blobs"] / "002.tgz").write_bytes(blob)
+            index_path = fixture["paths"]["npm_member_index"]
+            rows = [json.loads(line) for line in index_path.read_text().splitlines() if json.loads(line)["artifact_id"] == 1]
+            rows.extend((
+                {
+                    "artifact_id": 2, "identity": "dep-one@1.2.3", "kind": "file", "ordinal": 1,
+                    "path": "node/package.json", "sha256": hashlib.sha256(package).hexdigest(), "size": len(package),
+                },
+                {
+                    "artifact_id": 2, "identity": "dep-one@1.2.3", "kind": "symlink", "ordinal": 2,
+                    "path": "node/package.json", "sha256": None, "size": 0,
+                },
+                {
+                    "artifact_id": 2, "identity": "dep-one@1.2.3", "kind": "file", "ordinal": 3,
+                    "path": "node/lib/value.js", "sha256": hashlib.sha256(b"value\n").hexdigest(), "size": 6,
+                },
+            ))
+            index_data = b"".join(
+                json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n" for row in rows
+            )
+            index_path.write_bytes(index_data)
+
+            def update(control):
+                control["references"][1].update(
+                    integrity="sha512-" + base64.b64encode(hashlib.sha512(blob).digest()).decode("ascii"),
+                    sha256=hashlib.sha256(blob).hexdigest(),
+                    size=len(blob),
+                )
+                control["member_index"].update(
+                    declared_member_bytes=sum(row["size"] for row in rows),
+                    index_bytes=len(index_data),
+                    members=len(rows),
+                    sha256=hashlib.sha256(index_data).hexdigest(),
+                )
+
+            self.repin_npm_manifest(fixture, update)
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                with self.assertRaisesRegex(CATALOG_GENERATOR.CatalogError, "^duplicate logical member$"):
+                    CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+
+    def test_rejects_missing_extra_and_forged_npm_inputs(self):
+        for case in ("missing", "extra", "forged-index", "forged-metadata"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                fixture = make_public_catalog_fixture(Path(temp))
+                if case == "missing":
+                    (fixture["paths"]["npm_blobs"] / "002.tgz").unlink()
+                elif case == "extra":
+                    (fixture["paths"]["npm_blobs"] / "unexpected.tgz").write_bytes(b"unexpected")
+                elif case == "forged-index":
+                    index_path = fixture["paths"]["npm_member_index"]
+                    rows = [json.loads(line) for line in index_path.read_text().splitlines()]
+                    rows[-1]["sha256"] = "0" * 64
+                    index_data = b"".join(
+                        json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n" for row in rows
+                    )
+                    index_path.write_bytes(index_data)
+
+                    def update(value):
+                        value["member_index"].update(
+                            index_bytes=len(index_data), sha256=hashlib.sha256(index_data).hexdigest()
+                        )
+
+                    self.repin_npm_manifest(fixture, update)
+                else:
+                    self.repin_npm_manifest(
+                        fixture,
+                        lambda value: value["member_index"].update(
+                            declared_member_bytes=value["member_index"]["declared_member_bytes"] + 1
+                        ),
+                    )
+                with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                    with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                        CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+
+    def test_rejects_oci_membership_layer_digest_and_diff_id_failures(self):
+        for case in ("membership", "layer-digest", "diff-id", "control-totals"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                fixture = make_public_catalog_fixture(Path(temp))
+                if case == "membership":
+                    self.repin_oci_index(
+                        fixture, lambda value: value["manifests"][0].update(platform={"architecture": "arm64", "os": "linux"})
+                    )
+                elif case == "layer-digest":
+                    path = sorted(fixture["paths"]["base_blobs"].glob("layer-01-*.blob"))[0]
+                    data = bytearray(path.read_bytes())
+                    data[-1] ^= 1
+                    path.write_bytes(data)
+                elif case == "diff-id":
+                    blobs = fixture["paths"]["base_blobs"]
+                    old_config = next(blobs.glob("config-*.blob"))
+                    config = json.loads(old_config.read_bytes())
+                    config["rootfs"]["diff_ids"][0] = "sha256:" + "0" * 64
+                    config_data = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+                    config_digest = "sha256:" + hashlib.sha256(config_data).hexdigest()
+                    old_config.unlink()
+                    (blobs / f"config-{config_digest[7:]}.blob").write_bytes(config_data)
+                    manifest_path = fixture["paths"]["oci_manifest"]
+                    manifest = json.loads(manifest_path.read_bytes())
+                    manifest["config"].update(digest=config_digest, size=len(config_data))
+                    manifest_data = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+                    manifest_path.write_bytes(manifest_data)
+                    manifest_digest = "sha256:" + hashlib.sha256(manifest_data).hexdigest()
+                    fixture["pins"]["OCI_MANIFEST_DIGEST"] = manifest_digest
+
+                    def update_index(value):
+                        value["manifests"][0].update(digest=manifest_digest, size=len(manifest_data))
+
+                    self.repin_oci_index(fixture, update_index)
+                else:
+                    summary_path = fixture["paths"]["base_index_summary"]
+                    summary = json.loads(summary_path.read_bytes())
+                    summary["totals"]["members"] += 1
+                    summary_path.write_text(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+                with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                    with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                        CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+
+    def test_archive_walk_rejects_concatenated_tar_hidden_in_buffered_tail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "concatenated.tgz"
+            path.write_bytes(gzip.compress(
+                tar_bytes([("first", b"one")]) + tar_bytes([("second", b"two")]),
+                mtime=0,
+            ))
+            with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                CATALOG_GENERATOR._walk_archive(path, [0])
+
+    def test_archive_walk_accepts_zero_padding_and_empty_tar(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            normal = base / "normal.tgz"
+            normal.write_bytes(gzip.compress(tar_bytes([("first", b"one")]), mtime=0))
+            empty = base / "empty.tgz"
+            empty.write_bytes(gzip.compress(tar_bytes([]), mtime=0))
+            normal_result = CATALOG_GENERATOR._walk_archive(normal, [0])
+            empty_result = CATALOG_GENERATOR._walk_archive(empty, [0])
+        self.assertEqual([("first", 3, hashlib.sha256(b"one").hexdigest())], normal_result["output_rows"])
+        self.assertEqual([], empty_result["output_rows"])
+
+    def test_npm_control_includes_nonregular_members_while_lookup_exports_only_regular_members(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = make_public_catalog_fixture(Path(temp))
+            package = json.dumps({"name": "dep-one", "version": "1.2.3"}, separators=(",", ":")).encode()
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w", format=tarfile.PAX_FORMAT) as tar:
+                for name, payload in (("node/package.json", package), ("node/lib/value.js", b"value\n")):
+                    if name.endswith("value.js"):
+                        directory = tarfile.TarInfo("node/lib")
+                        directory.type = tarfile.DIRTYPE
+                        tar.addfile(directory)
+                    member = tarfile.TarInfo(name)
+                    member.size = len(payload)
+                    tar.addfile(member, io.BytesIO(payload))
+            blob = gzip.compress(archive.getvalue(), mtime=0)
+            (fixture["paths"]["npm_blobs"] / "002.tgz").write_bytes(blob)
+            index_path = fixture["paths"]["npm_member_index"]
+            rows = [json.loads(line) for line in index_path.read_text().splitlines() if json.loads(line)["artifact_id"] == 1]
+            rows.extend((
+                {"artifact_id": 2, "identity": "dep-one@1.2.3", "kind": "file", "ordinal": 1, "path": "node/package.json", "sha256": hashlib.sha256(package).hexdigest(), "size": len(package)},
+                {"artifact_id": 2, "identity": "dep-one@1.2.3", "kind": "directory", "ordinal": 2, "path": "node/lib", "sha256": None, "size": 0},
+                {"artifact_id": 2, "identity": "dep-one@1.2.3", "kind": "file", "ordinal": 3, "path": "node/lib/value.js", "sha256": hashlib.sha256(b"value\n").hexdigest(), "size": 6},
+            ))
+            index_data = b"".join(
+                json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n" for row in rows
+            )
+            index_path.write_bytes(index_data)
+
+            def update(value):
+                value["references"][1].update(
+                    integrity="sha512-" + base64.b64encode(hashlib.sha512(blob).digest()).decode("ascii"),
+                    sha256=hashlib.sha256(blob).hexdigest(),
+                    size=len(blob),
+                )
+                value["member_index"].update(
+                    declared_member_bytes=sum(row["size"] for row in rows),
+                    index_bytes=len(index_data),
+                    members=len(rows),
+                    sha256=hashlib.sha256(index_data).hexdigest(),
+                )
+
+            self.repin_npm_manifest(fixture, update)
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                catalog = json.loads(CATALOG_GENERATOR.build_catalog(**fixture["paths"]))
+            self.assertEqual(["lib/value.js", "package.json"], [row["path"] for row in catalog["npm"]])
+
+    @unittest.skipUnless(os.environ.get("IMAGE_AUDIT_PUBLIC_INPUTS"), "local pinned public inputs unavailable")
+    def test_full_production_catalog_is_reproducible_complete_pinned_and_bounded(self):
+        self.assertTrue(PUBLIC_CATALOG.is_file())
+        inputs = Path(os.environ["IMAGE_AUDIT_PUBLIC_INPUTS"])
+        npm = inputs / "public-reference-preparation" / "npm"
+        base = inputs / "public-reference-preparation" / "base"
+        metadata = inputs / "image-audit-public-origins" / "public-source-metadata"
+        paths = {
+            "npm_manifest": npm / "evidence" / "reference-manifest.json",
+            "npm_blobs": npm / "public-blobs",
+            "npm_member_index": npm / "evidence" / "member-index.jsonl",
+            "oci_index": metadata / "node-index.json",
+            "oci_manifest": metadata / "node-manifest.json",
+            "base_blobs": base / "public-blobs",
+            "base_index_summary": base / "evidence" / "layer-index-summary.json",
+            "base_layer_indexes": base / "evidence" / "layer-indexes",
+        }
+        generated = CATALOG_GENERATOR.build_catalog(**paths)
+        self.assertEqual(generated, PUBLIC_CATALOG.read_bytes())
+        self.assertLessEqual(len(generated), CATALOG_GENERATOR.MAX_CATALOG_BYTES)
+        catalog = json.loads(generated)
+        self.assertEqual(3851, len(catalog["npm"]))
+        self.assertEqual(2235, len(catalog["base"]))
+        self.assertEqual(171, len({(row["name"], row["version"]) for row in catalog["npm"]}))
+        self.assertEqual(180, len(catalog["provenance"]["npm_artifacts"]))
+        self.assertEqual(CATALOG_GENERATOR.SOURCE_COMMIT, catalog["provenance"]["source_commit"])
+        self.assertEqual(CATALOG_GENERATOR.LOCKFILE_SHA256, catalog["provenance"]["lockfile_sha256"])
+        self.assertEqual(
+            CATALOG_GENERATOR.NPM_REFERENCE_MANIFEST_SHA256,
+            catalog["provenance"]["npm_reference_manifest_sha256"],
+        )
+        self.assertEqual(CATALOG_GENERATOR.OCI_INDEX_DIGEST, catalog["provenance"]["oci"]["index"]["digest"])
+        self.assertEqual(CATALOG_GENERATOR.OCI_MANIFEST_DIGEST, catalog["provenance"]["oci"]["manifest"]["digest"])
+        with tempfile.TemporaryDirectory() as temp:
+            second = Path(temp) / "catalog.json"
+            CATALOG_GENERATOR.write_catalog(second, generated)
+            self.assertEqual(PUBLIC_CATALOG.read_bytes(), second.read_bytes())
+
+    def test_expansion_member_and_catalog_caps_accept_boundary_and_reject_boundary_minus_one(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = make_public_catalog_fixture(Path(temp))
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]), mock.patch.object(
+                CATALOG_GENERATOR, "MAX_TOTAL_EXPANSION", fixture["expanded_bytes"]
+            ), mock.patch.object(CATALOG_GENERATOR, "MAX_MEMBER_BYTES", fixture["largest_member"]):
+                baseline = CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]), mock.patch.object(
+                CATALOG_GENERATOR, "MAX_TOTAL_EXPANSION", fixture["expanded_bytes"] - 1
+            ):
+                with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                    CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]), mock.patch.object(
+                CATALOG_GENERATOR, "MAX_MEMBER_BYTES", fixture["largest_member"] - 1
+            ):
+                with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                    CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]), mock.patch.object(
+                CATALOG_GENERATOR, "MAX_CATALOG_BYTES", len(baseline)
+            ):
+                self.assertEqual(baseline, CATALOG_GENERATOR.build_catalog(**fixture["paths"]))
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]), mock.patch.object(
+                CATALOG_GENERATOR, "MAX_CATALOG_BYTES", len(baseline) - 1
+            ):
+                with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                    CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+
+    def test_failed_generation_leaves_no_output_and_writer_never_replaces_existing_content(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            fixture = make_public_catalog_fixture(base)
+            output = base / "catalog.json"
+            (fixture["paths"]["npm_blobs"] / "002.tgz").unlink()
+            arguments = []
+            for option, key in (
+                ("--npm-manifest", "npm_manifest"),
+                ("--npm-blobs", "npm_blobs"),
+                ("--npm-member-index", "npm_member_index"),
+                ("--oci-index", "oci_index"),
+                ("--oci-manifest", "oci_manifest"),
+                ("--base-blobs", "base_blobs"),
+                ("--base-index-summary", "base_index_summary"),
+                ("--base-layer-indexes", "base_layer_indexes"),
+            ):
+                arguments.extend((option, str(fixture["paths"][key])))
+            arguments.extend(("--output", str(output)))
+            with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(1, CATALOG_GENERATOR.main(arguments))
+            self.assertFalse(output.exists())
+
+            CATALOG_GENERATOR.write_catalog(output, b"expected")
+            CATALOG_GENERATOR.write_catalog(output, b"expected")
+            with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                CATALOG_GENERATOR.write_catalog(output, b"replacement")
+            self.assertEqual(b"expected", output.read_bytes())
+            output.unlink()
+            target = base / "target"
+            target.write_bytes(b"target")
+            output.symlink_to(target)
+            with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                CATALOG_GENERATOR.write_catalog(output, b"replacement")
+            self.assertEqual(b"target", target.read_bytes())
+
+    def test_writer_does_not_delete_an_output_replaced_after_its_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "catalog.json"
+
+            def replace_then_fail(_descriptor, _data):
+                output.unlink(missing_ok=True)
+                output.write_bytes(b"other writer")
+                raise OSError("synthetic write failure")
+
+            with mock.patch.object(CATALOG_GENERATOR.os, "write", side_effect=replace_then_fail):
+                with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                    CATALOG_GENERATOR.write_catalog(output, b"ours")
+            self.assertEqual(b"other writer", output.read_bytes())
+
+    def test_writer_does_not_delete_an_output_created_by_a_racing_writer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "catalog.json"
+
+            def race(*_args, **_kwargs):
+                output.write_bytes(b"racing writer")
+                raise FileExistsError
+
+            with mock.patch.object(CATALOG_GENERATOR.os, "link", side_effect=race):
+                with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                    CATALOG_GENERATOR.write_catalog(output, b"ours")
+            self.assertEqual(b"racing writer", output.read_bytes())
 
 
 if __name__ == "__main__":
