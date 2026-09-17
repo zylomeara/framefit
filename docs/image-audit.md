@@ -26,6 +26,8 @@ Offline namespaces, schema checks, and source verification are not a sandbox for
 
 `public_matches` counts exact matches from three routes: the established downloaded npm references, a locally pinned npm reference with the same package name, version, relative path, size, and verified content hash, or a locally pinned base-image reference with the same compressed layer digest, size, and verified content hash. The local catalog is hash-pinned auditor data and is never fetched at runtime.
 
+The local npm catalog keeps separate primary and historical provenance. Primary records remain tied to the current pinned lockfile and artifact set. Historical records identify each verified archive and the reviewed public source snapshots that contributed it, including the canonical repository and lockfile path. Catalog generation rehashes the raw archives, members, and pinned lockfile blobs offline before combining the records. This bounded snapshot set extends exact matching but does not claim exhaustive coverage of every past package or image.
+
 A base match proves layer-and-content membership only. It does not attribute the detection to an original path. Package names, paths, bytes from another layer, layer identity without matching content, and counters alone are not proof. `vendor_candidates` and `vendor_sources_fetched` retain their established downloaded-reference meanings and are not an upper bound on `public_matches`.
 
 Any detection still produces `COMPLETE_REVIEW_REQUIRED`, including a public-reference match. A match does not authorize changing GHCR visibility or access.

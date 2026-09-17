@@ -47,6 +47,7 @@ ORAS_VERSION = "1.3.3"
 GITLEAKS_VERSION = "8.30.1"
 SCHEMA = 1
 LEDGER_SCHEMA = 2
+PUBLIC_CATALOG_SCHEMA = 2
 
 MAX_VERSIONS = 1_000
 MAX_DESCRIPTORS = 25_000
@@ -59,8 +60,13 @@ MAX_RETAINED_BYTES = 1024**3
 MAX_NESTING = 4
 MAX_METADATA_BYTES = 32 * 1024**2
 MAX_CATALOG_BYTES = 32 * 1024**2
-PUBLIC_CATALOG_LENGTH = 1_053_543
-PUBLIC_CATALOG_SHA256 = "299e2b6b1a23eeb21340a020d8dd154da2aee674be5b5026f187076418f43514"
+MAX_HISTORICAL_ARTIFACTS = 44
+MAX_HISTORICAL_ARTIFACT_SNAPSHOTS = 4
+MAX_HISTORICAL_SNAPSHOTS = 4
+HISTORICAL_REPOSITORY = "https://github.com/zylomeara/framefit"
+HISTORICAL_LOCKFILE_PATH = "mcp-server/pnpm-lock.yaml"
+PUBLIC_CATALOG_LENGTH = 1_365_301
+PUBLIC_CATALOG_SHA256 = "d89c5648f3ac70392e48d15a0338ed169beac13e8d9a60dc100e069c5d630254"
 MAX_PROCESS_OUTPUT = 4 * 1024**2
 MAX_PUBLIC_COUNTER = 2**53 - 1
 MIN_FREE_BYTES = 512 * 1024**2
@@ -71,6 +77,7 @@ POLL_SECONDS = 0.025
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 NPM_NAME_RE = re.compile(r"^(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$")
 NPM_VERSION_RE = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -1933,6 +1940,61 @@ def _catalog_descriptor(value: object) -> tuple[str, int]:
     return digest_value, size
 
 
+def _catalog_npm_artifact(
+    value: object, *, historical: bool
+) -> tuple[tuple[str, str], set[tuple[str, str, str]]]:
+    keys = {"integrity", "name", "sha256", "size", "version"}
+    if historical:
+        keys.add("snapshots")
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError("invalid npm provenance")
+    name, version = value["name"], value["version"]
+    integrity, sha256, size = value["integrity"], value["sha256"], value["size"]
+    if (
+        not isinstance(name, str)
+        or not NPM_NAME_RE.fullmatch(name)
+        or (historical and name in _SOURCE_PACKAGES)
+        or not isinstance(version, str)
+        or not NPM_VERSION_RE.fullmatch(version)
+        or not isinstance(sha256, str)
+        or not HEX_RE.fullmatch(sha256)
+        or not _bounded_int(size)
+        or not isinstance(integrity, str)
+        or not integrity.startswith("sha512-")
+    ):
+        raise ValueError("invalid npm provenance")
+    decoded = base64.b64decode(integrity[7:], validate=True)
+    if len(decoded) != hashlib.sha512().digest_size or base64.b64encode(decoded).decode("ascii") != integrity[7:]:
+        raise ValueError("invalid npm provenance")
+    snapshots: set[tuple[str, str, str]] = set()
+    if historical:
+        records = value["snapshots"]
+        if not isinstance(records, list) or not 1 <= len(records) <= MAX_HISTORICAL_ARTIFACT_SNAPSHOTS:
+            raise ValueError("invalid historical snapshots")
+        previous: tuple[str, str, str] | None = None
+        for record in records:
+            if not isinstance(record, dict) or set(record) != {
+                "source_commit", "lockfile_git_blob_sha1", "lockfile_sha256"
+            }:
+                raise ValueError("invalid historical snapshot")
+            snapshot = (
+                record["source_commit"], record["lockfile_git_blob_sha1"], record["lockfile_sha256"]
+            )
+            if (
+                not isinstance(snapshot[0], str)
+                or not SHA1_RE.fullmatch(snapshot[0])
+                or not isinstance(snapshot[1], str)
+                or not SHA1_RE.fullmatch(snapshot[1])
+                or not isinstance(snapshot[2], str)
+                or not HEX_RE.fullmatch(snapshot[2])
+                or (previous is not None and snapshot <= previous)
+            ):
+                raise ValueError("invalid historical snapshot")
+            previous = snapshot
+            snapshots.add(snapshot)
+    return (name, version), snapshots
+
+
 def _load_public_catalog() -> tuple[dict[tuple[str, str, str], tuple[int, bytes]], frozenset[tuple[str, int, bytes]], frozenset[str]]:
     path = Path(__file__).with_name("image-audit-public-catalog.json")
     try:
@@ -1958,12 +2020,12 @@ def _load_public_catalog() -> tuple[dict[tuple[str, str, str], tuple[int, bytes]
         value = json.loads(data, object_pairs_hook=_catalog_pairs)
         if not isinstance(value, dict) or set(value) != {"base", "npm", "provenance", "schema"}:
             raise ValueError("invalid catalog root")
-        if not _is_int(value["schema"]) or value["schema"] != SCHEMA:
+        if not _is_int(value["schema"]) or value["schema"] != PUBLIC_CATALOG_SCHEMA:
             raise ValueError("invalid catalog schema")
 
         provenance = value["provenance"]
         if not isinstance(provenance, dict) or set(provenance) != {
-            "lockfile_sha256", "npm_artifacts", "npm_reference_manifest_sha256", "oci", "source_commit"
+            "historical_npm", "lockfile_sha256", "npm_artifacts", "npm_reference_manifest_sha256", "oci", "source_commit"
         }:
             raise ValueError("invalid catalog provenance")
         if (
@@ -1982,30 +2044,48 @@ def _load_public_catalog() -> tuple[dict[tuple[str, str, str], tuple[int, bytes]
         artifact_pairs: set[tuple[str, str]] = set()
         previous_artifact: tuple[str, str] | None = None
         for record in artifacts:
-            if not isinstance(record, dict) or set(record) != {"integrity", "name", "sha256", "size", "version"}:
-                raise ValueError("invalid npm provenance")
-            name, version = record["name"], record["version"]
-            integrity, sha256, size = record["integrity"], record["sha256"], record["size"]
-            if (
-                not isinstance(name, str)
-                or not NPM_NAME_RE.fullmatch(name)
-                or not isinstance(version, str)
-                or not NPM_VERSION_RE.fullmatch(version)
-                or not isinstance(sha256, str)
-                or not HEX_RE.fullmatch(sha256)
-                or not _bounded_int(size)
-                or not isinstance(integrity, str)
-                or not integrity.startswith("sha512-")
-            ):
-                raise ValueError("invalid npm provenance")
-            decoded = base64.b64decode(integrity[7:], validate=True)
-            if len(decoded) != hashlib.sha512().digest_size or base64.b64encode(decoded).decode("ascii") != integrity[7:]:
-                raise ValueError("invalid npm provenance")
-            pair = (name, version)
+            pair, _snapshots = _catalog_npm_artifact(record, historical=False)
             if previous_artifact is not None and pair <= previous_artifact:
                 raise ValueError("invalid npm provenance order")
             previous_artifact = pair
             artifact_pairs.add(pair)
+
+        historical = provenance["historical_npm"]
+        if not isinstance(historical, dict) or set(historical) != {
+            "artifacts", "candidate_manifest_sha256", "lockfile_path", "member_index_sha256",
+            "repository", "source_reference_manifest_sha256",
+        }:
+            raise ValueError("invalid historical provenance")
+        if (
+            not isinstance(historical["candidate_manifest_sha256"], str)
+            or not HEX_RE.fullmatch(historical["candidate_manifest_sha256"])
+            or not isinstance(historical["source_reference_manifest_sha256"], str)
+            or not HEX_RE.fullmatch(historical["source_reference_manifest_sha256"])
+            or not isinstance(historical["member_index_sha256"], str)
+            or not HEX_RE.fullmatch(historical["member_index_sha256"])
+            or historical["repository"] != HISTORICAL_REPOSITORY
+            or historical["lockfile_path"] != HISTORICAL_LOCKFILE_PATH
+        ):
+            raise ValueError("invalid historical provenance")
+        historical_artifacts = historical["artifacts"]
+        if not isinstance(historical_artifacts, list) or len(historical_artifacts) > MAX_HISTORICAL_ARTIFACTS:
+            raise ValueError("invalid historical artifacts")
+        historical_pairs: set[tuple[str, str]] = set()
+        historical_snapshots: set[tuple[str, str, str]] = set()
+        previous_historical: tuple[str, str] | None = None
+        for record in historical_artifacts:
+            pair, snapshots = _catalog_npm_artifact(record, historical=True)
+            if (
+                pair in artifact_pairs
+                or (previous_historical is not None and pair <= previous_historical)
+            ):
+                raise ValueError("invalid historical artifact order")
+            previous_historical = pair
+            historical_pairs.add(pair)
+            historical_snapshots.update(snapshots)
+            if len(historical_snapshots) > MAX_HISTORICAL_SNAPSHOTS:
+                raise ValueError("invalid historical snapshot coverage")
+        all_artifact_pairs = artifact_pairs | historical_pairs
 
         oci = provenance["oci"]
         if not isinstance(oci, dict) or set(oci) != {"config", "index", "layers", "manifest", "platform"}:
@@ -2043,6 +2123,7 @@ def _load_public_catalog() -> tuple[dict[tuple[str, str, str], tuple[int, bytes]
         if not isinstance(npm, list) or len(npm) > MAX_PUBLIC_COUNTER:
             raise ValueError("invalid npm catalog")
         npm_lookup: dict[tuple[str, str, str], tuple[int, bytes]] = {}
+        npm_pairs: set[tuple[str, str]] = set()
         previous_npm: tuple[str, str, str] | None = None
         for record in npm:
             if not isinstance(record, dict) or set(record) != {"name", "path", "sha256", "size", "version"}:
@@ -2058,7 +2139,7 @@ def _load_public_catalog() -> tuple[dict[tuple[str, str, str], tuple[int, bytes]
                 or not isinstance(sha256, str)
                 or not HEX_RE.fullmatch(sha256)
                 or not _bounded_int(size)
-                or (name, version) not in artifact_pairs
+                or (name, version) not in all_artifact_pairs
             ):
                 raise ValueError("invalid npm record")
             key = (name, version, relpath)
@@ -2066,6 +2147,9 @@ def _load_public_catalog() -> tuple[dict[tuple[str, str, str], tuple[int, bytes]
                 raise ValueError("invalid npm order")
             previous_npm = key
             npm_lookup[key] = (size, bytes.fromhex(sha256))
+            npm_pairs.add((name, version))
+        if not historical_pairs.issubset(npm_pairs):
+            raise ValueError("historical artifact missing npm rows")
 
         base = value["base"]
         if not isinstance(base, list) or len(base) > MAX_PUBLIC_COUNTER:
