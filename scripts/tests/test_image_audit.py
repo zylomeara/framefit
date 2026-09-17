@@ -56,6 +56,7 @@ def public_catalog_bytes(
     npm: list[dict[str, object]] | None = None,
     base: list[dict[str, object]] | None = None,
     artifacts: list[dict[str, object]] | None = None,
+    historical_artifacts: list[dict[str, object]] | None = None,
     layers: list[dict[str, object]] | None = None,
 ) -> bytes:
     npm = list(npm or [])
@@ -81,6 +82,14 @@ def public_catalog_bytes(
         "base": base,
         "npm": npm,
         "provenance": {
+            "historical_npm": {
+                "artifacts": list(historical_artifacts or []),
+                "candidate_manifest_sha256": hashlib.sha256(b"historical-candidates").hexdigest(),
+                "lockfile_path": "mcp-server/pnpm-lock.yaml",
+                "member_index_sha256": hashlib.sha256(b"historical-members").hexdigest(),
+                "repository": "https://github.com/zylomeara/framefit",
+                "source_reference_manifest_sha256": hashlib.sha256(b"historical-references").hexdigest(),
+            },
             "lockfile_sha256": hashlib.sha256(b"lockfile").hexdigest(),
             "npm_artifacts": artifacts,
             "npm_reference_manifest_sha256": hashlib.sha256(b"manifest").hexdigest(),
@@ -93,9 +102,28 @@ def public_catalog_bytes(
             },
             "source_commit": "1" * 40,
         },
-        "schema": 1,
+        "schema": 2,
     }
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def public_historical_artifacts(npm: list[dict[str, object]]) -> list[dict[str, object]]:
+    artifacts = []
+    for name, version in sorted({(row["name"], row["version"]) for row in npm}):
+        payload = f"{name}@{version}".encode()
+        artifacts.append({
+            "integrity": "sha512-" + base64.b64encode(hashlib.sha512(payload).digest()).decode("ascii"),
+            "name": name,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+            "snapshots": [{
+                "source_commit": "2" * 40,
+                "lockfile_git_blob_sha1": "3" * 40,
+                "lockfile_sha256": "4" * 64,
+            }],
+            "version": version,
+        })
+    return artifacts
 
 
 @contextlib.contextmanager
@@ -1389,12 +1417,118 @@ class PublicCatalogRuntimeTests(unittest.TestCase):
     def test_loads_committed_catalog_with_reviewed_pin_and_schema(self):
         self.assertTrue(hasattr(AUDIT, "_load_public_catalog"))
         npm_lookup, base_membership, fixed_names = AUDIT._load_public_catalog()
-        self.assertEqual(3851, len(npm_lookup))
+        self.assertEqual(5521, len(npm_lookup))
         self.assertEqual(2235, len(base_membership))
-        self.assertEqual(169, len(fixed_names))
+        self.assertEqual(175, len(fixed_names))
         self.assertTrue(fixed_names.isdisjoint(AUDIT._SOURCE_PACKAGES))
-        self.assertEqual(1_053_543, AUDIT.PUBLIC_CATALOG_LENGTH)
+        self.assertEqual(1, AUDIT.SCHEMA)
+        self.assertEqual(2, AUDIT.LEDGER_SCHEMA)
+        self.assertEqual(2, AUDIT.PUBLIC_CATALOG_SCHEMA)
+        self.assertEqual(1_365_301, AUDIT.PUBLIC_CATALOG_LENGTH)
+        self.assertEqual("d89c5648f3ac70392e48d15a0338ed169beac13e8d9a60dc100e069c5d630254", AUDIT.PUBLIC_CATALOG_SHA256)
         self.assertEqual(32 * 1024**2, AUDIT.MAX_CATALOG_BYTES)
+
+    def test_loader_accepts_historical_artifact_and_requires_its_npm_rows(self):
+        payload = b"historical member"
+        row = {
+            "name": "historical-lib",
+            "version": "1.2.3",
+            "path": "lib/item.js",
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        artifact_payload = b"historical-lib@1.2.3"
+        snapshot = {
+            "source_commit": "2" * 40,
+            "lockfile_git_blob_sha1": "3" * 40,
+            "lockfile_sha256": "4" * 64,
+        }
+        artifact = {
+            "integrity": "sha512-" + base64.b64encode(hashlib.sha512(artifact_payload).digest()).decode("ascii"),
+            "name": "historical-lib",
+            "sha256": hashlib.sha256(artifact_payload).hexdigest(),
+            "size": len(artifact_payload),
+            "snapshots": [snapshot],
+            "version": "1.2.3",
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            loaded = self.load(
+                Path(temp),
+                public_catalog_bytes(npm=[row], artifacts=[], historical_artifacts=[artifact]),
+            )
+        self.assertEqual((len(payload), hashlib.sha256(payload).digest()), loaded[0][("historical-lib", "1.2.3", "lib/item.js")])
+        self.assertEqual(frozenset({"historical-lib"}), loaded[2])
+
+        orphan = public_catalog_bytes(artifacts=[], historical_artifacts=[artifact])
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(AUDIT.AuditFailure, "^CATALOG_INVALID$"):
+                self.load(Path(temp), orphan)
+
+    def test_loader_rejects_invalid_historical_schema_caps_snapshots_and_crosslinks(self):
+        payload = b"member"
+        row = {
+            "name": "historical-lib", "version": "1.2.3", "path": "item.js",
+            "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+        def artifact(name="historical-lib", version="1.2.3", snapshots=None):
+            identity = f"{name}@{version}".encode()
+            return {
+                "integrity": "sha512-" + base64.b64encode(hashlib.sha512(identity).digest()).decode("ascii"),
+                "name": name,
+                "sha256": hashlib.sha256(identity).hexdigest(),
+                "size": len(identity),
+                "snapshots": snapshots if snapshots is not None else [{
+                    "source_commit": "2" * 40,
+                    "lockfile_git_blob_sha1": "3" * 40,
+                    "lockfile_sha256": "4" * 64,
+                }],
+                "version": version,
+            }
+
+        valid = json.loads(public_catalog_bytes(npm=[row], artifacts=[], historical_artifacts=[artifact()]))
+        cases = {}
+        value = json.loads(json.dumps(valid)); value["schema"] = 1; cases["old-schema"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"].pop("historical_npm"); cases["missing-history"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["extra"] = 1; cases["extra-key"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["repository"] = "https://example.invalid/repo"; cases["repository"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["lockfile_path"] = "other/lock.yaml"; cases["lockfile-path"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"][0]["size"] = True; cases["bool-size"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["candidate_manifest_sha256"] = True; cases["bool-manifest-hash"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"][0]["sha256"] = "f" * 63; cases["artifact-hash"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"][0]["integrity"] = "sha512-invalid"; cases["artifact-sri"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"][0]["snapshots"] = []; cases["empty-snapshots"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"][0]["snapshots"] *= 2; cases["duplicate-snapshot"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"][0]["snapshots"] = [
+            {"source_commit": "3" * 40, "lockfile_git_blob_sha1": "3" * 40, "lockfile_sha256": "4" * 64},
+            {"source_commit": "2" * 40, "lockfile_git_blob_sha1": "3" * 40, "lockfile_sha256": "4" * 64},
+        ]; cases["snapshot-order"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"][0]["snapshots"][0]["lockfile_git_blob_sha1"] = "f" * 39; cases["snapshot-hash"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"].append(
+            {**artifact(), "name": "historical-aaa"}
+        ); cases["artifact-order"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["npm_artifacts"] = [
+            {key: item for key, item in artifact().items() if key != "snapshots"}
+        ]; cases["primary-history-overlap"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"][0]["name"] = "express"; cases["legacy-name"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"] = [
+            artifact(f"history-{index:02d}") for index in range(45)
+        ]; cases["artifact-cap"] = value
+        snapshots = [
+            {"source_commit": f"{index:040x}", "lockfile_git_blob_sha1": f"{index + 10:040x}", "lockfile_sha256": f"{index + 20:064x}"}
+            for index in range(5)
+        ]
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"] = [
+            artifact(snapshots=snapshots)
+        ]; cases["artifact-snapshot-cap"] = value
+        value = json.loads(json.dumps(valid)); value["provenance"]["historical_npm"]["artifacts"] = [
+            artifact(f"history-{index}", snapshots=[snapshot]) for index, snapshot in enumerate(snapshots)
+        ]; cases["snapshot-union-cap"] = value
+        for name, value in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+                with self.assertRaisesRegex(AUDIT.AuditFailure, "^CATALOG_INVALID$"):
+                    self.load(Path(temp), data)
 
     def test_runtime_import_does_not_read_sibling_catalog(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1632,11 +1766,12 @@ class PublicCatalogIntegrationTests(unittest.TestCase):
         ), mock.patch.object(AUDIT, "assert_linux_network_isolated", return_value=None):
             return AUDIT.run_phase("scan", root)
 
-    def test_actual_scan_empty_fetch_and_compare_match_normal_and_scoped_fixed_packages(self):
+    def test_actual_scan_empty_fetch_and_compare_match_normal_and_scoped_historical_packages(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             members = []
             npm_rows = []
+            historical_artifacts = []
             expected = []
             for package, version, label in (
                 ("fixed-lib", "1.2.3", "fixed-normal"),
@@ -1656,12 +1791,28 @@ class PublicCatalogIntegrationTests(unittest.TestCase):
                     "size": len(candidate),
                     "version": version,
                 })
+                artifact_payload = f"{package}@{version}".encode()
+                historical_artifacts.append({
+                    "integrity": "sha512-" + base64.b64encode(hashlib.sha512(artifact_payload).digest()).decode("ascii"),
+                    "name": package,
+                    "sha256": hashlib.sha256(artifact_payload).hexdigest(),
+                    "size": len(artifact_payload),
+                    "snapshots": [{
+                        "source_commit": "2" * 40,
+                        "lockfile_git_blob_sha1": "3" * 40,
+                        "lockfile_sha256": "4" * 64,
+                    }],
+                    "version": version,
+                })
                 expected.append((f"/.image-audit-archive/000000000001/{root}", None, version, "lib/item.js"))
             npm_rows.sort(key=lambda row: (row["name"], row["version"], row["path"]))
+            historical_artifacts.sort(key=lambda row: (row["name"], row["version"]))
             layer = tar_bytes(members)
             layer_digest = digest(layer)
             catalog = public_catalog_bytes(
                 npm=npm_rows,
+                artifacts=[],
+                historical_artifacts=historical_artifacts,
                 layers=[{"diff_id": digest(b"fixed-diff"), "digest": layer_digest, "size": len(layer)}],
             )
             with use_public_catalog(base, catalog):
@@ -2345,6 +2496,8 @@ class PublicCatalogIntegrationTests(unittest.TestCase):
                     case.mkdir()
                     catalog_data = public_catalog_bytes(
                         npm=[npm_row],
+                        artifacts=[],
+                        historical_artifacts=public_historical_artifacts([npm_row]),
                         layers=[{"diff_id": digest((name + "-diff").encode()), "digest": actual_layer_digest, "size": len(actual_layer)}],
                     )
                     with use_public_catalog(case, catalog_data):
@@ -4817,6 +4970,91 @@ def make_public_catalog_fixture(base: Path) -> dict[str, object]:
     npm_manifest_data = json.dumps(npm_manifest, sort_keys=True, separators=(",", ":")).encode()
     npm_manifest_path.write_bytes(npm_manifest_data)
 
+    historical_blobs = base / "historical-npm-blobs"
+    historical_blobs.mkdir()
+    historical_name = "historical-lib"
+    historical_version = "2.0.0"
+    historical_package_json = json.dumps(
+        {"name": historical_name, "version": historical_version}, separators=(",", ":")
+    ).encode()
+    historical_members = (
+        ("package/package.json", historical_package_json),
+        ("package/lib/value.js", b"x" * 100),
+    )
+    historical_archive = tar_bytes(list(historical_members))
+    expanded_bytes += len(historical_archive)
+    largest_member = max(largest_member, *(len(payload) for _path, payload in historical_members))
+    historical_blob = gzip.compress(historical_archive, mtime=0)
+    (historical_blobs / "001.tgz").write_bytes(historical_blob)
+    historical_integrity = "sha512-" + base64.b64encode(hashlib.sha512(historical_blob).digest()).decode("ascii")
+
+    lockfiles = base / "historical-lockfiles"
+    lockfiles.mkdir()
+    lock_data = b"lockfileVersion: '9.0'\n"
+    lock_sha1 = hashlib.sha1(b"blob " + str(len(lock_data)).encode() + b"\0" + lock_data).hexdigest()
+    lock_sha256 = hashlib.sha256(lock_data).hexdigest()
+    (lockfiles / f"{lock_sha1}.yaml").write_bytes(lock_data)
+    snapshot = {
+        "source_commit": "2" * 40,
+        "lockfile_git_blob_sha1": lock_sha1,
+        "lockfile_sha256": lock_sha256,
+    }
+    candidate = {
+        "schema": 1,
+        "counts": {"absent_nonlegacy_names": 1, "absent_nonlegacy_pairs": 1},
+        "candidates": [{
+            "integrity": historical_integrity,
+            "name": historical_name,
+            "provenance": [snapshot],
+            "version": historical_version,
+        }],
+    }
+    candidate_path = base / "historical-candidates.json"
+    candidate_data = json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode()
+    candidate_path.write_bytes(candidate_data)
+    historical_rows = [
+        {
+            "artifact_id": 1,
+            "identity": f"{historical_name}@{historical_version}",
+            "kind": "file",
+            "ordinal": ordinal,
+            "path": path,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+        for ordinal, (path, payload) in enumerate(historical_members, 1)
+    ]
+    historical_index_path = base / "historical-member-index.jsonl"
+    historical_index_data = b"".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n" for row in historical_rows
+    )
+    historical_index_path.write_bytes(historical_index_data)
+    source_manifest = {
+        "schema": 1,
+        "candidate_file_sha256": hashlib.sha256(candidate_data).hexdigest(),
+        "counts": {"artifacts": 1, "members": len(historical_rows), "names": 1},
+        "references": [{
+            "archive_tail_verified": True,
+            "artifact_id": 1,
+            "duplicate_logical_member_paths": 0,
+            "expanded_bytes": len(historical_archive),
+            "identity_verified": True,
+            "integrity": historical_integrity,
+            "member_count": len(historical_rows),
+            "name": historical_name,
+            "provenance": [snapshot],
+            "regular_member_bytes": sum(row["size"] for row in historical_rows),
+            "root": "package",
+            "sha256": hashlib.sha256(historical_blob).hexdigest(),
+            "size": len(historical_blob),
+            "url": f"https://registry.npmjs.org/{historical_name}/-/{historical_name}-{historical_version}.tgz",
+            "version": historical_version,
+        }],
+    }
+    source_manifest_path = base / "historical-source-reference-manifest.json"
+    source_manifest_data = json.dumps(source_manifest, sort_keys=True, separators=(",", ":")).encode()
+    source_manifest_path.write_bytes(source_manifest_data)
+
     base_blobs = base / "base-blobs"
     base_blobs.mkdir()
     layer_specs = (
@@ -4926,6 +5164,11 @@ def make_public_catalog_fixture(base: Path) -> dict[str, object]:
             "npm_manifest": npm_manifest_path,
             "npm_blobs": npm_blobs,
             "npm_member_index": member_index,
+            "historical_candidate_manifest": candidate_path,
+            "historical_source_manifest": source_manifest_path,
+            "historical_blobs": historical_blobs,
+            "historical_member_index": historical_index_path,
+            "historical_lockfiles": lockfiles,
             "oci_index": index_path,
             "oci_manifest": child_path,
             "base_blobs": base_blobs,
@@ -4934,11 +5177,29 @@ def make_public_catalog_fixture(base: Path) -> dict[str, object]:
         },
         "pins": {
             "NPM_REFERENCE_MANIFEST_SHA256": hashlib.sha256(npm_manifest_data).hexdigest(),
+            "HISTORICAL_CANDIDATE_MANIFEST_SHA256": hashlib.sha256(candidate_data).hexdigest(),
+            "HISTORICAL_SOURCE_REFERENCE_MANIFEST_SHA256": hashlib.sha256(source_manifest_data).hexdigest(),
+            "HISTORICAL_MEMBER_INDEX_SHA256": hashlib.sha256(historical_index_data).hexdigest(),
+            "HISTORICAL_SNAPSHOTS": frozenset({(
+                snapshot["source_commit"], snapshot["lockfile_git_blob_sha1"], snapshot["lockfile_sha256"]
+            )}),
             "OCI_INDEX_DIGEST": "sha256:" + hashlib.sha256(index).hexdigest(),
             "OCI_MANIFEST_DIGEST": child_digest,
             "EXPECTED_NPM_ARTIFACTS": 2,
             "EXPECTED_NPM_EXPORTS": 1,
+            "EXPECTED_HISTORICAL_NPM_ARTIFACTS": 1,
+            "EXPECTED_HISTORICAL_NPM_NAMES": 1,
+            "EXPECTED_HISTORICAL_NPM_MEMBERS": len(historical_rows),
             "EXPECTED_BASE_LAYERS": 2,
+        },
+        "historical": {
+            "candidate": candidate,
+            "candidate_path": candidate_path,
+            "index_path": historical_index_path,
+            "lockfiles": lockfiles,
+            "snapshot": snapshot,
+            "source_manifest": source_manifest,
+            "source_manifest_path": source_manifest_path,
         },
         "expanded_bytes": expanded_bytes,
         "largest_member": largest_member,
@@ -4954,6 +5215,35 @@ class PublicCatalogGeneratorTests(unittest.TestCase):
         path.write_bytes(data)
         fixture["pins"]["NPM_REFERENCE_MANIFEST_SHA256"] = hashlib.sha256(data).hexdigest()
         return value
+
+    def repin_historical_candidate(self, fixture: dict[str, object], mutate) -> dict[str, object]:
+        path = fixture["paths"]["historical_candidate_manifest"]
+        value = json.loads(path.read_bytes())
+        mutate(value)
+        data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        path.write_bytes(data)
+        fixture["pins"]["HISTORICAL_CANDIDATE_MANIFEST_SHA256"] = hashlib.sha256(data).hexdigest()
+        return value
+
+    def repin_historical_source(self, fixture: dict[str, object], mutate) -> dict[str, object]:
+        path = fixture["paths"]["historical_source_manifest"]
+        value = json.loads(path.read_bytes())
+        mutate(value)
+        data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        path.write_bytes(data)
+        fixture["pins"]["HISTORICAL_SOURCE_REFERENCE_MANIFEST_SHA256"] = hashlib.sha256(data).hexdigest()
+        return value
+
+    def repin_historical_index(self, fixture: dict[str, object], mutate) -> list[dict[str, object]]:
+        path = fixture["paths"]["historical_member_index"]
+        rows = [json.loads(line) for line in path.read_bytes().splitlines()]
+        mutate(rows)
+        data = b"".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n" for row in rows
+        )
+        path.write_bytes(data)
+        fixture["pins"]["HISTORICAL_MEMBER_INDEX_SHA256"] = hashlib.sha256(data).hexdigest()
+        return rows
 
     def replace_npm_blob(self, fixture: dict[str, object], artifact_id: int, entries: list[tuple[str, bytes]]) -> None:
         path = fixture["paths"]["npm_blobs"] / f"{artifact_id:03d}.tgz"
@@ -4986,9 +5276,14 @@ class PublicCatalogGeneratorTests(unittest.TestCase):
                 data = CATALOG_GENERATOR.build_catalog(**fixture["paths"])
         catalog = json.loads(data)
         self.assertEqual({"schema", "provenance", "npm", "base"}, set(catalog))
-        self.assertEqual(1, catalog["schema"])
+        self.assertEqual(2, catalog["schema"])
         self.assertEqual(
-            [("dep-one", "1.2.3", "lib/value.js"), ("dep-one", "1.2.3", "package.json")],
+            [
+                ("dep-one", "1.2.3", "lib/value.js"),
+                ("dep-one", "1.2.3", "package.json"),
+                ("historical-lib", "2.0.0", "lib/value.js"),
+                ("historical-lib", "2.0.0", "package.json"),
+            ],
             [(row["name"], row["version"], row["path"]) for row in catalog["npm"]],
         )
         self.assertEqual(3, len(catalog["base"]))
@@ -4996,7 +5291,7 @@ class PublicCatalogGeneratorTests(unittest.TestCase):
         self.assertEqual(b"{", data[:1])
         self.assertEqual(b"}", data[-1:])
         self.assertEqual(
-            {"lockfile_sha256", "npm_artifacts", "npm_reference_manifest_sha256", "oci", "source_commit"},
+            {"historical_npm", "lockfile_sha256", "npm_artifacts", "npm_reference_manifest_sha256", "oci", "source_commit"},
             set(catalog["provenance"]),
         )
         self.assertTrue(all(set(row) == {"name", "version", "path", "size", "sha256"} for row in catalog["npm"]))
@@ -5006,6 +5301,22 @@ class PublicCatalogGeneratorTests(unittest.TestCase):
             all(set(row) == {"integrity", "name", "sha256", "size", "version"} for row in npm_artifacts)
         )
         self.assertEqual(sorted(npm_artifacts, key=lambda row: (row["name"], row["version"])), npm_artifacts)
+        historical = catalog["provenance"]["historical_npm"]
+        self.assertEqual(
+            {
+                "artifacts", "candidate_manifest_sha256", "lockfile_path", "member_index_sha256",
+                "repository", "source_reference_manifest_sha256",
+            },
+            set(historical),
+        )
+        self.assertEqual("https://github.com/zylomeara/framefit", historical["repository"])
+        self.assertEqual("mcp-server/pnpm-lock.yaml", historical["lockfile_path"])
+        self.assertEqual(1, len(historical["artifacts"]))
+        historical_artifact = historical["artifacts"][0]
+        self.assertEqual(
+            {"integrity", "name", "sha256", "size", "snapshots", "version"}, set(historical_artifact)
+        )
+        self.assertEqual([fixture["historical"]["snapshot"]], historical_artifact["snapshots"])
         oci = catalog["provenance"]["oci"]
         self.assertEqual({"config", "index", "layers", "manifest", "platform"}, set(oci))
         self.assertEqual({"digest", "size"}, set(oci["config"]))
@@ -5013,9 +5324,201 @@ class PublicCatalogGeneratorTests(unittest.TestCase):
         self.assertEqual({"digest", "size"}, set(oci["manifest"]))
         self.assertTrue(all(set(row) == {"diff_id", "digest", "size"} for row in oci["layers"]))
         self.assertEqual({"architecture", "os"}, set(oci["platform"]))
-        sized = catalog["npm"] + catalog["base"] + npm_artifacts + oci["layers"] + [oci["config"], oci["index"], oci["manifest"]]
+        sized = (
+            catalog["npm"] + catalog["base"] + npm_artifacts + historical["artifacts"]
+            + oci["layers"] + [oci["config"], oci["index"], oci["manifest"]]
+        )
         self.assertTrue(all(type(row["size"]) is int for row in sized))
         self.assertNotIn(None, list(self.walk_values(catalog)))
+
+    def test_rejects_historical_manifest_binding_overlap_legacy_duplicate_and_index_failures(self):
+        cases = (
+            "candidate-pin", "source-pin", "member-pin", "candidate-link", "snapshot-binding",
+            "sri", "overlap", "legacy", "duplicate-pair", "forged-index",
+        )
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                fixture = make_public_catalog_fixture(Path(temp))
+                if case == "candidate-pin":
+                    fixture["paths"]["historical_candidate_manifest"].write_bytes(
+                        fixture["paths"]["historical_candidate_manifest"].read_bytes() + b" "
+                    )
+                elif case == "source-pin":
+                    fixture["paths"]["historical_source_manifest"].write_bytes(
+                        fixture["paths"]["historical_source_manifest"].read_bytes() + b" "
+                    )
+                elif case == "member-pin":
+                    fixture["paths"]["historical_member_index"].write_bytes(
+                        fixture["paths"]["historical_member_index"].read_bytes() + b" "
+                    )
+                elif case == "candidate-link":
+                    self.repin_historical_source(
+                        fixture, lambda value: value.update(candidate_file_sha256="0" * 64)
+                    )
+                elif case == "snapshot-binding":
+                    altered = {**fixture["historical"]["snapshot"], "source_commit": "3" * 40}
+                    self.repin_historical_candidate(
+                        fixture, lambda value: value["candidates"][0].update(provenance=[altered])
+                    )
+                    self.repin_historical_source(
+                        fixture,
+                        lambda value: (
+                            value.update(candidate_file_sha256=fixture["pins"]["HISTORICAL_CANDIDATE_MANIFEST_SHA256"]),
+                            value["references"][0].update(provenance=[altered]),
+                        ),
+                    )
+                elif case == "sri":
+                    integrity = "sha512-" + base64.b64encode(b"\0" * 64).decode("ascii")
+                    self.repin_historical_candidate(
+                        fixture, lambda value: value["candidates"][0].update(integrity=integrity)
+                    )
+                    self.repin_historical_source(
+                        fixture,
+                        lambda value: (
+                            value.update(candidate_file_sha256=fixture["pins"]["HISTORICAL_CANDIDATE_MANIFEST_SHA256"]),
+                            value["references"][0].update(integrity=integrity),
+                        ),
+                    )
+                elif case in ("overlap", "legacy"):
+                    name, version = (("dep-one", "1.2.3") if case == "overlap" else ("express", "2.0.0"))
+                    self.repin_historical_candidate(
+                        fixture, lambda value: value["candidates"][0].update(name=name, version=version)
+                    )
+                    self.repin_historical_source(
+                        fixture,
+                        lambda value: (
+                            value.update(candidate_file_sha256=fixture["pins"]["HISTORICAL_CANDIDATE_MANIFEST_SHA256"]),
+                            value["references"][0].update(
+                                name=name,
+                                version=version,
+                                url=f"https://registry.npmjs.org/{name}/-/{name.rsplit('/', 1)[-1]}-{version}.tgz",
+                            ),
+                        ),
+                    )
+                elif case == "duplicate-pair":
+                    self.repin_historical_candidate(
+                        fixture,
+                        lambda value: (
+                            value["candidates"].append(dict(value["candidates"][0])),
+                            value["counts"].update(absent_nonlegacy_pairs=2),
+                        ),
+                    )
+                    self.repin_historical_source(
+                        fixture,
+                        lambda value: (
+                            value.update(candidate_file_sha256=fixture["pins"]["HISTORICAL_CANDIDATE_MANIFEST_SHA256"]),
+                            value["references"].append({**value["references"][0], "artifact_id": 2}),
+                            value["counts"].update(artifacts=2),
+                        ),
+                    )
+                    fixture["pins"]["EXPECTED_HISTORICAL_NPM_ARTIFACTS"] = 2
+                else:
+                    self.repin_historical_index(fixture, lambda rows: rows[-1].update(sha256="0" * 64))
+                with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                    with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                        CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+
+    def test_rejects_historical_raw_artifact_identity_member_root_tail_and_set_failures(self):
+        cases = ("fingerprint", "identity", "duplicate-member", "root", "tail", "missing", "extra")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                fixture = make_public_catalog_fixture(Path(temp))
+                blobs = fixture["paths"]["historical_blobs"]
+                blob_path = blobs / "001.tgz"
+                if case == "missing":
+                    blob_path.unlink()
+                elif case == "extra":
+                    (blobs / "unexpected.tgz").write_bytes(b"unexpected")
+                elif case == "fingerprint":
+                    data = bytearray(blob_path.read_bytes())
+                    data[-1] ^= 1
+                    blob_path.write_bytes(data)
+                else:
+                    package = json.dumps({
+                        "name": "other-lib" if case == "identity" else "historical-lib",
+                        "version": "2.0.0",
+                    }, separators=(",", ":")).encode()
+                    if case == "duplicate-member":
+                        entries = [
+                            ("package/package.json", package),
+                            ("package/lib/value.js", b"one"),
+                            ("package/lib/value.js", b"two"),
+                        ]
+                    elif case == "root":
+                        entries = [("package/package.json", package), ("other/lib/value.js", b"value")]
+                    else:
+                        entries = [("package/package.json", package), ("package/lib/value.js", b"value")]
+                    tar_data = tar_bytes(entries) + (b"nonzero-tail" if case == "tail" else b"")
+                    blob = gzip.compress(tar_data, mtime=0)
+                    blob_path.write_bytes(blob)
+                    integrity = "sha512-" + base64.b64encode(hashlib.sha512(blob).digest()).decode("ascii")
+                    self.repin_historical_candidate(
+                        fixture, lambda value: value["candidates"][0].update(integrity=integrity)
+                    )
+                    self.repin_historical_source(
+                        fixture,
+                        lambda value: (
+                            value.update(candidate_file_sha256=fixture["pins"]["HISTORICAL_CANDIDATE_MANIFEST_SHA256"]),
+                            value["references"][0].update(
+                                integrity=integrity,
+                                sha256=hashlib.sha256(blob).hexdigest(),
+                                size=len(blob),
+                            ),
+                        ),
+                    )
+                with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                    with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                        CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+
+    def test_rejects_missing_extra_altered_symlink_and_oversize_historical_lockfiles(self):
+        for case in ("missing", "extra", "altered", "symlink", "oversize"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                fixture = make_public_catalog_fixture(Path(temp))
+                lockfiles = fixture["paths"]["historical_lockfiles"]
+                lock = next(lockfiles.iterdir())
+                if case == "missing":
+                    lock.unlink()
+                elif case == "extra":
+                    (lockfiles / ("f" * 40 + ".yaml")).write_bytes(b"extra")
+                elif case == "altered":
+                    lock.write_bytes(lock.read_bytes() + b"altered")
+                elif case == "symlink":
+                    target = Path(temp) / "lock-target"
+                    target.write_bytes(lock.read_bytes())
+                    lock.unlink()
+                    lock.symlink_to(target)
+                else:
+                    lock.write_bytes(b"x" * (1024 * 1024 + 1))
+                with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
+                    with self.assertRaises(CATALOG_GENERATOR.CatalogError):
+                        CATALOG_GENERATOR.build_catalog(**fixture["paths"])
+
+    def test_historical_lockfiles_are_mandatory_in_api_and_cli(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = make_public_catalog_fixture(Path(temp))
+            paths = dict(fixture["paths"])
+            paths.pop("historical_lockfiles")
+            with self.assertRaises(TypeError):
+                CATALOG_GENERATOR.build_catalog(**paths)
+            arguments = []
+            for option, key in (
+                ("--npm-manifest", "npm_manifest"),
+                ("--npm-blobs", "npm_blobs"),
+                ("--npm-member-index", "npm_member_index"),
+                ("--historical-candidate-manifest", "historical_candidate_manifest"),
+                ("--historical-source-manifest", "historical_source_manifest"),
+                ("--historical-blobs", "historical_blobs"),
+                ("--historical-member-index", "historical_member_index"),
+                ("--oci-index", "oci_index"),
+                ("--oci-manifest", "oci_manifest"),
+                ("--base-blobs", "base_blobs"),
+                ("--base-index-summary", "base_index_summary"),
+                ("--base-layer-indexes", "base_layer_indexes"),
+            ):
+                arguments.extend((option, str(fixture["paths"][key])))
+            arguments.extend(("--output", str(Path(temp) / "catalog.json")))
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                CATALOG_GENERATOR._parser().parse_args(arguments)
 
     def walk_values(self, value):
         if isinstance(value, dict):
@@ -5264,19 +5767,33 @@ class PublicCatalogGeneratorTests(unittest.TestCase):
             self.repin_npm_manifest(fixture, update)
             with mock.patch.multiple(CATALOG_GENERATOR, **fixture["pins"]):
                 catalog = json.loads(CATALOG_GENERATOR.build_catalog(**fixture["paths"]))
-            self.assertEqual(["lib/value.js", "package.json"], [row["path"] for row in catalog["npm"]])
+            self.assertEqual(
+                ["lib/value.js", "package.json"],
+                [row["path"] for row in catalog["npm"] if row["name"] == "dep-one"],
+            )
 
-    @unittest.skipUnless(os.environ.get("IMAGE_AUDIT_PUBLIC_INPUTS"), "local pinned public inputs unavailable")
+    @unittest.skipUnless(
+        os.environ.get("IMAGE_AUDIT_PUBLIC_INPUTS") and os.environ.get("IMAGE_AUDIT_HISTORICAL_LOCKFILES"),
+        "local pinned public inputs unavailable",
+    )
     def test_full_production_catalog_is_reproducible_complete_pinned_and_bounded(self):
         self.assertTrue(PUBLIC_CATALOG.is_file())
         inputs = Path(os.environ["IMAGE_AUDIT_PUBLIC_INPUTS"])
         npm = inputs / "public-reference-preparation" / "npm"
         base = inputs / "public-reference-preparation" / "base"
+        historical = inputs / "historical-public-reference-preparation"
+        candidates = list(inputs.glob("*/historical-public-candidates.json"))
+        self.assertEqual(1, len(candidates))
         metadata = inputs / "image-audit-public-origins" / "public-source-metadata"
         paths = {
             "npm_manifest": npm / "evidence" / "reference-manifest.json",
             "npm_blobs": npm / "public-blobs",
             "npm_member_index": npm / "evidence" / "member-index.jsonl",
+            "historical_candidate_manifest": candidates[0],
+            "historical_source_manifest": historical / "source-reference-manifest.json",
+            "historical_blobs": historical / "public-blobs",
+            "historical_member_index": historical / "member-index.jsonl",
+            "historical_lockfiles": Path(os.environ["IMAGE_AUDIT_HISTORICAL_LOCKFILES"]),
             "oci_index": metadata / "node-index.json",
             "oci_manifest": metadata / "node-manifest.json",
             "base_blobs": base / "public-blobs",
@@ -5287,21 +5804,60 @@ class PublicCatalogGeneratorTests(unittest.TestCase):
         self.assertEqual(generated, PUBLIC_CATALOG.read_bytes())
         self.assertLessEqual(len(generated), CATALOG_GENERATOR.MAX_CATALOG_BYTES)
         catalog = json.loads(generated)
-        self.assertEqual(3851, len(catalog["npm"]))
+        self.assertEqual(2, catalog["schema"])
+        self.assertEqual(5521, len(catalog["npm"]))
         self.assertEqual(2235, len(catalog["base"]))
-        self.assertEqual(171, len({(row["name"], row["version"]) for row in catalog["npm"]}))
+        pairs = {(row["name"], row["version"]) for row in catalog["npm"]}
+        self.assertEqual(215, len(pairs))
+        self.assertEqual(175, len({name for name, _version in pairs}))
         self.assertEqual(180, len(catalog["provenance"]["npm_artifacts"]))
+        historical_provenance = catalog["provenance"]["historical_npm"]
+        self.assertEqual(44, len(historical_provenance["artifacts"]))
         self.assertEqual(CATALOG_GENERATOR.SOURCE_COMMIT, catalog["provenance"]["source_commit"])
         self.assertEqual(CATALOG_GENERATOR.LOCKFILE_SHA256, catalog["provenance"]["lockfile_sha256"])
         self.assertEqual(
             CATALOG_GENERATOR.NPM_REFERENCE_MANIFEST_SHA256,
             catalog["provenance"]["npm_reference_manifest_sha256"],
         )
+        self.assertEqual(
+            CATALOG_GENERATOR.HISTORICAL_CANDIDATE_MANIFEST_SHA256,
+            historical_provenance["candidate_manifest_sha256"],
+        )
+        self.assertEqual(
+            CATALOG_GENERATOR.HISTORICAL_SOURCE_REFERENCE_MANIFEST_SHA256,
+            historical_provenance["source_reference_manifest_sha256"],
+        )
+        self.assertEqual(
+            CATALOG_GENERATOR.HISTORICAL_MEMBER_INDEX_SHA256,
+            historical_provenance["member_index_sha256"],
+        )
         self.assertEqual(CATALOG_GENERATOR.OCI_INDEX_DIGEST, catalog["provenance"]["oci"]["index"]["digest"])
         self.assertEqual(CATALOG_GENERATOR.OCI_MANIFEST_DIGEST, catalog["provenance"]["oci"]["manifest"]["digest"])
+
+        old_result = subprocess.run(
+            ["git", "show", "3cc2c2e251e438f6c20d9221c68a37e6be6c38a4:scripts/image-audit-public-catalog.json"],
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "GIT_NO_LAZY_FETCH": "1",
+                "GIT_NO_REPLACE_OBJECTS": "1",
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual((0, b""), (old_result.returncode, old_result.stderr))
+        old = json.loads(old_result.stdout)
+        self.assertEqual(old["base"], catalog["base"])
+        old_rows = {json.dumps(row, sort_keys=True, separators=(",", ":")) for row in old["npm"]}
+        new_rows = {json.dumps(row, sort_keys=True, separators=(",", ":")) for row in catalog["npm"]}
+        self.assertEqual(3851, len(old_rows))
+        self.assertTrue(old_rows.issubset(new_rows))
+        for key in ("lockfile_sha256", "npm_artifacts", "npm_reference_manifest_sha256", "oci", "source_commit"):
+            self.assertEqual(old["provenance"][key], catalog["provenance"][key])
         with tempfile.TemporaryDirectory() as temp:
             second = Path(temp) / "catalog.json"
-            CATALOG_GENERATOR.write_catalog(second, generated)
+            CATALOG_GENERATOR.write_catalog(second, CATALOG_GENERATOR.build_catalog(**paths))
             self.assertEqual(PUBLIC_CATALOG.read_bytes(), second.read_bytes())
 
     def test_expansion_member_and_catalog_caps_accept_boundary_and_reject_boundary_minus_one(self):
@@ -5342,6 +5898,11 @@ class PublicCatalogGeneratorTests(unittest.TestCase):
                 ("--npm-manifest", "npm_manifest"),
                 ("--npm-blobs", "npm_blobs"),
                 ("--npm-member-index", "npm_member_index"),
+                ("--historical-candidate-manifest", "historical_candidate_manifest"),
+                ("--historical-source-manifest", "historical_source_manifest"),
+                ("--historical-blobs", "historical_blobs"),
+                ("--historical-member-index", "historical_member_index"),
+                ("--historical-lockfiles", "historical_lockfiles"),
                 ("--oci-index", "oci_index"),
                 ("--oci-manifest", "oci_manifest"),
                 ("--base-blobs", "base_blobs"),
