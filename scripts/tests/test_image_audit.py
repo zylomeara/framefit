@@ -303,6 +303,28 @@ def seed_acquired(root: Path, layers: list[bytes], *, annotation: str | None = N
     AUDIT.save_state(root, state)
 
 
+def process_is_gone(pid: int) -> bool:
+    # Signal 0 succeeds on zombies, and an orphaned dead child is reaped only
+    # where PID 1 reaps (not a bare container) — so "gone" must mean reaped or
+    # zombie, not merely "signal 0 failed".
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()  # Linux CI
+        return stat.rsplit(")", 1)[-1].split()[0] == "Z"
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, timeout=5)
+        return out.returncode != 0 or b"Z" in out.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def make_gitleaks_stub(
     directory: Path,
     *,
@@ -3037,6 +3059,98 @@ class ScanTests(unittest.TestCase):
         with mock.patch.object(AUDIT.platform, "system", return_value="Linux"), mock.patch.object(AUDIT.socket, "if_nameindex", return_value=[(1, "lo"), (2, "eth0")]):
             with self.assertRaisesRegex(AUDIT.AuditFailure, "^NETWORK_ISOLATION_FAILED$"):
                 AUDIT.assert_linux_network_isolated()
+
+    def test_kill_process_group_escalates_past_a_leader_that_exits_on_sigterm(self):
+        # The leader terminates on SIGTERM by default while its descendant (same
+        # process group) ignores it. Escalation keyed on the leader's exit would
+        # leave that descendant running; it must be keyed on the group's.
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            pid_path = base / "stubborn-child.pid"
+            child_code = (
+                "import os,signal,time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                f"open({str(pid_path)!r}, 'w').write(str(os.getpid()))\n"
+                "time.sleep(60)\n"
+            )
+            leader_code = (
+                "import subprocess,sys,time\n"
+                f"subprocess.Popen([sys.executable, '-B', '-c', {child_code!r}])\n"
+                "time.sleep(60)\n"
+            )
+            leader = subprocess.Popen(
+                [sys.executable, "-B", "-c", leader_code],
+                cwd=ROOT,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            child: int | None = None
+            try:
+                for _ in range(100):
+                    if pid_path.exists():
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(pid_path.exists())
+                child = int(pid_path.read_text())
+                os.kill(child, 0)
+                AUDIT._kill_process_group(leader)
+                self.assertIsNotNone(leader.poll())
+                for _ in range(60):
+                    if process_is_gone(child):
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("SIGTERM-ignoring descendant survived group cleanup")
+            finally:
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(os.getpgid(leader.pid), signal.SIGKILL)
+                if child is not None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                        os.killpg(os.getpgid(child), signal.SIGKILL)
+
+    def test_kill_process_group_delivers_sigterm_before_sigkill(self):
+        # A KILL-first implementation would also pass the stubborn-descendant
+        # test; this one proves TERM is actually delivered first: the child
+        # records TERM receipt, the leader ignores TERM and only dies to KILL.
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            marker_path = base / "child-got-term"
+            pid_path = base / "cooperative-child.pid"
+            child_code = (
+                "import os,signal,time\n"
+                "def on_term(*_):\n"
+                f"    open({str(marker_path)!r}, 'w').write('term')\n"
+                "    os._exit(0)\n"
+                "signal.signal(signal.SIGTERM, on_term)\n"
+                f"open({str(pid_path)!r}, 'w').write(str(os.getpid()))\n"
+                "time.sleep(60)\n"
+            )
+            leader_code = (
+                "import signal,subprocess,sys,time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                f"subprocess.Popen([sys.executable, '-B', '-c', {child_code!r}])\n"
+                "time.sleep(60)\n"
+            )
+            leader = subprocess.Popen(
+                [sys.executable, "-B", "-c", leader_code],
+                cwd=ROOT,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                for _ in range(100):
+                    if pid_path.exists():
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(pid_path.exists())
+                AUDIT._kill_process_group(leader)
+                self.assertTrue(marker_path.exists())
+                self.assertIsNotNone(leader.poll())
+            finally:
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(os.getpgid(leader.pid), signal.SIGKILL)
 
     def test_bulk_overrun_is_incomplete_and_reaps_its_cooperative_child(self):
         with tempfile.TemporaryDirectory() as temp:
