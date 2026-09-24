@@ -854,24 +854,51 @@ def _find_tool(name: str) -> Path:
     return path
 
 
+def _process_group_alive(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
+    if process.poll() is not None and not _process_group_alive(process.pid):
         return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         with contextlib.suppress(OSError):
             process.terminate()
+    # Escalation is keyed on the GROUP, not the leader: a leader that exits on
+    # SIGTERM can leave a SIGTERM-ignoring descendant alive in the same group.
+    # Give members the same ~1s budget to exit on TERM, then SIGKILL whatever
+    # remains. The pgid-reuse window between the aliveness probe and SIGKILL is
+    # a few milliseconds in a short-lived audit runner; the previous code had
+    # the same exposure on its KILL path. killpg(pid, 0) counts a zombie-only
+    # group as alive: on hosts where PID 1 does not reap orphans (bare
+    # containers without --init) cleanup can burn the full grace and fire a
+    # harmless no-op SIGKILL — timing cost only, correctness unaffected.
+    deadline = time.monotonic() + 1
+    while True:
+        if process.poll() is None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=max(0.0, min(0.05, deadline - time.monotonic())))
+        if process.poll() is not None and not _process_group_alive(process.pid):
+            return
+        if time.monotonic() >= deadline:
+            break
+        if process.poll() is not None:
+            time.sleep(0.02)
     try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        with contextlib.suppress(OSError):
+            process.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
         process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            with contextlib.suppress(OSError):
-                process.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=1)
 
 
 def _run_bounded(
