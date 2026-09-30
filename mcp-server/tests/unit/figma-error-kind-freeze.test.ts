@@ -597,7 +597,7 @@ describe('the populations this freeze is written against', () => {
     // only its union declaration is blanked - so a kind constant parked beside the type is an
     // unclassified site and fails here.
     expect(SITES.unclassified, 'unrecognised kind-literal sites - classify them or the map lies').toEqual([]);
-    expect(SITES.files, 'files mentioning FigmaApiError').toBe(19); // 18 -> 19: find-component-instances adds the bounded instance-scan hard-error gate
+    expect(SITES.files, 'files mentioning FigmaApiError').toBe(20); // Includes the comment metadata resolver.
   });
 
   it('the producer population is frozen: a NEW producer has to be added to the table above', () => {
@@ -657,7 +657,7 @@ describe('the populations this freeze is written against', () => {
         'upstream', 'unknown_4xx',    // :305 negative-cache whitelist
         'unknown_4xx',                // soft-expiry gate: too-large 400 markers carry softExpiresAt
       ],
-      'adapters/driven/figma-rest.ts': ['network'],
+      'adapters/driven/figma-rest.ts': ['too_large', 'unknown_4xx', 'network'],
       'adapters/driving/tools/compare-node-to-dom-tool.ts':
         // batch-2 item 5 remainder: the variables catch gained the escalation class gate
         // (too-large unknown_4xx is one of the two classes the negative cache caches
@@ -691,7 +691,7 @@ describe('the populations this freeze is written against', () => {
       'application/node-ancestry.ts': ['auth', 'forbidden'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '55 branch sites across 16 files').toBe(55); // 52 -> 55: find-component-instances adds auth/forbidden/rate_limited hard-error branches
+    expect(SITES.branches.length, '57 branch sites across 16 files').toBe(57); // Comment source-size diagnostics preserve the producer kind.
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "

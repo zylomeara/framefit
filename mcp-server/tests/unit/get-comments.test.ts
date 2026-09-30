@@ -53,15 +53,16 @@ function input(over: Partial<Parameters<typeof getCommentsUseCase>[2]> = {}) {
 describe('getCommentsUseCase', () => {
   // Use case now returns the full requested page + counts (page / total_matching / offset);
   // clamp, warnings, next_offset and markdown rendering all moved to the tool layer.
-  it('happy path: page with thread + resolved node name from structure', async () => {
+  it('returns the requested page when node labels are unavailable', async () => {
     const api = new FakeFigmaApi();
     const out = await getCommentsUseCase(api as unknown as FigmaApi, silent, input());
     const t1001 = out.page.find((t) => t.id === '1001');
     expect(t1001).toBeDefined();
-    expect(t1001!.anchor).toMatchObject({ node_name: 'Button / Primary' });
+    expect(t1001!.anchor).toMatchObject({ node_id: '1:42', node_name: '' });
     expect(out.total_matching).toBe(4);
     expect(out.page.length).toBe(4);
-    expect(out.offset).toBe(0);
+    expect(out.coverage.filter).toMatchObject({ complete: true, count_semantics: 'exact' });
+    expect(out.coverage.enrichment).toMatchObject({ complete: false, unresolved_node_ids_total: 2 });
   });
 
   it('returns the full requested page as threads', async () => {

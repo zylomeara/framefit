@@ -77,6 +77,34 @@ export type Thread = {
 // Map node_id (REST format, e.g. "1:42") → { name, page_name }.
 export type NodeRefMap = Map<string, { name: string; page_name: string }>;
 
+export type CommentsCoverageError = {
+  kind: string;
+  status: number;
+  retry_after_sec?: number;
+};
+
+export type CommentsCoverage = {
+  filter: {
+    complete: boolean;
+    candidate_threads: number;
+    evaluated_threads: number;
+    unresolved_threads: number;
+    count_semantics: 'exact' | 'lower_bound';
+    stop_reason?: string;
+    error?: CommentsCoverageError;
+  };
+  enrichment: {
+    complete: boolean;
+    requested_nodes: number;
+    resolved_node_names: number;
+    resolved_page_names: number;
+    unresolved_node_ids: string[];
+    unresolved_node_ids_total: number;
+    stop_reason?: string;
+    error?: CommentsCoverageError;
+  };
+};
+
 // Result helper for parsing.
 export type Result<T, E = string> =
   | { ok: true; value: T }

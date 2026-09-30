@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyFilters } from '../../src/domain/filters.js';
+import { applyFilters, applyPureFilters } from '../../src/domain/filters.js';
 import { buildFileStructure } from '../../src/domain/file-structure.js';
 import type { Thread, FilterCriteria, CommentInThread } from '../../src/domain/types.js';
 import type { RawDocumentNode } from '../../src/domain/file-structure.js';
@@ -45,6 +45,14 @@ describe('applyFilters', () => {
       thread({ id: 'on55', anchor: { kind: 'node', node_id: '1:55', node_name: '', page_name: '', offset: { x: 0, y: 0 } } }),
     ];
     expect(applyFilters(threads, { ...base, node_id: '1:42' }, structure).map((t) => t.id)).toEqual(['on42']);
+  });
+
+  it('pre-filters an exact node without document metadata', () => {
+    const threads = [
+      thread({ id: 'match', anchor: { kind: 'node', node_id: 'node-a', node_name: '', page_name: '', offset: { x: 0, y: 0 } } }),
+      thread({ id: 'other', anchor: { kind: 'node', node_id: 'node-b', node_name: '', page_name: '', offset: { x: 0, y: 0 } } }),
+    ];
+    expect(applyPureFilters(threads, { ...base, node_id: 'node-a' }).map((t) => t.id)).toEqual(['match']);
   });
 
   it('node_id + include_descendants includes child nodes', () => {

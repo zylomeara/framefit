@@ -29,17 +29,48 @@ The two additive write tools ([`post_comment`](#post_comment),
 | `min_replies` | integer ≥ 0 | Only threads with at least N replies |
 | `min_reactions` | integer ≥ 0 | Only threads whose root has at least N reactions |
 | `has_mentions` | boolean | Only threads with @-mentions in root or any reply |
-| `node_depth` | integer 0–10 (default 0) | Figma `/nodes` depth for fallback name resolution - 0 = name only (fast) |
-| `timeout_ms` | integer 1000–120000 | Per-call Figma request timeout in ms (default 90000). Raise toward the max for very large files if you still hit timeouts. |
+| `node_depth` | integer 0–10 (default 0) | Legacy option, accepted but ignored. Anchor metadata uses depth 1; descendant filtering has its own bounded traversal. |
+| `timeout_ms` | integer 1000–120000 | Per-request Figma timeout in ms (default 90000), also bounded by the server whole-tool deadline. Raising this does not extend that deadline. |
 | `figma_token` | string | Override Figma PAT; falls back to `FIGMA_TOKEN` env |
+
+## Coverage and large files
+
+Figma's comments endpoint returns the file's comments before any filters are applied. Node,
+date, `limit` and `offset` filters are client-side, not upstream pagination. A source-read error
+remains an error, never a successful empty result.
+
+Metadata is fetched separately with bounded depth-1 `/nodes` requests. Pure filters run first;
+structural filters run before pagination or ranking limits. Names/pages are best-effort: a
+metadata failure does not discard comments already read. Page names are available when the
+requested descendant scope is a CANVAS; other anchors may retain an empty page name.
+
+All three tools return `coverage` (also printed in Markdown by `get_comments`):
+
+- `filter.complete` indicates whether every candidate thread could be classified. When false,
+  counts use `count_semantics: "lower_bound"` and cover **definite matches only**;
+  `unresolved_threads` may contain additional matches. An empty result does not prove absence.
+- `enrichment.complete` describes the requested anchor names/pages separately. Missing labels
+  do not make otherwise complete thread counts partial. Unresolved IDs are listed up to a cap,
+  with `unresolved_node_ids_total` preserving the full count.
+- Stopped metadata work carries a reason and, for Figma errors, the error kind/status and any
+  `retry_after_sec`. Respect rate limits; narrowing a descendant scope can reduce tree work.
+  Increasing `node_depth` does not extend traversal.
+
+Metadata work shares a whole-tool deadline, a 16-call ceiling and a 10,000-node ceiling. It
+includes hidden nodes when checking descendant membership and never uses geometry as proof
+of membership. `next_offset` paginates the definite matches; a null value does not mean there
+are no unresolved candidates. Search ranking and summary top lists likewise cover only the
+classified matching set when filtering is incomplete. Response clamping retains coverage.
 
 ---
 
 ### get_comments
 
-Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates,
-node, mentions) and pagination. Anchors resolve to node names/pages. Use `summarize_comments`
-first on large files.
+Fetch review comments as threads with client-side filters and pagination. Figma returns all file
+comments before filtering. Anchor names/pages are best-effort; coverage.filter.complete=false means
+counts are lower bounds and empty results do not prove absence. coverage.enrichment reports
+unresolved labels separately. next_offset paginates definite matches only, not unresolved candidates.
+Use summarize_comments for aggregate statistics.
 
 If the configured response budget cannot fit even the first complete thread, the tool returns
 `isError:true` with `{code:"response_too_large", reason:"first_item_oversize"|"envelope_oversize",
@@ -71,8 +102,10 @@ cursor: do not advance `offset`; narrow the filters or request fewer threads.
 ### summarize_comments
 
 Aggregate statistics for a Figma file's comments (counts by author/anchor/node/date, top threads,
-mentions) using the same filters as `get_comments`. Returns a compact ~1-2KB summary - use this
-first to scope large files before fetching full threads.
+mentions) using the same client-side filters as get_comments. top_n limits displayed lists, not the
+counted population. coverage.filter.complete=false means counts are lower bounds over definite
+matches, not a complete census. Names/pages are best-effort and their availability is reported
+separately in coverage.enrichment.
 
 **Parameters** — all [shared filters](#shared-filter-parameters), plus:
 
@@ -94,8 +127,10 @@ first to scope large files before fetching full threads.
 ### find_threads
 
 Search a Figma file's comment threads by text, ranked by relevance, with optional fuzzy matching
-and the full filter set. Returns scored matches with highlights - use to locate specific
-discussions in large files.
+and the shared client-side filters. Returns scored matches with highlights.
+coverage.filter.complete=false means unclassified candidates remain; an empty result does not prove
+absence and the ranking covers definite matches only. Anchor labels are best-effort, reported
+separately in coverage.enrichment.
 
 **Parameters** — all [shared filters](#shared-filter-parameters), plus:
 
