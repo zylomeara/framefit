@@ -3,6 +3,38 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.30.2
+
+Comment tools no longer require a depth-4 whole-file tree to resolve anchor labels.
+`get_comments`, `summarize_comments`, and `find_threads` preserve fetched comments when optional
+node metadata is unavailable and report incomplete filtering separately from missing names/pages.
+
+**Output compatibility.** Accepted request fields are unchanged. Responses add `coverage.filter`
+and `coverage.enrichment`; when `coverage.filter.complete` is false, counts are lower bounds over
+definite matches and an empty result does not prove absence. `next_offset` paginates only those
+definite matches. The legacy `node_depth` option is accepted but ignored. Reconnect to refresh the
+comment tools' updated descriptions. DOM snapshot schema v7 and the extractor are unchanged; no
+re-capture or database migration is required.
+
+### Fixed
+
+- **Bounded anchor reads.** Node metadata uses depth-1 batches and descendant filtering walks only
+  the requested subtree, with call, node-count, and time limits. Hidden nodes remain eligible for
+  descendant membership; unvisited branches do not prove that a thread is outside the scope.
+- **Filtering before enrichment.** Pure filters run before metadata reads. Structural filters run
+  before pagination or ranking limits; cosmetic labels are resolved for the selected page or top
+  lists. Summary counts still cover the full classified matching set, not just its top lists.
+- **Partial results retain their evidence.** Metadata failures preserve available threads and node
+  IDs. JSON, Markdown, and clamped comment pages carry coverage. Errors fetching the comments
+  themselves remain errors; the message identifies the comments endpoint.
+
+### Changed
+
+- `timeout_ms` bounds individual Figma requests within the server's whole-tool deadline; raising
+  it does not extend the total traversal budget.
+- Anchor page names are best-effort. A CANVAS descendant scope supplies its page name; other
+  anchors can retain an empty page name, reported in enrichment coverage.
+
 ## 0.30.1
 
 Three design-QA fixes: direct TEXT leaves no longer require an inapplicable child-layout check,
