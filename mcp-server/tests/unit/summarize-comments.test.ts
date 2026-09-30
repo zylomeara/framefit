@@ -30,7 +30,10 @@ class FakeApi {
     return structure;
   }
   async getDocumentRaw(): Promise<any> { return {}; }
-  async getNodesRaw(): Promise<any> { return { nodes: {} }; }
+  async getNodesRaw(): Promise<any> {
+    if (this.structErr) throw this.structErr;
+    return { nodes: {} };
+  }
   async getImages(): Promise<any> { return { images: {} }; }
   async getVariablesLocal(): Promise<any> { return {}; }
   async getFileVersion(): Promise<any> { return { version: '1', name: 'F', lastModified: 'X' }; }
@@ -60,14 +63,20 @@ describe('summarizeCommentsUseCase', () => {
     expect(out.total).toBe(2);
   });
 
-  it('loads structure lazily (node anchors present in fixture)', async () => {
+  it('does not fetch a whole-file structure for node anchors', async () => {
     const api = new FakeApi();
     await summarizeCommentsUseCase(api as unknown as FigmaApi, silent, input());
-    expect(api.fileStructureCalls).toBe(1);
+    expect(api.fileStructureCalls).toBe(0);
   });
 
-  it('propagates structure failure (fail-fast)', async () => {
-    const api = new FakeApi(rawComments, new FigmaApiError('rate_limited', 429, 'slow'));
-    await expect(summarizeCommentsUseCase(api as unknown as FigmaApi, silent, input())).rejects.toMatchObject({ kind: 'rate_limited' });
+  it('keeps aggregates when optional label enrichment fails', async () => {
+    const out = await summarizeCommentsUseCase(
+      new FakeApi(rawComments, new FigmaApiError('rate_limited', 429, 'slow')) as unknown as FigmaApi,
+      silent,
+      input(),
+    );
+    expect(out.total).toBe(4);
+    expect(out.coverage.filter).toMatchObject({ complete: true, count_semantics: 'exact' });
+    expect(out.coverage.enrichment).toMatchObject({ complete: false, error: { kind: 'rate_limited', status: 429 } });
   });
 });

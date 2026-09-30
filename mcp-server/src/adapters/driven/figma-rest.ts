@@ -1,5 +1,5 @@
 import type { FigmaApi } from '../../ports/figma-api.js';
-import { FigmaApiError } from '../../ports/errors.js';
+import { FigmaApiError, TOO_LARGE_REASON_RE } from '../../ports/errors.js';
 import { tagBytes } from '../../infrastructure/response-size.js';
 import type { RawComment, NodeRefMap } from '../../domain/types.js';
 import type { Logger } from '../../infrastructure/logger.js';
@@ -58,8 +58,21 @@ export class FigmaRestAdapter implements FigmaApi {
 
   async getComments(fileKey: string): Promise<RawComment[]> {
     const url = `${BASE_URL}/files/${encodeURIComponent(fileKey)}/comments?as_md=true`;
-    const payload = await this.request<CommentsResponse>(url);
-    return payload.comments;
+    try {
+      const payload = await this.request<CommentsResponse>(url);
+      return payload.comments;
+    } catch (err) {
+      if (!(err instanceof FigmaApiError)) throw err;
+      const tooLarge = err.kind === 'too_large'
+        || (err.status === 400 && err.kind === 'unknown_4xx' && TOO_LARGE_REASON_RE.test(err.upstreamReason ?? ''));
+      const detail = tooLarge
+        ? `The comments response is too large (${err.status}).${quoteUpstream(err.upstreamReason)}`
+          + ' Node, date, limit and offset filters are client-side; Figma does not paginate this endpoint.'
+          + ' Reducing those filters cannot shrink this request. Read the comments in Figma or contact Figma support about this file.'
+        : err.message;
+      err.message = `Failed to read comments at GET /v1/files/{file_key}/comments. ${detail}`;
+      throw err;
+    }
   }
 
   async resolveNodes(

@@ -38,6 +38,7 @@ describe('findThreadsUseCase', () => {
     const out = await findThreadsUseCase(new FakeApi() as unknown as FigmaApi, silent, input());
     expect(out.query).toBe('радиус');
     expect(out.matches.map((m) => m.thread_id)).toContain('1001');
+    expect(out.coverage.filter).toMatchObject({ complete: true, count_semantics: 'exact' });
   });
 
   it('respects limit', async () => {

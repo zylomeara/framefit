@@ -86,17 +86,17 @@ export type ToolDeps = {
 const InputSchema = {
   ...FilterSchema,
   as_markdown: z.boolean().default(true).describe('Return markdown (default) vs structured JSON'),
-  node_depth: z.number().int().min(0).max(10).default(0).describe('Figma /nodes depth for fallback name resolution - 0 = name only (fast)'),
+  node_depth: z.number().int().min(0).max(10).default(0).describe('Legacy option, accepted but ignored. Anchor metadata uses depth 1; descendant filtering has its own bounded traversal.'),
   limit: z.number().int().min(1).max(200).default(50).describe('Max threads returned'),
   offset: z.number().int().min(0).default(0).describe('Skip first N matching threads (pagination)'),
-  timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-call Figma request timeout in ms (default 90000). Raise toward the 120000 max for very large files if you still hit timeouts.'),
+  timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-request Figma timeout in ms (default 90000), additionally bounded by the server whole-tool deadline. Raising this does not extend that deadline.'),
 };
 
 export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
     'get_comments',
     {
-      description: 'Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. Anchors resolve to node names/pages. Use summarize_comments first on large files.',
+      description: 'Fetch review comments as threads with client-side filters and pagination. Figma returns all file comments before filtering. Anchor names/pages are best-effort; coverage.filter.complete=false means counts are lower bounds and empty results do not prove absence. coverage.enrichment reports unresolved labels separately. next_offset paginates definite matches only, not unresolved candidates. Use summarize_comments for aggregate statistics.',
       inputSchema: InputSchema,
       // Advisory metadata only. MCP clients are instructed to treat annotations as untrusted, and
       // nothing in this server reads them - the only writability enforcement here is
@@ -105,7 +105,9 @@ export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void
     },
     async (args) =>
       runTool('get_comments', deps.logger, args.figma_token ?? deps.defaultToken, async (token) => {
-        const r = await getCommentsUseCase(deps.buildApi(token, args.timeout_ms), deps.logger, {
+        const deadlineAt = Date.now() + (deps.toolTimeBudgetMs ?? 90000);
+        const r = await getCommentsUseCase(deps.buildApi(token, args.timeout_ms, deadlineAt), deps.logger, {
+          deadlineAt,
           file: args.file,
           criteria: toCriteria(args),
           as_markdown: args.as_markdown,
@@ -126,12 +128,14 @@ export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void
         const conservativeSize = (threads: Thread[]): number => (args.as_markdown
           ? [
               `(${r.page.length} of ${r.total_matching} matching threads, next_offset=${r.total_matching})`,
+              `Coverage: ${serializeForDelivery(r.coverage)}`,
               ...conservativeWarnings.map((w) => `⚠ [${w.code}] ${w.message}`),
             ].join('\n') + '\n\n' + formatMarkdown(threads)
           : serializeForDelivery({
               total_matching: r.total_matching,
               returned: threads.length,
               next_offset: r.total_matching,
+              coverage: r.coverage,
               warnings: conservativeWarnings,
               threads,
             })).length;
@@ -145,15 +149,20 @@ export function registerGetCommentsTool(server: McpServer, deps: ToolDeps): void
             budget,
             clamped,
           });
+          const countLabel = r.coverage.filter.complete
+            ? `${threads.length} of ${r.total_matching} matching threads`
+            : `${threads.length} of ${r.total_matching} definite matches; ${r.coverage.filter.unresolved_threads} unresolved`;
           return args.as_markdown
             ? [
-                `(${threads.length} of ${r.total_matching} matching threads${next_offset !== null ? `, next_offset=${next_offset}` : ''})`,
+                `(${countLabel}${next_offset !== null ? `, next_offset=${next_offset}` : ''})`,
+                `Coverage: ${serializeForDelivery(r.coverage)}`,
                 ...warnings.map((w) => `⚠ [${w.code}] ${w.message}`),
               ].join('\n') + '\n\n' + formatMarkdown(threads)
             : serializeForDelivery({
                 total_matching: r.total_matching,
                 returned: threads.length,
                 next_offset,
+                coverage: r.coverage,
                 warnings,
                 threads,
               });

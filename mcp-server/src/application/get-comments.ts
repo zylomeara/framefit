@@ -2,9 +2,9 @@ import type { Logger } from '../infrastructure/logger.js';
 import type { FigmaApi } from '../ports/figma-api.js';
 import { parseFileKey } from '../domain/parse-file-key.js';
 import { groupThreads } from '../domain/group-threads.js';
-import { applyFilters } from '../domain/filters.js';
+import { applyPureFilters } from '../domain/filters.js';
 import { resolveAnchors } from './resolve-anchors.js';
-import type { Thread, FilterCriteria } from '../domain/types.js';
+import type { Thread, FilterCriteria, CommentsCoverage } from '../domain/types.js';
 
 export type GetCommentsInput = {
   file: string;
@@ -13,6 +13,7 @@ export type GetCommentsInput = {
   node_depth: number;
   limit: number;
   offset: number;
+  deadlineAt?: number;
 };
 
 export type Warning = { code: string; message: string };
@@ -24,6 +25,7 @@ export type GetCommentsResult = {
   page: Thread[];
   total_matching: number;
   offset: number;
+  coverage: CommentsCoverage;
 };
 
 export function computeWarnings(a: {
@@ -77,22 +79,23 @@ export async function getCommentsUseCase(
 
   const raw = await api.getComments(fileKey);
   const grouped = groupThreads(raw);
-
-  const { threads: enriched, structure } = await resolveAnchors(api, fileKey, grouped, {
+  const prefiltered = applyPureFilters(grouped, input.criteria);
+  const resolved = await resolveAnchors(api, fileKey, prefiltered, {
+    node_id: input.criteria.node_id,
     include_descendants: input.criteria.include_descendants,
     node_type: input.criteria.node_type,
     node_depth: input.node_depth,
-  });
+    deadlineAt: input.deadlineAt,
+  }, (threads) => threads.slice(input.offset, input.offset + input.limit));
 
-  const filtered = applyFilters(enriched, input.criteria, structure);
-  const page = filtered.slice(input.offset, input.offset + input.limit);
+  const page = resolved.threads.slice(input.offset, input.offset + input.limit);
 
   logger.info(
-    { tool: 'get_comments', total_matching: filtered.length, returned: page.length },
+    { tool: 'get_comments', total_matching: resolved.threads.length, returned: page.length },
     'use_case.done',
   );
 
   // No clamp here: the tool layer measures the DELIVERED serialization (per-branch: plain-text
   // markdown vs the JSON envelope through serializeForDelivery) and computes warnings.
-  return { page, total_matching: filtered.length, offset: input.offset };
+  return { page, total_matching: resolved.threads.length, offset: input.offset, coverage: resolved.coverage };
 }

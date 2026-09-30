@@ -105,7 +105,7 @@
     }
   },
   "find_threads": {
-    "description": "Search a Figma file's comment threads by text, ranked by relevance, with optional fuzzy matching and the full filter set. Returns scored matches with highlights - use to locate specific discussions in large files.",
+    "description": "Search a Figma file's comment threads by text, ranked by relevance, with optional fuzzy matching and the shared client-side filters. Returns scored matches with highlights. coverage.filter.complete=false means unclassified candidates remain; an empty result does not prove absence and the ranking covers definite matches only. Anchor labels are best-effort, reported separately in coverage.enrichment.",
     "inputSchemaKeys": [
       "author_handle",
       "author_id",
@@ -127,7 +127,7 @@
       "timeout_ms",
       "until"
     ],
-    "digest": "fcabfc7b2e121a5045bde9623bb9a7e33721c60ed91935efe435d21f08d9bed3",
+    "digest": "6ee69ff92dd47bb6713409522388f5010bbfd8798c65d515ef6db4e1a2a9cf7d",
     "annotations": {
       "readOnlyHint": true
     }
@@ -145,7 +145,7 @@
     }
   },
   "get_comments": {
-    "description": "Fetch review comments from a Figma file as threads, with rich filtering (author, message, dates, node, mentions) and pagination. Anchors resolve to node names/pages. Use summarize_comments first on large files.",
+    "description": "Fetch review comments as threads with client-side filters and pagination. Figma returns all file comments before filtering. Anchor names/pages are best-effort; coverage.filter.complete=false means counts are lower bounds and empty results do not prove absence. coverage.enrichment reports unresolved labels separately. next_offset paginates definite matches only, not unresolved candidates. Use summarize_comments for aggregate statistics.",
     "inputSchemaKeys": [
       "as_markdown",
       "author_handle",
@@ -167,7 +167,7 @@
       "timeout_ms",
       "until"
     ],
-    "digest": "9bc25933eadccc8c9f8766ce7b04444bf2bff1fa083d159b040f7e017c199c6b",
+    "digest": "cb4d005f72e8225d0a4903c2279b9cbb4befab114cd24d48b64e44d1d584941e",
     "annotations": {
       "readOnlyHint": true
     }
@@ -416,7 +416,7 @@
     }
   },
   "summarize_comments": {
-    "description": "Aggregate statistics for a Figma file's comments (counts by author/anchor/node/date, top threads, mentions) using the same filters as get_comments. Returns a compact ~1-2KB summary - use this first to scope large files before fetching full threads.",
+    "description": "Aggregate statistics for a Figma file's comments (counts by author/anchor/node/date, top threads, mentions) using the same client-side filters as get_comments. top_n limits displayed lists, not the counted population. coverage.filter.complete=false means counts are lower bounds over definite matches, not a complete census. Names/pages are best-effort and their availability is reported separately in coverage.enrichment.",
     "inputSchemaKeys": [
       "author_handle",
       "author_id",
@@ -436,7 +436,7 @@
       "top_n",
       "until"
     ],
-    "digest": "cbbf3cb7086046be21f289f8322bee225d7726f2379473a1787abe6d1ee5b25c",
+    "digest": "88283f2d03a273049427f2696c6eb1f7144afb00c3754cff74531902c8b24aea",
     "annotations": {
       "readOnlyHint": true
     }
