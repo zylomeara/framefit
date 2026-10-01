@@ -131,6 +131,10 @@ export class CachingFigmaApiAdapter implements FigmaApi {
     return res;
   }
 
+  getDocumentByIdsRaw(fileKey: string, ids: string[], depth: number, version?: string): Promise<RawFileResponse> {
+    return this.inner.getDocumentByIdsRaw(fileKey, ids, depth, version);
+  }
+
   getImages(fileKey: string, ids: string[], opts: ImageOptions): Promise<ImagesResult> {
     return this.inner.getImages(fileKey, ids, opts);
   }
@@ -144,10 +148,10 @@ export class CachingFigmaApiAdapter implements FigmaApi {
     return v;
   }
 
-  async getNodesRaw(fileKey: string, ids: string[], depth = 4): Promise<RawNodesResponse> {
-    if (!this.read || ids.length === 0) return this.inner.getNodesRaw(fileKey, ids, depth);
-    const { version } = await this.getFileVersion(fileKey);
-    const key = `${fileKey}|${version}|${[...ids].sort().join(',')}|${depth}`;
+  async getNodesRaw(fileKey: string, ids: string[], depth = 4, version?: string): Promise<RawNodesResponse> {
+    if (version !== undefined || !this.read || ids.length === 0) return this.inner.getNodesRaw(fileKey, ids, depth, version);
+    const { version: currentVersion } = await this.getFileVersion(fileKey);
+    const key = `${fileKey}|${currentVersion}|${[...ids].sort().join(',')}|${depth}`;
     const cached = this.read.nodeCache.get(key);
     if (cached) {
       this.logger.info({ file_key_prefix: fileKey.slice(0, 8) }, 'cache.hit_nodes');

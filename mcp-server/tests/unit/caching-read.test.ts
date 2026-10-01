@@ -50,6 +50,21 @@ describe('CachingFigmaApiAdapter read caching', () => {
     expect(getNodesRaw).toHaveBeenCalledTimes(1);
   });
 
+  it('versioned getNodesRaw bypasses warm latest-version caches', async () => {
+    const getNodesRaw = vi.fn(async () => ({ nodes: {} }));
+    const getFileVersion = vi.fn(async () => ({ version: 'latest', name: 'F', lastModified: 'X' }));
+    const c = build(fakeApi({ getNodesRaw, getFileVersion }));
+
+    await c.getNodesRaw('fixture', ['1:3'], 2);
+    await c.getNodesRaw('fixture', ['1:3'], 2);
+    await c.getNodesRaw('fixture', ['1:3'], 2, 'pinned');
+    await c.getNodesRaw('fixture', ['1:3'], 2, 'pinned');
+
+    expect(getNodesRaw).toHaveBeenCalledTimes(3);
+    expect(getNodesRaw.mock.calls[1]).toEqual(['fixture', ['1:3'], 2, 'pinned']);
+    expect(getFileVersion).toHaveBeenCalledTimes(1);
+  });
+
   it('new version busts the node cache', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: {} }));
     let v = 'v1';
@@ -69,6 +84,23 @@ describe('CachingFigmaApiAdapter read caching', () => {
     await c.getDocumentRaw('abc', 4);
     await c.getDocumentRaw('abc', 4);
     expect(getDocumentRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes fresh document projections through without probing or replacing the whole-document cache', async () => {
+    const getDocumentRaw = vi.fn(async () => ({ name: 'Whole', lastModified: 'X', version: 'latest', document: { id: '0:0', name: 'Whole document', type: 'DOCUMENT' } }));
+    const getDocumentByIdsRaw = vi.fn(async () => ({ name: 'Projection', lastModified: 'X', version: 'pinned', document: { id: '0:0', name: 'Projection document', type: 'DOCUMENT' } }));
+    const getFileVersion = vi.fn(async () => ({ version: 'latest', name: 'Whole', lastModified: 'X' }));
+    const c = build(fakeApi({ getDocumentRaw, getDocumentByIdsRaw, getFileVersion }));
+
+    await c.getDocumentRaw('fixture', 3);
+    await c.getDocumentByIdsRaw('fixture', ['1:3'], 3, 'pinned');
+    await c.getDocumentByIdsRaw('fixture', ['1:3'], 3, 'pinned');
+    const whole = await c.getDocumentRaw('fixture', 3);
+
+    expect(whole.name).toBe('Whole');
+    expect(getDocumentRaw).toHaveBeenCalledTimes(1);
+    expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(2);
+    expect(getFileVersion).toHaveBeenCalledTimes(1);
   });
 
   it('caches getFileComponentSets by fileKey; same key → one upstream call', async () => {

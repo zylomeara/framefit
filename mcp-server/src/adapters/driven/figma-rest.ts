@@ -111,11 +111,19 @@ export class FigmaRestAdapter implements FigmaApi {
     return this.runHeavy(() => this.request<RawFileResponse>(url));
   }
 
-  async getNodesRaw(fileKey: string, ids: string[], depth = 4): Promise<RawNodesResponse> {
+  async getDocumentByIdsRaw(fileKey: string, ids: string[], depth: number, version?: string): Promise<RawFileResponse> {
+    if (ids.length === 0) throw new Error('ids must not be empty');
+    const url =
+      `${BASE_URL}/files/${encodeURIComponent(fileKey)}` +
+      `?ids=${encodeURIComponent(this.canonicalIds(ids))}&depth=${depth}${this.versionParam(version)}`;
+    return this.runHeavy(() => this.request<RawFileResponse>(url));
+  }
+
+  async getNodesRaw(fileKey: string, ids: string[], depth = 4, version?: string): Promise<RawNodesResponse> {
     if (ids.length === 0) return { nodes: {} };
     const url =
       `${BASE_URL}/files/${encodeURIComponent(fileKey)}/nodes` +
-      `?ids=${encodeURIComponent(ids.join(','))}&depth=${depth}`;
+      `?ids=${encodeURIComponent(this.canonicalIds(ids))}&depth=${depth}${this.versionParam(version)}`;
     return this.runHeavy(() => this.request<RawNodesResponse>(url));
   }
 
@@ -295,6 +303,14 @@ export class FigmaRestAdapter implements FigmaApi {
   // queue behind a 100MB whole-file fetch.
   private runHeavy<T>(fn: () => Promise<T>): Promise<T> {
     return this.semaphore ? this.semaphore.run(fn) : fn();
+  }
+
+  private canonicalIds(ids: string[]): string {
+    return [...new Set(ids)].sort().join(',');
+  }
+
+  private versionParam(version: string | undefined): string {
+    return version === undefined ? '' : `&version=${encodeURIComponent(version)}`;
   }
 
   // Streaming read bounded by maxFetchBytes. A single whole-file response can be ~110MB; res.text()

@@ -86,7 +86,7 @@ export type ToolDeps = {
 const InputSchema = {
   ...FilterSchema,
   as_markdown: z.boolean().default(true).describe('Return markdown (default) vs structured JSON'),
-  node_depth: z.number().int().min(0).max(10).default(0).describe('Legacy option, accepted but ignored. Anchor metadata uses depth 1; descendant filtering has its own bounded traversal.'),
+  node_depth: z.number().int().min(0).max(10).default(0).describe('Legacy option, accepted but ignored. Descendant filtering uses bounded ancestor lookups with internally selected depths.'),
   limit: z.number().int().min(1).max(200).default(50).describe('Max threads returned'),
   offset: z.number().int().min(0).default(0).describe('Skip first N matching threads (pagination)'),
   timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-request Figma timeout in ms (default 90000), additionally bounded by the server whole-tool deadline. Raising this does not extend that deadline.'),

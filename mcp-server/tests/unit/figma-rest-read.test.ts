@@ -38,6 +38,35 @@ describe('FigmaRestAdapter read methods', () => {
     expect(res.nodes['3:4']).toBeNull();
   });
 
+  it('getNodesRaw canonicalizes ids and forwards a requested version', async () => {
+    stub((url) => {
+      expect(url).toContain('/files/fixture/nodes?ids=1%3A3%2C2%3A9&depth=5&version=revision');
+      return { body: { nodes: {} } };
+    });
+    await api().getNodesRaw('fixture', ['2:9', '1:3', '2:9'], 5, 'revision');
+  });
+
+  it('getDocumentByIdsRaw fetches the requested canonical projection', async () => {
+    stub((url) => {
+      expect(url).toContain('/files/fixture?ids=1%3A3%2C2%3A9&depth=5&version=revision');
+      return { body: { name: 'Fixture', lastModified: 'X', version: 'revision', document: { id: '0:0', name: 'Document', type: 'DOCUMENT' } } };
+    });
+    const res = await api().getDocumentByIdsRaw('fixture', ['2:9', '1:3', '2:9'], 5, 'revision');
+    expect(res.version).toBe('revision');
+  });
+
+  it('getDocumentByIdsRaw rejects empty ids before making a request', async () => {
+    const fn = stub(() => ({ body: {} }));
+    await expect(api().getDocumentByIdsRaw('fixture', [], 5)).rejects.toThrow('ids');
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('getDocumentByIdsRaw preserves shared Figma API errors', async () => {
+    stub(() => ({ status: 403, body: { err: 'Denied' } }));
+    await expect(api().getDocumentByIdsRaw('fixture', ['1:3'], 5, 'revision'))
+      .rejects.toMatchObject({ kind: 'forbidden', status: 403 });
+  });
+
   it('getNodesRaw returns empty map for empty ids without calling fetch', async () => {
     const fn = stub(() => ({ body: {} }));
     const res = await api().getNodesRaw('abc', [], 4);

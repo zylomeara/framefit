@@ -29,7 +29,7 @@ The two additive write tools ([`post_comment`](#post_comment),
 | `min_replies` | integer ≥ 0 | Only threads with at least N replies |
 | `min_reactions` | integer ≥ 0 | Only threads whose root has at least N reactions |
 | `has_mentions` | boolean | Only threads with @-mentions in root or any reply |
-| `node_depth` | integer 0–10 (default 0) | Legacy option, accepted but ignored. Anchor metadata uses depth 1; descendant filtering has its own bounded traversal. |
+| `node_depth` | integer 0–10 (default 0) | Legacy option, accepted but ignored. Descendant filtering uses bounded ancestor lookups with internally selected depths. |
 | `timeout_ms` | integer 1000–120000 | Per-request Figma timeout in ms (default 90000), also bounded by the server whole-tool deadline. Raising this does not extend that deadline. |
 | `figma_token` | string | Override Figma PAT; falls back to `FIGMA_TOKEN` env |
 
@@ -39,10 +39,23 @@ Figma's comments endpoint returns the file's comments before any filters are app
 date, `limit` and `offset` filters are client-side, not upstream pagination. A source-read error
 remains an error, never a successful empty result.
 
-Metadata is fetched separately with bounded depth-1 `/nodes` requests. Pure filters run first;
-structural filters run before pagination or ranking limits. Names/pages are best-effort: a
-metadata failure does not discard comments already read. Page names are available when the
-requested descendant scope is a CANVAS; other anchors may retain an empty page name.
+Pure filters run first; structural filters run before pagination or ranking limits. Descendant
+filtering requests ancestor paths for candidate anchors rather than walking the entire scope.
+The first document response establishes a version; subsequent structural reads use that version.
+A target's explicit path proves whether it is within the scope. Omission from a depth-limited
+response does not prove absence: a same-version `/nodes` lookup must explicitly return `null`
+to establish that the anchor is absent from that document version. An omitted key or failed lookup
+remains unresolved. When candidates require ancestry checks, the scope itself must also be verified.
+If pure filters already leave no candidates, no metadata is needed to prove an empty result.
+
+Absent anchors have no descendant membership in the inspected document version. This does not
+identify their former location or mean their comments were deleted; comments remain available
+without the descendant filter. Exact-node filtering still compares the stored anchor ID. Figma
+does not offer versioned comments, so the comment read and document read are not an atomic snapshot.
+
+Names/pages are best-effort: a metadata failure does not discard comments already read. Ancestor
+paths can supply page names; anchors resolved only through direct node metadata may retain an
+empty page name.
 
 All three tools return `coverage` (also printed in Markdown by `get_comments`):
 
@@ -53,8 +66,8 @@ All three tools return `coverage` (also printed in Markdown by `get_comments`):
   do not make otherwise complete thread counts partial. Unresolved IDs are listed up to a cap,
   with `unresolved_node_ids_total` preserving the full count.
 - Stopped metadata work carries a reason and, for Figma errors, the error kind/status and any
-  `retry_after_sec`. Respect rate limits; narrowing a descendant scope can reduce tree work.
-  Increasing `node_depth` does not extend traversal.
+  `retry_after_sec`. Respect rate limits; narrower author, date or text filters can reduce the
+  candidate anchors needing classification. Increasing `node_depth` does not extend lookup budgets.
 
 Metadata work shares a whole-tool deadline, a 16-call ceiling and a 10,000-node ceiling. It
 includes hidden nodes when checking descendant membership and never uses geometry as proof
