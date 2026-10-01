@@ -134,6 +134,7 @@ export interface ComponentRefMeta { key: string; name?: string; remote?: boolean
 export interface RawStyleMeta { name: string; styleType: string }
 
 export interface RawNodesResponse {
+  version?: string;
   nodes: Record<string, { document: RawSceneNode; components?: Record<string, ComponentRefMeta>; componentSets?: Record<string, ComponentRefMeta>; styles?: Record<string, RawStyleMeta> } | null>;
 }
 

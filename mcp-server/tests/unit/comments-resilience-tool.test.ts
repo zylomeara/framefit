@@ -61,8 +61,16 @@ describe('comment tools metadata failures', () => {
     } else {
       expect(out.total).toBe(3);
     }
-    expect(h.urls.map((u) => u.pathname)).toEqual(['/v1/files/SampleFile/comments', '/v1/files/SampleFile/nodes']);
-    expect(h.urls[1].searchParams.get('depth')).toBe('1');
+    expect(h.urls[0].pathname).toBe('/v1/files/SampleFile/comments');
+    const metadata = h.urls.slice(1);
+    expect(metadata.every((u) => u.pathname === '/v1/files/SampleFile/nodes' && u.searchParams.get('depth') === '1')).toBe(true);
+    const batches = metadata.map((u) => u.searchParams.get('ids')!.split(','));
+    expect(batches[0]).toEqual(['7:1', '7:2', '7:3']);
+    expect(batches.at(-1)).toHaveLength(1);
+    for (let i = 1; i < batches.length; i++) {
+      expect(batches[i].length).toBeLessThan(batches[i - 1].length);
+      expect(batches[i].every((id) => batches[i - 1].includes(id))).toBe(true);
+    }
   });
 
   it.each(tools)('%s keeps source-read failure distinct from an empty result', async (tool) => {

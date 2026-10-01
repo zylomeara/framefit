@@ -3,7 +3,7 @@ import { resolveAnchors } from '../../src/application/resolve-anchors.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { CommentInThread, Thread } from '../../src/domain/types.js';
-import type { RawSceneNode } from '../../src/domain/figma-raw.js';
+import type { RawFileResponse, RawSceneNode } from '../../src/domain/figma-raw.js';
 
 function comment(): CommentInThread {
   return { id: 'comment', author: { id: 'author', handle: 'writer' }, created_at: '2026-01-01T00:00:00Z', message: 'synthetic', mentions: [], reactions_count: 0 };
@@ -14,30 +14,69 @@ function nodeThread(id: string, nodeId: string): Thread {
 function raw(id: string, type: string, children?: RawSceneNode[]): RawSceneNode {
   return { id, name: `name-${id}`, type, ...(children === undefined ? {} : { children }) };
 }
+function document(...pages: RawSceneNode[]): RawSceneNode {
+  return raw('document', 'DOCUMENT', pages);
+}
 
 class NodeApi {
-  calls: string[][] = [];
+  nodeCalls: { ids: string[]; depth: number; version?: string }[] = [];
+  fileCalls: { ids: string[]; depth: number; version?: string }[] = [];
+
   constructor(
     private readonly nodes: Record<string, RawSceneNode>,
-    private readonly failure?: Error,
+    private readonly options: {
+      projection?: RawSceneNode;
+      omittedKeys?: Set<string>;
+      nodeFailure?: Error;
+      fileFailure?: Error;
+    } = {},
   ) {}
-  async getNodesRaw(_fileKey: string, ids: string[]): Promise<{ nodes: Record<string, { document: RawSceneNode } | null> }> {
-    this.calls.push(ids);
-    if (this.failure) throw this.failure;
-    return { nodes: Object.fromEntries(ids.map((id) => [id, this.nodes[id] ? { document: this.nodes[id] } : null])) };
+
+  async getDocumentByIdsRaw(_fileKey: string, ids: string[], depth: number, version?: string): Promise<RawFileResponse> {
+    this.fileCalls.push({ ids: [...ids], depth, ...(version === undefined ? {} : { version }) });
+    if (this.options.fileFailure) throw this.options.fileFailure;
+    return {
+      name: 'Synthetic file',
+      lastModified: '2026-01-01T00:00:00Z',
+      version: 'version-one',
+      document: this.options.projection ?? document(),
+    };
   }
-  async getFileStructure(): Promise<never> { throw new Error('whole-file metadata must not be fetched'); }
+
+  async getNodesRaw(_fileKey: string, ids: string[], depth = 4, version?: string): Promise<{ version?: string; nodes: Record<string, { document: RawSceneNode } | null> }> {
+    this.nodeCalls.push({ ids: [...ids], depth, ...(version === undefined ? {} : { version }) });
+    if (this.options.nodeFailure) throw this.options.nodeFailure;
+    const entries = ids.flatMap((id) => this.options.omittedKeys?.has(id)
+      ? []
+      : [[id, this.nodes[id] ? { document: this.nodes[id] } : null] as const]);
+    return { ...(version === undefined ? {} : { version: 'version-one' }), nodes: Object.fromEntries(entries) };
+  }
 }
 
 const noFilter = { include_descendants: false, node_depth: 0 };
 
 describe('resolveAnchors', () => {
-  it('resolves hidden nested descendants through depth-one batches', async () => {
+  it('uses a canvas name as its page name for exact and type metadata reads', async () => {
+    const page = raw('page', 'CANVAS');
+
+    for (const opts of [
+      { node_id: 'page', include_descendants: false, node_depth: 0 },
+      { ...noFilter, node_type: 'CANVAS' },
+    ]) {
+      const api = new NodeApi({ page });
+      const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('thread', 'page')], opts);
+
+      expect(out.threads[0].anchor).toMatchObject({ node_name: 'name-page', page_name: 'name-page' });
+      expect(out.coverage.enrichment).toMatchObject({ complete: true, resolved_page_names: 1 });
+    }
+  });
+
+  it('resolves a hidden nested descendant from a candidate-only document projection', async () => {
     const target = raw('target', 'RECTANGLE');
     target.visible = false;
     const nested = raw('nested', 'FRAME', [target]);
     const page = raw('page', 'CANVAS', [nested]);
-    const api = new NodeApi({ page, nested, target });
+    const api = new NodeApi({}, { projection: document(page) });
 
     const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('thread', 'target')], {
       node_id: 'page', include_descendants: true, node_depth: 0,
@@ -47,88 +86,58 @@ describe('resolveAnchors', () => {
     expect(out.threads[0].anchor).toMatchObject({ node_name: 'name-target', page_name: 'name-page' });
     expect(out.coverage.filter).toMatchObject({ complete: true, count_semantics: 'exact' });
     expect(out.coverage.enrichment.complete).toBe(true);
-    expect(api.calls).toEqual([['page'], ['nested']]);
+    expect(api.fileCalls).toEqual([{ ids: ['target'], depth: 3 }]);
+    expect(api.nodeCalls).toEqual([]);
   });
 
-  it('reports an unknown branch rather than claiming a negative descendant match', async () => {
-    const mystery = raw('mystery', 'UNFAMILIAR');
-    const api = new NodeApi({ page: raw('page', 'FRAME', [mystery]), mystery });
+  it('reports an omitted candidate as unknown when the pinned node response lacks its key', async () => {
+    const page = raw('page', 'CANVAS');
+    const api = new NodeApi({ page }, { projection: document(), omittedKeys: new Set(['unseen']) });
     const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('thread', 'unseen')], {
       node_id: 'page', include_descendants: true, node_depth: 0,
     });
 
     expect(out.threads).toEqual([]);
-    expect(out.coverage.filter).toMatchObject({ complete: false, unresolved_threads: 1, count_semantics: 'lower_bound', stop_reason: 'unknown_scope' });
+    expect(out.coverage.filter).toMatchObject({ complete: false, unresolved_threads: 1, count_semantics: 'lower_bound' });
+    expect(api.nodeCalls).toEqual([{ ids: ['unseen', 'page'], depth: 1, version: 'version-one' }]);
   });
 
-  it('proves a negative descendant match only after an exhausted subtree', async () => {
-    const api = new NodeApi({ page: raw('page', 'FRAME', []) });
+  it('proves a negative descendant match from an own null at the pinned version', async () => {
+    const page = raw('page', 'CANVAS');
+    const api = new NodeApi({ page }, { projection: document() });
     const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('thread', 'outside')], {
       node_id: 'page', include_descendants: true, node_depth: 0,
     });
 
     expect(out.threads).toEqual([]);
     expect(out.coverage.filter).toMatchObject({ complete: true, unresolved_threads: 0, count_semantics: 'exact' });
+    expect(api.nodeCalls).toEqual([{ ids: ['outside', 'page'], depth: 1, version: 'version-one' }]);
   });
 
-  it('treats a missing scope root as unresolved', async () => {
-    const api = new NodeApi({});
+  it('treats an absent scope root as unresolved', async () => {
+    const outside = raw('outside', 'RECTANGLE');
+    const api = new NodeApi({}, { projection: document(raw('page', 'CANVAS', [outside])) });
     const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('thread', 'outside')], {
       node_id: 'missing-root', include_descendants: true, node_depth: 0,
     });
 
     expect(out.threads).toEqual([]);
     expect(out.coverage.filter).toMatchObject({ complete: false, unresolved_threads: 1, stop_reason: 'scope_root_missing' });
+    expect(api.nodeCalls).toEqual([{ ids: ['missing-root'], depth: 1, version: 'version-one' }]);
   });
 
-  it('stops a scope walk once every candidate anchor is found', async () => {
+  it('projects all distinct candidate anchors in one bounded request', async () => {
     const first = raw('first', 'RECTANGLE');
     const second = raw('second', 'ELLIPSE');
-    const api = new NodeApi({ page: raw('page', 'CANVAS', [first, second]), first, second });
+    const page = raw('page', 'CANVAS', [first, second]);
+    const api = new NodeApi({}, { projection: document(page) });
     const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('one', 'first'), nodeThread('two', 'second')], {
       node_id: 'page', include_descendants: true, node_depth: 0,
     });
 
     expect(out.threads.map((thread) => thread.id)).toEqual(['one', 'two']);
-    expect(api.calls).toEqual([['page']]);
-  });
-
-  it('marks a descendant beyond the index cap as unresolved', async () => {
-    const children = Array.from({ length: 10_001 }, (_, index) => raw(`child-${index}`, 'RECTANGLE'));
-    let lateFieldReads = 0;
-    Object.defineProperties(children.at(-1)!, {
-      name: { get: () => { lateFieldReads++; return 'late'; } },
-      type: { get: () => { lateFieldReads++; return 'RECTANGLE'; } },
-    });
-    const api = new NodeApi({ page: raw('page', 'CANVAS', children) });
-
-    const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('thread', 'child-10000')], {
-      node_id: 'page', include_descendants: true, node_depth: 0,
-    });
-
-    expect(out.threads).toEqual([]);
-    expect(out.coverage.filter).toMatchObject({
-      complete: false,
-      unresolved_threads: 1,
-      count_semantics: 'lower_bound',
-      stop_reason: 'node_visit_cap',
-    });
-    expect(lateFieldReads).toBe(0);
-    expect(api.calls).toEqual([['page']]);
-  });
-
-  it('keeps indexed positive descendants when the child list reaches the cap', async () => {
-    const children = Array.from({ length: 10_001 }, (_, index) => raw(`child-${index}`, 'RECTANGLE'));
-    const api = new NodeApi({ page: raw('page', 'CANVAS', children) });
-
-    const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('thread', 'child-0')], {
-      node_id: 'page', include_descendants: true, node_depth: 0,
-    });
-
-    expect(out.threads.map((thread) => thread.id)).toEqual(['thread']);
-    expect(out.coverage.filter).toMatchObject({ complete: true, count_semantics: 'exact' });
-    expect(out.coverage.enrichment).toMatchObject({ complete: true, stop_reason: 'node_visit_cap' });
-    expect(api.calls).toEqual([['page']]);
+    expect(api.fileCalls).toEqual([{ ids: ['first', 'second'], depth: 3 }]);
+    expect(api.nodeCalls).toEqual([]);
   });
 
   it('batches direct type checks by at most fifty anchors', async () => {
@@ -139,8 +148,9 @@ describe('resolveAnchors', () => {
     });
 
     expect(out.threads).toHaveLength(51);
-    expect(api.calls).toHaveLength(2);
-    expect(api.calls.every((batch) => batch.length <= 50)).toBe(true);
+    expect(api.nodeCalls).toHaveLength(2);
+    expect(api.nodeCalls.every((call) => call.ids.length <= 50)).toBe(true);
+    expect(api.fileCalls).toEqual([]);
   });
 
   it('stops metadata work at an expired deadline', async () => {
@@ -149,17 +159,18 @@ describe('resolveAnchors', () => {
       node_id: 'page', include_descendants: true, node_depth: 0, deadlineAt: Date.now() - 1,
     });
 
-    expect(api.calls).toEqual([]);
+    expect(api.fileCalls).toEqual([]);
+    expect(api.nodeCalls).toEqual([]);
     expect(out.coverage.filter).toMatchObject({ complete: false, stop_reason: 'deadline', count_semantics: 'lower_bound' });
   });
 
   it('stops after the first Figma metadata error and preserves its diagnosis', async () => {
-    const api = new NodeApi({}, new FigmaApiError('rate_limited', 429, 'later', 7));
+    const api = new NodeApi({}, { nodeFailure: new FigmaApiError('rate_limited', 429, 'later', 7) });
     const out = await resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('one', 'one'), nodeThread('two', 'two')], {
       ...noFilter, node_type: 'RECTANGLE',
     });
 
-    expect(api.calls).toHaveLength(1);
+    expect(api.nodeCalls).toHaveLength(1);
     expect(out.coverage.filter).toMatchObject({ complete: false, error: { kind: 'rate_limited', status: 429, retry_after_sec: 7 } });
   });
 
@@ -170,13 +181,13 @@ describe('resolveAnchors', () => {
       ...noFilter, node_type: 'RECTANGLE',
     });
 
-    expect(api.calls).toHaveLength(16);
+    expect(api.nodeCalls).toHaveLength(16);
     expect(out.coverage.filter).toMatchObject({ complete: false, count_semantics: 'lower_bound', stop_reason: 'metadata_call_cap' });
     expect(out.threads).toHaveLength(800);
   });
 
   it('propagates programming errors from metadata reads', async () => {
-    const api = new NodeApi({}, new Error('programming fault'));
+    const api = new NodeApi({}, { nodeFailure: new Error('programming fault') });
     await expect(resolveAnchors(api as unknown as FigmaApi, 'synthetic', [nodeThread('thread', 'target')], {
       ...noFilter, node_type: 'RECTANGLE',
     })).rejects.toThrow('programming fault');

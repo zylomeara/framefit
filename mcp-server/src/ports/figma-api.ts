@@ -43,8 +43,11 @@ export interface FigmaApi {
   /** GET /v1/files/:key?depth=N — full document with version/lastModified. Tier 1. */
   getDocumentRaw(fileKey: string, depth?: number): Promise<RawFileResponse>;
 
+  /** GET /v1/files/:key?ids=…&depth=N — fresh projection of specific ids, optionally at a version. */
+  getDocumentByIdsRaw(fileKey: string, ids: string[], depth: number, version?: string): Promise<RawFileResponse>;
+
   /** GET /v1/files/:key/nodes?ids=…&depth=N — raw subtree per id. Tier 1. */
-  getNodesRaw(fileKey: string, ids: string[], depth?: number): Promise<RawNodesResponse>;
+  getNodesRaw(fileKey: string, ids: string[], depth?: number, version?: string): Promise<RawNodesResponse>;
 
   /** Frame-hydration fetch: holds the DEEPEST raw per frame id-set, re-slices ≤ heldDepth for
    *  free. `requestedMaxDepth` is the caller's max_depth (NOT the fetch depth); the adapter

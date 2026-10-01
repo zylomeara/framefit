@@ -13,7 +13,7 @@ const InputSchema = {
     .default(false)
     .describe('Typo-tolerant fuzzy matching. Default false uses fast exact substring. For word-form variants search by the common stem (e.g. "updat" matches update/updated/updating); enable fuzzy for typos.'),
   limit: z.number().int().min(1).max(50).default(10).describe('Max matches returned'),
-  node_depth: z.number().int().min(0).max(10).default(0).describe('Legacy option, accepted but ignored. Anchor metadata uses depth 1; descendant filtering has its own bounded traversal.'),
+  node_depth: z.number().int().min(0).max(10).default(0).describe('Legacy option, accepted but ignored. Descendant filtering uses bounded ancestor lookups with internally selected depths.'),
   timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-request Figma timeout in ms (default 90000), additionally bounded by the server whole-tool deadline. Raising this does not extend that deadline.'),
 };
 

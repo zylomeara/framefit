@@ -7,7 +7,7 @@ import { runTool, jsonResult } from './shared-error-handler.js';
 
 const InputSchema = {
   ...FilterSchema,
-  node_depth: z.number().int().min(0).max(10).default(0).describe('Legacy option, accepted but ignored. Anchor metadata uses depth 1; descendant filtering has its own bounded traversal.'),
+  node_depth: z.number().int().min(0).max(10).default(0).describe('Legacy option, accepted but ignored. Descendant filtering uses bounded ancestor lookups with internally selected depths.'),
   top_n: z.number().int().min(1).max(50).default(10).describe('How many entries in by_top_nodes and top_threads_by_replies'),
   timeout_ms: z.number().int().min(1000).max(120000).optional().describe('Per-request Figma timeout in ms (default 90000), additionally bounded by the server whole-tool deadline. Raising this does not extend that deadline.'),
 };

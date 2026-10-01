@@ -689,9 +689,10 @@ describe('the populations this freeze is written against', () => {
       'adapters/driving/tools/search-design-system-tool.ts': ['auth', 'rate_limited', 'forbidden', 'auth'],
       'application/find-component-instances.ts': ['auth', 'forbidden', 'rate_limited'],
       'application/node-ancestry.ts': ['auth', 'forbidden'],
+      'application/resolve-anchors.ts': ['too_large', 'unknown_4xx'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '57 branch sites across 16 files').toBe(57); // Comment source-size diagnostics preserve the producer kind.
+    expect(SITES.branches.length, '59 branch sites across 17 files').toBe(59); // Includes bounded comment projection recovery.
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "
