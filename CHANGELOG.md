@@ -3,6 +3,29 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.30.3
+
+Descendant-scoped comment filtering now checks candidate-anchor ancestry instead of traversing the
+requested subtree. This reduces the metadata work needed to classify threads while keeping
+unproven membership explicit.
+
+**Output compatibility.** Request fields and response shapes are unchanged. Reconnect to refresh
+comment-tool parameter descriptions. DOM snapshot schema v7 and the extractor are unchanged; this
+release does not require re-capture or a database migration.
+
+### Fixed
+
+- **Version-pinned scope evidence.** After the initial candidate projection establishes a document
+  version, later structural reads use that version. Comment reads themselves are not versioned or
+  atomic snapshots. Explicit missing-node responses remain distinct from unresolved membership;
+  counts stay lower bounds when candidates cannot be classified.
+- **Bounded metadata recovery.** Recognized oversized metadata responses can recover through batch
+  splitting or shallower candidate projections. Established matches survive independent metadata
+  failures, and deferred size errors no longer replace terminal Figma errors or deadline stops.
+- **Metadata validation.** Malformed node maps and projection entries remain unresolved rather than
+  crashing the tools. Ambiguous scope paths cannot establish new matches, and direct CANVAS reads
+  retain their known page name.
+
 ## 0.30.2
 
 Comment tools no longer require a depth-4 whole-file tree to resolve anchor labels.
