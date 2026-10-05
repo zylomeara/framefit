@@ -3,6 +3,56 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.30.4
+
+Color mode evidence now reaches nodes nested deeper than the old ancestor-discovery ceiling, and large
+files no longer spend the whole discovery budget reading entire documents. `compare_node_to_dom` and
+`get_design_context` read a node's ancestors from targeted, version-pinned projections and accept an
+ancestor mode only from a proven document path, so a missing or wrong path can no longer select a
+mode.
+
+**Output compatibility.** Request fields are unchanged. `compare_node_to_dom` responses can add
+`degraded_stages` entries with `stage` `ancestor_discovery`, one per `reason`, each listing its
+`affected_pairs` and adding a report line. `get_design_context` now also reports ancestor discovery
+that stopped for reasons other than time, as an `ancestor_discovery` stage with `reason` `error`;
+the new `detail` field carries the exact cause, such as `depth_cap` or `version_mismatch`. Reconnect
+to refresh the `compare_node_to_dom` description. DOM snapshot schema v7 and the extractor are
+unchanged; no re-capture or database migration is required.
+
+### Fixed
+
+- **Targeted ancestor discovery.** Ancestors come from projections of the requested nodes at depths
+  4, 8 and 16 from the document root, one request per depth for a whole compare batch, pinned to the
+  version of the node response, under a shared deadline and a 24 MiB per-response evidence budget.
+  There is no whole-document fallback. Nodes deeper than 16 levels stay unconfirmed (`depth_cap`).
+- **Proven ancestor paths only.** A chain counts only when it is the single document-to-page-to-node
+  path of the same file version, with exact node identity (an `I` prefix aside), no nested page or
+  document nodes and no repeated ids along the path. Ambiguous, malformed, mismatched or incomplete
+  evidence contributes no ancestor modes; it is reported, never treated as a confirmed default.
+- **Frame shortcut.** With `frame_node_id`, a same-version depth-2 document that proves the frame's
+  own path is used first, under the shared deadline. The geometry-guided probe descent is removed;
+  it could not prove that a path was unique.
+- **Response root identity.** Node roots returned by Figma are checked against the requested id
+  before use, instead of being combined with the requested node's ancestors when they belong to
+  another node. `compare_node_to_dom` reports such a pair as a `node` warning row and does not diff
+  it; `get_design_context` fails with a malformed scoped root error. Existing compatibility for
+  compound requests whose root carries only its terminal id is kept at this boundary only.
+- **Cached responses stay intact.** `get_design_context` depth pruning no longer edits cached node
+  responses, and the identity check copies only the response root rather than whole subtrees.
+
+### Changed
+
+- Version-pinned targeted projections are cached in the existing document cache (per user in
+  multi-tenant deployments), keyed by file, version, node ids and depth; responses with a missing or
+  different version are not stored. Projection reads without a version, such as the first
+  comment-scope projection, pass through uncached and add no version request; version-pinned
+  comment-scope projections can now be served from the same cache.
+- The `compare_node_to_dom` description and the variables report line no longer say that every
+  token row stays unresolved after a variables failure: library graph and snapshot fallbacks, where
+  the server has them, may still resolve some rows; the rest stay unresolved, and completeness
+  follows the delivered rows. A larger `get_variables` timeout only retries the local variables
+  index and does not supply ancestor mode evidence.
+
 ## 0.30.3
 
 Descendant-scoped comment filtering now checks candidate-anchor ancestry instead of traversing the
