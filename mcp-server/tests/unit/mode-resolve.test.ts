@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { collectSubtreeModes, collectSubtreeChains, effectiveMode, ancestorModes, buildModeByCollection, buildExactModeEvidence, buildGraphModeEvidence, modeIds, hasBoundPaintColor, ancestorChainFromSubtree, hasExternalBoundPaintColor, collectExternalPaintKeys, pickDescentCandidates, boxIntersects, sceneIdEquals } from '../../src/domain/mode-resolve.js';
+import { collectSubtreeModes, collectSubtreeChains, effectiveMode, ancestorModes, buildModeByCollection, buildExactModeEvidence, buildGraphModeEvidence, modeIds, hasBoundPaintColor, ancestorChainFromSubtree, documentaryAncestorChain, hasExternalBoundPaintColor, collectExternalPaintKeys, sceneIdEquals } from '../../src/domain/mode-resolve.js';
 import type { RawSceneNode } from '../../src/domain/figma-raw.js';
 
 const tree: RawSceneNode = {
@@ -211,6 +211,73 @@ describe('ancestorChainFromSubtree — the document chain', () => {
   });
 });
 
+describe('strict documentary ancestor extraction', () => {
+  const doc = (children: RawSceneNode[]): RawSceneNode => ({ id: '0:0', name: 'Document', type: 'DOCUMENT', children });
+  const page = (id: string, children: RawSceneNode[] = []): RawSceneNode => ({ id, name: id, type: 'CANVAS', children });
+
+  it('returns the unique root-to-parent chain and excludes the target', () => {
+    const target = plain('I4:4;8:8');
+    const result = documentaryAncestorChain(doc([page('0:1', [plain('2:2', [target])])]), '4:4;8:8');
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) expect(result.nodesRootToParent.map((node) => node.id)).toEqual(['0:0', '0:1', '2:2']);
+  });
+
+  it('does not match a plain terminal-id decoy for a compound target', () => {
+    const result = documentaryAncestorChain(doc([page('0:1', [plain('8:8')])]), '4:4;8:8');
+    expect(result).toEqual({ ok: false, reason: 'missing_target' });
+  });
+
+  it('rejects duplicate exact normalized target paths instead of choosing the first', () => {
+    const result = documentaryAncestorChain(doc([
+      page('0:1', [plain('I4:4;8:8')]),
+      page('0:2', [plain('4:4;8:8')]),
+    ]), 'I4:4;8:8');
+    expect(result).toEqual({ ok: false, reason: 'ambiguous_target' });
+  });
+
+  it('rejects DOCUMENT -> FRAME -> CANVAS linkage even though the path contains a page', () => {
+    const result = documentaryAncestorChain(doc([
+      plain('2:2', [page('0:1', [plain('4:4')])]),
+    ]), '4:4');
+    expect(result).toEqual({ ok: false, reason: 'malformed_chain' });
+  });
+
+  it('rejects a nested CANVAS below the direct page', () => {
+    const result = documentaryAncestorChain(doc([
+      page('0:1', [plain('2:2', [page('0:2')])]),
+    ]), '0:2');
+    expect(result).toEqual({ ok: false, reason: 'malformed_chain' });
+  });
+
+  it('rejects a nested DOCUMENT below the direct page', () => {
+    const nestedDocument = {
+      id: '0:2', name: 'Nested document', type: 'DOCUMENT', children: [plain('4:4')],
+    } as RawSceneNode;
+    const result = documentaryAncestorChain(doc([
+      page('0:1', [plain('2:2', [nestedDocument])]),
+    ]), '4:4');
+    expect(result).toEqual({ ok: false, reason: 'malformed_chain' });
+  });
+
+  it('rejects repeated normalized scene IDs in one lineage', () => {
+    const result = documentaryAncestorChain(doc([
+      page('0:1', [plain('I2:2', [plain('2:2', [plain('4:4')])])]),
+    ]), '4:4');
+    expect(result).toEqual({ ok: false, reason: 'invalid_projection' });
+  });
+
+  it('accepts a direct CANVAS target and excludes it from ancestors', () => {
+    const result = documentaryAncestorChain(doc([page('0:1')]), '0:1');
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) expect(result.nodesRootToParent.map((node) => node.id)).toEqual(['0:0']);
+  });
+
+  it('returns no partial chain when the visit cap cuts the uniqueness scan', () => {
+    const result = documentaryAncestorChain(doc([page('0:1', [plain('4:4'), plain('5:5')])]), '4:4', 2);
+    expect(result).toEqual({ ok: false, reason: 'scan_cap' });
+  });
+});
+
 describe('hasExternalBoundPaintColor — graph/snapshot-fallback gate (external = id with a published key)', () => {
   const ext = (id: string) => ({ ...plain(id), fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'VariableID:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1:2' } } }] } as RawSceneNode);
   it('external bound-SOLID (40-hex key in the id) → true', () => { expect(hasExternalBoundPaintColor(ext('1:1'))).toBe(true); });
@@ -263,40 +330,10 @@ describe('collectExternalPaintKeys — paint-level published-key collector (snap
   });
 });
 
-describe('pickDescentCandidates (probe prefilter)', () => {
-  const frameBox = { x: 100, y: 100, width: 200, height: 100 };
-  const sec = (id: string, box?: { x: number; y: number; width: number; height: number }, type = 'SECTION') =>
-    ({ id, name: id, type, ...(box ? { absoluteBoundingBox: box } : {}) }) as RawSceneNode;
-
-  it('intersects: overlapping / containing / touching within ε — pass; far — no', () => {
-    const inside = sec('a', { x: 50, y: 50, width: 400, height: 300 });     // contains frameBox
-    const overlap = sec('b', { x: 250, y: 150, width: 200, height: 100 }); // partial overlap
-    const eps = sec('c', { x: 300.5, y: 100, width: 50, height: 50 });     // touching within ε=1
-    const far = sec('d', { x: 900, y: 900, width: 10, height: 10 });
-    expect(pickDescentCandidates([inside, overlap, eps, far], frameBox).map((n) => n.id)).toEqual(['a', 'b', 'c']);
-  });
-  it('a candidate WITHOUT a bbox passes (conservatively); a non-container type — no', () => {
-    const noBox = sec('nb');
-    const text = sec('t', { x: 100, y: 100, width: 200, height: 100 }, 'TEXT');
-    expect(pickDescentCandidates([noBox, text], frameBox).map((n) => n.id)).toEqual(['nb']);
-  });
-  it('container types: SECTION/FRAME/GROUP/COMPONENT/COMPONENT_SET', () => {
-    const boxes = ['SECTION', 'FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE']
-      .map((t, i) => sec(`n${i}`, { x: 100, y: 100, width: 10, height: 10 }, t));
-    expect(pickDescentCandidates(boxes, frameBox)).toHaveLength(5); // INSTANCE excluded
-  });
-  it('ε-boundary EXACTLY at 1px (c.x - eps === frameBox.x + frameBox.width) — included (mutation lock <= → < in both x-terms of boxIntersects)', () => {
-    // frameBox.x + frameBox.width = 300; c.x = 301 ⟹ c.x - eps(1) === 300 EXACTLY — not "within ε"
-    // (like the neighbouring eps case x:300.5 above, where strict < also passes and does not catch the
-    // mutation), but exactly ON the boundary. Same y-overlap as frameBox (y:100..200 vs c.y:100..150).
-    const exact = sec('e', { x: 301, y: 100, width: 50, height: 50 });
-    expect(pickDescentCandidates([exact], frameBox).map((n) => n.id)).toEqual(['e']);
-    // The "<=→< in both x-terms of boxIntersects" mutation → a.x-eps(300) < b.x+b.width(300) === false →
-    // boxIntersects returns false → the candidate is filtered out → RED here.
-  });
-  it('sceneIdEquals normalizes the leading I', () => {
+describe('sceneIdEquals', () => {
+  it('normalizes the leading I without collapsing a compound ID to its terminal segment', () => {
     expect(sceneIdEquals('I123:4;5:6', '123:4;5:6')).toBe(true);
-    expect(sceneIdEquals('123:4', '123:5')).toBe(false);
+    expect(sceneIdEquals('5:6', '123:4;5:6')).toBe(false);
   });
 });
 

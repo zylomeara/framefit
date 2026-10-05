@@ -106,20 +106,62 @@ export function ancestorChainFromSubtree(root: RawSceneNode, targetId: string): 
   return walk(root, []);
 }
 
-// Latency prefilter of target-descent candidates. GEOMETRY only picks who to try
-// (membership is proven documentarily by children-id in the tool); intersects (not containment, ε=1px)
-// catches overflow/rotation/clip cases; a candidate without a bbox passes conservatively.
-export type DescentBox = { x: number; y: number; width: number; height: number };
-const DESCENT_CONTAINER_TYPES = new Set(['SECTION', 'FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET']);
-export function boxIntersects(a: DescentBox, b: DescentBox, eps = 1): boolean {
-  return a.x - eps <= b.x + b.width && b.x - eps <= a.x + a.width
-    && a.y - eps <= b.y + b.height && b.y - eps <= a.y + a.height;
-}
-export function pickDescentCandidates(containers: readonly RawSceneNode[], frameBox: DescentBox): RawSceneNode[] {
-  return containers.filter((c) => DESCENT_CONTAINER_TYPES.has(c.type)
-    && (c.absoluteBoundingBox == null || boxIntersects(c.absoluteBoundingBox, frameBox)));
-}
 export const sceneIdEquals = (a: string, b: string): boolean => stripI(a) === stripI(b);
+
+export type DocumentaryChainFailure =
+  | 'invalid_projection'
+  | 'scan_cap'
+  | 'missing_target'
+  | 'ambiguous_target'
+  | 'malformed_chain';
+
+export type DocumentaryChainResult =
+  | { ok: true; nodesRootToParent: RawSceneNode[] }
+  | { ok: false; reason: DocumentaryChainFailure };
+
+/**
+ * Extract the only exact DOCUMENT -> direct CANVAS -> ... -> target path from a projection.
+ * The whole returned slice is scanned before evidence is accepted, so a duplicate target,
+ * malformed linkage, cycle, or visit-cap cut can never select an arbitrary first match.
+ */
+export function documentaryAncestorChain(
+  root: RawSceneNode,
+  targetId: string,
+  maxVisited = 10_000,
+): DocumentaryChainResult {
+  if (!root || root.type !== 'DOCUMENT' || typeof root.id !== 'string' || !Array.isArray(root.children)) {
+    return { ok: false, reason: 'invalid_projection' };
+  }
+  type Pending = { node: RawSceneNode; path: RawSceneNode[]; lineage: Set<string> };
+  const pending: Pending[] = [{ node: root, path: [], lineage: new Set() }];
+  const matches: { node: RawSceneNode; path: RawSceneNode[] }[] = [];
+  let visited = 0;
+
+  while (pending.length > 0) {
+    const { node, path, lineage } = pending.pop()!;
+    if (++visited > maxVisited) return { ok: false, reason: 'scan_cap' };
+    if (!node || typeof node !== 'object' || typeof node.id !== 'string' || typeof node.type !== 'string'
+      || (node.children !== undefined && !Array.isArray(node.children))) {
+      return { ok: false, reason: 'invalid_projection' };
+    }
+    const normalizedId = stripI(node.id);
+    if (lineage.has(normalizedId)) return { ok: false, reason: 'invalid_projection' };
+    if (sceneIdEquals(node.id, targetId)) matches.push({ node, path });
+    const nextLineage = new Set(lineage).add(normalizedId);
+    for (const child of node.children ?? []) pending.push({ node: child, path: [...path, node], lineage: nextLineage });
+  }
+
+  if (matches.length === 0) return { ok: false, reason: 'missing_target' };
+  if (matches.length !== 1) return { ok: false, reason: 'ambiguous_target' };
+  const [{ node, path }] = matches;
+  const directPage = path.length === 1 && node.type === 'CANVAS';
+  const belowPage = path.length >= 2 && path[0] === root && path[1].type === 'CANVAS';
+  if (!directPage && !belowPage) return { ok: false, reason: 'malformed_chain' };
+  if (belowPage && [...path.slice(2), node].some((entry) => entry.type === 'CANVAS' || entry.type === 'DOCUMENT')) {
+    return { ok: false, reason: 'malformed_chain' };
+  }
+  return { ok: true, nodesRootToParent: path };
+}
 
 /** Fold an ancestor chain (root -> parent order); deeper entries override shallower. */
 export function ancestorModes(ancestorsRootToParent: RawSceneNode[]): ModeStack {

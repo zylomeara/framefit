@@ -351,8 +351,10 @@ Key behaviours (from the live tool description):
   `get_metadata` to see them.
 - The call runs under a server time budget: enrichment stages (variables resolution, ancestor-mode
   discovery, component docs, Code Connect, screenshot) that do not fit are skipped and listed in
-  `degraded_stages [{stage, reason}]` - the core subtree is never time-degraded (the size budget's
-  `degraded` flag is separate). If the subtree fetch itself exceeds the budget the call fails fast
+  `degraded_stages [{stage, reason, detail?}]` - the core subtree is never time-degraded (the size
+  budget's `degraded` flag is separate). For `ancestor_discovery`, `detail` names why the node's
+  ancestor mode chain could not be proven (for example `depth_cap`, `version_mismatch`,
+  `ambiguous_target`); mode-dependent values then stay `unverifiable`. If the subtree fetch itself exceeds the budget the call fails fast
   and suggests a lower depth.
 
 Use `get_metadata` first to pick a `node_id`.

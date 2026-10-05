@@ -14,6 +14,7 @@ function fakeApi(over: Partial<FigmaApi> = {}): FigmaApi {
     resolveNodes: async () => new Map(),
     getFileStructure: async () => ({ nodeById: new Map(), pageNameByNodeId: new Map(), childrenByNodeId: new Map() }) as any,
     getDocumentRaw: async () => ({ name: 'F', lastModified: 'X', version: '1', document: { id: '0:0', name: 'D', type: 'DOCUMENT' } }),
+    getDocumentByIdsRaw: async (_file: string, _ids: string[], _depth: number, version?: string) => ({ name: 'F', lastModified: 'X', version: version ?? '1', document: { id: '0:0', name: 'D', type: 'DOCUMENT' } }),
     getNodesRaw: async () => ({ nodes: {} }),
     getImages: async () => ({ images: {} }),
     getVariablesLocal: async () => ({ meta: { variables: {}, variableCollections: {} } }),
@@ -86,21 +87,63 @@ describe('CachingFigmaApiAdapter read caching', () => {
     expect(getDocumentRaw).toHaveBeenCalledTimes(1);
   });
 
-  it('passes fresh document projections through without probing or replacing the whole-document cache', async () => {
-    const getDocumentRaw = vi.fn(async () => ({ name: 'Whole', lastModified: 'X', version: 'latest', document: { id: '0:0', name: 'Whole document', type: 'DOCUMENT' } }));
-    const getDocumentByIdsRaw = vi.fn(async () => ({ name: 'Projection', lastModified: 'X', version: 'pinned', document: { id: '0:0', name: 'Projection document', type: 'DOCUMENT' } }));
+  it('caches version-matched targeted projections by canonical ids without a version preflight', async () => {
+    const getDocumentByIdsRaw = vi.fn(async (_file: string, _ids: string[], _depth: number, version?: string) => ({
+      name: 'Projection', lastModified: 'X', version: version!, document: { id: '0:0', name: 'Projection document', type: 'DOCUMENT' },
+    }));
     const getFileVersion = vi.fn(async () => ({ version: 'latest', name: 'Whole', lastModified: 'X' }));
-    const c = build(fakeApi({ getDocumentRaw, getDocumentByIdsRaw, getFileVersion }));
+    const c = build(fakeApi({ getDocumentByIdsRaw, getFileVersion }));
 
-    await c.getDocumentRaw('fixture', 3);
-    await c.getDocumentByIdsRaw('fixture', ['1:3'], 3, 'pinned');
-    await c.getDocumentByIdsRaw('fixture', ['1:3'], 3, 'pinned');
-    const whole = await c.getDocumentRaw('fixture', 3);
+    await c.getDocumentByIdsRaw('fixture', ['2:2', '1:1', '2:2'], 3, 'pinned');
+    await c.getDocumentByIdsRaw('fixture', ['1:1', '2:2'], 3, 'pinned');
 
-    expect(whole.name).toBe('Whole');
-    expect(getDocumentRaw).toHaveBeenCalledTimes(1);
+    expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(1);
+    expect(getFileVersion).not.toHaveBeenCalled();
+  });
+
+  it('isolates targeted projection cache entries by file, requested version, ids and depth', async () => {
+    const getDocumentByIdsRaw = vi.fn(async (_file: string, _ids: string[], _depth: number, version?: string) => ({
+      name: 'Projection', lastModified: 'X', version: version!, document: { id: '0:0', name: 'D', type: 'DOCUMENT' },
+    }));
+    const c = build(fakeApi({ getDocumentByIdsRaw }));
+
+    await c.getDocumentByIdsRaw('file-a', ['1:1'], 4, 'v1');
+    await c.getDocumentByIdsRaw('file-b', ['1:1'], 4, 'v1');
+    await c.getDocumentByIdsRaw('file-a', ['1:1'], 4, 'v2');
+    await c.getDocumentByIdsRaw('file-a', ['2:2'], 4, 'v1');
+    await c.getDocumentByIdsRaw('file-a', ['1:1'], 8, 'v1');
+
+    expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([
+    { caseName: 'missing', responseVersion: undefined },
+    { caseName: 'mismatched', responseVersion: 'other' },
+  ])('does not cache a targeted projection with a $caseName response version', async ({ responseVersion }) => {
+    const getDocumentByIdsRaw = vi.fn(async () => ({
+      name: 'Projection', lastModified: 'X', ...(responseVersion ? { version: responseVersion } : {}),
+      document: { id: '0:0', name: 'D', type: 'DOCUMENT' },
+    } as any));
+    const c = build(fakeApi({ getDocumentByIdsRaw }));
+
+    await c.getDocumentByIdsRaw('fixture', ['1:1'], 4, 'pinned');
+    await c.getDocumentByIdsRaw('fixture', ['1:1'], 4, 'pinned');
+
     expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(2);
-    expect(getFileVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves unversioned targeted projections as passthrough without a version preflight', async () => {
+    const getDocumentByIdsRaw = vi.fn(async () => ({
+      name: 'Projection', lastModified: 'X', version: 'latest', document: { id: '0:0', name: 'D', type: 'DOCUMENT' },
+    }));
+    const getFileVersion = vi.fn(async () => ({ version: 'latest', name: 'F', lastModified: 'X' }));
+    const c = build(fakeApi({ getDocumentByIdsRaw, getFileVersion }));
+
+    await c.getDocumentByIdsRaw('fixture', ['1:1'], 4);
+    await c.getDocumentByIdsRaw('fixture', ['1:1'], 4);
+
+    expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(2);
+    expect(getFileVersion).not.toHaveBeenCalled();
   });
 
   it('caches getFileComponentSets by fileKey; same key → one upstream call', async () => {

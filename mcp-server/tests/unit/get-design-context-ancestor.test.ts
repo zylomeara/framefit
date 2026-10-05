@@ -1,26 +1,20 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { registerGetDesignContextTool, discoverAncestorModes } from '../../src/adapters/driving/tools/get-design-context-tool.js';
+import { registerGetDesignContextTool, discoverAncestorModes, discoverAncestorModesBatch } from '../../src/adapters/driving/tools/get-design-context-tool.js';
 import { createLogger, type Logger } from '../../src/infrastructure/logger.js';
 import type { FigmaApi } from '../../src/ports/figma-api.js';
 import type { ToolDeps } from '../../src/adapters/driving/tools/get-comments-tool.js';
 import { buildGraph, resolveKeyInMode } from '../../src/domain/variable-graph.js';
 import { FigmaApiError } from '../../src/ports/errors.js';
 import { makeFakeMcpServer, textOf } from '../helpers/fake-mcp-server.js';
+import { tagBytes } from '../../src/infrastructure/response-size.js';
 
 const logger = createLogger({ level: 'silent' });
 afterEach(() => vi.useRealTimers());
 
-// FR-3(a) / FR-2 regression guard — end-to-end ancestor glue through the tool, no network.
-//
+// Tool-level ancestor-mode integration, with every API boundary replaced by an in-memory fake.
 // Tree: DOC → PAGE → ANC(explicitVariableModes {C:m2}) → ROOT(request root) → LEAF(stroke→V:1).
-// The ancestor ANC sets the mode ABOVE the request root, so the request subtree alone cannot
-// pin it down: the tool must (1) detect needsAncestors, (2) fetch getDocumentRaw, (3) fetch the
-// ancestor chain via getNodesRaw at depth=1 (depth=0 400s — the FR-2 bug), (4) merge the
-// ancestor stack, and (5) resolve LEAF in the ANCESTOR mode m2 (#8b6afb) with mode_source:'node'.
-//
-// The fake getNodesRaw THROWS on depth<1 (mimics Figma's 400 on depth=0), so reverting FR-2 to
-// depth=0 makes the ancestor fetch throw → empty stack → LEAF degrades to the default-mode
-// #a73afd/mode_source:'default' → this test fails. That makes it a genuine regression guard.
+// The ancestor mode sits above the request root, so subtree evidence alone cannot select it. The
+// targeted projection must prove the complete documentary chain and resolve LEAF under m2.
 
 const collectionC = { 'C': { id: 'C', name: 'Theme', defaultModeId: 'm1',
   modes: [{ modeId: 'm1', name: 'Default' }, { modeId: 'm2', name: 'Dusk' }] } };
@@ -37,8 +31,7 @@ const rootSubtree = {
     boundVariables: { strokes: [{ type: 'VARIABLE_ALIAS', id: 'V:1' }] } }],
 };
 
-// Full document tree returned by getDocumentRaw (needs only id/name/type/children for the
-// structure walk, plus explicitVariableModes for the ancestor mode fold).
+// Documentary tree returned by the targeted projection. It carries the unique path and ancestor pin.
 const fullDoc = {
   id: 'DOC', name: 'Document', type: 'DOCUMENT', children: [
     { id: 'PAGE', name: 'Page 1', type: 'CANVAS', children: [
@@ -51,19 +44,13 @@ const fullDoc = {
   ],
 };
 
-// Ancestor nodes returned by getNodesRaw(chainIds, depth=1) — ANC carries the explicit mode.
-const ancestorNodes: Record<string, { document: unknown }> = {
-  DOC: { document: { id: 'DOC', name: 'Document', type: 'DOCUMENT' } },
-  PAGE: { document: { id: 'PAGE', name: 'Page 1', type: 'CANVAS' } },
-  ANC: { document: { id: 'ANC', name: 'Themed', type: 'FRAME', explicitVariableModes: { C: 'm2' } } },
-};
-
 type Harness = { handler: (a: any) => Promise<any>; depthsSeen: number[]; stacksSeen: Map<string, string>[] };
 
 function harness(opts: {
   leafBoundId?: string;                                  // override the stroke binding id (cross-lib)
   variables?: unknown;                                   // override getVariablesLocal payload
   variableGraph?: ToolDeps['variableGraph'];
+  projection?: unknown;
 } = {}): Harness {
   const { server, call } = makeFakeMcpServer();
   const depthsSeen: number[] = [];
@@ -80,13 +67,14 @@ function harness(opts: {
         depthsSeen.push(depth ?? -1);
         if ((depth ?? 0) < 1) throw new Error('Figma 400: depth must be a positive integer');
         const nodes: Record<string, { document: unknown }> = {};
-        for (const nid of ids) {
-          if (nid === 'ROOT') nodes[nid] = { document: rootDoc };
-          else if (ancestorNodes[nid]) nodes[nid] = ancestorNodes[nid];
-        }
-        return { nodes };
+        for (const nid of ids) if (nid === 'ROOT') nodes[nid] = { document: rootDoc };
+        return { version: 'v1', nodes };
       },
-      getDocumentRaw: async () => ({ document: fullDoc } as any),
+      getDocumentByIdsRaw: async (_file: string, _ids: string[], depth: number, version?: string) => {
+        depthsSeen.push(depth);
+        return { name: 'Synthetic', lastModified: '', version: version ?? 'v1', document: opts.projection ?? prune(fullDoc, depth) } as any;
+      },
+      getDocumentRaw: async () => { throw new Error('whole-file fetch must not be used'); },
       getVariablesLocal: async () => opts.variables ?? { meta: { variableCollections: collectionC, variables: variableV1 } },
       getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
       getFileComponentSets: async () => [],
@@ -114,16 +102,116 @@ describe('get_design_context ancestor-mode glue (FR-2 / FR-3a)', () => {
       mode_dependent: true, effective_mode_source: 'ancestor_chain',
       effective_modes: { Theme: { mode: 'Dusk', source: 'ancestor_chain', node_id: 'ANC' } },
     });
-    // The ancestor chain WAS fetched at depth=1 (never depth=0).
-    expect(h.depthsSeen).toContain(1);
+    expect(h.depthsSeen).toContain(4);
     expect(h.depthsSeen).not.toContain(0);
+  });
+
+  it('preserves the specific targeted ancestor failure in degraded stage detail', async () => {
+    const h = harness({ projection: { id: 'BROKEN', name: 'Broken', type: 'FRAME', children: [] } });
+    const body = JSON.parse((await h.handler({
+      file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false,
+    })).content[0].text);
+
+    expect(body.degraded_stages).toContainEqual({
+      stage: 'ancestor_discovery', reason: 'error', detail: 'invalid_projection',
+    });
+  });
+
+  it('rejects a foreign compound core root before variables or ancestor discovery', async () => {
+    const requested = 'I12:34;56:78';
+    const returned = 'I90:12;56:78';
+    const foreignRoot = { ...rootSubtree, id: returned };
+    const getVariablesLocal = vi.fn(async () => ({ meta: { variableCollections: collectionC, variables: variableV1 } }));
+    const getDocumentByIdsRaw = vi.fn(async () => ({ name: 'Synthetic', lastModified: '', version: 'v1', document: fullDoc }));
+    const { server, call } = makeFakeMcpServer();
+    registerGetDesignContextTool(server, {
+      buildApi: () => ({
+        getNodesRaw: async () => ({ version: 'v1', nodes: { [requested]: { document: foreignRoot } } }),
+        getDocumentByIdsRaw, getVariablesLocal,
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger, maxResultChars: 40000,
+    });
+
+    const result = await call('get_design_context', {
+      file: 'abc', node_id: requested, depth: 2, include_component_docs: false,
+    });
+    const text = textOf(result.content?.[0]);
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain(requested);
+    expect(text).not.toContain(returned);
+    expect(getVariablesLocal).not.toHaveBeenCalled();
+    expect(getDocumentByIdsRaw).not.toHaveBeenCalled();
+  });
+
+  it('prunes a full-id root to the requested depth without mutating the cached response', async () => {
+    const cachedRoot = {
+      id: '12:34', name: 'Scoped target', type: 'FRAME',
+      absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 },
+      children: [{ id: '2:1', name: 'child', type: 'FRAME', children: [
+        { id: '2:2', name: 'grandchild', type: 'RECTANGLE' },
+      ] }],
+    };
+    const before = structuredClone(cachedRoot);
+    const { server, call } = makeFakeMcpServer();
+    registerGetDesignContextTool(server, {
+      buildApi: () => ({
+        getNodesRaw: async () => ({ version: 'v1', nodes: { '12:34': { document: cachedRoot } } }),
+        getVariablesLocal: async () => ({ meta: { variableCollections: {}, variables: {} } }),
+        getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
+        getFileComponentSets: async () => [],
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger, maxResultChars: 40000,
+    });
+
+    const result = await call('get_design_context', {
+      file: 'abc', node_id: '12:34', depth: 1, include_component_docs: false,
+    });
+    const body = JSON.parse(textOf(result.content?.[0]));
+
+    expect(result.isError).toBeFalsy();
+    expect(body.node.children[0].truncated).toBe(true);
+    expect(body.node.children[0].childCount).toBe(1);
+    expect(cachedRoot).toEqual(before);
+  });
+
+  it('accepts an exact terminal scoped root and normalizes only the root id without mutating the cached response', async () => {
+    const requested = 'I12:34;56:78';
+    const cachedRoot = {
+      id: '56:78', name: 'Scoped target', type: 'FRAME',
+      absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 },
+      children: [{ id: '2:1', name: 'child', type: 'FRAME', children: [
+        { id: '2:2', name: 'grandchild', type: 'RECTANGLE' },
+      ] }],
+    };
+    const before = structuredClone(cachedRoot);
+    const { server, call } = makeFakeMcpServer();
+    registerGetDesignContextTool(server, {
+      buildApi: () => ({
+        getNodesRaw: async () => ({ version: 'v1', nodes: { [requested]: { document: cachedRoot } } }),
+        getVariablesLocal: async () => ({ meta: { variableCollections: {}, variables: {} } }),
+        getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
+        getFileComponentSets: async () => [],
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger, maxResultChars: 40000,
+    });
+
+    const result = await call('get_design_context', {
+      file: 'abc', node_id: requested, depth: 1, include_component_docs: false,
+    });
+    const body = JSON.parse(textOf(result.content?.[0]));
+
+    expect(result.isError).toBeFalsy();
+    expect(body.node.id).toBe(requested);
+    expect(body.node.children[0].id).toBe('2:1');
+    expect(cachedRoot).toEqual(before);
   });
 
   it('passes the ancestor-merged stack to a cross-library variableGraph.resolveInMode', async () => {
     const EXT = 'VariableID:' + 'a'.repeat(40) + '/9:9';
     const graph: ToolDeps['variableGraph'] = {
       // modesByName present → the cross-lib top collection is MULTI-mode, so needsAncestors()
-      // triggers discovery (a single-mode top would render inline and skip the whole-file fetch).
+      // triggers targeted discovery (a single-mode top would render inline and skip it).
       resolve: () => ({ value: '#8b6afb', name: 'lib/accent', modesByName: { Default: '#a73afd', Dusk: '#8b6afb' } }),
       resolveInMode: () => ({
         token: 'lib/accent', default_value: '#a73afd', effective_rendered_value: '#8b6afb', value: '#8b6afb',
@@ -146,7 +234,7 @@ describe('get_design_context ancestor-mode glue (FR-2 / FR-3a)', () => {
 
 // --- Minor (perf): needsAncestors gates cross-lib discovery on a MULTI-mode top collection ---
 // A single-mode cross-library binding renders inline (mode_dependent stays false) no matter what
-// mode any ancestor sets, so a depth-8 whole-file fetch for it is pure waste. needsAncestors()
+// mode any ancestor sets, so targeted ancestor discovery for it is pure waste. needsAncestors()
 // must SKIP discovery when the only cross-lib binding's top collection is single-mode (resolve()
 // returns no modesByName), and RUN it when the top collection is multi-mode.
 describe('get_design_context: cross-lib discovery gated on multi-mode top (perf)', () => {
@@ -166,10 +254,14 @@ describe('get_design_context: cross-lib discovery gated on multi-mode top (perf)
         getNodesRaw: async (_f: string, ids: string[], depth?: number) => {
           if ((depth ?? 0) < 1 && !ids.includes('ROOT')) throw new Error('Figma 400: depth must be positive');
           const nodes: Record<string, { document: unknown }> = {};
-          for (const id of ids) { if (id === 'ROOT') nodes[id] = { document: rootWithExt }; else if (ancestorNodes[id]) nodes[id] = ancestorNodes[id]; }
-          return { nodes };
+          for (const id of ids) if (id === 'ROOT') nodes[id] = { document: rootWithExt };
+          return { version: 'v1', nodes };
         },
-        getDocumentRaw: async () => { docFetches++; return { document: fullDoc } as any; },
+        getDocumentByIdsRaw: async (_file: string, _ids: string[], depth: number, version?: string) => {
+          docFetches++;
+          return { name: 'Synthetic', lastModified: '', version: version ?? 'v1', document: prune(fullDoc, depth) } as any;
+        },
+        getDocumentRaw: async () => { throw new Error('whole-file fetch must not be used'); },
         getVariablesLocal: async () => ({ meta: { variableCollections: collectionC, variables: {} } }),  // EXT not local → cross-lib path
         getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); }, getFileComponentSets: async () => [],
       } as unknown as FigmaApi),
@@ -186,13 +278,13 @@ describe('get_design_context: cross-lib discovery gated on multi-mode top (perf)
     return { handler: (a: any): Promise<any> => call('get_design_context', a), docFetches: () => docFetches };
   }
 
-  it('single-mode cross-lib binding → discovery SKIPPED (no whole-file getDocumentRaw)', async () => {
+  it('single-mode cross-lib binding skips targeted ancestor discovery', async () => {
     const b = build({ value: '#123456', name: 'lib/token' });   // no modesByName ⇒ single-mode top
     await b.handler({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
     expect(b.docFetches()).toBe(0);
   });
 
-  it('multi-mode cross-lib binding → discovery RUNS (getDocumentRaw fetched)', async () => {
+  it('multi-mode cross-lib binding runs targeted ancestor discovery', async () => {
     const b = build({ value: '#123456', name: 'lib/token', modesByName: { Default: '#123456', Dusk: '#000000' } });
     await b.handler({ file: 'abc', node_id: 'ROOT', depth: 4, include_component_docs: false });
     expect(b.docFetches()).toBeGreaterThan(0);
@@ -225,325 +317,190 @@ function prune(node: FakeNode, depth: number): FakeNode {
   return { ...rest, children: children.map((c) => prune(c, depth - 1)) };
 }
 
-const SUBBRAND = 'VariableCollectionId:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/34:56';
+const TARGET_COLLECTION = 'VariableCollectionId:synthetic/1:1';
 
-// DOC → PAGE(CANVAS, sets sub-brand→Solar) → L2 → L3 → L4 → L5 → ROOT(depth 6) → LEAF
-const deepTree: FakeNode = {
-  id: 'DOC', name: 'Document', type: 'DOCUMENT', children: [
-    { id: 'PAGE', name: 'Page 1', type: 'CANVAS', explicitVariableModes: { [SUBBRAND]: '34:0' }, children: [
-      { id: 'L2', name: 'l2', type: 'FRAME', children: [
-        { id: 'L3', name: 'l3', type: 'FRAME', children: [
-          { id: 'L4', name: 'l4', type: 'FRAME', children: [
-            { id: 'L5', name: 'l5', type: 'FRAME', children: [
-              { id: 'ROOT', name: 'Header', type: 'INSTANCE', children: [
-                { id: 'LEAF', name: 'Union', type: 'VECTOR' },
-              ] },
-            ] },
-          ] },
-        ] },
-      ] },
-    ] },
-  ],
-};
-
-// Every node's explicitVariableModes, served by getNodesRaw(chainIds, depth=1).
-function nodeDocsById(tree: FakeNode): Record<string, { document: FakeNode }> {
-  const out: Record<string, { document: FakeNode }> = {};
-  const walk = (n: FakeNode) => {
-    const { children, ...rest } = n;
-    void children;
-    out[n.id] = { document: rest };
-    for (const c of n.children ?? []) walk(c);
-  };
-  walk(tree);
-  return out;
-}
-
-function recordingLogger(): { logger: Logger; logs: { obj: unknown; msg: string }[] } {
-  const logs: { obj: unknown; msg: string }[] = [];
-  const rec = (obj: unknown, msg?: string) => { logs.push({ obj, msg: msg ?? '' }); };
-  const logger = { info: rec, warn: rec, error: rec, debug: rec, trace: rec, fatal: rec, child: () => logger } as unknown as Logger;
-  return { logger, logs };
-}
-
-function fakeApi(tree: FakeNode, depthsSeen: number[]): Pick<FigmaApi, 'getDocumentRaw' | 'getNodesRaw'> {
-  const docs = nodeDocsById(tree);
+function targetAtDepth(targetId: string, level: number): FakeNode {
+  let branch: FakeNode = { id: targetId, name: targetId, type: 'FRAME' };
+  for (let current = level - 1; current >= 2; current--) {
+    branch = {
+      id: `${targetId}-w${current}`, name: `wrapper ${current}`, type: 'FRAME',
+      ...(current === level - 1 ? { explicitVariableModes: { [TARGET_COLLECTION]: 'near' } } : {}),
+      children: [branch],
+    };
+  }
   return {
-    getDocumentRaw: async (_file: string, depth = 4) => { depthsSeen.push(depth); return { document: prune(tree, depth) } as any; },
-    getNodesRaw: async (_file: string, ids: string[], _depth?: number) => {
-      const nodes: Record<string, { document: unknown }> = {};
-      for (const id of ids) if (docs[id]) nodes[id] = docs[id];
-      return { nodes } as any;
+    id: 'DOC', name: 'Document', type: 'DOCUMENT', children: [{
+      id: 'PAGE', name: 'Page', type: 'CANVAS', explicitVariableModes: { [TARGET_COLLECTION]: 'far' }, children: [branch],
+    }],
+  };
+}
+
+function projectionApi(tree: FakeNode, calls: Array<{ ids: string[]; depth: number; version?: string }>, responseVersion = 'v-proof') {
+  return {
+    getDocumentByIdsRaw: async (_file: string, ids: string[], depth: number, version?: string) => {
+      calls.push({ ids: [...ids], depth, version });
+      return { name: 'Proof', lastModified: '', version: responseVersion, document: prune(tree, depth) } as any;
     },
   };
 }
 
-describe('discoverAncestorModes (deep-node reach + coverageComplete)', () => {
-  it('deepens the fetch to locate a depth-6 request root and reports coverageComplete=true', async () => {
-    const depthsSeen: number[] = [];
-    const api = fakeApi(deepTree, depthsSeen);
-    const { logger } = recordingLogger();
-    const disc = await discoverAncestorModes(api, 'file', 'ROOT', logger);
-    // The page's sub-brand→Solar mode was discovered even though ROOT is deeper than depth 4.
-    expect(disc.stack.get(SUBBRAND)).toBe('34:0');
-    expect(disc.coverageComplete).toBe(true);
-    // It tried depth 4 first (ROOT absent), then deepened to 8 (ROOT present).
-    expect(depthsSeen).toEqual([4, 8]);
+describe('discoverAncestorModes targeted batch ladder', () => {
+  it('resolves shallow ids once, removes them, and recovers a depth-16 target with nearest-wins', async () => {
+    const shallow: FakeNode = { id: 'SHALLOW', name: 'shallow', type: 'FRAME' };
+    const deep = targetAtDepth('DEEP', 16);
+    deep.children![0].children!.push(shallow);
+    const calls: Array<{ ids: string[]; depth: number; version?: string }> = [];
+
+    const found = await discoverAncestorModesBatch(projectionApi(deep, calls), 'file',
+      ['DEEP', 'SHALLOW', 'DEEP'], 'v-proof', logger);
+
+    expect(found.get('SHALLOW')).toMatchObject({ coverageComplete: true });
+    expect(found.get('DEEP')).toMatchObject({ coverageComplete: true });
+    expect(found.get('DEEP')!.stack.get(TARGET_COLLECTION)).toBe('near');
+    expect(calls).toEqual([
+      { ids: ['DEEP', 'SHALLOW'], depth: 4, version: 'v-proof' },
+      { ids: ['DEEP'], depth: 8, version: 'v-proof' },
+      { ids: ['DEEP'], depth: 16, version: 'v-proof' },
+    ]);
   });
 
-  it('logs design_context.ancestor_discovery with depth_reached + at_max_depth (observability)', async () => {
-    const depthsSeen: number[] = [];
-    const api = fakeApi(deepTree, depthsSeen);
-    const { logger, logs } = recordingLogger();
-    await discoverAncestorModes(api, 'file', 'ROOT', logger);   // deepens 4 → 8 (the expensive path)
-    const disc = logs.find((l) => l.msg === 'design_context.ancestor_discovery');
-    expect(disc).toBeTruthy();
-    expect(disc!.obj).toMatchObject({ depth_reached: 8, at_max_depth: true, located: true, coverage_complete: true, reaches_top_canvas: true });
+  it('keeps a depth-17 target unknown after exactly the 4 -> 8 -> 16 schedule', async () => {
+    const calls: Array<{ ids: string[]; depth: number; version?: string }> = [];
+    const result = await discoverAncestorModes(projectionApi(targetAtDepth('DEEPER', 17), calls),
+      'file', 'DEEPER', 'v-proof', logger);
+
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'depth_cap' });
+    expect(result.nodesRootToParent).toEqual([]);
+    expect(result.stack.size).toBe(0);
+    expect(calls.map((call) => call.depth)).toEqual([4, 8, 16]);
   });
 
-  it('ancestor_discovery reports at_max_depth=false for a shallow root found in the first fetch', async () => {
-    const depthsSeen: number[] = [];
-    const api = fakeApi(deepTree, depthsSeen);
-    const { logger, logs } = recordingLogger();
-    await discoverAncestorModes(api, 'file', 'L2', logger);   // L2 at depth 2 → located at the first (depth-4) fetch
-    const disc = logs.find((l) => l.msg === 'design_context.ancestor_discovery');
-    expect(disc!.obj).toMatchObject({ depth_reached: 4, at_max_depth: false, located: true });
+  it('returns missing_version without issuing a projection', async () => {
+    const getDocumentByIdsRaw = vi.fn();
+    const result = await discoverAncestorModes({ getDocumentByIdsRaw } as never,
+      'file', 'TARGET', undefined, logger);
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'missing_version' });
+    expect(getDocumentByIdsRaw).not.toHaveBeenCalled();
   });
 
-  it('does NOT locate the node when capped at depth 4 → coverageComplete=false', async () => {
-    const depthsSeen: number[] = [];
-    const api = fakeApi(deepTree, depthsSeen);
-    const { logger, logs } = recordingLogger();
-    const disc = await discoverAncestorModes(api, 'file', 'ROOT', logger, { maxDepth: 4 });
-    expect(disc.coverageComplete).toBe(false);
-    expect(disc.stack.size).toBe(0);          // ROOT absent → no chain → no ancestor modes
-    expect(depthsSeen).toEqual([4]);          // never deepened past the cap
-    expect(logs.some((l) => l.msg === 'design_context.ancestor_coverage_dropped')).toBe(true);
+  it('rejects a projection response without a version with no ancestor evidence', async () => {
+    const getDocumentByIdsRaw = vi.fn(async () => {
+      const { version: _version, ...raw } = {
+        name: 'Proof', lastModified: '', version: 'discarded', document: targetAtDepth('TARGET', 3),
+      };
+      return raw as any;
+    });
+    const result = await discoverAncestorModes({ getDocumentByIdsRaw },
+      'file', 'TARGET', 'v-proof', logger);
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'missing_version' });
+    expect(result.nodesRootToParent).toEqual([]);
+    expect(result.stack.size).toBe(0);
+    expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(1);
   });
 
-  it('batch-2 item 6 residual: a COMPOUND (nested-instance) id sits below its instance and is not in the walked tree → honest coverageComplete=false, never a crash', async () => {
-    // get_design_context now accepts compound ids; its core /nodes fetch resolves them, but
-    // this whole-file locate walk is depth-bounded and instance INTERNALS are below the
-    // instance node — on real files usually past the ceiling. The contract is the same
-    // honest degradation as any unlocated node (named ceiling, not a defect).
-    const depthsSeen: number[] = [];
-    const api = fakeApi(deepTree, depthsSeen);
-    const { logger, logs } = recordingLogger();
-    const disc = await discoverAncestorModes(api, 'file', 'I999:1;77:5', logger);
-    expect(disc.coverageComplete).toBe(false);
-    expect(disc.stack.size).toBe(0);
-    expect(logs.some((l) => l.msg === 'design_context.ancestor_coverage_dropped')).toBe(true);
+  it('rejects a mismatched response version with no ancestor evidence', async () => {
+    const calls: Array<{ ids: string[]; depth: number; version?: string }> = [];
+    const result = await discoverAncestorModes(projectionApi(targetAtDepth('TARGET', 3), calls, 'other'),
+      'file', 'TARGET', 'v-proof', logger);
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'version_mismatch' });
+    expect(result.nodesRootToParent).toEqual([]);
+    expect(result.stack.size).toBe(0);
+    expect(calls).toHaveLength(1);
   });
 
-  it('stops on oversize (would blow the byte budget) → coverageComplete=false, drop logged, one fetch only', async () => {
-    const depthsSeen: number[] = [];
-    const api = fakeApi(deepTree, depthsSeen);
-    const { logger, logs } = recordingLogger();
-    // Tiny budget: even the depth-4 document exceeds it → discovery must stop before deepening.
-    const disc = await discoverAncestorModes(api, 'file', 'ROOT', logger, { byteBudget: 10 });
-    expect(disc.coverageComplete).toBe(false);
-    expect(depthsSeen).toEqual([4]);          // did NOT deepen / pull more
-    const drop = logs.find((l) => l.msg === 'design_context.ancestor_coverage_dropped');
-    expect(drop).toBeTruthy();
-    expect((drop!.obj as { reason?: string }).reason).toBe('byte_budget');
+  it('applies the 24MiB-style budget after the response and accepts no evidence from an oversized payload', async () => {
+    const calls: Array<{ ids: string[]; depth: number; version?: string }> = [];
+    const result = await discoverAncestorModes(projectionApi(targetAtDepth('TARGET', 3), calls),
+      'file', 'TARGET', 'v-proof', logger, { byteBudget: 10 });
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'byte_budget' });
+    expect(result.nodesRootToParent).toEqual([]);
+    expect(calls).toHaveLength(1);
   });
 
-  it('reports coverageComplete=true for a shallow root already within the first fetch', async () => {
-    const depthsSeen: number[] = [];
-    const api = fakeApi(deepTree, depthsSeen);
-    const { logger } = recordingLogger();
-    const disc = await discoverAncestorModes(api, 'file', 'L2', logger);   // L2 is at depth 2
-    expect(disc.coverageComplete).toBe(true);
-    expect(disc.stack.get(SUBBRAND)).toBe('34:0');
-    expect(depthsSeen).toEqual([4]);          // located on the first fetch, no deepening
+  it('prefers the tagged wire size when enforcing the post-response byte budget', async () => {
+    const raw = {
+      name: 'Proof', lastModified: '', version: 'v-proof', document: targetAtDepth('TARGET', 3),
+    } as any;
+    tagBytes(raw, 10_000);
+    const result = await discoverAncestorModes({ getDocumentByIdsRaw: async () => raw },
+      'file', 'TARGET', 'v-proof', logger, { byteBudget: 5_000 });
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'byte_budget' });
+    expect(result.nodesRootToParent).toEqual([]);
   });
 
-  it('deadline: discovery drops BEFORE the first whole-file fetch when the floor does not fit', async () => {
-    let docCalls = 0;
-    const api = { getDocumentRaw: async () => { docCalls++; return { document: { id: '0:0', type: 'DOCUMENT', children: [] } }; },
-                  getNodesRaw: async () => ({ nodes: {} }) };
-    const disc = await discoverAncestorModes(api as never, 'F', '1:1', logger, { deadlineAt: Date.now() + 1_000 });
-    expect(docCalls).toBe(0);                                          // 15s floor > 1s remaining
-    expect(disc.coverageComplete).toBe(false);
-    expect(disc.droppedReason).toBe('time_budget');
+  it('classifies transport too_large as byte_budget and propagates rate limits', async () => {
+    const tooLarge = { getDocumentByIdsRaw: async () => {
+      throw new FigmaApiError('too_large', 400, 'too large');
+    } };
+    const result = await discoverAncestorModes(tooLarge, 'file', 'TARGET', 'v-proof', logger);
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'byte_budget' });
+    expect(result.nodesRootToParent).toEqual([]);
+
+    const limited = { getDocumentByIdsRaw: async () => {
+      throw new FigmaApiError('rate_limited', 429, 'slow down', 3);
+    } };
+    await expect(discoverAncestorModes(limited, 'file', 'TARGET', 'v-proof', logger))
+      .rejects.toMatchObject({ kind: 'rate_limited', status: 429 });
   });
 
-  // R3-F4: the floor gate only decides whether to START a fetch; the fetch ITSELF runs through a
-  // fresh CAPPED api (cfg.makeCappedApi) so an overrun aborts as a REAL settled rejection. The
-  // capped adapter surfaces an over-budget fetch as FigmaApiError('network', 0, '… timed out …'),
-  // which discovery maps to a time_budget drop; a 429 arriving before the cap rethrows as genuine
-  // rate_limited and must PROPAGATE (never swallowed into a quiet degraded success — the R2 race bug).
-  it('deadline: a capped whole-file fetch that aborts (timeout FigmaApiError) → time_budget, loop stopped', async () => {
-    let cappedDocCalls = 0;
-    const cappedApi = {
-      getDocumentRaw: async () => { cappedDocCalls++; throw new FigmaApiError('network', 0, 'Figma request timed out after 20000ms'); },
-      getNodesRaw: async () => ({ nodes: {} }),
-    } as unknown as Pick<FigmaApi, 'getDocumentRaw' | 'getNodesRaw'>;
-    // Base api must NOT be used when a capped factory + deadline are present — make it throw loudly.
-    const base = { getDocumentRaw: async () => { throw new Error('base api used — should be capped'); }, getNodesRaw: async () => ({ nodes: {} }) };
-    const disc = await discoverAncestorModes(base as never, 'F', '1:1', logger,
-      { deadlineAt: Date.now() + 20_000, makeCappedApi: () => cappedApi });
-    expect(disc.droppedReason).toBe('time_budget');
-    expect(disc.coverageComplete).toBe(false);
-    expect(cappedDocCalls).toBe(1);                                   // stopped after the first capped fetch — never deepened to depth 8
+  it('does not start a projection after the absolute deadline has passed', async () => {
+    const getDocumentByIdsRaw = vi.fn();
+    const result = await discoverAncestorModes({ getDocumentByIdsRaw } as never,
+      'file', 'TARGET', 'v-proof', logger, { deadlineAt: Date.now() - 1 });
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'time_budget' });
+    expect(result.nodesRootToParent).toEqual([]);
+    expect(getDocumentByIdsRaw).not.toHaveBeenCalled();
   });
 
-  it('deadline: a capped getDocumentRaw 429 REJECTS discovery (rate_limited propagates, never a quiet drop)', async () => {
-    const cappedApi = {
-      getDocumentRaw: async () => { throw new FigmaApiError('rate_limited', 429, 'slow down', 5); },
-      getNodesRaw: async () => ({ nodes: {} }),
-    } as unknown as Pick<FigmaApi, 'getDocumentRaw' | 'getNodesRaw'>;
-    const base = { getDocumentRaw: async () => ({ document: { id: '0:0', type: 'DOCUMENT', children: [] } }), getNodesRaw: async () => ({ nodes: {} }) };
-    await expect(discoverAncestorModes(base as never, 'F', '1:1', logger,
-      { deadlineAt: Date.now() + 20_000, makeCappedApi: () => cappedApi }),
-    ).rejects.toMatchObject({ kind: 'rate_limited', status: 429 });
+  it('clamps an oversized remaining deadline to the existing 90s request cap', async () => {
+    const calls: Array<{ ids: string[]; depth: number; version?: string }> = [];
+    const api = projectionApi(targetAtDepth('TARGET', 3), calls);
+    const caps: number[] = [];
+    const result = await discoverAncestorModes(api, 'file', 'TARGET', 'v-proof', logger, {
+      deadlineAt: Date.now() + 10_000_000_000,
+      makeCappedApi: (capMs) => { caps.push(capMs); return api; },
+    });
+    expect(result.coverageComplete).toBe(true);
+    expect(caps).toEqual([90_000]);
   });
 
-  it('deadline: a capped TRAILING getNodesRaw that aborts (timeout) → time_budget, empty ancestors', async () => {
-    const depthsSeen: number[] = [];
-    const base = fakeApi(deepTree, depthsSeen);                       // getDocumentRaw locates L2 in the first (depth-4) fetch
-    // capped api: getDocumentRaw locates L2 (delegates to base), the trailing getNodesRaw aborts.
-    const cappedApi = {
-      getDocumentRaw: base.getDocumentRaw,
-      getNodesRaw: async () => { throw new FigmaApiError('network', 0, 'Figma request timed out after 20000ms'); },
-    } as unknown as Pick<FigmaApi, 'getDocumentRaw' | 'getNodesRaw'>;
-    const disc = await discoverAncestorModes(base, 'file', 'L2', logger,
-      { deadlineAt: Date.now() + 20_000, makeCappedApi: () => cappedApi });
-    expect(disc.droppedReason).toBe('time_budget');
-    expect(disc.coverageComplete).toBe(false);
-    expect(disc.stack.size).toBe(0);                                  // trailing fetch dropped → no ancestor modes
-    expect(disc.nodesRootToParent).toEqual([]);
-  });
-
-  // R6-F2: the trailing chain fetch's capMs floor (`max(1_000, deadlineAt - now)`) fires even when
-  // the deadline has ALREADY passed by the time the (successful) locate loop finishes — issuing an
-  // avoidable network call that also queues on the shared heavy-fetch semaphore. A direct
-  // deadline-passed pre-gate (mirroring the loop's own floor check) must skip the fetch entirely.
-  it('deadline: trailing chain fetch is SKIPPED (never called) when the deadline has already passed by locate time', async () => {
-    const depthsSeen: number[] = [];
-    let getNodesRawCalls = 0;
-    vi.useFakeTimers();
-    const start = Date.now();
-    // > the loop's 15s floor (need = max(15_000, 2*lastLatencyMs)) so the first iteration proceeds
-    // past the pre-fetch floor gate and actually calls getDocumentRaw.
-    const deadlineAt = start + 16_000;
-    const api = {
-      getDocumentRaw: async (_file: string, depth = 4) => {
-        depthsSeen.push(depth);
-        // Simulate a successful but slow fetch that eats the whole remaining budget: by the time
-        // it resolves and the node has been located, the deadline has already passed.
-        vi.advanceTimersByTime(20_000);
-        return { document: prune(deepTree, depth) } as any;             // depth=4 already contains L2
-      },
-      getNodesRaw: async (_file: string, ids: string[]) => {
-        getNodesRawCalls++;
-        const docs = nodeDocsById(deepTree);
-        const nodes: Record<string, { document: unknown }> = {};
-        for (const id of ids) if (docs[id]) nodes[id] = docs[id];
-        return { nodes } as any;
-      },
-    } as unknown as Pick<FigmaApi, 'getDocumentRaw' | 'getNodesRaw'>;
-    const { logger: recLogger, logs } = recordingLogger();
-    const disc = await discoverAncestorModes(api, 'file', 'L2', recLogger, { deadlineAt });
-    expect(getNodesRawCalls).toBe(0);                                   // trailing fetch never issued
-    expect(disc.droppedReason).toBe('time_budget');
-    expect(disc.coverageComplete).toBe(false);
-    const drop = logs.find((l) => l.msg === 'design_context.ancestor_coverage_dropped'
-      && (l.obj as { stage?: string }).stage === 'ancestor_chain');
-    expect(drop).toBeTruthy();
-    expect((drop!.obj as { reason?: string }).reason).toBe('time_budget');
-  });
-
-  // R7-F2: discovery's capMs computation (`max(1_000, deadlineAt - now)`) had no UPPER clamp — a
-  // budget past ~2.1e9ms overflows Node's setTimeout (silently clamped to ~1ms internally), so every
-  // capped fetch would abort at ~1ms and get mislabeled 'time_budget'. Both capMs sites (the loop
-  // fetch and the trailing chain fetch) must clamp to <=90s, matching every sibling cap in this file
-  // (coreCapMs, the variables/docs/CC/screenshot caps all clamp to 90_000).
-  it('R7-F2: an oversized deadline still clamps capMs to <=90s at both the loop and trailing-chain sites', async () => {
-    const depthsSeen: number[] = [];
-    const base = fakeApi(deepTree, depthsSeen);   // L2 located on the FIRST (depth-4) fetch; has a 2-node ancestor chain (DOC, PAGE)
-    const capsSeen: number[] = [];
-    const disc = await discoverAncestorModes(base, 'file', 'L2', logger,
-      { deadlineAt: Date.now() + 10_000_000_000, makeCappedApi: (capMs) => { capsSeen.push(capMs); return base; } });
-    expect(disc.coverageComplete).toBe(true);
-    expect(capsSeen.length).toBeGreaterThanOrEqual(2);   // one loop-fetch call + one trailing chain-fetch call
-    for (const c of capsSeen) expect(c).toBeLessThanOrEqual(90_000);
-  });
-
-  // Giant-file latency: predictive byte gate (opt-in, cfg.predictiveByteGate — set ONLY by the compare
-  // call-site). The pre-existing REACTIVE check (`bytes >= byteBudget`) only stops AFTER a fetch
-  // already returned an over-budget document; on a giant real file the NEXT (doubled) depth can
-  // itself be tens of MB, and — worse — a cached depth-4 response returns near-instantly, making
-  // the reactive gate blind to how expensive the depth-8 fetch will actually be (the large-page
-  // 88s stream-abort). The predictive gate multiplies the CURRENT fetch's bytes by 2 (deepening
-  // AT MINIMUM doubles the serialized tree) and refuses to even START the next fetch. Doc has NO
-  // target node — 'nope:1' is never located, so the ONLY way discovery stops after one fetch is
-  // the byte gate itself (not a locate).
-  it('predictiveByteGate — bytes*2 >= byteBudget drops BEFORE the next fetch (spy=1)', async () => {
-    const depthsSeen: number[] = [];
-    // depth-4 doc WITHOUT the target node; name-padded so JSON.stringify(document).length ≈ 600.
-    const doc = { id: 'DOC', name: 'x'.repeat(546), type: 'DOCUMENT', children: [] };
-    const bytes = JSON.stringify(doc).length;
-    expect(bytes).toBeLessThan(1000);                              // sanity: reactive gate would NOT fire on its own
-    const api = {
-      getDocumentRaw: async (_f: string, depth = 4) => { depthsSeen.push(depth); return { document: doc } as any; },
-      getNodesRaw: async () => ({ nodes: {} }) as any,
-    };
-    const { logger: recLogger, logs } = recordingLogger();
-    const disc = await discoverAncestorModes(api as never, 'k', 'nope:1', recLogger,
-      { startDepth: 4, byteBudget: 1000, predictiveByteGate: true });
-    expect(depthsSeen).toEqual([4]);                               // exactly one fetch — predictive stop BEFORE depth 8
-    expect(disc.droppedReason).toBe('byte_budget');
-    const drop = logs.find((l) => l.msg === 'design_context.ancestor_coverage_dropped');
-    expect(drop).toBeTruthy();
-    expect((drop!.obj as { predicted_next_bytes?: number }).predicted_next_bytes).toBe(bytes * 2);
-  });
-
-  it('predictive byte-gate control: the same doc WITHOUT the flag → the reactive gate lets it through (600 < 1000), deepening continues', async () => {
-    const depthsSeen: number[] = [];
-    const doc = { id: 'DOC', name: 'x'.repeat(546), type: 'DOCUMENT', children: [] };
-    const api = {
-      getDocumentRaw: async (_f: string, depth = 4) => { depthsSeen.push(depth); return { document: doc } as any; },
-      getNodesRaw: async () => ({ nodes: {} }) as any,
-    };
-    const disc = await discoverAncestorModes(api as never, 'k', 'nope:1', logger, { startDepth: 4, byteBudget: 1000 });
-    expect(depthsSeen).toEqual([4, 8]);                            // no flag → reactive-only → deepens once, then depth_cap
-    expect(disc.droppedReason).toBe('depth_cap');
-  });
-
-  it('predictive byte-gate control-2: under the flag, bytes*2 < byteBudget (byteBudget: 2000) → deepening continues', async () => {
-    const depthsSeen: number[] = [];
-    const doc = { id: 'DOC', name: 'x'.repeat(546), type: 'DOCUMENT', children: [] };
-    const api = {
-      getDocumentRaw: async (_f: string, depth = 4) => { depthsSeen.push(depth); return { document: doc } as any; },
-      getNodesRaw: async () => ({ nodes: {} }) as any,
-    };
-    const disc = await discoverAncestorModes(api as never, 'k', 'nope:1', logger,
-      { startDepth: 4, byteBudget: 2000, predictiveByteGate: true });
-    expect(depthsSeen).toEqual([4, 8]);                            // predicted 1200 < 2000 → does NOT stop early
-    expect(disc.droppedReason).toBe('depth_cap');
+  it('uses the capped api under an absolute deadline and returns empty time_budget evidence on timeout', async () => {
+    const base = { getDocumentByIdsRaw: vi.fn() };
+    const capped = { getDocumentByIdsRaw: vi.fn(async () => {
+      throw new FigmaApiError('network', 0, 'Figma request timed out after 1000ms');
+    }) };
+    const caps: number[] = [];
+    const result = await discoverAncestorModes(base as never, 'file', 'TARGET', 'v-proof', logger, {
+      deadlineAt: Date.now() + 20_000,
+      makeCappedApi: (capMs) => { caps.push(capMs); return capped; },
+    });
+    expect(result).toMatchObject({ coverageComplete: false, reason: 'time_budget' });
+    expect(result.nodesRootToParent).toEqual([]);
+    expect(base.getDocumentByIdsRaw).not.toHaveBeenCalled();
+    expect(capped.getDocumentByIdsRaw).toHaveBeenCalledTimes(1);
+    expect(caps[0]).toBeGreaterThan(0);
+    expect(caps[0]).toBeLessThanOrEqual(20_000);
   });
 });
 
 // --- Deep root BEYOND the ancestor-fetch depth cap -> honest 'default' -----------------------
 //
-// discoverAncestorModes starts at depth 4 and doubles once to 8 (ANCESTOR_START_DEPTH /
-// ANCESTOR_MAX_DEPTH in get-design-context-tool.ts), then stops. A request root ONE level past
-// that cap is never located by ANY bounded fetch the tool actually performs (no maxDepth override
-// here — this exercises the tool's real, hard-coded bound), so coverageComplete=false and the
+// discoverAncestorModes tries the bounded 4 -> 8 -> 16 projection ladder, then stops. A request
+// root ONE level past that cap is never located by any bounded projection the tool performs;
+// this exercises the tool's real hard-coded bound, so coverageComplete=false and the
 // ancestor stack stays empty. The LEAF's stroke is bound to V:1 in the 2-mode collection C (same
 // fixture as the shallow-root glue test above) with NO explicit mode anywhere in the (unreachable)
 // chain: it must resolve to collection C's DEFAULT mode (m1, #a73afd) and be labeled
 // mode_source:'default' — never silently promoted to 'node' just because a default was used.
 describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest default', () => {
   it('coverageComplete=false: multi-mode token defaults to the collection default, mode_source stays "default"', async () => {
-    // DOC(0) -> PAGE(1) -> W2..W8(2..8) -> ROOT(9) -> LEAF(10). ROOT sits at level 9 — past the
-    // depth-8 cap — so even the deepest bounded document fetch never contains it.
+    // DOC(0) -> PAGE(1) -> W2..W16(2..16) -> ROOT(17) -> LEAF. ROOT sits one
+    // level beyond the targeted projection ceiling, so no accepted chain can contain it.
     let deepNode: FakeNode = {
       id: 'ROOT', name: 'Header', type: 'FRAME',
       children: [{ id: 'LEAF', name: '24/Stroke/menu', type: 'VECTOR' }],
     };
-    for (let i = 8; i >= 2; i--) {
+    for (let i = 16; i >= 2; i--) {
       deepNode = { id: `W${i}`, name: `wrapper ${i}`, type: 'FRAME', children: [deepNode] };
     }
     const beyondCapTree: FakeNode = {
@@ -551,20 +508,19 @@ describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest 
         { id: 'PAGE', name: 'Page 1', type: 'CANVAS', children: [deepNode] },
       ],
     };
-    const docsById = nodeDocsById(beyondCapTree);
-
     const depthsSeen: number[] = [];
     const { server, call } = makeFakeMcpServer();
     const deps: ToolDeps = {
       buildApi: () => ({
-        getDocumentRaw: async (_file: string, depth = 4) => { depthsSeen.push(depth); return { document: prune(beyondCapTree, depth) } as any; },
+        getDocumentByIdsRaw: async (_file: string, _ids: string[], depth: number, version?: string) => {
+          depthsSeen.push(depth);
+          return { name: 'Synthetic', lastModified: '', version: version ?? 'v1', document: prune(beyondCapTree, depth) } as any;
+        },
+        getDocumentRaw: async () => { throw new Error('whole-file fetch must not be used'); },
         getNodesRaw: async (_file: string, ids: string[]) => {
           const nodes: Record<string, { document: unknown }> = {};
-          for (const id of ids) {
-            if (id === 'ROOT') nodes[id] = { document: rootSubtree };   // ROOT's own subtree (LEAF bound to V:1)
-            else if (docsById[id]) nodes[id] = docsById[id];
-          }
-          return { nodes };
+          for (const id of ids) if (id === 'ROOT') nodes[id] = { document: rootSubtree };
+          return { version: 'v1', nodes };
         },
         getVariablesLocal: async () => ({ meta: { variableCollections: collectionC, variables: variableV1 } }),
         getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
@@ -582,7 +538,7 @@ describe('get_design_context: deep root beyond the ancestor-fetch cap -> honest 
       mode_dependent: true, effective_mode_source: 'unverifiable',
     });
     // Discovery genuinely deepened to the cap (4 -> 8) and then stopped — it never located ROOT.
-    expect(depthsSeen).toEqual([4, 8]);
+    expect(depthsSeen).toEqual([4, 8, 16]);
   });
 });
 
@@ -655,18 +611,6 @@ function collisionGraph(): { graph: ToolDeps['variableGraph']; stacksSeen: Map<s
 
 type CNode = { id: string; name: string; type: string; explicitVariableModes?: Record<string, string>; children?: CNode[]; [k: string]: unknown };
 
-// The full-document ancestor docs served by getNodesRaw(chainIds, depth=1): each node minus children.
-function ancestorDocMap(fullDoc: CNode): Record<string, { document: CNode }> {
-  const out: Record<string, { document: CNode }> = {};
-  const walk = (n: CNode) => {
-    const { children, ...rest } = n; void children;
-    out[n.id] = { document: rest };
-    for (const c of n.children ?? []) walk(c);
-  };
-  walk(fullDoc);
-  return out;
-}
-
 const leafNode = (): CNode => ({ id: 'LEAF', name: '24/Stroke/menu', type: 'VECTOR',
   strokes: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }], strokeWeight: 1.5,
   boundVariables: { strokes: [{ type: 'VARIABLE_ALIAS', id: ACCENT_BINDING }] } });
@@ -674,20 +618,19 @@ const leafNode = (): CNode => ({ id: 'LEAF', name: '24/Stroke/menu', type: 'VECT
 function collisionHarness(fullDoc: CNode, rootSubtree: CNode, rootId: string):
   { handler: (a: any) => Promise<any>; stacksSeen: Map<string, string>[] } {
   const { graph, stacksSeen } = collisionGraph();
-  const ancDocs = ancestorDocMap(fullDoc);
   const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
       getNodesRaw: async (_f: string, ids: string[], depth?: number) => {
         if ((depth ?? 0) < 1) throw new Error('Figma 400: depth must be a positive integer');
         const nodes: Record<string, { document: unknown }> = {};
-        for (const id of ids) {
-          if (id === rootId) nodes[id] = { document: rootSubtree };
-          else if (ancDocs[id]) nodes[id] = ancDocs[id];
-        }
-        return { nodes };
+        for (const id of ids) if (id === rootId) nodes[id] = { document: rootSubtree };
+        return { version: 'v1', nodes };
       },
-      getDocumentRaw: async () => ({ document: fullDoc } as any),
+      getDocumentByIdsRaw: async (_f: string, _ids: string[], depth: number, version?: string) => ({
+        name: 'Synthetic', lastModified: '', version: version ?? 'v1', document: prune(fullDoc, depth),
+      } as any),
+      getDocumentRaw: async () => { throw new Error('whole-file fetch must not be used'); },
       getVariablesLocal: async () => ({ meta: { variableCollections: {}, variables: {} } }),
       getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
       getFileComponentSets: async () => [],
@@ -782,6 +725,63 @@ describe('get_design_context nearest-wins BY LIBRARY KEY across the full chain',
 // CT (multi-mode, PINNED on ROOT via explicitVariableModes) — accent aliases into
 // CD (multi-mode, pinned NOWHERE in the subtree) — brand → resolves to CD's DEFAULT (#a73afd).
 // Expect mode_source:'default'. Pre-fix (coverageComplete defaulted true) this asserted 'node'.
+describe('get_design_context targeted ancestor projection', () => {
+  it('recovers a depth-12 ancestor mode at projection depth 16 without a whole-file fetch', async () => {
+    const rawColor = { r: 0.067, g: 0.133, b: 0.2, a: 1 };       // #112233
+    const defaultColor = { r: 0.267, g: 0.333, b: 0.4, a: 1 };   // #445566
+    const selectedColor = { r: 0.467, g: 0.533, b: 0.6, a: 1 };  // #778899
+    const requestRoot = {
+      id: '7:70', name: 'target', type: 'FRAME',
+      fills: [{ type: 'SOLID', color: rawColor, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'V:proof' } } }],
+      absoluteBoundingBox: { x: 0, y: 0, width: 80, height: 32 },
+    };
+    let branch: FakeNode = { id: '7:70', name: 'target', type: 'FRAME' };
+    for (let level = 11; level >= 2; level--) {
+      branch = { id: `7:${level}`, name: `level ${level}`, type: 'FRAME', children: [branch] };
+    }
+    const projected: FakeNode = {
+      id: '0:0', name: 'Document', type: 'DOCUMENT', children: [{
+        id: '0:1', name: 'Page', type: 'CANVAS', explicitVariableModes: { C: 'selected' }, children: [branch],
+      }],
+    };
+    const projectionDepths: number[] = [];
+    const { server, call } = makeFakeMcpServer();
+    const deps: ToolDeps = {
+      buildApi: () => ({
+        getNodesRaw: async () => ({ version: 'v-proof', nodes: { '7:70': { document: requestRoot } } }),
+        getDocumentByIdsRaw: async (_file: string, ids: string[], depth: number, version?: string) => {
+          expect(ids).toEqual(['7:70']);
+          expect(version).toBe('v-proof');
+          projectionDepths.push(depth);
+          return { name: 'Proof', lastModified: '', version: 'v-proof', document: prune(projected, depth) } as any;
+        },
+        getDocumentRaw: async () => { throw new Error('whole-file fetch must not be used'); },
+        getVariablesLocal: async () => ({ meta: {
+          variableCollections: { C: { id: 'C', name: 'Theme', defaultModeId: 'default', modes: [
+            { modeId: 'default', name: 'Default' }, { modeId: 'selected', name: 'Selected' },
+          ] } },
+          variables: { 'V:proof': { id: 'V:proof', name: 'surface/proof', resolvedType: 'COLOR', variableCollectionId: 'C',
+            valuesByMode: { default: defaultColor, selected: selectedColor } } },
+        } }),
+        getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
+        getFileComponentSets: async () => [],
+      } as unknown as FigmaApi),
+      defaultToken: 'figd_x', logger, maxResultChars: 40000,
+    };
+    registerGetDesignContextTool(server, deps);
+
+    const response = await call('get_design_context', { file: 'proof', node_id: '7:70', depth: 4, include_component_docs: false });
+    const body = JSON.parse(textOf(response.content[0]));
+    const fillRef = body.node.fill;
+    expect(body.globalVars[fillRef]).toMatchObject({
+      default_value: '#445566', effective_rendered_value: '#778899', value: '#778899',
+      effective_mode_source: 'ancestor_chain',
+    });
+    expect(body.globalVars[fillRef].value).not.toBe('#112233');
+    expect(projectionDepths).toEqual([4, 8, 16]);
+  });
+});
+
 describe('get_design_context: skipped discovery + downstream-alias multi-mode default -> honest default (Critical)', () => {
   it('needsAncestors=false (direct collection pinned) but a downstream alias hop defaults -> mode_source:"default"', async () => {
     // CT = directly-bound collection (multi-mode), pinned by the subtree on ROOT.
@@ -817,10 +817,13 @@ describe('get_design_context: skipped discovery + downstream-alias multi-mode de
         getNodesRaw: async (_f: string, ids: string[], _depth?: number) => {
           const nodes: Record<string, { document: unknown }> = {};
           for (const nid of ids) if (nid === 'ROOT') nodes[nid] = { document: rootSubtree };
-          return { nodes };
+          return { version: 'v1', nodes };
         },
-        // Called ONLY by discoverAncestorModes — must never fire when needsAncestors()=false.
-        getDocumentRaw: async (_f: string, depth = 4) => { docFetches.push(depth); return { document: { id: 'DOC', type: 'DOCUMENT' } } as any; },
+        // Called only by ancestor discovery — must never fire when needsAncestors() is false.
+        getDocumentByIdsRaw: async (_f: string, _ids: string[], depth: number) => {
+          docFetches.push(depth);
+          return { name: 'Synthetic', lastModified: '', version: 'v1', document: { id: 'DOC', name: 'Document', type: 'DOCUMENT', children: [] } } as any;
+        },
         getVariablesLocal: async () => ({ meta: { variableCollections: collections, variables } }),
         getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
         getFileComponentSets: async () => [],

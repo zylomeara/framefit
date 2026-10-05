@@ -407,10 +407,13 @@ read ❌ as defects:
    descend and do not raise `max_depth`: those children are excluded from this box's layout by
    definition, and no capture depth returns them. Pair such an element directly by its own selector
    — a fixed site header is the ordinary case.
-- a `degraded_stages` entry on the response — an enrichment that did not arrive, with what it cost.
-  Today that is the variables index: the token rows read unresolved rather than verified, the verdict
-  stays incomplete, and the entry carries the ms. It is only fetched when a pair binds a colour to a
-  variable, so its absence on a geometry-only compare means *not needed*, not *failed*. If the detail
+- a `degraded_stages` entry on the response — an enrichment that did not arrive. Two stages exist.
+  `variables` is the variables index and carries the ms it cost: library graph/snapshot fallbacks may
+  still resolve some token rows, the rest read unresolved, and completeness follows the delivered
+  rows and verification. `ancestor_discovery` names the pairs (`affected_pairs`) whose ancestor mode
+  chain could not be proven, with a `reason`: their mode-dependent token rows stay unconfirmed, and
+  `get_variables` does not change that. Both are only fetched when a pair binds a colour to a
+  variable, so their absence on a geometry-only compare means *not needed*, not *failed*. If the detail
   starts with `cached:` the failure is being replayed from an earlier attempt — this call did not wait;
   at the same cap it will not retry until the cache expires. For a capped timeout/too-large failure,
   `get_variables` with a larger supported `timeout_ms` bypasses that cached failure, not the underlying

@@ -62,8 +62,8 @@ export interface ReadCaches {
 // attempt per minute: agent-tolerable spacing, Figma-polite. Read rule in getVariablesLocal.
 export const TOO_LARGE_SOFT_EXPIRY_MS = 60_000;
 
-// Decorator: caches getFileStructure (legacy) + version-keyed node/variables
-// trees. Comments, images, document-raw pass through.
+// Decorator: caches getFileStructure plus version-keyed node, variable, whole-document, and targeted
+// projection trees. Comments and images pass through.
 // NOTE: in single-tenant HTTP the cache is shared and keyed by fileKey+version,
 // not by token — a caller passing its own figma_token can hit another caller's
 // cached tree. This is fine for stdio (one user) and the env-token deploy; the
@@ -131,8 +131,19 @@ export class CachingFigmaApiAdapter implements FigmaApi {
     return res;
   }
 
-  getDocumentByIdsRaw(fileKey: string, ids: string[], depth: number, version?: string): Promise<RawFileResponse> {
-    return this.inner.getDocumentByIdsRaw(fileKey, ids, depth, version);
+  async getDocumentByIdsRaw(fileKey: string, ids: string[], depth: number, version?: string): Promise<RawFileResponse> {
+    if (!this.read || !version || ids.length === 0) return this.inner.getDocumentByIdsRaw(fileKey, ids, depth, version);
+    const canonicalIds = [...new Set(ids)].sort();
+    const key = `${fileKey}|${version}|projection:${canonicalIds.join(',')}|${depth}`;
+    const cached = this.read.docCache.get(key);
+    if (cached) {
+      this.logger.info({ file_key_prefix: fileKey.slice(0, 8) }, 'cache.hit_projection');
+      return cached;
+    }
+    const res = await this.dedup(`projection|${key}`,
+      () => this.inner.getDocumentByIdsRaw(fileKey, canonicalIds, depth, version));
+    if (res.version === version) this.read.docCache.set(key, res, sizeOf(res));
+    return res;
   }
 
   getImages(fileKey: string, ids: string[], opts: ImageOptions): Promise<ImagesResult> {
