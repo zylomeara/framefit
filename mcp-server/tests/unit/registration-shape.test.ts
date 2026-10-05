@@ -199,6 +199,16 @@ describe('the tools/list surface a client receives is unchanged', () => {
     expect(description).toContain('definition_status:"unavailable"');
   });
 
+  it('describes compare variable recovery without promising complete fallback', async () => {
+    const description = (await deliveredTools()).find((entry) => entry.name === 'compare_node_to_dom')?.description ?? '';
+    expect(description).toContain('available graph/snapshot fallbacks may recover some rows');
+    expect(description).toContain('unrecovered rows remain unresolved');
+    expect(description).toContain('completeness is determined by the actual rows and verification');
+    expect(description).toContain('only retries local-index acquisition');
+    expect(description).toContain('does not guarantee success or restore ancestor evidence');
+    expect(description).not.toContain('get_variables with a larger timeout_ms is what gets past that');
+  });
+
   it('delivers the recorded safety annotations, over the real protocol', async () => {
     const live = await liveSurface();
     // Fail-closed on both sides: a tool that stops sending annotations compares undefined against a

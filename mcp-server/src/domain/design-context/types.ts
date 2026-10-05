@@ -64,5 +64,5 @@ export interface DesignContext {
   /** Enrichment stages skipped/failed under the per-call time budget. The core subtree is never
    * time-degraded (see `degraded` for the size budget). Reasons: time_budget (skipped to fit),
    * error (stage failed), cached_error (known-broken endpoint, negative-cached). */
-  degraded_stages?: { stage: 'variables' | 'ancestor_discovery' | 'component_docs' | 'code_connect' | 'screenshot'; reason: 'time_budget' | 'error' | 'cached_error' }[];
+  degraded_stages?: { stage: 'variables' | 'ancestor_discovery' | 'component_docs' | 'code_connect' | 'screenshot'; reason: 'time_budget' | 'error' | 'cached_error'; detail?: string }[];
 }

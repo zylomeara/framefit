@@ -176,7 +176,7 @@ the app under another mode. When the binding can be resolved, the spec carries a
 effectiveModes?, effectiveModeSource? }`. `token` is the variable name (the thing to write into
 code); `effectiveHex` is the evidenced rendered value. A multi-mode token with no visible pin has
 `effectiveHex: null` and `effectiveModeSource: "unverifiable"`; `defaultHex` remains diagnostic
-only. This tool deliberately does not pay for whole-file ancestor discovery, so a pin above the
+only. This tool deliberately does not pay for ancestor discovery, so a pin above the
 requested node stays unverifiable where `get_design_context` can report `ancestor_chain` with a
 non-null rendered value. When both tools name a binding they name it identically - one
 shared resolver - but today `get_design_context` does not name every binding this tool can: a
@@ -341,8 +341,9 @@ and diverged. Everything without such evidence keeps the value-based rule above.
 lives in the variables payload, so it is only as available as the fetch that carries it.
 
 Colors are enriched from the file's variables, and that fetch is the slowest thing this tool does on
-a large file. When it fails or times out, the run degrades honestly - token rows read as unresolved
-and a `confirm_token` blocker appears for every `bound-unresolved` row and every row whose two
+a large file. When it fails or times out, the run degrades honestly - the library graph and snapshot
+fallbacks (where this server has them) may still resolve some token rows; rows they cannot resolve
+read as unresolved, and a `confirm_token` blocker appears for every `bound-unresolved` row and every row whose two
 values did not already match byte-for-byte (an equal `mode-unconfirmed` or `semantic-confirm` pair
 stays a visible `review` row without blocking) - and the codeSyntax evidence above dies with the
 same fetch - and says so in two places a caller sees: a
@@ -350,9 +351,24 @@ same fetch - and says so in two places a caller sees: a
 unresolved-token blockers among them (no token name in the detail) name the escalation road when
 the failure class allows one - run `get_variables {timeout_ms: 120000}` on the file (the largest
 budget the tool allows), then re-run the compare; the detail also names the ceiling (a
-failed 120s call is itself cached for ~10 minutes). `ms`
+failed 120s call is itself cached for ~10 minutes). A larger budget only retries the local
+variables index; it does not guarantee that index, and it does not supply ancestor mode evidence. `ms`
 is the point. Measured on this transport, that one endpoint took 90 seconds of a 93-second call, and
 without it the caller has a two-minute silence and no way to tell a slow call from a hung one.
+
+A bound color's effective mode can also be pinned on an ancestor of the paired node (its frame,
+section or page). The tool reads those ancestors from version-pinned targeted projections of the
+paired nodes - 4, then 8, then 16 levels from the document root, one request per depth for the
+whole batch; with `frame_node_id`, a same-version depth-2 document that proves the frame's own path
+is used first. An ancestor chain counts only when it is a single unambiguous
+`DOCUMENT -> page -> ... -> node` path of the same file version as the pair. When it cannot be
+proven, `degraded_stages` carries `{ stage: "ancestor_discovery", reason, affected_pairs:
+[{ pair_index, node_id, label?, selector? }] }` plus one `ℹ️` line in `report_markdown`: the
+mode-dependent token rows of those pairs stay unconfirmed, while geometry and frame coverage are
+unaffected. `reason` is one of `missing_version`, `version_mismatch`, `missing_target`,
+`ambiguous_target`, `malformed_chain`, `invalid_projection`, `scan_cap`, `depth_cap` (the node is
+deeper than 16 levels), `byte_budget`, `time_budget` or `error`. Retrying `get_variables` does not
+change this stage.
 
 Every color verdict consumes only `effectiveHex`. `defaultHex` is diagnostic evidence and never
 feeds a `pass`, `fail`, or measured Figma value. When a bound token has `effectiveHex:null` (or an

@@ -4,7 +4,7 @@ import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, textResult } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, normalizeScopedResponseRoot, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { buildLayoutSpec, ENUM_CAPS, anyTruncatedSpec } from '../../../domain/layout-spec/projector.js';
 import { diffPair, summarize, widthNoiseTolerance, deriveCoverage, condenseBulkPass, dimensionOf, NOT_COVERED_BY_TOOL } from '../../../domain/layout-spec/diff.js';
 import { renderReport } from '../../../domain/layout-spec/report.js';
@@ -17,16 +17,11 @@ import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/la
 import type { PairResult, PairSummary, DomSnapshot, DomSnapshotOk, LayoutSpec, VerificationReceipt, CaptureInfo, PairAttribution, PairSource, DiffRow, FixPlanGroup, FixPlanEdit, MatchProfile } from '../../../domain/layout-spec/types.js';
 import { hintForNode, type SourceHint } from '../../../domain/layout-spec/class-source.js';
 import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
-import { collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, collectExternalPaintKeys, ancestorChainFromSubtree, buildExactModeEvidence, buildGraphModeEvidence, modeIds, pickDescentCandidates, sceneIdEquals } from '../../../domain/mode-resolve.js';
-import { discoverAncestorModes } from './get-design-context-tool.js';
+import { collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, collectExternalPaintKeys, buildExactModeEvidence, buildGraphModeEvidence, documentaryAncestorChain, modeIds, sceneIdEquals } from '../../../domain/mode-resolve.js';
+import { discoverAncestorModesBatch, type AncestorDiscovery, type AncestorDiscoveryReason } from './get-design-context-tool.js';
 import { makeColorTokenResolver, prefetchSnapshotHits, buildMergedCssEvidence, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
 import { FigmaApiError, isTimeoutMessage, TOO_LARGE_REASON_RE } from '../../../ports/errors.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
-
-// Latency: a targeted probe-descent in canvasChainFor (:204-215) — bounded so a pathological
-// canvas (wide fan-out / deep section nesting) degrades honestly to (d) instead of stalling.
-const DESCENT_MAX_ROUNDS = 3;
-const DESCENT_MAX_CANDIDATES = 64;
 
 // Latency: the /variables/local cap lives with the shared resolver factory (one constant → the
 // negative-cache entries both tools write are keyed by the same capMs and serve each other).
@@ -40,7 +35,11 @@ const DESCENT_MAX_CANDIDATES = 64;
  * not THAT the stage degraded - the rows already say that - but that the caller spent most of the
  * call waiting for it.
  */
-interface DegradedStage { stage: 'variables'; reason: 'error'; ms: number; detail: string }
+type DegradedStage =
+  | { stage: 'variables'; reason: 'error'; ms: number; detail: string }
+  | { stage: 'ancestor_discovery'; reason: AncestorDiscoveryReason; affected_pairs: Array<{
+      pair_index: number; node_id: string; label?: string; selector?: string;
+    }> };
 
 // match-profiles: the type lives in domain (types.ts) — it has domain consumers (DiffOptions.profile
 // in diff.ts + buildVerification.opts.matchProfile); the re-export preserves existing test imports.
@@ -358,9 +357,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
       'Snapshots come from the canonical extractor (get_layout_spec include_extractor:true). ' +
       'The variables index is fetched only when a pair binds a colour to a variable - a call with no bound ' +
       'colour never waits on it. When it IS needed and does not arrive, degraded_stages says so with the ms ' +
-      'it cost: the token rows then read unresolved rather than verified, the verdict stays incomplete, and a ' +
-      'failure is remembered per file for a few minutes - so a later call does not re-pay the wait and does ' +
-      'not retry it either. get_variables with a larger timeout_ms is what gets past that. ' +
+      'it cost; available graph/snapshot fallbacks may recover some rows, unrecovered rows remain unresolved, and ' +
+      'completeness is determined by the actual rows and verification. A failure is remembered per file for a few ' +
+      'minutes, so a later call does not re-pay the wait or retry it. A larger get_variables timeout only retries ' +
+      'local-index acquisition; it does not guarantee success or restore ancestor evidence. ' +
       'Token rows with status `review` carry `figma`/`dom` token names - judge them: return **same token** ' +
       '(-> resolved) only if the names denote the same concept; **wrong token** (-> report) ONLY when they denote ' +
       'clearly-DIFFERENT concepts (e.g. error vs success); when the names cannot be bridged either way (a possible ' +
@@ -396,7 +396,58 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // Figma-side only and must NOT imply the DOM got deeper). effDepth == reqDepth unless clamped.
         const frameRes = await api.getFrameRaw(parsed.value, ids, reqDepth);
         const res = frameRes.raw;
+        const coreVersion = typeof res.version === 'string' && res.version.length > 0 ? res.version : undefined;
+        const pairRoots = pairIds.map((id) => normalizeScopedResponseRoot(res.nodes[id]?.document, id));
+        const coreFrameRoot = frameId === undefined
+          ? undefined
+          : normalizeScopedResponseRoot(res.nodes[frameId]?.document, frameId);
         const effDepth = frameRes.effectiveMaxDepth;
+
+        // Resolve snapshot references and all pair-local early exits before any mode lookup is queued.
+        // The same prepared record drives demand gates and the pair loop, so an expired ref, missing
+        // node, or stale schema cannot start ancestor discovery and later exit without using it.
+        type PreparedPair = {
+          domSnap?: DomSnapshot;
+          selector?: string;
+          base: { node_id: string; label?: string; selector?: string };
+          earlyRows?: DiffRow[];
+          modeEligible: boolean;
+        };
+        const prepared: PreparedPair[] = args.pairs.map((p, i) => {
+          let resolveErrorNote: string | undefined;
+          let resolvedSnapshot: unknown;
+          if (p.dom_ref) {
+            if (!deps.snapshotStore) resolveErrorNote = 'snapshot store unavailable on this server — pass dom inline';
+            else {
+              const resolved = resolveDomRef(p.dom_ref, deps.snapshotStore, deps.tenantId ?? 'local');
+              if (resolved.ok) resolvedSnapshot = resolved.snapshot;
+              else resolveErrorNote = resolved.note;
+            }
+          }
+          const domSnap = (p.dom as DomSnapshot | undefined) ?? (resolvedSnapshot as DomSnapshot | undefined);
+          const selector = p.dom_ref?.selector ?? (domSnap as { selector?: string } | undefined)?.selector;
+          const base = { node_id: pairIds[i], ...(p.label ? { label: p.label } : {}), ...(selector ? { selector } : {}) };
+          let earlyRows: DiffRow[] | undefined;
+          if (resolveErrorNote) earlyRows = [{ prop: 'snapshot_ref', status: 'warn', note: resolveErrorNote }];
+          else if (!res.nodes[pairIds[i]]?.document) {
+            earlyRows = [{ prop: 'node', status: 'warn', note: `node ${pairIds[i]} not found in file` }];
+          } else if (!pairRoots[i]) {
+            earlyRows = [{ prop: 'node', status: 'warn', note: `node ${pairIds[i]} returned a malformed scoped root` }];
+          } else if (!domSnap) {
+            earlyRows = [{ prop: 'snapshot', status: 'warn', note: 'snapshot unavailable' }];
+          } else {
+            const schema = (domSnap as DomSnapshotOk).schema;
+            if (schema !== undefined && schema !== DOM_SNAPSHOT_SCHEMA_VERSION) {
+              earlyRows = [{ prop: 'snapshot_schema', status: 'warn', figma: DOM_SNAPSHOT_SCHEMA_VERSION, dom: schema,
+                note: 'snapshot version does not match the server — re-capture with a FRESH script: get_layout_spec {include_extractor:true, extractor_mode:"inline"} (on the loader path an open page keeps serving its cached old extractor), or reload the page first' }];
+            }
+          }
+          const status = (domSnap as { status?: string } | undefined)?.status;
+          return { domSnap, selector, base, earlyRows,
+            modeEligible: earlyRows === undefined && (status === undefined || status === 'ok') };
+        });
+        const eligibleIndices = prepared.flatMap((pair, i) => pair.modeEligible ? [i] : []);
+
         const hydration: Array<HydrationReceipt | undefined> = Array(args.pairs.length);
         // The DOM slice of each pair, collected IN PARALLEL with the diff — needed by
         // auditContainer (buildVerification below) for the between-children spacing audit of partial containers,
@@ -449,8 +500,8 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // ponytail: the predicate mirrors today's two consumers. A future consumer that reads
         // variableIndex WITHOUT a bound paint would make it under-trigger in silence — the upgrade
         // path then is a lazily memoised index, not a wider predicate.
-        const anyPairBindsColor = pairIds.some((pid) => {
-          const doc = res.nodes[pid]?.document;
+        const anyPairBindsColor = eligibleIndices.some((i) => {
+          const doc = pairRoots[i];
           return doc !== undefined && hasBoundPaintColor(doc);
         });
         const variablesStartedAt = Date.now();
@@ -490,8 +541,8 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         // no evidence at all - every both-token row stays legacy, byte-for-byte 0.22.0. Ordered
         // after ensureReady above (the graph view is a read).
         const referencedLibKeys = variableIndex
-          ? [...new Set(pairIds.flatMap((pid) => {
-              const doc = res.nodes[pid]?.document;
+          ? [...new Set(eligibleIndices.flatMap((i) => {
+              const doc = pairRoots[i];
               return doc ? [...collectExternalPaintKeys(doc)] : [];
             }))]
           : [];
@@ -500,7 +551,7 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           : undefined;
         const cssEvidence = variableIndex ? buildMergedCssEvidence(variableIndex, graphView) : undefined;
 
-        const frameWidth = frameId ? res.nodes[frameId]?.document?.absoluteBoundingBox?.width : undefined;
+        const frameWidth = coreFrameRoot?.absoluteBoundingBox?.width;
 
         // Preflight: the reference (frameWidth) is known BEFORE the per-pair loop — compared directly with
         // expected_overlay_width, no plumbing of the DOM innerWidth out of Promise.all. Emitted ONLY
@@ -512,12 +563,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           preflight = `frame w${frameWidth}, overlay ${args.expected_overlay_width} — check the breakpoint variant (find_breakpoint_variant)`;
         }
 
-        // The deepest available raw of the frame — the source of the pairs' document ancestor chain.
-        // covRes (tier 3, held_depth up to 9) ?? the main fetch (effDepth+1, the floor —
-        // always present). Falling back to whole-file discovery is ONLY triggered by a pair not being locatable
-        // in bestFrameRaw, NOT by a tier-3 failure (a transient cov-fetch failure
-        // must not drop a heavy file back into the 60-90s whole-file path).
+        // The deepest available raw of the frame. It is used for geometry regardless of mode-version
+        // validity; documentary mode evidence comes only from a same-version shortcut or the targeted batch ladder.
         let bestFrameRaw: RawSceneNode | undefined;
+        let modeFrameRaw: RawSceneNode | undefined;
         // placeholder-frame signal state: the frame walk is memoized (one scan per call), the
         // max detected count feeds ONE receipt-level notes[] line after buildVerification.
         let framePlaceholderScan: { count: number; visited: number } | undefined;
@@ -538,9 +587,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         let enumMeta: { depth: number; source: 'deep' | 'pair_fetch' } | undefined;
         if (frameId) {
           const fe = res.nodes[frameId];
-          if (fe?.document) {
-            bestFrameRaw = fe.document;
-            const mainSpec = buildLayoutSpec(fe.document, { components: fe.components ?? {}, setNames: new Map() }, { maxDepth: effDepth, caps: ENUM_CAPS });
+          if (fe?.document && coreFrameRoot) {
+            bestFrameRaw = coreFrameRoot;
+            if (coreVersion !== undefined) modeFrameRaw = coreFrameRoot;
+            const mainSpec = buildLayoutSpec(coreFrameRoot, { components: fe.components ?? {}, setNames: new Map() }, { maxDepth: effDepth, caps: ENUM_CAPS });
             frameSpec = mainSpec; enumMeta = { depth: effDepth, source: 'pair_fetch' };
             // Final hardening: gate reads effDepth, NOT reqDepth. reqDepth
             // is what the CALLER asked for; effDepth is what the main fetch actually got (frameRes.
@@ -559,9 +609,10 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
             if (effDepth < 8 && anyTruncatedSpec(mainSpec)) {
               try {
                 const covRes = await api.getFrameRaw(parsed.value, [frameId], 8);
-                const cd = covRes.raw.nodes[frameId]?.document; // guard: optional chain
+                const cd = normalizeScopedResponseRoot(covRes.raw.nodes[frameId]?.document, frameId);
                 if (cd) {
                   bestFrameRaw = cd;
+                  if (coreVersion !== undefined && covRes.raw.version === coreVersion) modeFrameRaw = cd;
                   frameSpec = buildLayoutSpec(cd, { components: covRes.raw.nodes[frameId]?.components ?? {}, setNames: new Map() }, { maxDepth: covRes.effectiveMaxDepth, caps: ENUM_CAPS });
                   enumMeta = { depth: covRes.effectiveMaxDepth, source: 'deep' };
                 }
@@ -573,68 +624,41 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
           }
         }
 
-        // Latency: deadline on the discovery fallbacks — one per call. This is a discovery-only
-        // cap (the main/cov getFrameRaw calls above go through the un-capped api, bounded by
-        // FIGMA_TIMEOUT_MS — pre-existing): honestly a discovery budget, NOT "a ceiling on
-        // the whole call".
+        // One absolute deadline covers the depth-2 shortcut and targeted fallback ladder. Every
+        // network request is dispatched through an adapter carrying that same deadline.
         const deadlineAt = Date.now() + (deps.toolTimeBudgetMs ?? 90_000);
-        // Latency: opt-in predictive byte gate — compare is the ONLY caller that sets this
-        // (get_design_context keeps the reactive-only gate, see discoverAncestorModes' cfg doc).
-        // Both discoverAncestorModes call-sites below share this one cappedCfg literal.
         const cappedCfg = {
           deadlineAt,
-          predictiveByteGate: true as const,
           makeCappedApi: (capMs: number) => deps.buildApi(token, capMs, deadlineAt),
         };
 
-        // The canvas part of the document ancestor chain (DOCUMENT..parent(frame)) — ONE
-        // lazy depth-2 raw fetch for the whole call, shared by all pairs (`??=` is synchronous → a single
-        // initialization even under the parallel Promise.all below). The walk goes over the RAW doc.document:
-        // RawSceneNode preserves explicitVariableModes — buildFileStructure is FORBIDDEN here (it strips
-        // the modes = confidently-wrong color under coverageComplete=true).
-        // undefined = the skeleton isn't fetched / the frame isn't top-level in the depth-2 slice AND the probe-descent (below) didn't
-        // recover the chain → the caller falls into fallback branch (d).
-        // The closure captures the fid of the FIRST call — invariant: exactly one frame_node_id per tool
-        // call; on a multi-frame refactor, key the memo by fid.
+        // Build a synthetic documentary tree from a proven root->parent(frame) chain and the frame's
+        // same-version raw. Running the shared strict extractor over this composed tree prevents the
+        // shortcut from accepting a CANVAS merely somewhere in a malformed path or picking a duplicate.
+        const composeFrameTree = (ancestors: RawSceneNode[], frame: RawSceneNode): RawSceneNode | undefined => {
+          if (ancestors.length === 0) return undefined;
+          let child = frame;
+          for (let i = ancestors.length - 1; i >= 0; i--) {
+            const { children: _children, ...node } = ancestors[i];
+            child = { ...node, children: [child] } as RawSceneNode;
+          }
+          return child;
+        };
+
+        // The documentary path above frame is a shortcut only when one same-version depth-2
+        // projection proves it directly. Deeper or ambiguous frames use the targeted batch ladder.
         let canvasChainMemo: Promise<RawSceneNode[] | undefined> | undefined;
         const canvasChainFor = (fid: string): Promise<RawSceneNode[] | undefined> =>
           (canvasChainMemo ??= (async () => {
+            if (!coreVersion) return undefined;
+            const remaining = deadlineAt - Date.now();
+            if (remaining <= 0) return undefined;
             try {
-              const doc = await api.getDocumentRaw(parsed.value, 2);
-              const root = doc.document as unknown as RawSceneNode;
-              const direct = ancestorChainFromSubtree(root, fid);
-              if (direct !== undefined) return direct;
-              // Latency: the frame isn't in the depth-2 slice (section-nested) → a targeted probe-descent INSTEAD of (d).
-              // bbox is ONLY a pre-filter for whom to probe; membership is documentary, via the children-id of the probe
-              // RESPONSE ROOTS (only the ids requested in a given round
-              // enter the chain; sibling branches are excluded by parent-linkage through chain). Any failure/cap/
-              // deadline → undefined → the existing honest branch (d).
-              const frameBox = res.nodes[fid]?.document?.absoluteBoundingBox;
-              if (frameBox == null) return undefined;
-              type Frontier = { id: string; chain: RawSceneNode[] };
-              let frontier: Frontier[] = [];
-              for (const canvas of root.children ?? []) {
-                if (canvas.type !== 'CANVAS') continue;
-                for (const cand of pickDescentCandidates(canvas.children ?? [], frameBox))
-                  frontier.push({ id: cand.id, chain: [root, canvas] });
-              }
-              for (let round = 0; round < DESCENT_MAX_ROUNDS && frontier.length > 0; round++) {
-                if (frontier.length > DESCENT_MAX_CANDIDATES) return undefined;     // cap AFTER the pre-filter
-                const remaining = deadlineAt - Date.now();
-                if (remaining <= 0) return undefined;                               // deadline → (d)
-                const probeApi = cappedCfg.makeCappedApi(Math.min(Math.max(1_000, remaining), 90_000));
-                const probe = await probeApi.getNodesRaw(parsed.value, frontier.map((f) => f.id), 1);
-                const next: Frontier[] = [];
-                for (const f of frontier) {
-                  const full = probe.nodes[f.id]?.document;                         // probe RESPONSE ROOT
-                  if (!full) continue;
-                  if ((full.children ?? []).some((c) => sceneIdEquals(c.id, fid))) return [...f.chain, full];
-                  for (const cand of pickDescentCandidates(full.children ?? [], frameBox))
-                    next.push({ id: cand.id, chain: [...f.chain, full] });          // parent-linkage: response roots only
-                }
-                frontier = next;
-              }
-              return undefined;                                                     // rounds exhausted → (d)
+              const shortcutApi = deps.buildApi(token, Math.min(Math.max(1, remaining), 90_000), deadlineAt);
+              const doc = await shortcutApi.getDocumentRaw(parsed.value, 2);
+              if (doc.version !== coreVersion) return undefined;
+              const direct = documentaryAncestorChain(doc.document as RawSceneNode, fid);
+              return direct.ok ? direct.nodesRootToParent : undefined;
             } catch (err) {
               if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
               deps.logger.info({ err: (err as Error).message }, 'compare.canvas_chain_unavailable');
@@ -657,128 +681,74 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
         try {
           // The gate (index-less only) and the snapHits ⊆ graph-misses invariant live INSIDE
           // prefetchSnapshotHits — shared with get_layout_spec by construction.
-          snapHits = await prefetchSnapshotHits(deps, variableIndex, pairIds.map((pid) => res.nodes[pid]?.document));
+          snapHits = await prefetchSnapshotHits(deps, variableIndex,
+            eligibleIndices.map((i) => pairRoots[i]));
         } catch (err) {
           if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
           deps.logger.info({ err: (err as Error).message }, 'compare.snapshot_prefetch_unavailable');
         }
 
+        const modeIndices = eligibleIndices.filter((i) => {
+          const doc = pairRoots[i];
+          return doc !== undefined && ((variableIndex !== undefined && hasBoundPaintColor(doc))
+            || (variableIndex === undefined && graphOrSnapshotAvailable && hasExternalBoundPaintColor(doc)));
+        });
+        const modeEvidence = new Map<number, AncestorDiscovery>();
+
+        if (modeIndices.length > 0 && frameId !== undefined && modeFrameRaw !== undefined && coreVersion !== undefined) {
+          const canvasChain = await canvasChainFor(frameId);
+          if (canvasChain !== undefined) {
+            for (const i of modeIndices) {
+              const composed = composeFrameTree(canvasChain, modeFrameRaw);
+              if (!composed) continue;
+              const proof = documentaryAncestorChain(composed, pairIds[i]);
+              if (proof.ok) {
+                modeEvidence.set(i, {
+                  stack: modeIds(buildGraphModeEvidence(proof.nodesRootToParent, pairIds[i])),
+                  nodesRootToParent: proof.nodesRootToParent,
+                  coverageComplete: true,
+                });
+              }
+            }
+          }
+        }
+
+        const fallbackIndices = modeIndices.filter((i) => !modeEvidence.has(i));
+        if (fallbackIndices.length > 0) {
+          const fallback = await discoverAncestorModesBatch(api, parsed.value,
+            fallbackIndices.map((i) => pairIds[i]), coreVersion, deps.logger, cappedCfg);
+          for (const i of fallbackIndices) {
+            const found = [...fallback].find(([id]) => sceneIdEquals(id, pairIds[i]))?.[1]
+              ?? { stack: new Map(), nodesRootToParent: [], coverageComplete: false, reason: 'missing_target' as const };
+            modeEvidence.set(i, found);
+          }
+        }
+
+        const degradedByReason = new Map<AncestorDiscoveryReason, NonNullable<Extract<DegradedStage, { stage: 'ancestor_discovery' }>['affected_pairs']>>();
+        for (const i of modeIndices) {
+          const evidence = modeEvidence.get(i);
+          if (evidence?.coverageComplete || !evidence?.reason) continue;
+          const affected = degradedByReason.get(evidence.reason) ?? [];
+          affected.push({ pair_index: i, node_id: pairIds[i],
+            ...(args.pairs[i].label ? { label: args.pairs[i].label } : {}),
+            ...(prepared[i].selector ? { selector: prepared[i].selector } : {}) });
+          degradedByReason.set(evidence.reason, affected);
+        }
+        for (const [reason, affected_pairs] of degradedByReason) {
+          degradedStages.push({ stage: 'ancestor_discovery', reason, affected_pairs });
+        }
+
         const results: PairResult[] = await Promise.all(args.pairs.map(async (p, i): Promise<PairResult> => {
           const id = pairIds[i];
-
-          // Resolve dom_ref (if given) BEFORE anything else touches the snapshot — every downstream
-          // reference to the dom side goes through the single `domSnap` local computed right below,
-          // never `p.dom` directly (with `dom` now optional, any leftover `p.dom` access would
-          // TypeError on a dom_ref pair and take down the whole Promise.all, not just that pair).
-          let resolveErrorNote: string | undefined;
-          let resolvedSnapshot: unknown;
-          if (p.dom_ref) {
-            if (!deps.snapshotStore) {
-              resolveErrorNote = 'snapshot store unavailable on this server — pass dom inline';
-            } else {
-              const r = resolveDomRef(p.dom_ref, deps.snapshotStore, deps.tenantId ?? 'local');
-              if (r.ok) resolvedSnapshot = r.snapshot;
-              else resolveErrorNote = r.note;
-            }
-          }
-
-          const domSnap: DomSnapshot | undefined = (p.dom as DomSnapshot | undefined) ?? (resolvedSnapshot as DomSnapshot | undefined);
-          const selector = p.dom_ref?.selector ?? (domSnap as { selector?: string } | undefined)?.selector;
-          const base = { node_id: id, ...(p.label ? { label: p.label } : {}), ...(selector ? { selector } : {}) };
-
-          if (resolveErrorNote) {
-            const rows = [{ prop: 'snapshot_ref', status: 'warn' as const, note: resolveErrorNote }];
-            return { ...base, rows, summary: summarize(rows), coverage: deriveCoverage(rows) };
-          }
-          const entry = res.nodes[id];
-          if (!entry?.document) {
-            const rows = [{ prop: 'node', status: 'warn' as const, note: `node ${id} not found in file` }];
-            return { ...base, rows, summary: summarize(rows), coverage: deriveCoverage(rows) };
-          }
+          const { domSnap, base, earlyRows } = prepared[i];
+          if (earlyRows) return { ...base, rows: earlyRows, summary: summarize(earlyRows), coverage: deriveCoverage(earlyRows) };
+          const entry = { ...res.nodes[id]!, document: pairRoots[i]! };
           const okSnap = domSnap as DomSnapshotOk;
-          if (okSnap.schema !== undefined && okSnap.schema !== DOM_SNAPSHOT_SCHEMA_VERSION) {
-            const rows = [{ prop: 'snapshot_schema', status: 'warn' as const, figma: DOM_SNAPSHOT_SCHEMA_VERSION,
-              dom: okSnap.schema,
-              note: 'snapshot version does not match the server — re-capture with a FRESH script: get_layout_spec {include_extractor:true, extractor_mode:"inline"} (on the loader path an open page keeps serving its cached old extractor), or reload the page first' }];
-            return { ...base, rows, summary: summarize(rows), coverage: deriveCoverage(rows) };
-          }
           const setNames = await buildSetNames(api, entry, deps.logger);
 
-          // Discover this node's ancestor variable modes (best-effort) and fold them with
-          // the subtree chain into a per-node ModeStack, so resolveColorToken resolves each bound
-          // fill/stroke to the hex UNDER the node's effective mode (not the library default). Any
-          // failure EXCEPT rate_limited degrades to an EMPTY ancestor stack + coverageComplete=false
-          // — the resolver then either resolves from subtree modes alone or stays honestly 'default';
-          // it never throws. Mirrors get_design_context's stackFor/resolveTokenMode wiring.
-          let coverageComplete = false;
-          // Raw ancestor nodes (root→parent), threaded ALONGSIDE ancestorStack in every
-          // branch below — the graph resolver (graphStackFor, near stackFor) needs the RAW node
-          // chain (not the folded exact-id map) to lib-key-fold it together with the subtree chain,
-          // mirroring get-design-context-tool.ts's ancestorNodesRootToParent (:448-530).
-          let ancestorNodes: RawSceneNode[] = [];
-          // Without variableIndex, resolveColorToken is always undefined; without
-          // bound-SOLID colors in the subtree, aliasId won't be found on any node → ancestorStack/
-          // coverageComplete are unobservable in the output (their only consumer is resolveColorToken) →
-          // skip discovery byte-for-byte (the first disjunct). BUT discovery (ancestor modes) is also needed by
-          // the graph/snapshot fallback — it resolves EXTERNAL bound colors even when the local
-          // variableIndex is unavailable. The second disjunct gates EXACTLY this path: variableIndex
-          // is absent, but at least one of the graph/snapshot deps is wired (multi-tenant), AND the subtree
-          // has an external bound color the graph/snapshot can actually resolve (local-only
-          // ids are inaccessible to them without an index — hasExternalBoundPaintColor, not hasBoundPaintColor). If
-          // NEITHER an index NOR graph/snapshot deps exist (single-tenant/stdio, or multi-tenant without
-          // both deps) — skip: discovery would be pure latency with no consumer.
-          const needsModes = (variableIndex !== undefined && hasBoundPaintColor(entry.document))
-            || (variableIndex === undefined && graphOrSnapshotAvailable && hasExternalBoundPaintColor(entry.document));
-          if (needsModes) {
-            try {
-              // Prefer the CHEAP documented chain built from bestFrameRaw (already
-              // in memory from the frame-hydration fetch above) + the shared depth-2 canvas skeleton
-              // over the EXPENSIVE deadline-capped whole-file discovery. Fallback matrix
-              // (a)-(d): (a) no frame_node_id / (b) pair located outside bestFrameRaw (frameChain
-              // undefined) / (c) no bestFrameRaw at all → straight to deadline-capped discovery below; (d)
-              // pair located INSIDE bestFrameRaw but the frame itself isn't reachable in the depth-2
-              // canvas skeleton → try deadline-capped discovery FIRST (it may still recover the mode via a
-              // deeper whole-file fetch), and only fall back to a partial intra-frame-only chain when
-              // discovery itself got cut short (droppedReason set) — an honest coverageComplete=false,
-              // never a silent "frame-only" chain that could miss a page/section-level mode pin.
-              let done = false;
-              if (frameId !== undefined && bestFrameRaw !== undefined) {
-                const frameChain = ancestorChainFromSubtree(bestFrameRaw, id);
-                if (frameChain !== undefined) {                      // located ⟹ intra-frame chain is complete
-                  const canvasChain = await canvasChainFor(frameId); // [DOCUMENT..parent(frame)] | undefined
-                  if (canvasChain !== undefined && canvasChain.some((n) => n.type === 'CANVAS')) {
-                    // Full documented chain: canvas-part strictly ABOVE the frame; frameChain[0] ===
-                    // bestFrameRaw (chain root is the frame itself), and for pair===frame frameChain
-                    // === [] — the frame is correctly EXCLUDED from the ancestor stack (its own modes
-                    // arrive via collectSubtreeModes/stackFor instead). ONLY spread-concat form here
-                    // — a slice-variant would double-count the frame when pair === frame.
-                    ancestorNodes = [...canvasChain, ...frameChain];
-                    coverageComplete = true;
-                    done = true;
-                  } else {
-                    const disc = await discoverAncestorModes(api, parsed.value, id, deps.logger, cappedCfg);
-                    if (disc.droppedReason === undefined) {
-                      coverageComplete = disc.coverageComplete;
-                      ancestorNodes = disc.nodesRootToParent;
-                    } else {
-                      ancestorNodes = frameChain;
-                      coverageComplete = false;
-                    }
-                    done = true;
-                  }
-                }
-                // frameChain === undefined → pair sits outside bestFrameRaw (b) → fallback below.
-              }
-              if (!done) {                                           // (a)(b)(c) → deadline-capped whole-file discovery
-                const disc = await discoverAncestorModes(api, parsed.value, id, deps.logger, cappedCfg);
-                coverageComplete = disc.coverageComplete;
-                ancestorNodes = disc.nodesRootToParent;
-              }
-            } catch (err) {
-              if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
-              deps.logger.info({ err: (err as Error).message }, 'compare.ancestor_modes_unavailable');
-            }
-          }
+          const discovered = modeEvidence.get(i);
+          const coverageComplete = discovered?.coverageComplete ?? false;
+          const ancestorNodes = discovered?.nodesRootToParent ?? [];
           // The GRAPH resolver's stack, matched by LIBRARY KEY (not exact collection
           // id) — a plain stackFor merge would let two subscribed-instance suffixes of the SAME
           // library collection both survive (one from ancestorNodes, one from the subtree chain),

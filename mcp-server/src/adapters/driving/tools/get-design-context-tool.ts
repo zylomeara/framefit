@@ -14,16 +14,17 @@ import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, jsonResult } from './shared-error-handler.js';
 import { serializeForDelivery } from './serialize.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, normalizeScopedResponseRoot, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { simplify } from '../../../domain/design-context/simplify.js';
 import { buildVariableIndex, resolveBoundVariable, resolveBoundVariableInMode, boundVariableId, type VariableIndex } from '../../../domain/variables.js';
 import {
   collectSubtreeModes, collectSubtreeChains, buildModeByCollection, buildExactModeEvidence, buildGraphModeEvidence,
-  modeIds, effectiveMode, type ModeEvidenceStack, type ModeStack,
+  documentaryAncestorChain, sceneIdEquals,
+  modeIds, effectiveMode, type DocumentaryChainFailure, type ModeEvidenceStack, type ModeStack,
 } from '../../../domain/mode-resolve.js';
-import { buildFileStructure, type RawDocumentNode, type FileStructure } from '../../../domain/file-structure.js';
+import { sizeOf } from '../../../infrastructure/response-size.js';
 import { extractLibraryKey } from '../../../domain/variable-snapshot.js';
-import { FigmaApiError } from '../../../ports/errors.js';
+import { FigmaApiError, TOO_LARGE_REASON_RE } from '../../../ports/errors.js';
 import type { FigmaApi } from '../../../ports/figma-api.js';
 import type { Logger } from '../../../infrastructure/logger.js';
 import type { ResolvedToken } from '../../../domain/design-context/resolved-token.js';
@@ -74,197 +75,169 @@ function collectExternalAliasIds(root: RawSceneNode, idx: VariableIndex | undefi
 }
 
 // --- Ancestor-mode discovery ---------------------------------------------------------------
-// Ancestor mode discovery reads each ancestor node's explicitVariableModes. The chain is found
-// by fetching the document structure and walking parent links. If the request node is deeper
-// than the fetch depth it is ABSENT from the tree → the chain is empty → a mode set on a page
-// never applies → wrong on-screen color. We deepen the fetch until the node is present, BOUNDED
-// by a depth cap AND a byte budget so we never risk pulling the ~110 MB worst-case whole file.
-
-// Start shallow (matches getDocumentRaw's historical default) and deepen by doubling to the cap.
+// Targeted file projections retain the documentary path to every requested id without pulling the
+// unrelated file tree. The three-rung ladder is shared by get_design_context and compare.
 const ANCESTOR_START_DEPTH = 4;
-const ANCESTOR_MAX_DEPTH = 8;
-// Byte budget for the whole-file structure fetch. A large file's depth-4 document is a few MB;
-// we allow deepening only while the fetched document stays under this budget, then STOP with an
-// honest incomplete coverage rather than risk pulling the whole (~110 MB worst-case) file. The
-// size is the serialized length of the fetched document (a proxy for the transferred bytes).
-const ANCESTOR_BYTE_BUDGET = 24 * 1024 * 1024; // 24 MB
+const ANCESTOR_MAX_DEPTH = 16;
+const ANCESTOR_MAX_ATTEMPTS = 3;
+const ANCESTOR_BYTE_BUDGET = 24 * 1024 * 1024;
+
+export type AncestorDiscoveryReason = DocumentaryChainFailure
+  | 'missing_version'
+  | 'version_mismatch'
+  | 'byte_budget'
+  | 'time_budget'
+  | 'depth_cap'
+  | 'error';
 
 export interface AncestorDiscovery {
-  /** collectionId -> modeId folded from the ancestor chain (nearest-wins, de-duped by lib key). */
   stack: ModeStack;
-  /** The raw ancestor nodes above the request root, in root→parent order (each with its
-   * explicitVariableModes). Exposed so the caller can lib-key-fold them together with the request
-   * subtree chain into ONE nearest-wins-by-library-key stack for the graph resolver. */
   nodesRootToParent: RawSceneNode[];
-  /** True iff the request node was located AND its chain reaches a top-level CANVAS (page). When
-   * false, a mode set on an unfetched ancestor may still be missing → downstream must stay honest. */
   coverageComplete: boolean;
-  /** Why discovery stopped short of locating the node (undefined when it wasn't stopped): the
-   * existing depth_cap/byte_budget bounds, or time_budget (the per-call deadline could not fit
-   * another whole-file fetch). The caller surfaces only time_budget in degraded_stages —
-   * depth_cap/byte_budget stay log-only (pre-existing behavior). */
-  droppedReason?: 'depth_cap' | 'byte_budget' | 'time_budget';
+  reason?: AncestorDiscoveryReason;
 }
 
-// The capped-api adapter (buildApi(token, capMs)) aborts an over-budget fetch INSIDE
-// FigmaRestAdapter as FigmaApiError('network', 0, '… timed out …'). Discovery maps that (and only
-// that) to a time_budget drop; every other rejection (notably rate_limited) propagates.
+export interface AncestorDiscoveryConfig {
+  startDepth?: number;
+  maxDepth?: number;
+  byteBudget?: number;
+  deadlineAt?: number;
+  makeCappedApi?: (capMs: number) => Pick<FigmaApi, 'getDocumentByIdsRaw'>;
+}
+
+const emptyDiscovery = (reason: AncestorDiscoveryReason): AncestorDiscovery => ({
+  stack: new Map(), nodesRootToParent: [], coverageComplete: false, reason,
+});
+
 const isTimeoutAbort = (err: unknown): boolean =>
   err instanceof FigmaApiError && err.kind === 'network' && err.message.includes('timed out');
 
-/**
- * Locate `nodeId`'s ancestor chain via a bounded, size-guarded document fetch and fold the
- * ancestor explicit modes into a ModeStack. `getDocumentRaw` is version-cached, so repeated
- * fetches within a file version are amortized. Deepens (4 -> 8) until the node is present or a
- * bound is hit; on a bound (depth cap or byte budget) it STOPS and reports coverageComplete=false,
- * logging what was dropped (no silent truncation).
- */
-export async function discoverAncestorModes(
-  api: Pick<FigmaApi, 'getDocumentRaw' | 'getNodesRaw'>,
-  fileKey: string,
-  nodeId: string,
-  logger: Logger,
-  cfg: { startDepth?: number; maxDepth?: number; byteBudget?: number; deadlineAt?: number;
-    /** Build a fresh api capped at `capMs` (the tool passes deps.buildApi(token, capMs)). Each
-     * iteration — and the trailing chain fetch — uses a fresh capped instance so a REAL abort
-     * settles the ACTUAL promise: an over-budget fetch throws the adapter's timeout FigmaApiError
-     * (mapped to droppedReason:'time_budget' — drop, coverageComplete:false), while a 429 arriving
-     * before the cap rethrows as genuine rate_limited and propagates. Capped instances share the
-     * same readCaches (single factory), and getDocumentRaw has no negative cache → no poisoning;
-     * positive doc caching still applies. Absent (unit tests / no deadline) → the base `api`. */
-    makeCappedApi?: (capMs: number) => Pick<FigmaApi, 'getDocumentRaw' | 'getNodesRaw'>;
-    /** Latency (opt-in, compare-only): predict the NEXT fetch's size (`bytes * 2` — deepening
-     * at minimum doubles the real tree) and stop BEFORE issuing it, instead of the reactive
-     * `bytes >= byteBudget` (which only fires AFTER an over-budget fetch already returned — and is
-     * blind to a cached depth-4 response returning near-instantly while the ACTUAL depth-8 fetch
-     * would be tens of MB — a live 88s stream-abort measured on a large production page). The gdc (get_design_context) path keeps
-     * the reactive-only check: ×2 is not a guaranteed bound on wide-shallow files. */
-    predictiveByteGate?: boolean } = {},
-): Promise<AncestorDiscovery> {
-  const maxDepth = cfg.maxDepth ?? ANCESTOR_MAX_DEPTH;
-  const byteBudget = cfg.byteBudget ?? ANCESTOR_BYTE_BUDGET;
-  let depth = cfg.startDepth ?? ANCESTOR_START_DEPTH;
+const isTooLarge = (err: unknown): boolean => err instanceof FigmaApiError
+  && (err.kind === 'too_large'
+    || (err.kind === 'unknown_4xx' && err.status === 400 && TOO_LARGE_REASON_RE.test(err.upstreamReason ?? '')));
 
-  let struct: FileStructure = { nodeById: new Map(), pageNameByNodeId: new Map(), childrenByNodeId: new Map() };
-  let located = false;
-  let droppedReason: 'depth_cap' | 'byte_budget' | 'time_budget' | undefined;
-  let lastLatencyMs = 0;
-  for (;;) {
-    // Time budget: a whole-file fetch on a heavy file runs 60-90s; do not START one that
-    // cannot plausibly fit (floor 15s, else 2x the previous fetch's latency).
-    const need = Math.max(15_000, 2 * lastLatencyMs);
-    if (cfg.deadlineAt !== undefined && Date.now() + need > cfg.deadlineAt) {
-      droppedReason = 'time_budget';
-      logger.info({ file_key_prefix: fileKey.slice(0, 8), node_id: nodeId, depth, need_ms: need, reason: 'time_budget' },
-        'design_context.ancestor_coverage_dropped');
-      break;
-    }
-    // The floor gate above only decides whether to START a fetch; the fetch itself must be bounded
-    // too, or a slow-but-successful whole-file fetch (measured 63-90s) silently overruns the whole
-    // call's deadline. Fetch through a fresh capped api (remaining budget, floored 1s, ceiled 90s —
-    // R7-F2: an oversized deadline (e.g. a misconfigured multi-hour budget) must not hand
-    // setTimeout a value past Node's ~2.1e9ms limit, which silently clamps to ~1ms and mislabels
-    // every discovery 'time_budget' almost instantly) so an overrun aborts to time_budget via a
-    // REAL settled rejection instead of hanging. (the cheap floor check stays the first gate.)
-    const capMs = cfg.deadlineAt !== undefined ? Math.min(Math.max(1_000, cfg.deadlineAt - Date.now()), 90_000) : undefined;
-    const fetchApi = capMs !== undefined && cfg.makeCappedApi !== undefined ? cfg.makeCappedApi(capMs) : api;
-    const t0 = Date.now();
-    let fileDoc: Awaited<ReturnType<typeof api.getDocumentRaw>>;
-    try {
-      fileDoc = await fetchApi.getDocumentRaw(fileKey, depth);                // cached by file version
-    } catch (err) {
-      if (isTimeoutAbort(err)) {
-        droppedReason = 'time_budget';
-        logger.info({ file_key_prefix: fileKey.slice(0, 8), node_id: nodeId, depth, cap_ms: capMs, reason: 'time_budget' },
-          'design_context.ancestor_coverage_dropped');
-        break;
-      }
-      throw err;                                                              // rate_limited & all else propagate
-    }
-    lastLatencyMs = Date.now() - t0;
-    struct = buildFileStructure(fileDoc.document as unknown as RawDocumentNode);
-    if (struct.nodeById.has(nodeId)) { located = true; break; }
-    // Node not in this (bounded) tree. Stop if we cannot (depth cap) or should not (byte budget)
-    // go deeper — the next, deeper fetch would only be larger. Degrade honestly, log the drop.
-    if (depth >= maxDepth) {
-      droppedReason = 'depth_cap';
-      logger.info({ file_key_prefix: fileKey.slice(0, 8), node_id: nodeId, depth, reason: 'depth_cap' },
-        'design_context.ancestor_coverage_dropped');
-      break;
-    }
-    const bytes = JSON.stringify(fileDoc.document).length;
-    // Latency (opt-in, compare only): a predictive gate — doubling depth at least doubles the
-    // bytes on a real tree; the reactive `bytes >= byteBudget` caught the overshoot only AFTER the fetch,
-    // and a latency need-gate is poisoned by the cache (depth-4 from cache in ~1s → "depth-8 will fit" → 88s
-    // stream abort, live measurement on a large prod page). The gdc path stays reactive: ×2 is not a guaranteed
-    // boundary on wide-shallow files.
-    const byteStop = cfg.predictiveByteGate ? bytes * 2 >= byteBudget : bytes >= byteBudget;
-    if (byteStop) {
-      droppedReason = 'byte_budget';
-      logger.info({ file_key_prefix: fileKey.slice(0, 8), node_id: nodeId, depth, bytes, budget: byteBudget,
-        ...(cfg.predictiveByteGate ? { predicted_next_bytes: bytes * 2 } : {}), reason: 'byte_budget' },
-        'design_context.ancestor_coverage_dropped');
-      break;
-    }
+function canonicalSceneIds(ids: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const id of ids) if (!out.some((kept) => sceneIdEquals(kept, id))) out.push(id);
+  return out;
+}
+
+function projectionBytes(value: unknown): number {
+  const tagged = sizeOf(value);
+  if (tagged > 0) return tagged;
+  try { return Buffer.byteLength(JSON.stringify(value), 'utf8'); }
+  catch { return Number.POSITIVE_INFINITY; }
+}
+
+/** Resolve a batch with at most one targeted projection at each depth (4 -> 8 -> 16). */
+export async function discoverAncestorModesBatch(
+  api: Pick<FigmaApi, 'getDocumentByIdsRaw'>,
+  fileKey: string,
+  nodeIds: readonly string[],
+  version: string | undefined,
+  logger: Logger,
+  cfg: AncestorDiscoveryConfig = {},
+): Promise<Map<string, AncestorDiscovery>> {
+  const ids = canonicalSceneIds(nodeIds);
+  const results = new Map<string, AncestorDiscovery>();
+  if (!version) {
+    for (const id of ids) results.set(id, emptyDiscovery('missing_version'));
+    return results;
+  }
+
+  const maxDepth = cfg.maxDepth ?? ANCESTOR_MAX_DEPTH;
+  const depths: number[] = [];
+  let depth = Math.min(cfg.startDepth ?? ANCESTOR_START_DEPTH, maxDepth);
+  while (depths.length < ANCESTOR_MAX_ATTEMPTS) {
+    depths.push(depth);
+    if (depth >= maxDepth) break;
     depth = Math.min(depth * 2, maxDepth);
   }
 
-  // Build the ancestor chain (root … parent(nodeId)) from parent links.
-  const parentOf = new Map<string, string>();
-  for (const [pid, kids] of struct.childrenByNodeId) for (const k of kids) parentOf.set(k, pid);
-  const chainIds: string[] = [];
-  for (let cur = parentOf.get(nodeId); cur; cur = parentOf.get(cur)) chainIds.unshift(cur);   // root … parent(id)
-
-  // Coverage is complete only when the node was located AND its chain reaches a top-level CANVAS
-  // (a document-root page) — i.e. we hold every ancestor that could carry an explicit mode.
-  const reachesTopCanvas = chainIds.some((cid) => struct.nodeById.get(cid)?.type === 'CANVAS');
-  const coverageComplete = located && reachesTopCanvas;
-
-  // depth=1 (nodes only, no children): buildModeByCollection reads only each node's
-  // .explicitVariableModes. depth=0 is below Figma's minimum and 400s the request.
-  // Guard this trailing fetch too — a slow getNodesRaw after a successful locate would also
-  // overrun the deadline. Unlike the loop, there is no next iteration to re-check the floor, so a
-  // direct deadline-passed PRE-GATE below skips the fetch entirely when the deadline has already
-  // elapsed (the capMs floor further down — `min(max(1_000, deadlineAt - now), 90_000)` — would
-  // otherwise still schedule a 1s-capped fetch even past the deadline, an avoidable call that also
-  // queues on the shared heavy-fetch semaphore). A timeout during the fetch itself still degrades
-  // honestly (empty stack/ancestors, coverageComplete=false, droppedReason=time_budget) rather than
-  // block.
-  let anc: Awaited<ReturnType<typeof api.getNodesRaw>>;
-  if (chainIds.length) {
+  let unresolved = [...ids];
+  for (const attemptedDepth of depths) {
+    if (unresolved.length === 0) break;
     if (cfg.deadlineAt !== undefined && Date.now() >= cfg.deadlineAt) {
-      logger.info({ file_key_prefix: fileKey.slice(0, 8), node_id: nodeId, depth, reason: 'time_budget', stage: 'ancestor_chain' },
-        'design_context.ancestor_coverage_dropped');
-      return { stack: new Map(), nodesRootToParent: [], coverageComplete: false, droppedReason: 'time_budget' };
+      for (const id of unresolved) results.set(id, emptyDiscovery('time_budget'));
+      unresolved = [];
+      break;
     }
-    // R7-F2: same upper clamp as the loop fetch above — see that comment for why (Node's setTimeout
-    // silently mis-fires past ~2.1e9ms, which an oversized deadline could otherwise reach).
-    const capMs = cfg.deadlineAt !== undefined ? Math.min(Math.max(1_000, cfg.deadlineAt - Date.now()), 90_000) : undefined;
-    const chainApi = capMs !== undefined && cfg.makeCappedApi !== undefined ? cfg.makeCappedApi(capMs) : api;
+    const remaining = cfg.deadlineAt === undefined ? undefined : cfg.deadlineAt - Date.now();
+    const fetchApi = remaining !== undefined && cfg.makeCappedApi
+      ? cfg.makeCappedApi(Math.min(Math.max(1, remaining), 90_000))
+      : api;
+
+    let raw: Awaited<ReturnType<FigmaApi['getDocumentByIdsRaw']>>;
     try {
-      anc = await chainApi.getNodesRaw(fileKey, chainIds, 1);
+      raw = await fetchApi.getDocumentByIdsRaw(fileKey, unresolved, attemptedDepth, version);
     } catch (err) {
-      if (isTimeoutAbort(err)) {
-        logger.info({ file_key_prefix: fileKey.slice(0, 8), node_id: nodeId, depth, cap_ms: capMs, reason: 'time_budget', stage: 'ancestor_chain' },
-          'design_context.ancestor_coverage_dropped');
-        return { stack: new Map(), nodesRootToParent: [], coverageComplete: false, droppedReason: 'time_budget' };
-      }
-      throw err;                                                              // rate_limited & all else propagate
+      if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
+      const reason: AncestorDiscoveryReason = isTimeoutAbort(err) ? 'time_budget' : isTooLarge(err) ? 'byte_budget' : 'error';
+      for (const id of unresolved) results.set(id, emptyDiscovery(reason));
+      unresolved = [];
+      break;
     }
-  } else {
-    anc = { nodes: {} };
+
+    const bytes = projectionBytes(raw);
+    if (bytes > (cfg.byteBudget ?? ANCESTOR_BYTE_BUDGET)) {
+      for (const id of unresolved) results.set(id, emptyDiscovery('byte_budget'));
+      unresolved = [];
+      break;
+    }
+    if (!raw || typeof raw !== 'object' || raw.document?.type !== 'DOCUMENT') {
+      for (const id of unresolved) results.set(id, emptyDiscovery('invalid_projection'));
+      unresolved = [];
+      break;
+    }
+    if (typeof raw.version !== 'string' || raw.version.length === 0) {
+      for (const id of unresolved) results.set(id, emptyDiscovery('missing_version'));
+      unresolved = [];
+      break;
+    }
+    if (raw.version !== version) {
+      for (const id of unresolved) results.set(id, emptyDiscovery('version_mismatch'));
+      unresolved = [];
+      break;
+    }
+
+    const next: string[] = [];
+    for (const id of unresolved) {
+      const chain = documentaryAncestorChain(raw.document, id);
+      if (chain.ok) {
+        results.set(id, {
+          stack: buildModeByCollection(chain.nodesRootToParent),
+          nodesRootToParent: chain.nodesRootToParent,
+          coverageComplete: true,
+        });
+      } else if (chain.reason === 'missing_target') {
+        next.push(id);
+      } else {
+        results.set(id, emptyDiscovery(chain.reason));
+      }
+    }
+    unresolved = next;
   }
-  const rootToParent = chainIds.map((cid) => anc.nodes[cid]?.document).filter((n): n is RawSceneNode => !!n);
-  // Observability: one line per discovery so prod can measure how often the deepest (maxDepth)
-  // whole-file fetch actually fires and whether it yields complete coverage. `depth_reached ===
-  // <maxDepth>` counts the expensive path; `at_max_depth` flags it directly.
-  logger.info(
-    { file_key_prefix: fileKey.slice(0, 8), node_id: nodeId, depth_reached: depth, at_max_depth: depth >= maxDepth,
-      located, reaches_top_canvas: reachesTopCanvas, coverage_complete: coverageComplete, chain_len: chainIds.length },
-    'design_context.ancestor_discovery',
-  );
-  return { stack: buildModeByCollection(rootToParent), nodesRootToParent: rootToParent, coverageComplete,
-    ...(droppedReason ? { droppedReason } : {}) };
+
+  for (const id of unresolved) results.set(id, emptyDiscovery('depth_cap'));
+  for (const id of ids) {
+    const result = results.get(id)!;
+    logger.info({ file_key_prefix: fileKey.slice(0, 8), node_id: id,
+      coverage_complete: result.coverageComplete, reason: result.reason }, 'design_context.ancestor_discovery');
+  }
+  return results;
+}
+
+/** Singleton wrapper retained for get_design_context. */
+export async function discoverAncestorModes(
+  api: Pick<FigmaApi, 'getDocumentByIdsRaw'>,
+  fileKey: string,
+  nodeId: string,
+  version: string | undefined,
+  logger: Logger,
+  cfg: AncestorDiscoveryConfig = {},
+): Promise<AncestorDiscovery> {
+  return (await discoverAncestorModesBatch(api, fileKey, [nodeId], version, logger, cfg)).get(nodeId)
+    ?? emptyDiscovery('missing_target');
 }
 
 export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps): void {
@@ -312,9 +285,9 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
         const remaining = () => deadlineAt - Date.now();
         type DegradedStage = NonNullable<DesignContext['degraded_stages']>[number];
         const degradedStages: DegradedStage[] = [];
-        const stageDegraded = (stage: DegradedStage['stage'], reason: DegradedStage['reason']): void => {
-          degradedStages.push({ stage, reason });
-          deps.logger.info({ stage, reason, remaining_ms: remaining() }, 'design_context.stage_degraded');
+        const stageDegraded = (stage: DegradedStage['stage'], reason: DegradedStage['reason'], detail?: string): void => {
+          degradedStages.push({ stage, reason, ...(detail ? { detail } : {}) });
+          deps.logger.info({ stage, reason, detail, remaining_ms: remaining() }, 'design_context.stage_degraded');
         };
         // Fetch depth+1 so boundary containers reveal whether children were cut (accurate
         // truncated/childCount); simplify stops at args.depth so the extra level is count-only.
@@ -360,26 +333,30 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
         }
         const entry = nodes.nodes[id];
         if (!entry) throw new Error(`node ${id} not found in file`);
-        const doc = entry.document;
+        const scopedDoc = normalizeScopedResponseRoot(entry.document, id);
+        if (!scopedDoc) throw new Error(`node ${id} returned a malformed scoped root`);
         progress('subtree fetched', 20);
 
         // We fetched args.depth + 1 so we can tell a depth-cut container (children exist one level
         // below the requested depth) from a genuinely empty one. Use that extra level ONLY to count
         // cut children, then prune it away immediately so EVERY downstream consumer — needsAncestors,
         // collectExternalAliasIds, collectSubtreeModes/Chains, and simplify — sees exactly the
-        // requested depth, byte-identical to a plain depth-N fetch. This keeps mode resolution and
+        // requested depth, byte-identical to a plain depth-N fetch. The pruned tree is built from
+        // shallow copies along the kept path: the scoped root shares its descendants with the cached
+        // API response, which must never be mutated. This keeps mode resolution and
         // ancestor-discovery gating unaffected by a node that is never rendered in the result.
         const boundaryChildCounts = new Map<string, number>();
-        const pruneToRequestedDepth = (n: RawSceneNode, depth: number): void => {
+        const pruneToRequestedDepth = (n: RawSceneNode, depth: number): RawSceneNode => {
+          if (!n.children) return n;
           if (depth >= args.depth) {
-            const visibleKids = (n.children ?? []).filter((c) => c.visible !== false);
+            const visibleKids = n.children.filter((c) => c.visible !== false);
             if (visibleKids.length) boundaryChildCounts.set(n.id, visibleKids.length);
-            if (n.children) delete (n as { children?: unknown }).children;
-            return;
+            const { children: _cut, ...rest } = n;
+            return rest as RawSceneNode;
           }
-          for (const c of n.children ?? []) pruneToRequestedDepth(c, depth + 1);
+          return { ...n, children: n.children.map((c) => pruneToRequestedDepth(c, depth + 1)) };
         };
-        pruneToRequestedDepth(doc, 0);
+        const doc = pruneToRequestedDepth(scopedDoc, 0);
 
         progress('resolving variables', 35);
         // Best-effort variable resolution; absent on non-Enterprise → raw hex. Capped at
@@ -491,7 +468,7 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
               } else if (deps.variableGraph) {
                 // cross-library: ancestors matter ONLY when the top collection is multi-mode. A
                 // single-mode top binding renders inline (mode_dependent stays false) regardless of
-                // any ancestor mode, so a depth-8 whole-file fetch for it is pure waste.
+                // any ancestor mode, so targeted projection for it is pure waste.
                 // isMultiMode counts modes by existence (exact mirror of resolveInMode's mode-object
                 // condition, robust to a partial-sync collection with an unresolvable mode); when
                 // that signal is absent, fall back to resolve().modesByName (present iff multi-mode).
@@ -517,8 +494,8 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
         const ancestorDiscoveryWanted = needsAncestors();
         if (ancestorDiscoveryWanted) {
           try {
-            // Bounded, size-guarded ancestor discovery: deepens the whole-file fetch (4 -> 8) only
-            // until the request node is present or a depth/byte/time bound is hit, then degrades
+            // Bounded, size-guarded ancestor discovery: one targeted batch ladder (4 -> 8 -> 16)
+            // stops when the request node is proven or a depth/byte/time bound is hit, then degrades
             // honestly (coverageComplete=false -> resolvers stay at honest 'default').
             // The leading positional `api` arg is discoverAncestorModes' no-deadline fallback,
             // exercised directly by its own unit tests; THIS call always passes both `deadlineAt`
@@ -526,12 +503,11 @@ export function registerGetDesignContextTool(server: McpServer, deps: ToolDeps):
             // capped instance and the fallback branch is structurally unreachable here. Passing the
             // already-built `coreApi` (rather than constructing a separate, genuinely unused plain
             // instance) avoids an extra dead buildApi call purely to satisfy the required parameter.
-            const disc = await discoverAncestorModes(coreApi, parsed.value, id, deps.logger, { deadlineAt, makeCappedApi: (capMs) => deps.buildApi(token, capMs, deadlineAt) });
+            const disc = await discoverAncestorModes(coreApi, parsed.value, id, nodes.version, deps.logger,
+              { deadlineAt, makeCappedApi: (capMs) => deps.buildApi(token, capMs, deadlineAt) });
             ancestorNodesRootToParent = disc.nodesRootToParent;
             coverageComplete = disc.coverageComplete;
-            // depth_cap/byte_budget stay log-only (pre-existing behavior); only the time budget
-            // surfaces as a degraded stage — it is this call's budget, not the file's shape.
-            if (disc.droppedReason === 'time_budget') stageDegraded('ancestor_discovery', 'time_budget');
+            if (disc.reason) stageDegraded('ancestor_discovery', disc.reason === 'time_budget' ? 'time_budget' : 'error', disc.reason);
           } catch (err) {
             if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
             deps.logger.info({ err: (err as Error).message }, 'design_context.ancestor_modes_unavailable');

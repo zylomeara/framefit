@@ -4,7 +4,7 @@
 //  - parity where both tools can see the pin (same name, same hex, same mode_source);
 //  - the documented asymmetry when the pin sits ABOVE the requested node (same name;
 //    design_context says mode_source:'node', get_layout_spec honestly says 'default' - it
-//    deliberately does not pay for whole-file ancestor discovery);
+//    deliberately does not pay for targeted ancestor discovery);
 //  - the documented NAMING ceiling: a SINGLE-mode variable bound at the PAINT level is named
 //    by the shared resolver (get_layout_spec/compare) and NOT by get_design_context, whose
 //    legacy single-mode name path reads node-level boundVariables only. Adversarial wave
@@ -41,7 +41,7 @@ const rootNode = (pinned: boolean): RawSceneNode => ({
   ...(pinned ? { explicitVariableModes: { 'VC:1': 'm2' } } : {}),
 } as RawSceneNode);
 
-// Whole-file tree for design-context's ancestor discovery: the pin lives on ANC, ABOVE ROOT.
+// Documentary projection for design-context ancestor discovery: the pin lives on ANC, ABOVE ROOT.
 const fullDoc = {
   id: 'DOC', name: 'Document', type: 'DOCUMENT', children: [
     { id: 'PAGE', name: 'Page 1', type: 'CANVAS', children: [
@@ -51,14 +51,6 @@ const fullDoc = {
     ] },
   ],
 };
-const ancestorNodes: Record<string, { document: unknown }> = {
-  DOC: { document: { id: 'DOC', name: 'Document', type: 'DOCUMENT' } },
-  PAGE: { document: { id: 'PAGE', name: 'Page 1', type: 'CANVAS' } },
-  ANC: { document: { id: 'ANC', name: 'Themed', type: 'FRAME', explicitVariableModes: { 'VC:1': 'm2' } } },
-};
-
-// get_design_context validates node_id against ^\d+[:\-]\d+$ — 'ROOT' does not pass. Use a
-// numeric id for the request root instead; the tree keeps the same shape.
 const NUM = (n: RawSceneNode): RawSceneNode => ({ ...n, id: '1:1' } as RawSceneNode);
 const fullDocNum = JSON.parse(JSON.stringify(fullDoc).replace('"ROOT"', '"1:1"'));
 const fillTokenOf = (specOut: any) => specOut.specs[0].spec.fillToken;
@@ -70,11 +62,15 @@ const dcFillOf = (dcOut: any) => {
 function harness(doc: RawSceneNode) {
   const api = {
     getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
-    getDocumentRaw: async () => ({ document: fullDocNum } as any),
+    getDocumentRaw: async () => ({ name: 'Synthetic', lastModified: '', version: '1', document: fullDocNum } as any),
+    getDocumentByIdsRaw: async (_file: string, _ids: string[], _depth: number, version?: string) => ({
+      name: 'Synthetic', lastModified: '', version: version ?? '1', document: fullDocNum,
+    } as any),
     getImages: async () => ({ images: {} }),
     getFileVersion: async () => ({ version: '1', name: 'F', lastModified: 'X' }),
-    getNodesRaw: vi.fn(async (_f: string, ids: string[]) =>
-      ({ nodes: Object.fromEntries(ids.map((id) => [id, id === '1:1' ? { document: doc } : ancestorNodes[id] ?? null])) })),
+    getNodesRaw: vi.fn(async (_f: string, ids: string[]) => ({
+      version: '1', nodes: Object.fromEntries(ids.map((id) => [id, id === '1:1' ? { document: doc } : null])),
+    })),
     getVariablesLocal: async () => VARS,
   } as unknown as FigmaApi;
   const deps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 } as ToolDeps;
@@ -106,7 +102,7 @@ describe('token parity across get_design_context and get_layout_spec', () => {
     const lsTok = fillTokenOf(await h.layoutSpec());
     expect(dcFill.token).toBe('bg/level 2');
     expect(lsTok.token).toBe('bg/level 2');
-    // design_context pays for whole-file ancestor discovery and confirms the ancestor pin:
+    // design_context pays for targeted ancestor discovery and confirms the ancestor pin:
     expect(dcFill.value).toBe(HEX_M2);
     expect(dcFill.effective_mode_source).toBe('ancestor_chain');
     // get_layout_spec folds the fetched subtree only — the pin above is invisible, and the
@@ -135,11 +131,15 @@ const singleModePaintBound: RawSceneNode = {
 function singleModeHarness() {
   const api = {
     getComments: async () => [], resolveNodes: async () => new Map(), getFileStructure: async () => ({}) as any,
-    getDocumentRaw: async () => ({ document: fullDocNum } as any),
+    getDocumentRaw: async () => ({ name: 'Synthetic', lastModified: '', version: '1', document: fullDocNum } as any),
+    getDocumentByIdsRaw: async (_file: string, _ids: string[], _depth: number, version?: string) => ({
+      name: 'Synthetic', lastModified: '', version: version ?? '1', document: fullDocNum,
+    } as any),
     getImages: async () => ({ images: {} }),
     getFileVersion: async () => ({ version: '1', name: 'F', lastModified: 'X' }),
-    getNodesRaw: vi.fn(async (_f: string, ids: string[]) =>
-      ({ nodes: Object.fromEntries(ids.map((id) => [id, id === '1:1' ? { document: singleModePaintBound } : ancestorNodes[id] ?? null])) })),
+    getNodesRaw: vi.fn(async (_f: string, ids: string[]) => ({
+      version: '1', nodes: Object.fromEntries(ids.map((id) => [id, id === '1:1' ? { document: singleModePaintBound } : null])),
+    })),
     getVariablesLocal: async () => VARS_SINGLE,
   } as unknown as FigmaApi;
   const deps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars: 40000 } as ToolDeps;

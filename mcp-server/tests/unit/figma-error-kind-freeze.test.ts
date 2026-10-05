@@ -659,10 +659,7 @@ describe('the populations this freeze is written against', () => {
       ],
       'adapters/driven/figma-rest.ts': ['too_large', 'unknown_4xx', 'network'],
       'adapters/driving/tools/compare-node-to-dom-tool.ts':
-        // batch-2 item 5 remainder: the variables catch gained the escalation class gate
-        // (too-large unknown_4xx is one of the two classes the negative cache caches
-        // cap-aware) - it sits INSIDE the first rate_limited catch, hence position 2.
-        ['rate_limited', 'unknown_4xx', 'rate_limited', 'rate_limited', 'rate_limited', 'rate_limited'],
+        ['rate_limited', 'unknown_4xx', 'rate_limited', 'rate_limited', 'rate_limited'],
       // feedback item 10: the container walk mirrors find_nodes' contract (auth/forbidden
       // rethrow, rate_limited stops the loop keeping the partial), and the content fetch
       // degrades on everything except the dead-token pair.
@@ -673,8 +670,9 @@ describe('the populations this freeze is written against', () => {
       'adapters/driving/tools/get-layout-spec-tool.ts': ['rate_limited', 'rate_limited'],
       'adapters/driving/tools/get-code-connect-map-tool.ts': ['rate_limited'],
       'adapters/driving/tools/get-design-context-tool.ts': [
-        'network', 'rate_limited', 'network', 'rate_limited', 'rate_limited', 'rate_limited',
+        'network', 'too_large', 'unknown_4xx', 'rate_limited', 'rate_limited', 'network',
         'rate_limited', 'rate_limited', 'rate_limited', 'rate_limited', 'rate_limited',
+        'rate_limited', 'rate_limited', 'rate_limited',
       ],
       'adapters/driving/tools/get-pin-detail-tool.ts': ['upstream'],
       'adapters/driving/tools/get-review-board-tool.ts': ['upstream'],
@@ -692,7 +690,7 @@ describe('the populations this freeze is written against', () => {
       'application/resolve-anchors.ts': ['too_large', 'unknown_4xx'],
       'domain/consumed-libraries.ts': ['rate_limited'],
     });
-    expect(SITES.branches.length, '59 branch sites across 17 files').toBe(59); // Includes bounded comment projection recovery.
+    expect(SITES.branches.length, '61 branch sites across 17 files').toBe(61); // Includes bounded comment and mode projection recovery.
     // The one kind nothing branches on today. Stated rather than left implicit: a reader comparing
     // the two tables above would otherwise read the gap as a scanner bug.
     expect(consumersOf('not_found'), "nothing branches on 'not_found' - it reaches the reader as "

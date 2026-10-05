@@ -38,20 +38,24 @@ const singleVars = { meta: {
     valuesByMode: { d1: { r: 0.1, g: 0.2, b: 0.3, a: 1 } } } },
 } };
 
-// withDiscovery (C2 positive controls): wires a coverage-capable getDocumentRaw so
-// discoverAncestorModes can locate the request node under a DOCUMENT -> CANVAS chain and reach
-// a top-level CANVAS, making coverageComplete true. Backward-compatible — defaults to the bare
-// (no getDocumentRaw) api that the suppression tests rely on to make discovery fail/skip.
+// withDiscovery (C2 positive controls): wires a versioned targeted projection so
+// discoverAncestorModes can prove the request node under a DOCUMENT -> CANVAS chain. The bare
+// default intentionally leaves discovery unavailable for the suppression tests.
 function handlerFor(docArg: unknown, varsArg: unknown, rootId: string, extraDeps: Partial<ToolDeps> = {}, withDiscovery = false) {
   const { server, call } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
-      getNodesRaw: async () => ({ nodes: { [rootId]: { document: docArg } } }),
+      getNodesRaw: async () => ({ version: 'v1', nodes: { [rootId]: { document: docArg } } }),
       getVariablesLocal: async () => varsArg,
       getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
       getFileComponentSets: async () => [],
       ...(withDiscovery ? {
-        getDocumentRaw: async () => ({ document: { id: '0:0', type: 'DOCUMENT', children: [{ id: '99:1', type: 'CANVAS', children: [docArg] }] } }),
+        getDocumentByIdsRaw: async (_file: string, _ids: string[], _depth: number, version?: string) => ({
+          name: 'Synthetic', lastModified: '', version: version ?? 'v1',
+          document: { id: '0:0', name: 'Document', type: 'DOCUMENT', children: [
+            { id: '99:1', name: 'Page', type: 'CANVAS', children: [docArg] },
+          ] },
+        }),
       } : {}),
     } as unknown as FigmaApi),
     defaultToken: 'figd_x', logger, maxResultChars: 40000,

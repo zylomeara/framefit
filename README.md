@@ -270,7 +270,8 @@ Figma: **Settings → Security → Personal access tokens**, with the scopes for
   run on the server's token.
 - `file_variables:read` — Enterprise only. `get_variables` fails outright without it;
   `get_design_context` reports the skipped stage in `degraded_stages`; `compare_node_to_dom`
-  **degrades quietly**, and its token rows read `unknown`.
+  reports it there too and keeps going: library graph/snapshot fallbacks may still resolve some
+  token rows, and the rest read unresolved.
 - `team_library_content:read` — `search_design_system`, which reads the published components,
   component sets and styles of a team. A 403 is diagnosed per team and re-thrown carrying Figma's
   own stated reason.

@@ -25,7 +25,7 @@ const variables = { meta: {
 } };
 
 // handlerFor: copied from get-design-context-modes.test.ts — accepts extraDeps (incl.
-// toolTimeBudgetMs) and an optional coverage-capable getDocumentRaw (withDiscovery).
+// toolTimeBudgetMs) and an optional versioned targeted projection (withDiscovery).
 // get_design_context's handler takes the MCP `extra` (progressToken + sendNotification) as a
 // SECOND argument, for its heartbeat notifications. The shared fake's call() models args only, so
 // this harness reaches the recorded registration directly rather than widening the shared fake
@@ -36,12 +36,17 @@ function handlerFor(docArg: unknown, varsArg: unknown, rootId: string, extraDeps
   const { server, get } = makeFakeMcpServer();
   const deps: ToolDeps = {
     buildApi: () => ({
-      getNodesRaw: async () => ({ nodes: { [rootId]: { document: docArg } } }),
+      getNodesRaw: async () => ({ version: 'v1', nodes: { [rootId]: { document: docArg } } }),
       getVariablesLocal: async () => varsArg,
       getImages: async () => ({ images: {} }), getComponent: async () => { throw new Error('none'); },
       getFileComponentSets: async () => [],
       ...(withDiscovery ? {
-        getDocumentRaw: async () => ({ document: { id: '0:0', type: 'DOCUMENT', children: [{ id: '99:1', type: 'CANVAS', children: [docArg] }] } }),
+        getDocumentByIdsRaw: async (_file: string, _ids: string[], _depth: number, version?: string) => ({
+          name: 'Synthetic', lastModified: '', version: version ?? 'v1',
+          document: { id: '0:0', name: 'Document', type: 'DOCUMENT', children: [
+            { id: '99:1', name: 'Page', type: 'CANVAS', children: [docArg] },
+          ] },
+        }),
       } : {}),
     } as unknown as FigmaApi),
     defaultToken: 'figd_x', logger, maxResultChars: 40000,

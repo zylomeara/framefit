@@ -11,11 +11,49 @@ import { FigmaApiError } from '../../src/ports/errors.js';
 import { buildGraph, resolveKeyInMode } from '../../src/domain/variable-graph.js';
 import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 import { DomSnapshotStore } from '../../src/infrastructure/dom-snapshot-store.js';
+import { Semaphore } from '../../src/infrastructure/semaphore.js';
 
 const logger = createLogger({ level: 'silent' });
-function harness(api: Partial<FigmaApi>, maxResultChars = 40000, extra: Partial<ToolDeps> = {}) {
+function harness(api: Partial<FigmaApi>, maxResultChars = 40000, extra: Partial<ToolDeps> = {}, fillMissingVersions = true) {
   const { server, call } = makeFakeMcpServer();
-  const deps: ToolDeps = { buildApi: () => withFrameRaw(api) as FigmaApi, defaultToken: 'figd_x', logger, maxResultChars, ...extra };
+  const buildVersionedApi = (): FigmaApi => {
+    const getNodesRaw = api.getNodesRaw && (async (...args: Parameters<FigmaApi['getNodesRaw']>) => {
+      const raw = await api.getNodesRaw!(...args);
+      return fillMissingVersions ? { ...raw, version: raw.version ?? 'v1' } : raw;
+    });
+    const base = withFrameRaw({ ...api, ...(getNodesRaw ? { getNodesRaw } : {}) }) as FigmaApi;
+    const rawGetFrame = base.getFrameRaw.bind(base);
+    const getDocumentRaw = api.getDocumentRaw && (async (...args: Parameters<FigmaApi['getDocumentRaw']>) => {
+      const raw = await api.getDocumentRaw!(...args);
+      return fillMissingVersions ? { ...raw, version: raw.version ?? 'v1' } : raw;
+    });
+    const getDocumentByIdsRaw = api.getDocumentByIdsRaw
+      ? async (...args: Parameters<FigmaApi['getDocumentByIdsRaw']>) => {
+          const raw = await api.getDocumentByIdsRaw!(...args);
+          return fillMissingVersions ? { ...raw, version: raw.version ?? args[3] ?? 'v1' } : raw;
+        }
+      : getDocumentRaw
+        // Legacy fixtures supplied their synthetic documentary tree through getDocumentRaw. Route
+        // those values into the targeted projection boundary; this is test compatibility only and
+        // does not model a production whole-file fallback.
+        ? async (file: string, _ids: string[], depth: number, version?: string) => {
+            const raw = await getDocumentRaw(file, depth);
+            return { ...raw, version: raw.version ?? version ?? 'v1' };
+          }
+        : undefined;
+    return {
+      ...base,
+      getFrameRaw: async (...args) => {
+        const result = await rawGetFrame(...args);
+        return fillMissingVersions
+          ? { ...result, raw: { ...result.raw, version: result.raw.version ?? 'v1' } }
+          : result;
+      },
+      ...(getDocumentRaw ? { getDocumentRaw } : {}),
+      ...(getDocumentByIdsRaw ? { getDocumentByIdsRaw } : {}),
+    };
+  };
+  const deps: ToolDeps = { buildApi: () => buildVersionedApi(), defaultToken: 'figd_x', logger, maxResultChars, ...extra };
   registerCompareNodeToDomTool(server, deps);
   return (a: any): Promise<any> => call('compare_node_to_dom', a);
 }
@@ -383,13 +421,13 @@ describe('compare_node_to_dom tool', () => {
   // lazy memo (:202 `canvasChainMemo ??=`), initialized synchronously ONLY INSIDE gate A
   // (:267 `if (variableIndex && hasBoundPaintColor(...))`). card without fills/boundVariables →
   // hasBoundPaintColor(card)===false → the gate never enters its body → canvasChainFor is NEVER
-  // called → getDocumentRaw(...,2) (the skeleton) is NOT fetched, and thus neither is the deadline-capped whole-file
-  // discoverAncestorModes (also inside the same gate). A byte-lock on laziness: without THIS
+  // called → getDocumentRaw(...,2) (the skeleton) is NOT fetched, and neither is targeted ancestor
+  // discovery. A byte-lock on laziness: without THIS
   // test the mutation "canvasChainFor(frameId) is called unconditionally (outside gate A)" would stay invisible
   // — test A (:177) without frame_node_id never passes through branch C (frameId===undefined).
-  it('latency: a pair WITHOUT bound colors + frame_node_id → canvas-memo is lazy, getDocumentRaw NOT called at all (neither depth-2 skeleton nor whole-file)', async () => {
+  it('latency: a pair WITHOUT bound colors + frame_node_id starts neither the depth-2 shortcut nor targeted discovery', async () => {
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: card }, '9:1': { document: frameNode } } }));
-    const getDocumentRaw = vi.fn();                       // must not be called at all — neither the skeleton nor whole-file
+    const getDocumentRaw = vi.fn();                       // direct shortcut must not be called
     const getVariablesLocal = vi.fn(async () => emptyVars);
     const run = harness({ getNodesRaw, getVariablesLocal, getDocumentRaw });
     const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(card) }] });
@@ -421,6 +459,72 @@ describe('compare_node_to_dom tool', () => {
     expect(getDocumentRaw).not.toHaveBeenCalled();        // discovery skipped despite the bound-paint
     expect(res.isError).toBeFalsy();                      // honest degradation (variables_unavailable), not a crash
     expect(JSON.parse(res.content[0].text).pairs[0].summary).toBeDefined();
+  });
+
+  it('resolves snapshot errors before mode demand and queues no ancestor projection', async () => {
+    const getNodesRaw = vi.fn(async () => ({ version: 'v1', nodes: { '1:1': { document: cardBoundFill } } }));
+    const getVariablesLocal = vi.fn(async () => boundVars());
+    const getDocumentByIdsRaw = vi.fn();
+    const snapshotStore = {
+      resolve: vi.fn(() => ({ ok: false as const, reason: 'expired' as const })),
+    } as unknown as ToolDeps['snapshotStore'];
+    const run = harness({ getNodesRaw, getVariablesLocal, getDocumentByIdsRaw }, 40000, { snapshotStore });
+
+    const out = JSON.parse((await run({
+      file: FILE,
+      pairs: [{ node_id: '1:1', dom_ref: { ref: 'expired', selector: '.card' } }],
+    })).content[0].text);
+
+    expect(out.pairs[0].rows).toContainEqual(expect.objectContaining({ prop: 'snapshot_ref' }));
+    expect(getVariablesLocal).not.toHaveBeenCalled();
+    expect(getDocumentByIdsRaw).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'plain mismatch', requested: '1:1', returned: '1:2' },
+    { name: 'missing root id', requested: '1:1', returned: undefined },
+    { name: 'foreign compound with the same terminal', requested: 'I12:34;56:78', returned: 'I90:12;56:78' },
+  ])('rejects a $name before variable demand, ancestry, or geometry', async ({ requested, returned }) => {
+    const foreign = { ...cardBoundFill, id: returned } as unknown as RawSceneNode;
+    const getNodesRaw = vi.fn(async () => ({ version: 'v1', nodes: { [requested]: { document: foreign } } }));
+    const getVariablesLocal = vi.fn(async () => boundVars());
+    const getDocumentByIdsRaw = vi.fn(async () => docWithNode(foreign));
+    const run = harness({ getNodesRaw, getVariablesLocal, getDocumentByIdsRaw }, 40000, {}, false);
+
+    const out = JSON.parse((await run({
+      file: FILE, pairs: [{ node_id: requested, dom: domFor(foreign), label: 'validated-pair' }],
+    })).content[0].text);
+    const rows = out.pairs[0].rows;
+
+    expect(out.pairs[0].label).toBe('validated-pair');
+    expect(rows).toEqual([expect.objectContaining({
+      prop: 'node', status: 'warn', note: expect.stringContaining(requested),
+    })]);
+    expect(rows[0].note).not.toContain(String(returned));
+    expect(rows.some((row: any) => row.prop === 'size.w' || row.prop === 'fill')).toBe(false);
+    expect(getVariablesLocal).not.toHaveBeenCalled();
+    expect(getDocumentByIdsRaw).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'full compound without the I prefix', requested: 'I12-34;56-78', normalized: 'I12:34;56:78', returned: '12:34;56:78' },
+    { name: 'full compound with the I prefix', requested: '12:34;56:78', normalized: '12:34;56:78', returned: 'I12:34;56:78' },
+    { name: 'exact terminal scoped alias', requested: 'I12:34;56:78', normalized: 'I12:34;56:78', returned: '56:78' },
+  ])('accepts a $name for a response entry selected by the requested map key', async ({ requested, normalized, returned }) => {
+    const original = { ...card, id: returned } as RawSceneNode;
+    const getNodesRaw = vi.fn(async (_file: string, ids: string[]) => ({
+      version: 'v1', nodes: { [ids[0]]: { document: original } },
+    }));
+    const run = harness({ getNodesRaw });
+
+    const out = JSON.parse((await run({
+      file: FILE, pairs: [{ node_id: requested, dom: domFor(original) }],
+    })).content[0].text);
+
+    expect(out.pairs[0].node_id).toBe(normalized);
+    expect(out.pairs[0].rows.some((row: any) => row.prop === 'size.w')).toBe(true);
+    expect(out.pairs[0].rows.some((row: any) => row.prop === 'node')).toBe(false);
+    expect(original.id).toBe(returned);
   });
 
   it('a variables fetch that fails is REPORTED to the caller, not only logged: degraded_stages + a report line', async () => {
@@ -504,7 +608,8 @@ describe('compare_node_to_dom tool', () => {
     // The other direction, because a key that is always present says nothing: an honest flag has to
     // be absent on the healthy path, or every reader learns to ignore it.
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
-    const run = harness({ getNodesRaw, getVariablesLocal: boundVars });
+    const getDocumentRaw = vi.fn(async () => docWithNode(cardBoundFill));
+    const run = harness({ getNodesRaw, getVariablesLocal: boundVars, getDocumentRaw });
     const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
     expect(JSON.parse(res.content[0].text).degraded_stages).toBeUndefined();
   });
@@ -788,7 +893,7 @@ describe('compare_node_to_dom tool', () => {
     // instantly degrade (time_budget), NOT call getDocumentRaw(4+) — we count the calls.
     const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
     const getDocumentRaw = vi.fn(async () => docWithNode(cardBoundFill));
-    const run = harness({ getNodesRaw, getVariablesLocal: boundVars, getDocumentRaw }, 40000, { toolTimeBudgetMs: 1 });
+    const run = harness({ getNodesRaw, getVariablesLocal: boundVars, getDocumentRaw }, 40000, { toolTimeBudgetMs: -60_000 });
     const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
     expect(getDocumentRaw).not.toHaveBeenCalled();        // the discovery floor-gate fired BEFORE the fetch
     expect(res.content[0].text).toContain('"pairs"');     // the call did NOT fail — honest degradation
@@ -838,7 +943,129 @@ describe('compare_node_to_dom tool', () => {
       document: { id: '0:0', name: 'Document', type: 'DOCUMENT', children: [pageWithMode] } as unknown as RawSceneNode,
     };
 
-    it("document-chain: a pair in the frame's deep-raw → chain WITHOUT whole-file (getDocumentRaw only depth-2) + CANVAS mode applied", async () => {
+    it('a core response without a version keeps geometry but starts no ancestor projection', async () => {
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardBoundFill } } }));
+      const getDocumentByIdsRaw = vi.fn();
+      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentByIdsRaw }, 40000, {}, false);
+
+      const out = JSON.parse((await run({
+        file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill), label: 'versionless' }],
+      })).content[0].text);
+      const fill = out.pairs[0].rows.find((row: any) => row.prop === 'fill');
+
+      expect(getDocumentByIdsRaw).not.toHaveBeenCalled();
+      expect(fill).toMatchObject({ figma: null, status: 'review' });
+      expect(out.pairs[0].rows.some((row: any) => row.prop === 'size.w')).toBe(true);
+      expect(out.degraded_stages).toContainEqual(expect.objectContaining({
+        stage: 'ancestor_discovery', reason: 'missing_version',
+        affected_pairs: [expect.objectContaining({ pair_index: 0, node_id: '1:1', label: 'versionless' })],
+      }));
+    });
+
+    it.each([
+      { caseName: 'missing', responseVersion: undefined, reason: 'missing_version' },
+      { caseName: 'mismatched', responseVersion: 'v-other', reason: 'version_mismatch' },
+    ])('rejects $caseName targeted-projection versions and does not leak their explicit pin', async ({ responseVersion, reason }) => {
+      const getNodesRaw = vi.fn(async () => ({ version: 'v1', nodes: { '1:1': { document: cardBoundFill } } }));
+      const getDocumentByIdsRaw = vi.fn(async () => ({
+        name: 'Projection', lastModified: '', ...(responseVersion ? { version: responseVersion } : {}),
+        document: { id: '0:0', name: 'D', type: 'DOCUMENT', children: [{
+          id: '0:1', name: 'P', type: 'CANVAS',
+          explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' }, children: [cardBoundFill],
+        }] },
+      } as RawFileResponse));
+      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentByIdsRaw }, 40000, {}, false);
+
+      const out = JSON.parse((await run({
+        file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill), label: 'projected' }],
+      })).content[0].text);
+      const fill = out.pairs[0].rows.find((row: any) => row.prop === 'fill');
+
+      expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(1);
+      expect(fill).toMatchObject({ figma: null, status: 'review' });
+      expect(fill.figma).not.toBe(HEX_71);
+      expect(out.degraded_stages).toContainEqual(expect.objectContaining({
+        stage: 'ancestor_discovery', reason,
+        affected_pairs: [expect.objectContaining({ pair_index: 0, node_id: '1:1', label: 'projected' })],
+      }));
+      expect(out.report_markdown).toContain(`ancestor_discovery: not resolved (${reason})`);
+    });
+
+    it('does not start the depth-2 shortcut after the ancestor deadline has expired', async () => {
+      const frameDeep = pageWithMode.children![0];
+      const getNodesRaw = vi.fn(async (): Promise<RawNodesResponse> => ({
+        version: 'v1', nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } },
+      }));
+      const getDocumentRaw = vi.fn(async () => docRaw);
+      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw }, 40000, {
+        toolTimeBudgetMs: -60_000,
+      });
+
+      const out = JSON.parse((await run({
+        file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }],
+      })).content[0].text);
+
+      expect(getDocumentRaw).not.toHaveBeenCalled();
+      expect(out.degraded_stages).toContainEqual(expect.objectContaining({
+        stage: 'ancestor_discovery', reason: 'time_budget',
+      }));
+    });
+
+    it('dispatches the depth-2 shortcut through an API capped to the remaining deadline', async () => {
+      const frameDeep = pageWithMode.children![0];
+      const getNodesRaw = vi.fn(async (): Promise<RawNodesResponse> => ({
+        version: 'v1', nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } },
+      }));
+      const uncappedDocument = vi.fn(async () => docRaw);
+      const cappedDocument = vi.fn(async () => docRaw);
+      const initialApi = withFrameRaw({
+        getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw: uncappedDocument,
+      }) as FigmaApi;
+      const cappedApi = { ...initialApi, getDocumentRaw: cappedDocument } as FigmaApi;
+      const buildApi = vi.fn((_token: string, capMs?: number, _deadlineAt?: number) => capMs === undefined ? initialApi : cappedApi);
+      const run = harness({}, 40000, { buildApi, toolTimeBudgetMs: 60_000 });
+
+      const out = JSON.parse((await run({
+        file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }],
+      })).content[0].text);
+
+      expect(uncappedDocument).not.toHaveBeenCalled();
+      expect(cappedDocument).toHaveBeenCalledTimes(1);
+      expect(cappedDocument).toHaveBeenCalledWith(FILE, 2);
+      expect(buildApi).toHaveBeenCalledTimes(2);
+      expect(buildApi.mock.calls[1][1]).toBeGreaterThan(0);
+      expect(buildApi.mock.calls[1][1]).toBeLessThanOrEqual(60_000);
+      expect(buildApi.mock.calls[1][2]).toEqual(expect.any(Number));
+      expect(out.pairs[0].rows.find((row: any) => row.prop === 'fill').figma).toBe(HEX_71);
+    });
+
+    it('preserves a rate limit from the capped depth-2 shortcut', async () => {
+      const frameDeep = pageWithMode.children![0];
+      const getNodesRaw = vi.fn(async (): Promise<RawNodesResponse> => ({
+        version: 'v1', nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } },
+      }));
+      const uncappedDocument = vi.fn(async () => docRaw);
+      const cappedDocument = vi.fn(async () => {
+        throw new FigmaApiError('rate_limited', 429, 'slow down', 5);
+      });
+      const initialApi = withFrameRaw({
+        getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw: uncappedDocument,
+      }) as FigmaApi;
+      const cappedApi = { ...initialApi, getDocumentRaw: cappedDocument } as FigmaApi;
+      const buildApi = vi.fn((_token: string, capMs?: number, _deadlineAt?: number) => capMs === undefined ? initialApi : cappedApi);
+      const run = harness({}, 40000, { buildApi, toolTimeBudgetMs: 60_000 });
+
+      const result = await run({
+        file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }],
+      });
+
+      expect(uncappedDocument).not.toHaveBeenCalled();
+      expect(cappedDocument).toHaveBeenCalledTimes(1);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/rate_limited/i);
+    });
+
+    it("uses the direct depth-2 shortcut when the pair is present in the frame slice and applies the CANVAS mode", async () => {
       const frameDeep = pageWithMode.children![0];          // the frame with cardBoundFill inside
       const getNodesRaw = vi.fn(async (_f: string, ids: string[], _depth?: number): Promise<RawNodesResponse> =>
         ids.includes('9:1') ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
@@ -846,7 +1073,7 @@ describe('compare_node_to_dom tool', () => {
       const getDocumentRaw = vi.fn(async (_f: string, depth?: number): Promise<RawFileResponse> => { expect(depth).toBe(2); return docRaw; });
       const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
       const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      expect(getDocumentRaw).toHaveBeenCalledTimes(1);       // ONLY the depth-2 skeleton, ZERO whole-file deepening
+      expect(getDocumentRaw).toHaveBeenCalledTimes(1);       // direct depth-2 shortcut only
       const out = JSON.parse(res.content[0].text);
       const colorRow = out.pairs[0].rows.find((r: any) => r.prop === 'fill');
       // MUTATION LOCK L3-imp-1 (flagship): the assert pins EXACTLY the figma side (diff.ts:955
@@ -854,48 +1081,187 @@ describe('compare_node_to_dom tool', () => {
       // keep this assert green under a mutation of the canvas part.
       expect(colorRow.figma).toBe(HEX_71);                   // hex of mode 7:1, NOT default
       // Mutation m1 "the canvas part strips explicitVariableModes" → figma === '#ffffff' → RED here.
-      // probe-invariant: the frame is FOUND in the depth-2 slice directly (ancestorChainFromSubtree
-      // direct path) — the targeted probe-descent must not run at all, not a single depth-1 call.
+      // shortcut invariant: the frame is proven in the depth-2 slice directly, so targeted
+      // projection fallback must not run.
       expect(getNodesRaw.mock.calls.some((c) => c[2] === 1)).toBe(false);
     });
 
-    it("document-chain fallback (b): a pair DEEPER than deep-raw → deadline-capped whole-file (ONLY depth-4; no depth-2 skeleton — an undefined frameChain short-circuits canvasChainFor). MUTATION LOCK on the undefined-frameChain branch, green even before the fix (the fallback already yields depth-4) — NOT TDD-RED", async () => {
-      const shallowFrame = { id: '9:1', name: 'frame', type: 'FRAME', children: [] } as RawSceneNode; // no pair inside
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[]): Promise<RawNodesResponse> =>
-        ids.includes('9:1') ? { nodes: { '9:1': { document: shallowFrame }, '1:1': { document: cardBoundFill } } }
-                            : { nodes: { '1:1': { document: cardBoundFill } } });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docRaw); // serves both the skeleton and the whole-file slot
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toContain(4);                           // whole-file deepening started (ANCESTOR_START_DEPTH)
+    it('rejects a foreign core frame root and recovers the pair mode through targeted projection', async () => {
+      const variableId = 'VariableID:identity';
+      const collectionId = 'IdentityCollection';
+      const RAW = '#cc2244';
+      const DEFAULT = '#111111';
+      const SELECTED = '#2255aa';
+      const FOREIGN = '#22aa55';
+      const pair: RawSceneNode = {
+        id: '1:1', name: 'pair', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 },
+        fills: [{ type: 'SOLID', color: { r: 0.8, g: 0.133, b: 0.267, a: 1 },
+          boundVariables: { color: { type: 'VARIABLE_ALIAS', id: variableId } } }],
+      };
+      const foreignFrame: RawSceneNode = {
+        id: '9:9', name: 'foreign', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 777, height: 700 },
+        explicitVariableModes: { [collectionId]: 'foreign' }, children: [pair],
+      };
+      const requestedFrame: RawSceneNode = {
+        id: '9:1', name: 'requested', type: 'FRAME', children: [pair],
+      };
+      const skeleton: RawFileResponse = {
+        name: 'f', lastModified: '', version: 'v1', document: {
+          id: '0:0', name: 'D', type: 'DOCUMENT', children: [{
+            id: '0:1', name: 'P', type: 'CANVAS',
+            explicitVariableModes: { [collectionId]: 'selected' },
+            children: [{ id: '9:1', name: 'requested', type: 'FRAME' }],
+          }],
+        } as RawSceneNode,
+      };
+      const targeted: RawFileResponse = {
+        ...skeleton, document: {
+          id: '0:0', name: 'D', type: 'DOCUMENT', children: [{
+            id: '0:1', name: 'P', type: 'CANVAS',
+            explicitVariableModes: { [collectionId]: 'selected' }, children: [requestedFrame],
+          }],
+        } as RawSceneNode,
+      };
+      const variables: RawVariablesResponse = { meta: {
+        variables: { [variableId]: {
+          id: variableId, name: 'identity/color', resolvedType: 'COLOR', variableCollectionId: collectionId,
+          valuesByMode: {
+            default: { r: 0.067, g: 0.067, b: 0.067, a: 1 },
+            selected: { r: 0.133, g: 0.333, b: 0.667, a: 1 },
+            foreign: { r: 0.133, g: 0.667, b: 0.333, a: 1 },
+          },
+        } },
+        variableCollections: { [collectionId]: {
+          id: collectionId, name: 'Identity', defaultModeId: 'default',
+          modes: [{ modeId: 'default', name: 'Default' }, { modeId: 'selected', name: 'Selected' }, { modeId: 'foreign', name: 'Foreign' }],
+        } },
+      } };
+      const getNodesRaw = vi.fn(async () => ({ version: 'v1', nodes: {
+        '9:1': { document: foreignFrame }, '1:1': { document: pair },
+      } }));
+      const getDocumentRaw = vi.fn(async () => skeleton);
+      const getDocumentByIdsRaw = vi.fn(async () => targeted);
+      const run = harness({ getNodesRaw, getDocumentRaw, getDocumentByIdsRaw,
+        getVariablesLocal: async () => variables });
+
+      const out = JSON.parse((await run({
+        file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(pair) }],
+      })).content[0].text);
+      const fill = out.pairs[0].rows.find((row: any) => row.prop === 'fill');
+
+      expect(fill.figma).toBe(SELECTED);
+      expect(fill.figma).not.toBe(RAW);
+      expect(fill.figma).not.toBe(DEFAULT);
+      expect(fill.figma).not.toBe(FOREIGN);
+      expect(out.frame).toEqual({ node_id: '9:1' });
+      expect(out.pairs[0].rows).toContainEqual(expect.objectContaining({ prop: 'frame', figma: '9:1' }));
+      expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(1);
     });
 
-    it('document-chain fallback (d): located, but the frame is NOT in the depth-2 skeleton (nested in a section) → discovery recovered the mode', async () => {
-      // skeleton: DOCUMENT→CANVAS→section (frame 9:1 absent at depth-2)
+    it('rejects a foreign deep-coverage frame root and retains usable core geometry', async () => {
+      const deepLeaf: RawSceneNode = {
+        id: '8:8', name: 'leaf', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 10, height: 10 },
+      };
+      let nested = deepLeaf;
+      for (let level = 7; level >= 1; level--) nested = {
+        id: `8:${level}`, name: `level ${level}`, type: 'FRAME',
+        absoluteBoundingBox: { x: 0, y: 0, width: 20, height: 20 }, children: [nested],
+      };
+      const coreFrame: RawSceneNode = {
+        id: '9:1', name: 'requested', type: 'FRAME',
+        absoluteBoundingBox: { x: 0, y: 0, width: 375, height: 800 }, children: [nested],
+      };
+      const foreignDeep: RawSceneNode = {
+        id: '9:9', name: 'foreign', type: 'FRAME',
+        absoluteBoundingBox: { x: 0, y: 0, width: 999, height: 999 }, children: [],
+      };
+      const getFrameRaw = vi.fn(async (_file: string, ids: string[], requestedDepth: number) => ids.length > 1
+        ? { raw: { version: 'v1', nodes: { '1:1': { document: card }, '9:1': { document: coreFrame } } },
+            heldDepth: requestedDepth + 1, hydrated: false, effectiveMaxDepth: requestedDepth }
+        : { raw: { version: 'v1', nodes: { '9:1': { document: foreignDeep } } },
+            heldDepth: 9, hydrated: false, effectiveMaxDepth: 8 });
+      const run = harness({ getFrameRaw } as Partial<FigmaApi>);
+
+      const out = JSON.parse((await run({
+        file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(card) }],
+      })).content[0].text);
+
+      expect(getFrameRaw).toHaveBeenCalledTimes(2);
+      expect(out.frame).toEqual({ node_id: '9:1', width: 375 });
+      expect(out.verification.frame_coverage.enumeration_source).toBe('pair_fetch');
+    });
+
+    it.each([
+      { caseName: 'missing', responseVersion: undefined },
+      { caseName: 'mismatched', responseVersion: 'v-other' },
+    ])('rejects a $caseName depth-2 skeleton version while preserving frame coverage', async ({ responseVersion }) => {
+      const frameDeep = pageWithMode.children![0];
+      const getNodesRaw = vi.fn(async () => ({
+        version: 'v1', nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } },
+      }));
+      const invalid = {
+        name: 'f', lastModified: '', ...(responseVersion ? { version: responseVersion } : {}), document: docRaw.document,
+      } as RawFileResponse;
+      const getDocumentRaw = vi.fn(async () => invalid);
+      const getDocumentByIdsRaw = vi.fn(async () => invalid);
+      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw, getDocumentByIdsRaw }, 40000, {}, false);
+
+      const out = JSON.parse((await run({
+        file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }],
+      })).content[0].text);
+      const fill = out.pairs[0].rows.find((row: any) => row.prop === 'fill');
+
+      expect(getDocumentRaw).toHaveBeenCalledTimes(1);
+      expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(1);
+      expect(fill).toMatchObject({ figma: null, status: 'review' });
+      expect(fill.figma).not.toBe(HEX_71);
+      expect(out.verification.frame_coverage).toMatchObject({ enumeration_source: 'pair_fetch' });
+    });
+
+    it('uses targeted fallback when the frame slice does not contain the pair', async () => {
+      const shallowFrame = { id: '9:1', name: 'frame', type: 'FRAME', children: [] } as RawSceneNode;
+      const getNodesRaw = vi.fn(async (_f: string, ids: string[], _depth?: number): Promise<RawNodesResponse> =>
+        ids.includes('9:1') ? { nodes: { '9:1': { document: shallowFrame }, '1:1': { document: cardBoundFill } } }
+                            : { nodes: { '1:1': { document: cardBoundFill } } });
+      const getDocumentRaw = vi.fn(async (_file: string, _depth?: number): Promise<RawFileResponse> => docRaw);
+      const getDocumentByIdsRaw = vi.fn(async (_file: string, _ids: string[], _depth: number, _version?: string): Promise<RawFileResponse> => docRaw);
+      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw, getDocumentByIdsRaw });
+
+      await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
+
+      expect(getDocumentRaw.mock.calls.map((call) => call[1])).toEqual([2]);
+      expect(getDocumentByIdsRaw.mock.calls.map((call) => call[2])).toEqual([4]);
+    });
+
+    it('uses targeted fallback when the frame is below the depth-2 shortcut and preserves the ancestor mode', async () => {
       const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
         { id: '0:1', type: 'CANVAS', name: 'P', explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
           children: [{ id: '5:5', type: 'SECTION', name: 'S' }] }] }, version: 'v1' } as unknown as RawFileResponse;
-      // bbox-absence on frameDeep — LOAD-BEARING: routes into (d) past the probe-descent
       const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME', children: [cardBoundFill] } as RawSceneNode;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[]): Promise<RawNodesResponse> =>
+      const getNodesRaw = vi.fn(async (_f: string, ids: string[], _depth?: number): Promise<RawNodesResponse> =>
         ids.includes('9:1') ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
                             : { nodes: { '1:1': { document: cardBoundFill } } });
-      // whole-file deepening (depth 4) FINDS the node: return the full doc with section→frame→card
       const fullDoc = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
         { id: '0:1', type: 'CANVAS', name: 'P', explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
           children: [{ id: '5:5', type: 'SECTION', name: 'S', children: [frameDeep] }] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const getDocumentRaw = vi.fn(async (_f: string, depth?: number): Promise<RawFileResponse> => (depth === 2 ? docNoFrame : fullDoc));
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toEqual(expect.arrayContaining([2, 4])); // skeleton + B-recovery
-      expect(JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill')).toBeDefined();
-      // MUTATION LOCK L1-imp: the mutation "no (d) condition — partial chain immediately" → no depth-4 call → RED
+      const getDocumentRaw = vi.fn(async (_file: string, _depth?: number): Promise<RawFileResponse> => docNoFrame);
+      const getDocumentByIdsRaw = vi.fn(async (_file: string, _ids: string[], _depth: number, _version?: string): Promise<RawFileResponse> => fullDoc);
+      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw, getDocumentByIdsRaw });
+
+      const out = JSON.parse((await run({
+        file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }],
+      })).content[0].text);
+      const fill = out.pairs[0].rows.find((row: any) => row.prop === 'fill');
+
+      expect(getDocumentRaw.mock.calls.map((call) => call[1])).toEqual([2]);
+      expect(getDocumentByIdsRaw.mock.calls.map((call) => call[2])).toEqual([4]);
+      expect(getNodesRaw.mock.calls.some((call) => call[2] === 1)).toBe(false);
+      expect(fill.figma).toBe(HEX_71);
+      expect(fill.note ?? '').not.toMatch(/mode is not confirmed/);
     });
 
     it('the canvas skeleton is fetched ONCE per call with 2+ color pairs (memo)', async () => {
-      const frameDeep = pageWithMode.children![0];
+      const frameDeep = structuredClone(pageWithMode.children![0]);
       const second = { ...cardBoundFill, id: '1:9' } as RawSceneNode;
       (frameDeep.children as RawSceneNode[]).push(second);
       const getNodesRaw = vi.fn(async (_f: string, ids: string[]): Promise<RawNodesResponse> =>
@@ -908,14 +1274,37 @@ describe('compare_node_to_dom tool', () => {
       expect(getDocumentRaw).toHaveBeenCalledTimes(1);
     });
 
-    it('(d)-partial mutation-lock: discovery CUT SHORT (depth_cap) → a partial frame-only chain = honest default-hex + review "mode not confirmed", NEVER "hex matched under the mode"', async () => {
-      // The skeleton AND ALL whole-file depths WITHOUT the frame/pair (the page-mode 7:1 lives on the CANVAS above):
-      // canvasChainFor(depth 2) doesn't find the frame → branch (d); discovery deepens 4→8, doesn't find the pair
-      // → droppedReason:'depth_cap' (deterministic) → a partial intra-frame chain.
+    it('never mutates the cached frame, pair or depth-2 documents it shares with scoped roots', async () => {
+      // Scoped roots are shallow copies: descendants stay shared with the cached API responses.
+      // Strict-mode writes into a frozen tree throw, so any in-place edit turns this call into an error.
+      const deepFreeze = <T>(value: T): T => {
+        if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+          Object.freeze(value);
+          for (const child of Object.values(value as object)) deepFreeze(child);
+        }
+        return value;
+      };
+      const doc = deepFreeze(structuredClone(docRaw));
+      const frame = (doc.document as RawSceneNode).children![0].children![0];
+      const card = frame.children![0];
+      const getNodesRaw = vi.fn(async (_f: string, ids: string[]): Promise<RawNodesResponse> =>
+        deepFreeze<RawNodesResponse>(ids.includes('9:1') ? { nodes: { '9:1': { document: frame }, '1:1': { document: card } } }
+                                       : { nodes: { '1:1': { document: card } } }));
+      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => doc);
+      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
+      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(card) }] });
+      expect(res.isError).toBeFalsy();
+      const fill = JSON.parse(res.content[0].text).pairs[0].rows.find((row: any) => row.prop === 'fill');
+      expect(fill.figma).toBe(HEX_71);
+    });
+
+    it('targeted fallback depth_cap keeps the mode unconfirmed instead of trusting partial evidence', async () => {
+      // The depth-2 shortcut and every targeted projection omit the frame/pair while the page carries mode 7:1.
+      // Discovery tries 4→8→16, never finds the pair, and returns depth_cap with no partial chain.
       const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
         { id: '0:1', type: 'CANVAS', name: 'P', explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
           children: [{ id: '5:5', type: 'SECTION', name: 'S' }] }] }, version: 'v1' } as unknown as RawFileResponse;
-      // bbox-absence on frameDeep — LOAD-BEARING: routes into (d) past the probe-descent
+      // Frame is intentionally absent from the depth-2 documentary shortcut, forcing targeted fallback.
       const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME', children: [cardBoundFill] } as RawSceneNode;
       const getNodesRaw = vi.fn(async (_f: string, ids: string[]): Promise<RawNodesResponse> =>
         ids.includes('9:1') ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
@@ -937,70 +1326,19 @@ describe('compare_node_to_dom tool', () => {
       expect(colorRow.note).toMatch(/mode is not confirmed/);
     });
 
-    // Predictive byte-gate e2e: compare ALWAYS passes predictiveByteGate:true into cappedCfg (the cfg lives
-    // ONCE for both discoverAncestorModes call-sites — see the cappedCfg literal above). On the
-    // giant-file (d) route (bbox-absent frameDeep — the same load-bearing trick as in the
-    // (d)-partial lock above, routing PAST the probe-descent) the depth-4 whole-file already
-    // weighs ~13MB (with no target pair inside — discovery doesn't locate at depth 4): the predictive gate
-    // must stop AFTER this fetch and NOT try depth 8 (which would be ~26MB+,
-    // a measured 88s stream abort on a large prod page). 13MB < 24MB (ANCESTOR_BYTE_BUDGET) — the reactive
-    // gate BY ITSELF would NOT fire here, so a green test proves exactly the predictive
-    // branch, not a coincidence with the reactive threshold.
-    it('predictive byte-gate e2e: the (d) route (bbox-absent) + depth-4 = 13MB → predictive drop, depth-8 not attempted', async () => {
-      const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
-          children: [{ id: '5:5', type: 'SECTION', name: 'S' }] }] }, version: 'v1' } as unknown as RawFileResponse;
-      // bbox-absence on frameDeep — LOAD-BEARING: routes into (d) past the probe-descent
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME', children: [cardBoundFill] } as RawSceneNode;
-      // depth-4 whole-file: 13MB name-padding, no target pair ('1:1') inside — discovery doesn't
-      // locate at depth 4, which makes byte-gate the SOLE reason for stopping (not located).
-      const giantDoc = { document: { id: '0:0', type: 'DOCUMENT', name: 'x'.repeat(13_000_000), children: [] },
-        version: 'v1' } as unknown as RawFileResponse;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[]): Promise<RawNodesResponse> =>
-        ids.includes('9:1') ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-                            : { nodes: { '1:1': { document: cardBoundFill } } });
-      const getDocumentRaw = vi.fn(async (_f: string, depth?: number): Promise<RawFileResponse> => (depth === 2 ? docNoFrame : giantDoc));
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toEqual([2, 4]);                        // skeleton + ONE whole-file — NEVER depth 8
-      // The mutation "compare doesn't pass predictiveByteGate" → the reactive gate (13MB < 24MB) does NOT
-      // stop discovery → depth doubles to 8 → depths contains 8 → RED here.
-    });
-
-    // predictive byte-gate e2e (a) route (a regression-net lock): cappedCfg
-    // (predictiveByteGate:true) is ONE literal, living for BOTH discoverAncestorModes call-sites
-    // (:400 and :415, see the comment at cappedCfg above). The e2e test above routes through the FIRST
-    // (:400, the (d) path — frame_node_id given, frame located inside bestFrameRaw, but canvasChain
-    // unavailable). The SECOND call-site (:415, fallback matrix (a)(b)(c)) was NOT separately locked: a live
-    // mutation ONLY there (`{...cappedCfg, predictiveByteGate: false}` substituted exclusively into
-    // the :415 call, :400 untouched) passed the whole suite 89/89 green — no existing scenario
-    // routes into :415 WITHOUT frame_node_id at all (the (a) path: `frameId` undefined ⟹ the :385-411 block
-    // is skipped entirely, `done` stays false from the start). Here — WITHOUT frame_node_id: needsModes
-    // fires via a LOCAL bound color (multiModeVars → variableIndex defined, the first disjunct of
-    // needsModes — hasBoundPaintColor(cardBoundFill), NOT hasExternalBoundPaintColor — external isn't
-    // needed here, variableIndex already covers the local alias). discoverAncestorModes is called EXACTLY
-    // ONCE — at :415. The same 13MB trick: depth-4 whole-file with no target node inside (discovery doesn't
-    // locate, byte-gate is the SOLE reason for stopping), 13MB×2 ≥ 24MB (ANCESTOR_BYTE_BUDGET) —
-    // the predictive gate must stop, depth-8 is never attempted.
-    it('predictive byte-gate e2e (a) route: WITHOUT frame_node_id at all → the SECOND discoverAncestorModes call-site (:415) also predictively drops 13MB×2 ≥ 24MB, depth-8 not attempted', async () => {
-      // depth-4 whole-file: 13MB name-padding, WITHOUT '1:1' inside — discovery doesn't locate the node at
-      // depth 4 (located===false), which makes byte-gate the SOLE reason for stopping.
-      const giantDoc = { document: { id: '0:0', name: 'x'.repeat(13_000_000), type: 'DOCUMENT', children: [] },
-        version: 'v1' } as unknown as RawFileResponse;
-      const getNodesRaw = vi.fn(async (_f: string, _ids: string[]): Promise<RawNodesResponse> =>
+    it('targeted fallback uses the bounded 4 -> 8 -> 16 ladder without whole-file size prediction', async () => {
+      const projected = { name: 'f', lastModified: '', version: 'v1',
+        document: { id: '0:0', name: 'D', type: 'DOCUMENT', children: [] } } as RawFileResponse;
+      const getNodesRaw = vi.fn(async (): Promise<RawNodesResponse> =>
         ({ nodes: { '1:1': { document: cardBoundFill } } }));
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => giantDoc);
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      // WITHOUT frame_node_id at all — the (a) path: frameId===undefined ⟹ :385-411 skipped entirely ⟹
-      // the single discoverAncestorModes call falls exactly on :415.
+      const getDocumentRaw = vi.fn();
+      const getDocumentByIdsRaw = vi.fn(async (_file: string, _ids: string[], _depth: number, _version?: string): Promise<RawFileResponse> => projected);
+      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw, getDocumentByIdsRaw });
+
       await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toContain(4);
-      expect(depths).not.toContain(8);
-      // A live mutation "the :415 call receives {...cappedCfg, predictiveByteGate: false}" → the reactive
-      // gate (13MB < 24MB) does NOT stop discovery → depth doubles to 8 → depths contains 8 →
-      // RED here.
+
+      expect(getDocumentByIdsRaw.mock.calls.map((call) => call[2])).toEqual([4, 8, 16]);
+      expect(getDocumentRaw).not.toHaveBeenCalled();
     });
 
     it('document-chain: CANVAS-guard mutation-lock — the frame is located in the depth-2 skeleton, but the chain WITHOUT CANVAS → we do NOT trust the skeleton, discovery recovers the page-mode', async () => {
@@ -1009,7 +1347,7 @@ describe('compare_node_to_dom tool', () => {
       const docFrameUnderDoc = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
         { id: '9:1', name: 'frame', type: 'FRAME' }] }, version: 'v1' } as unknown as RawFileResponse;
       const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME', children: [cardBoundFill] } as RawSceneNode;
-      // whole-file (depth 4) — the REAL structure: a page with mode 7:1 above the frame
+      // targeted projection (depth 4) — the real structure: a page with mode 7:1 above the frame
       const fullDoc = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
         { id: '0:1', type: 'CANVAS', name: 'P', explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
           children: [frameDeep] }] }, version: 'v1' } as unknown as RawFileResponse;
@@ -1032,8 +1370,8 @@ describe('compare_node_to_dom tool', () => {
       const colorRow = JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill');
       // The mutation "remove canvasChain.some(CANVAS)" → chain=[DOCUMENT] accepted as complete → discovery is NOT
       // called (no depth-4) + ancestorStack empty → figma=HEX_DEFAULT under coverageComplete=true
-      // (a confidently-wrong mode) → RED on BOTH asserts. The fixture is deliberately orthogonal to
-      // the (d)-partial lock above: there canvasChain is undefined (the guard isn't reached), here it is reached.
+      // (a confidently-wrong mode) → RED on BOTH asserts. This fixture is orthogonal to the depth-cap
+      // lock above: here targeted fallback succeeds and recovers the page mode.
       expect(colorRow.figma).toBe(HEX_71);                  // page-mode recovered by discovery, NOT lost
     });
 
@@ -1107,12 +1445,11 @@ describe('compare_node_to_dom tool', () => {
 
     // Edge case (ancestor-latency): the main fetch returns the frame TRUNCATED
     // (childrenTruncated by depth — no pair inside), the cov-fetch@8 (tier 3, tool :169) returns
-    // a DEEP frame where the pair IS present — bestFrameRaw MUST reuse the cov result (:172
-    // `bestFrameRaw = cd`), otherwise frameChain isn't localized from the main frame (no pair there) and the tool
-    // falls into deadline-capped whole-file discovery (depth 4+) — the reuse must avoid exactly this.
+    // a DEEP frame where the pair IS present — bestFrameRaw MUST reuse the coverage result; otherwise
+    // the direct shortcut cannot prove the pair and the targeted fallback starts unnecessarily.
     // Local fixtures (do not reuse the shared docRaw/pageWithMode/multiModeVars — the same reason for
     // isolation from the "memo" mutation as in the nearest-wins test above).
-    it("deep-pair reuse: the frame's main fetch is truncated (no pair inside), the cov-fetch@8 contains the pair → bestFrameRaw reuses cov (:172), whole-file discovery does NOT start", async () => {
+    it("deep-pair reuse: the coverage fetch contains the pair, so targeted fallback does not start", async () => {
       const varsLocal: RawVariablesResponse = {
         meta: {
           variables: {
@@ -1174,12 +1511,64 @@ describe('compare_node_to_dom tool', () => {
       const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
 
       const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toEqual([2]);                            // ONLY the canvas skeleton — whole-file discovery (depth 4+) did NOT start
+      expect(depths).toEqual([2]);                            // direct skeleton only; targeted fallback did not start
       const colorRow = JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill');
       expect(colorRow.figma).toBe(HEX_71);                    // the chain is localized FROM the cov-fetch (bestFrameRaw=cd), not from main
-      // The mutation "comment out `bestFrameRaw = cd;` (:172)" → bestFrameRaw stays the main frame
-      // WITHOUT the pair → frameChain undefined → fallback (!done) → deadline-capped whole-file discovery
-      // starts (depth 4+) → depths contains 4 → toEqual([2]) RED.
+      // Without `bestFrameRaw = cd`, the direct proof cannot locate the pair and targeted fallback starts
+      // at depth 4; the legacy fixture shim records that as another getDocumentRaw call, making this RED.
+    });
+
+    it.each([
+      { caseName: 'missing', responseVersion: undefined },
+      { caseName: 'mismatched', responseVersion: 'v-other' },
+    ])('uses a $caseName deep-coverage response for geometry only, never for mode evidence', async ({ responseVersion }) => {
+      let nested: RawSceneNode = {
+        id: '8:8', name: 'leaf', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 40, height: 8 },
+      };
+      for (let level = 6; level >= 1; level--) nested = {
+        id: `8:${level}`, name: `level ${level}`, type: 'FRAME',
+        absoluteBoundingBox: { x: 0, y: 0, width: 40, height: 8 }, children: [nested],
+      };
+      const shallowFrame: RawSceneNode = {
+        id: '9:1', name: 'frame', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 375, height: 812 },
+        children: [nested],
+      };
+      const deepFrame: RawSceneNode = {
+        id: '9:1', name: 'frame', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 375, height: 812 },
+        explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' }, children: [cardBoundFill],
+      };
+      const getFrameRaw = vi.fn(async (_file: string, ids: string[], requestedDepth: number) => ids.length > 1
+        ? { raw: { version: 'v1', nodes: { '1:1': { document: cardBoundFill }, '9:1': { document: shallowFrame } } },
+            heldDepth: requestedDepth + 1, hydrated: false, effectiveMaxDepth: requestedDepth }
+        : { raw: { ...(responseVersion ? { version: responseVersion } : {}), nodes: { '9:1': { document: deepFrame } } },
+            heldDepth: 9, hydrated: false, effectiveMaxDepth: 8 });
+      const getDocumentRaw = vi.fn(async () => ({
+        name: 'f', lastModified: '', version: 'v1', document: {
+          id: '0:0', name: 'D', type: 'DOCUMENT', children: [{ id: '0:1', name: 'P', type: 'CANVAS', children: [
+            { id: '9:1', name: 'frame', type: 'FRAME' },
+          ] }],
+        },
+      } as RawFileResponse));
+      const getDocumentByIdsRaw = vi.fn(async (_file: string, _ids: string[], _depth: number, _version?: string) => ({
+        name: 'f', lastModified: '', version: 'v1', document: {
+          id: '0:0', name: 'D', type: 'DOCUMENT', children: [{ id: '0:1', name: 'P', type: 'CANVAS', children: [] }],
+        },
+      } as RawFileResponse));
+      const run = harness({ getFrameRaw, getDocumentRaw, getDocumentByIdsRaw,
+        getVariablesLocal: multiModeVars } as Partial<FigmaApi>, 40000, {}, false);
+
+      const out = JSON.parse((await run({
+        file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }],
+      })).content[0].text);
+      const fill = out.pairs[0].rows.find((row: any) => row.prop === 'fill');
+
+      expect(getFrameRaw).toHaveBeenCalledTimes(2);
+      expect(getDocumentByIdsRaw.mock.calls.map((call) => call[2])).toEqual([4, 8, 16]);
+      expect(fill).toMatchObject({ figma: null, status: 'review' });
+      expect(fill.figma).not.toBe(HEX_71);
+      expect(out.verification.frame_coverage).toMatchObject({ enumeration_source: 'deep' });
+      expect(out.verification.frame_coverage.unverified_containers).toBeUndefined();
+      expect(out.verification.complete).toBe(false);
     });
 
     // Mutation-net-gap lock: a mirror of the flagship "dual-suffix"
@@ -1253,326 +1642,71 @@ describe('compare_node_to_dom tool', () => {
       // Mutation lock (m1, low mutation-net-gap): `ancestorNodes = [...canvasChain, ...frameChain]`
       // (:339) → `[]` in this full-chain branch → graphStackFor loses the CANVAS pin entirely →
       // resolveInMode falls back to the default mode → figma becomes HEX_DEFAULT_G → RED on the first
-      // assert above. (m2 — `ancestorNodes = frameChain` → `[]` in the (d)-partial branch, :349 — THIS test
-      // goes through full-chain, not through (d); the (d) arm for the GRAPH resolver remains a follow-up, see
-      // not a blocker, degrades to an honest review, not to a confidently-wrong color.)
+      // assert above. This test exercises the complete shortcut chain; graph fallback under an
+      // incomplete targeted projection remains honestly unconfirmed rather than confidently colored.
     });
 
-    // A targeted probe-descent in canvasChainFor — the frame is NOT in the depth-2 slice (nested in
-    // a section), but the section and the frame HAVE a bbox → the geometry pre-filter (pickDescentCandidates) picks
-    // WHOM to probe, while membership is proven documentarily (children-id of the probe RESPONSE ROOT) — NEVER
-    // by bbox directly. Replaces the expensive (d)-deadline-capped whole-file discovery with a single getNodesRaw depth-1.
-    it('probe-descent: a frame in a SECTION + bbox → probe-descent (getNodesRaw depth-1) instead of whole-file; CANVAS mode applied; coverageComplete=true', async () => {
-      // depth-2 skeleton: DOCUMENT→CANVAS→SECTION (no frame 9:1); the section and the frame HAVE a bbox → probe route
-      const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
-          children: [
-            { id: '5:5', type: 'SECTION', name: 'S', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 } },
-            { id: '5:6', type: 'SECTION', name: 'far', absoluteBoundingBox: { x: 9000, y: 9000, width: 10, height: 10 } },
-          ] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill] } as RawSceneNode;
-      const probeSection = { id: '5:5', type: 'SECTION', name: 'S',
-        absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 },
-        children: [{ id: '9:1', type: 'FRAME', name: 'frame' }] } as RawSceneNode; // probe RESPONSE ROOT
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
-        if (ids.includes('5:5')) { expect(depth).toBe(1); return { nodes: { '5:5': { document: probeSection } } }; }
-        return ids.includes('9:1')
-          ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-          : { nodes: { '1:1': { document: cardBoundFill } } };
-      });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docNoFrame);
-      //   ↑ WITHOUT an inner expect in the mock (an AssertionError is swallowed by the catch :363 — RED must
-      //     be DIRECT, via the external depths assert below)
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      expect(getDocumentRaw.mock.calls.map((c) => c[1])).toEqual([2]); // ZERO whole-file deepening — the heart of the probe-descent
-      const probeCall = getNodesRaw.mock.calls.find((c) => (c[1] as string[]).includes('5:5'));
-      expect(probeCall![1]).not.toContain('5:6');                     // the bbox pre-filter cut off the far section
-      const colorRow = JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill');
-      expect(colorRow.figma).toBe(HEX_71);                             // the CANVAS mode arrived via the descent
-      // Invariant (blocker): status 'pass' is UNREACHABLE here — domFor gives DOM #ffffff ≠ HEX_71, the row
-      // mismatches by design (the sibling test :570 also asserts only the figma side). The observable signal of
-      // coverageComplete=true is the ABSENCE of the unconfirmed-mode note (an inversion of the lock :661):
-      expect(colorRow.note ?? '').not.toMatch(/mode is not confirmed/);
-      // Mutation m2 "descent disabled" → discovery deepening (depth 4 in getDocumentRaw) → RED on toEqual([2]).
-      // Mutation m1 "membership by bbox" is caught by the adversarial test below.
-    });
-
-    it('probe-descent adversarial: a branching 2-level descent — the mode lives ONLY on the intermediate section of the true path; a sibling with the SAME collection on a DIFFERENT mode does NOT enter the chain', async () => {
-      // A(5:5, pin 7:2 via the probe RESPONSE ROOT) ⊃ B(6:6, WITHOUT a pin) ⊃ frame; sibling A'(5:9, pin
-      // 7:1) also bbox-intersects frameBox, but is documentarily EMPTY (probeAprime.children===[]). The correct
-      // hex = HEX_72 (the pin of the intermediate A). varsAB is a copy of varsMultiMode with a third mode '7:2'.
-      const HEX_72 = '#993366'; // valuesByMode['7:2'] — r:.6 g:.2 b:.4
-      const varsAB: RawVariablesResponse = {
-        meta: {
-          variables: {
-            'VariableID:9:9': {
-              id: 'VariableID:9:9', name: 'neutral/bg/base', resolvedType: 'COLOR',
-              variableCollectionId: 'VariableCollectionId:7:7',
-              valuesByMode: { m0: { r: 1, g: 1, b: 1, a: 1 }, '7:1': { r: 0.2, g: 0.4, b: 0.6, a: 1 }, '7:2': { r: 0.6, g: 0.2, b: 0.4, a: 1 } },
-            },
-          },
-          variableCollections: {
-            'VariableCollectionId:7:7': {
-              id: 'VariableCollectionId:7:7', name: 'Theme', defaultModeId: 'm0',
-              modes: [{ modeId: 'm0', name: 'Default' }, { modeId: '7:1', name: 'Solar' }, { modeId: '7:2', name: 'Alt' }],
-            },
-          },
-        },
+    it('falls back to targeted projection when depth-2 cannot prove the frame and rejects a duplicate target in an unsearched branch', async () => {
+      const nearSection: RawSceneNode = {
+        id: '5:5', name: 'near', type: 'SECTION',
+        absoluteBoundingBox: { x: 0, y: 0, width: 1200, height: 1200 },
+        children: [{ id: '9:1', name: 'frame', type: 'FRAME' }],
       };
-      const varsABFn = async (): Promise<RawVariablesResponse> => varsAB;
-
-      const docSkel = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', children: [
-          { id: '5:5', type: 'SECTION', name: 'A', absoluteBoundingBox: { x: 0, y: 0, width: 3000, height: 3000 } },
-          //   ↑ the skeleton copy of A DELIBERATELY WITHOUT explicitVariableModes — the mode must come from the probe RESPONSE ROOT
-          { id: '5:9', type: 'SECTION', name: 'Aprime', absoluteBoundingBox: { x: 0, y: 0, width: 3000, height: 3000 },
-            explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' } },
-        ] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const probeA = { id: '5:5', type: 'SECTION', name: 'A', explicitVariableModes: { 'VariableCollectionId:7:7': '7:2' },
-        children: [{ id: '6:6', type: 'SECTION', name: 'B', absoluteBoundingBox: { x: 0, y: 0, width: 1000, height: 1000 } }] } as RawSceneNode;
-      const probeAprime = { id: '5:9', type: 'SECTION', name: 'Aprime', explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
-        children: [] } as RawSceneNode;                                  // documentarily does NOT contain the frame
-      const probeB = { id: '6:6', type: 'SECTION', name: 'B',
-        children: [{ id: '9:1', type: 'FRAME', name: 'frame' }] } as RawSceneNode;   // WITHOUT a pin
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 100, y: 100, width: 50, height: 50 }, children: [cardBoundFill] } as RawSceneNode;
-
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
-        if (ids.includes('5:5') || ids.includes('5:9')) {
-          expect(depth).toBe(1);
-          const nodes: Record<string, { document: RawSceneNode }> = {};
-          if (ids.includes('5:5')) nodes['5:5'] = { document: probeA };
-          if (ids.includes('5:9')) nodes['5:9'] = { document: probeAprime };
-          return { nodes };
-        }
-        if (ids.includes('6:6')) { expect(depth).toBe(1); return { nodes: { '6:6': { document: probeB } } }; }
-        return ids.includes('9:1')
-          ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-          : { nodes: { '1:1': { document: cardBoundFill } } };
+      const skeleton = {
+        name: 'f', lastModified: '', version: 'v1', document: {
+          id: '0:0', name: 'D', type: 'DOCUMENT', children: [{
+            id: '0:1', name: 'P', type: 'CANVAS',
+            explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
+            children: [
+              { ...nearSection, children: undefined },
+              { id: '5:6', name: 'far', type: 'SECTION', absoluteBoundingBox: { x: 8000, y: 8000, width: 20, height: 20 } },
+            ],
+          }],
+        },
+      } as RawFileResponse;
+      const frameDeep: RawSceneNode = {
+        id: '9:1', name: 'frame', type: 'FRAME',
+        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill],
+      };
+      const duplicate = { ...cardBoundFill, id: 'I1:1' } as RawSceneNode;
+      const targeted = {
+        name: 'f', lastModified: '', version: 'v1', document: {
+          id: '0:0', name: 'D', type: 'DOCUMENT', children: [{
+            id: '0:1', name: 'P', type: 'CANVAS', children: [
+              { ...nearSection, children: [frameDeep] },
+              { id: '5:6', name: 'far', type: 'SECTION', children: [
+                { id: '9:2', name: 'other frame', type: 'FRAME', children: [duplicate] },
+              ] },
+            ],
+          }],
+        },
+      } as RawFileResponse;
+      const getNodesRaw = vi.fn(async (_file: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
+        if (depth === 1) return { version: 'v1', nodes: { '5:5': { document: nearSection } } };
+        return { version: 'v1', nodes: {
+          '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill },
+        } };
       });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docSkel);
-      const run = harness({ getNodesRaw, getVariablesLocal: varsABFn, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
+      const getDocumentRaw = vi.fn(async () => skeleton);
+      const getDocumentByIdsRaw = vi.fn(async () => targeted);
+      const run = harness({ getNodesRaw, getDocumentRaw, getDocumentByIdsRaw, getVariablesLocal: multiModeVars });
 
-      const colorRow = JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill');
-      expect(colorRow.figma).toBe(HEX_72);              // the pin of the intermediate A (true path), NOT default
-      expect(colorRow.figma).not.toBe(HEX_71);           // NOT the sibling Aprime — a flat bbox-merge would have caught it
-      expect(colorRow.figma).not.toBe('#ffffff');         // the level is NOT lost (a partial chain didn't slip in the default)
-      const probeCalls = getNodesRaw.mock.calls.filter((c) => c[2] === 1);
-      expect(probeCalls.length).toBe(2);                  // exactly 2 rounds: [5:5,5:9] → [6:6]
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toEqual([2]);                        // the probe-descent found the chain — whole-file discovery did NOT start
-      // The mutation "flat branch merge / membership by bbox" (m1, sceneIdEquals→boxIntersects) → A' also
-      // matches as "containing" the frame (its bbox intersects frameBox) → HEX_71 → RED on toBe(HEX_72).
-      // The mutation "loss of the intermediate level" (m3, next.push WITHOUT accumulating chain) → probeA drops
-      // out of the chain → default hex → RED on not.toBe('#ffffff').
-    });
+      const out = JSON.parse((await run({
+        file: FILE, frame_node_id: '9:1',
+        pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill), label: 'duplicate-target' }],
+      })).content[0].text);
+      const fill = out.pairs[0].rows.find((row: any) => row.prop === 'fill');
 
-    it('probe-descent: the cap of 64 counts pre-filter SURVIVORS — 100 top-level frames, 1 intersects → descent lives', async () => {
-      const farFrames: RawSceneNode[] = Array.from({ length: 99 }, (_, i) => ({
-        id: `9:${200 + i}`, type: 'FRAME', name: `far${i}`,
-        absoluteBoundingBox: { x: 100000 + i, y: 100000, width: 10, height: 10 },
+      expect(getNodesRaw.mock.calls.some((call) => call[2] === 1)).toBe(false);
+      expect(getDocumentByIdsRaw).toHaveBeenCalledTimes(1);
+      expect(fill).toMatchObject({ figma: null, status: 'review' });
+      expect(fill.figma).not.toBe(HEX_71);
+      expect(out.degraded_stages).toContainEqual(expect.objectContaining({
+        stage: 'ancestor_discovery', reason: 'ambiguous_target',
+        affected_pairs: [expect.objectContaining({ node_id: '1:1', label: 'duplicate-target' })],
       }));
-      const nearFrame: RawSceneNode = { id: '5:5', type: 'FRAME', name: 'near', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 } };
-      const docSkel = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', children: [...farFrames, nearFrame] },
-      ] }, version: 'v1' } as unknown as RawFileResponse;
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill] } as RawSceneNode;
-      const probeNear = { id: '5:5', type: 'FRAME', name: 'near', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 },
-        explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
-        children: [{ id: '9:1', type: 'FRAME', name: 'frame' }] } as RawSceneNode;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
-        if (depth === 1) { expect(ids).toEqual(['5:5']); return { nodes: { '5:5': { document: probeNear } } }; }
-        return ids.includes('9:1')
-          ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-          : { nodes: { '1:1': { document: cardBoundFill } } };
-      });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docSkel);
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      const probeCall = getNodesRaw.mock.calls.find((c) => c[2] === 1);
-      expect(probeCall![1]).toEqual(['5:5']);            // exactly 1 survivor — 99 far ones filtered out by the pre-filter
-      const colorRow = JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill');
-      expect(colorRow).toBeDefined();
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toEqual([2]);                        // the descent found the chain in 1 round — whole-file did NOT start
     });
 
-    it('probe-descent (d) cap: >64 pre-filter survivors → probe NOT called, honest discovery deepening', async () => {
-      const nearSections: RawSceneNode[] = Array.from({ length: 70 }, (_, i) => ({
-        id: `5:${i}`, type: 'SECTION', name: `S${i}`,
-        absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 },
-      }));
-      const docSkel = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', children: nearSections },
-      ] }, version: 'v1' } as unknown as RawFileResponse;
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill] } as RawSceneNode;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], _depth?: number): Promise<RawNodesResponse> =>
-        ids.includes('9:1') ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-                            : { nodes: { '1:1': { document: cardBoundFill } } });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docSkel);
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      expect(getNodesRaw.mock.calls.some((c) => c[2] === 1)).toBe(false); // the cap cut off BEFORE the probe — not a single depth-1 call
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toContain(4);                        // whole-file discovery started honestly
-      expect(JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill')).toBeDefined();
-    });
-
-    it('probe-descent (d) rounds exhausted: A⊃B⊃C⊃D (3 rounds — all containers without the frame) → honest discovery after the 3rd round', async () => {
-      const docSkel = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', children: [
-          { id: '5:1', type: 'SECTION', name: 'A', absoluteBoundingBox: { x: 0, y: 0, width: 3000, height: 3000 } },
-        ] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const probeA = { id: '5:1', type: 'SECTION', name: 'A', children: [
-        { id: '5:2', type: 'SECTION', name: 'B', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 } },
-      ] } as RawSceneNode;
-      const probeB = { id: '5:2', type: 'SECTION', name: 'B', children: [
-        { id: '5:3', type: 'SECTION', name: 'C', absoluteBoundingBox: { x: 0, y: 0, width: 1000, height: 1000 } },
-      ] } as RawSceneNode;
-      const probeC = { id: '5:3', type: 'SECTION', name: 'C', children: [
-        { id: '5:4', type: 'SECTION', name: 'D', absoluteBoundingBox: { x: 0, y: 0, width: 500, height: 500 } },
-      ] } as RawSceneNode;                                // the 3rd round yields ANOTHER container, NOT the frame — rounds exhausted
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 0, y: 0, width: 50, height: 50 }, children: [cardBoundFill] } as RawSceneNode;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
-        if (depth === 1) {
-          if (ids.includes('5:1')) return { nodes: { '5:1': { document: probeA } } };
-          if (ids.includes('5:2')) return { nodes: { '5:2': { document: probeB } } };
-          if (ids.includes('5:3')) return { nodes: { '5:3': { document: probeC } } };
-        }
-        return ids.includes('9:1')
-          ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-          : { nodes: { '1:1': { document: cardBoundFill } } };
-      });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docSkel);
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      const probeCalls = getNodesRaw.mock.calls.filter((c) => c[2] === 1);
-      expect(probeCalls.length).toBe(3);                  // exactly DESCENT_MAX_ROUNDS rounds, none found the frame
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toContain(4);                        // rounds exhausted → honest discovery fallback
-      expect(JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill')).toBeDefined();
-    });
-
-    it('probe-descent (d) probe error: getNodesRaw throws → honest (d), logs compare.canvas_chain_unavailable', async () => {
-      const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', children: [
-          { id: '5:5', type: 'SECTION', name: 'S', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 } },
-        ] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill] } as RawSceneNode;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
-        if (depth === 1) throw new Error('boom');
-        return ids.includes('9:1')
-          ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-          : { nodes: { '1:1': { document: cardBoundFill } } };
-      });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docNoFrame);
-      const { logger: recLogger, logs } = recordingLogger();
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw }, 40000, { logger: recLogger });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      expect(logs.some((l) => l.msg === 'compare.canvas_chain_unavailable')).toBe(true);
-      expect(res.isError).toBeFalsy();
-      expect(JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill')).toBeDefined();
-    });
-
-    it('probe-descent (d) probe timeout: FigmaApiError network "timed out" → honest (d) without hanging', async () => {
-      const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', children: [
-          { id: '5:5', type: 'SECTION', name: 'S', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 } },
-        ] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill] } as RawSceneNode;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
-        if (depth === 1) throw new FigmaApiError('network', 0, 'Figma request timed out after 20000ms');
-        return ids.includes('9:1')
-          ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-          : { nodes: { '1:1': { document: cardBoundFill } } };
-      });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docNoFrame);
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      expect(res.isError).toBeFalsy();
-      expect(JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill')).toBeDefined();
-    });
-
-    it('probe-descent (d) deadline BEFORE probe: an expired budget → the descent enters, but the pre-probe remaining<=0 guard cuts off BEFORE the probe call', async () => {
-      // toolTimeBudgetMs:1 (the pattern from the :520 area) DISTINGUISHES discoverAncestorModes' floor-gate (Date.
-      // now()+15000>deadlineAt — the floor dominates, true regardless of the real elapsed time),
-      // but the probe-descent's pre-probe gate is a BARE `remaining<=0` WITHOUT a floor: under a JIT-warm full-suite run
-      // the synchronous path BEFORE this check (the mock's main fetch + resolveSetNames early-return + etc.)
-      // fits in <1ms of real wall-clock — Date.now() doesn't manage to advance past
-      // deadlineAt=+1ms → RED was discovered LIVE (flaky: green in isolation, red in the full
-      // run). The fix is a negative budget: deadlineAt is already IN THE PAST at capture time (:189, BEFORE
-      // the probe-descent), remaining<=0 holds DETERMINISTICALLY regardless of machine/JIT speed.
-      const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', children: [
-          { id: '5:5', type: 'SECTION', name: 'S', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 } },
-        ] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill] } as RawSceneNode;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], _depth?: number): Promise<RawNodesResponse> =>
-        ids.includes('9:1') ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-                            : { nodes: { '1:1': { document: cardBoundFill } } });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docNoFrame);
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw }, 40000, { toolTimeBudgetMs: -60_000 });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      expect(getNodesRaw.mock.calls.some((c) => c[2] === 1)).toBe(false); // probe NOT called — the deadline expired earlier
-      expect(res.content[0].text).toContain('"pairs"');                  // honest degradation, the call did NOT fail
-      // The mutation "remove the pre-probe remaining<=0 guard" → probe is called despite the expired deadline → RED
-    });
-
-    it('probe-descent: rate_limited from the probe — rethrow (isError), NOT swallowed into (d)', async () => {
-      const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', children: [
-          { id: '5:5', type: 'SECTION', name: 'S', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 } },
-        ] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const frameDeep = { id: '9:1', name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill] } as RawSceneNode;
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
-        if (depth === 1) throw new FigmaApiError('rate_limited', 429, 'slow down', 5);
-        return ids.includes('9:1')
-          ? { nodes: { '9:1': { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-          : { nodes: { '1:1': { document: cardBoundFill } } };
-      });
-      const getDocumentRaw = vi.fn(async (_f: string, _depth?: number): Promise<RawFileResponse> => docNoFrame);
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: '9:1', pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      expect(res.isError).toBe(true);
-      expect(res.content[0].text).toMatch(/rate_limited/i);
-    });
-
-    it("probe-descent: I-prefix membership — the frame-instance part I9:1;3:3 is found in the section's children", async () => {
-      const FRAME_ID = 'I9:1;3:3';
-      const docNoFrame = { document: { id: '0:0', type: 'DOCUMENT', name: 'D', children: [
-        { id: '0:1', type: 'CANVAS', name: 'P', explicitVariableModes: { 'VariableCollectionId:7:7': '7:1' },
-          children: [
-            { id: '5:5', type: 'SECTION', name: 'S', absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 } },
-          ] }] }, version: 'v1' } as unknown as RawFileResponse;
-      const frameDeep = { id: FRAME_ID, name: 'frame', type: 'FRAME',
-        absoluteBoundingBox: { x: 10, y: 10, width: 375, height: 812 }, children: [cardBoundFill] } as RawSceneNode;
-      const probeSection = { id: '5:5', type: 'SECTION', name: 'S',
-        absoluteBoundingBox: { x: 0, y: 0, width: 2000, height: 2000 },
-        children: [{ id: '9:1;3:3', type: 'FRAME', name: 'frame' }] } as RawSceneNode; // WITHOUT the leading I
-      const getNodesRaw = vi.fn(async (_f: string, ids: string[], depth?: number): Promise<RawNodesResponse> => {
-        if (ids.includes('5:5')) { expect(depth).toBe(1); return { nodes: { '5:5': { document: probeSection } } }; }
-        return ids.includes(FRAME_ID)
-          ? { nodes: { [FRAME_ID]: { document: frameDeep }, '1:1': { document: cardBoundFill } } }
-          : { nodes: { '1:1': { document: cardBoundFill } } };
-      });
-      const getDocumentRaw = vi.fn(async (_f: string, depth?: number): Promise<RawFileResponse> => { expect(depth).toBe(2); return docNoFrame; });
-      const run = harness({ getNodesRaw, getVariablesLocal: multiModeVars, getDocumentRaw });
-      const res = await run({ file: FILE, frame_node_id: FRAME_ID, pairs: [{ node_id: '1:1', dom: domFor(cardBoundFill) }] });
-      const colorRow = JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill');
-      expect(colorRow.figma).toBe(HEX_71);
-      const depths = getDocumentRaw.mock.calls.map((c) => c[1]);
-      expect(depths).toEqual([2]);                        // the probe-descent found the chain without whole-file discovery
-    });
   });
 
   it('batches all ids (+frame) into ONE fetch when frame enumeration complete at effDepth, diffs and renders the report', async () => {
@@ -2852,6 +2986,94 @@ describe('compare_node_to_dom tool', () => {
   });
 });
 
+describe('compare mode ancestry batching', () => {
+  const collectionId = 'C:batch';
+  const variableId = 'V:batch';
+  const variables: RawVariablesResponse = { meta: {
+    variableCollections: { [collectionId]: { id: collectionId, name: 'Theme', defaultModeId: 'default', modes: [
+      { modeId: 'default', name: 'Default' }, { modeId: 'selected', name: 'Selected' },
+    ] } },
+    variables: { [variableId]: { id: variableId, name: 'surface/batch', resolvedType: 'COLOR', variableCollectionId: collectionId,
+      valuesByMode: { default: { r: 1, g: 1, b: 1, a: 1 }, selected: { r: 0.2, g: 0.4, b: 0.6, a: 1 } } } },
+  } };
+  const boundNode = (id: string): RawSceneNode => ({
+    id, name: id, type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 40 },
+    fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: variableId } } }],
+  });
+  const deepBranch = (target: RawSceneNode): RawSceneNode => {
+    let child = target;
+    for (let level = 11; level >= 2; level--) child = { id: `${target.id}-w${level}`, name: `w${level}`, type: 'FRAME', children: [child] };
+    return child;
+  };
+  const prune = (node: RawSceneNode, depth: number): RawSceneNode => {
+    const { children, ...rest } = node;
+    if (depth <= 0 || !children) return { ...rest } as RawSceneNode;
+    return { ...rest, children: children.map((child) => prune(child, depth - 1)) } as RawSceneNode;
+  };
+
+  async function runBatch(order: string[]) {
+    const shortcutIds = Array.from({ length: 10 }, (_, i) => `1:${i + 1}`);
+    const deepIds = Array.from({ length: 10 }, (_, i) => `2:${i + 1}`);
+    const nodes = new Map([...shortcutIds, ...deepIds].map((id) => [id, boundNode(id)]));
+    const frame: RawSceneNode = { id: '9:1', name: 'Frame', type: 'FRAME',
+      absoluteBoundingBox: { x: 0, y: 0, width: 375, height: 812 },
+      children: shortcutIds.map((id) => nodes.get(id)!) };
+    const projected: RawSceneNode = { id: '0:0', name: 'Document', type: 'DOCUMENT', children: [{
+      id: '0:1', name: 'Page', type: 'CANVAS', explicitVariableModes: { [collectionId]: 'selected' },
+      children: deepIds.map((id) => deepBranch(nodes.get(id)!)),
+    }] };
+    const skeleton: RawFileResponse = { name: 'Synthetic', lastModified: '', version: 'v-batch',
+      document: { id: '0:0', name: 'Document', type: 'DOCUMENT', children: [{
+        id: '0:1', name: 'Page', type: 'CANVAS', explicitVariableModes: { [collectionId]: 'selected' },
+        children: [{ id: '9:1', name: 'Frame', type: 'FRAME' }],
+      }] } };
+    const projectionCalls: Array<{ ids: string[]; depth: number }> = [];
+    const gate = new Semaphore(1);
+    const getDocumentByIdsRaw = vi.fn(async (_file: string, ids: string[], depth: number, version?: string) =>
+      gate.run(async () => {
+        projectionCalls.push({ ids: [...ids], depth });
+        return { name: 'Synthetic', lastModified: '', version: version!, document: prune(projected, depth) } as RawFileResponse;
+      }));
+    const getNodesRaw = vi.fn(async (_file: string, ids: string[]): Promise<RawNodesResponse> => ({
+      version: 'v-batch',
+      nodes: Object.fromEntries(ids.map((id) => [id, id === '9:1' ? { document: frame } : { document: nodes.get(id)! }])),
+    }));
+    const getDocumentRaw = vi.fn(async (_file: string, _depth?: number): Promise<RawFileResponse> => skeleton);
+    // This test verifies all 20 outcomes, not the prefix retained by the response-budget clamp.
+    const run = harness({ getNodesRaw, getDocumentRaw, getDocumentByIdsRaw,
+      getVariablesLocal: async () => variables }, 200_000);
+    const output = JSON.parse((await run({ file: FILE, frame_node_id: '9:1', pairs: order.map((id) => ({
+      node_id: id, dom: domFor(nodes.get(id)!), label: id,
+    })) })).content[0].text);
+    return {
+      projectionCalls,
+      skeletonDepths: getDocumentRaw.mock.calls.map((call) => call[1]),
+      outcomes: Object.fromEntries(output.pairs.map((pair: any) => [pair.node_id, {
+        figma: pair.rows.find((row: any) => row.prop === 'fill')?.figma,
+        status: pair.rows.find((row: any) => row.prop === 'fill')?.status,
+      }])),
+    };
+  }
+
+  it('batches 20 cold pairs once per depth under Semaphore(1), with mixed shortcut/fallback order independence', async () => {
+    const ids = [
+      ...Array.from({ length: 10 }, (_, i) => `1:${i + 1}`),
+      ...Array.from({ length: 10 }, (_, i) => `2:${i + 1}`),
+    ];
+    const forward = await runBatch(ids);
+    const reverse = await runBatch([...ids].reverse());
+
+    expect(forward.projectionCalls.map((call) => call.depth)).toEqual([4, 8, 16]);
+    expect(forward.projectionCalls.every((call) => call.ids.length === 10)).toBe(true);
+    expect(forward.skeletonDepths).toEqual([2]);
+    expect(reverse.projectionCalls.map((call) => call.depth)).toEqual([4, 8, 16]);
+    expect(Object.keys(forward.outcomes)).toHaveLength(20);
+    expect(Object.keys(reverse.outcomes)).toHaveLength(20);
+    expect(reverse.outcomes).toEqual(forward.outcomes);
+    expect(Object.values(forward.outcomes).every((outcome: any) => outcome.figma === '#336699')).toBe(true);
+  });
+});
+
 describe('compare_node_to_dom hydration receipt (Phase 1, Figma-side only)', () => {
   const box = (x: number, y: number, w: number, h: number) => ({ x, y, width: w, height: h });
   const chain = (levels: number): any => {
@@ -3107,9 +3329,40 @@ describe('compare_node_to_dom variables cap 20s (MT-only) + compare.done', () =>
       const res = await run({ file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardExtCapped) }] });
       expect(res.isError).toBeFalsy();
       expect(logs.some((l) => l.msg === 'compare.variables_unavailable')).toBe(true);
-      const colorRow = JSON.parse(res.content[0].text).pairs[0].rows.find((r: any) => r.prop === 'fill');
+      const out = JSON.parse(res.content[0].text);
+      const colorRow = out.pairs[0].rows.find((r: any) => r.prop === 'fill');
       expect(colorRow.figma).toBe(HEX);           // the external-bound color row is resolved through the graph
       expect(colorRow.figma).not.toBe('#ff0000');  // NOT the raw paint literal (anti-vacuum)
+      expect(out.report_markdown).toContain('available graph/snapshot fallbacks may recover some rows');
+      expect(out.report_markdown).toContain('final completeness follows the delivered rows and verification');
+      expect(out.report_markdown).not.toContain('only rows still dependent on local variables');
+      expect(out.report_markdown).not.toContain('the rows it feeds read as unresolved');
+    });
+
+    it('variables cap e2e: external graph/snapshot misses remain unresolved and the report defers to actual rows', async () => {
+      const getNodesRaw = vi.fn(async () => ({ nodes: { '1:1': { document: cardExtCapped } } }));
+      const getDocumentRaw = vi.fn(async () => docWithNode(cardExtCapped));
+      const cappedGetVars = vi.fn(async () => {
+        throw new FigmaApiError('network', 0, 'Figma request timed out after 20000ms');
+      });
+      const uncapped = withFrameRaw({ getNodesRaw, getDocumentRaw }) as FigmaApi;
+      const capped = { ...uncapped, getVariablesLocal: cappedGetVars } as FigmaApi;
+      const buildApi = vi.fn((_t: string, capMs?: number) => (capMs === 20000 ? capped : uncapped));
+      const run = harness({}, 40000, {
+        buildApi,
+        variableGraph: { resolve: () => undefined },
+        variableSnapshot: { lookup: vi.fn(async () => new Map()) },
+      });
+
+      const out = JSON.parse((await run({
+        file: FILE, pairs: [{ node_id: '1:1', dom: domFor(cardExtCapped) }],
+      })).content[0].text);
+      const colorRow = out.pairs[0].rows.find((row: any) => row.prop === 'fill');
+
+      expect(colorRow).toMatchObject({ figma: '#ff0000', status: 'review' });
+      expect(out.report_markdown).toContain('available graph/snapshot fallbacks may recover some rows');
+      expect(out.report_markdown).toContain('unrecovered rows remain unresolved');
+      expect(out.report_markdown).toContain('final completeness follows the delivered rows and verification');
     });
   });
 

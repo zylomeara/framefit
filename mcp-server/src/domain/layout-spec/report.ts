@@ -172,7 +172,12 @@ export function renderReport(input: {
   // Enrichment that did not arrive, and the seconds it took not to arrive. Rendered next to the
   // rows it degraded, because a caller who reads only this markdown is otherwise told that colors
   // are `unknown` without being told why the call took two minutes to say so.
-  degradedStages?: { stage: string; reason: string; ms: number; detail: string }[];
+  degradedStages?: Array<
+    | { stage: 'variables'; reason: string; ms: number; detail: string }
+    | { stage: 'ancestor_discovery'; reason: string; affected_pairs: Array<{
+        pair_index: number; node_id: string; label?: string; selector?: string;
+      }> }
+  >;
 }): string {
   const lines: string[] = [];
   const frameNote = input.frame ? `, frame ${input.frame.node_id}${input.frame.width ? ` (${input.frame.width}px)` : ''}` : '';
@@ -311,14 +316,17 @@ export function renderReport(input: {
   );
   if (vBlock.length) lines.push('', ...vBlock);
   for (const d of input.degradedStages ?? []) {
+    if (d.stage === 'ancestor_discovery') {
+      const addresses = d.affected_pairs.map((p) =>
+        `#${p.pair_index} ${p.label ?? p.node_id}${p.selector ? ` (${p.selector})` : ''}`).join(', ');
+      lines.push('', `ℹ️ ancestor_discovery: not resolved (${d.reason}) for ${addresses} — mode-dependent token rows for those pairs remain unconfirmed; geometry and frame coverage are unaffected`);
+      continue;
+    }
     // A REPLAYED failure cost this call nothing: the negative cache answered from an earlier attempt,
     // so ms is ~0 and the detail carries the `cached:` prefix (a contract with the caching adapter).
-    // Printing "that wait is inside this call's duration" there was plainly false, and it buried the
-    // one fact a reader can act on — the failure is remembered, so the next call will not retry it
-    // either, and only a larger explicit timeout gets past the marker.
     lines.push('', d.detail.startsWith('cached:')
-      ? `ℹ️ ${d.stage}: not resolved (${d.reason}: ${d.detail}) — remembered from an earlier attempt, so this call did not wait for it and the next one will not retry it either; the rows it feeds read as unresolved rather than verified`
-      : `ℹ️ ${d.stage}: not resolved after ${Math.round(d.ms / 1000)}s (${d.reason}: ${d.detail}) — that wait is inside this call's duration, and the rows it feeds read as unresolved rather than verified`);
+      ? `ℹ️ ${d.stage}: not resolved (${d.reason}: ${d.detail}) — remembered from an earlier attempt, so this call did not wait for it and the next one will not retry it either; available graph/snapshot fallbacks may recover some rows; unrecovered rows remain unresolved, and final completeness follows the delivered rows and verification`
+      : `ℹ️ ${d.stage}: not resolved after ${Math.round(d.ms / 1000)}s (${d.reason}: ${d.detail}) — that wait is inside this call's duration; available graph/snapshot fallbacks may recover some rows; unrecovered rows remain unresolved, and final completeness follows the delivered rows and verification`);
   }
   lines.push('', `⚠️ NOT covered by this tool (verify visually): ${(input.notCovered ?? NOT_COVERED_BY_TOOL).join(', ')}`);
   // The icon claim is MODE-DEPENDENT: the icon-color axis fires only in the Figma comparator.
