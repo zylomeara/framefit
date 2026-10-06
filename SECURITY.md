@@ -25,7 +25,7 @@ Worth knowing before you look, and worth knowing if you self-host:
 
 Both are documented in the source at the line that implements them.
 
-- **The audience check on `/mcp` is soft: a mismatch is logged, never rejected.** Claude's dynamically-registered clients present a token whose `azp` is a UUID and which carries no per-service `aud`, because the connector omits the `resource` parameter — so there is no audience to match. Hard-enforcing it would break every legitimate connector. The path that *is* hard-enforced is `/accounts`, which carries portal tokens. See `mcp-server/src/infrastructure/server.ts`, `makeRequireJwt`.
+- **The audience check on `/mcp` is soft by default: a mismatch is logged, not rejected.** Claude's dynamically-registered clients present a token whose `azp` is a UUID, and a connector that omits the `resource` parameter gets no per-service `aud` — so there is no audience to match. Hard-enforcing it by default would break those connectors. `MCP_STRICT_AUDIENCE=true` rejects any `/mcp` token whose `aud` is not exactly `EXPECTED_AUDIENCE` (by default the server's MCP URL), for authorization servers that narrow `aud` to the requested `resource`. The path `ENFORCE_AUDIENCE` hard-enforces is `/accounts`, which carries portal tokens. See `mcp-server/src/infrastructure/server.ts`, `makeRequireJwt`.
 - **A shared Keycloak realm means a token minted for one service validates on another** if you deploy several MCP servers against one realm. That is a property of the deployment topology, not of this code; give each service its own audience mapper if it matters to you.
 
 If you think either decision is wrong, that is a design discussion — open an issue.

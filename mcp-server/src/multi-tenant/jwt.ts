@@ -39,6 +39,13 @@ export function assertAzp(payload: JWTPayload, expectedAzp: string): void {
   }
 }
 
+/** True only when `aud` names exactly `expected` and nothing else: the string itself, or a
+ *  one-element array holding it. Exact comparison - no trimming, case folding or trailing slash. */
+export function soleAudience(payload: JWTPayload, expected: string): boolean {
+  const aud = payload.aud;
+  return Array.isArray(aud) ? aud.length === 1 && aud[0] === expected : aud === expected;
+}
+
 export function extractBearerToken(authHeader: string | undefined): string | null {
   if (!authHeader?.startsWith('Bearer ')) return null;
   return authHeader.slice(7);

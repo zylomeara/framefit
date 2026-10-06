@@ -17,6 +17,9 @@ export interface MultiTenantEnv {
   expectedAudience: string;   // EXPECTED_AUDIENCE; default ${PUBLIC_BASE_URL ?? https://${MCP_HOST}}/mcp
   expectedAzp: string;        // EXPECTED_AZP (default 'figma-portal')
   enforceAudience: boolean;   // ENFORCE_AUDIENCE (default false) — rollout flag
+  /** MCP_STRICT_AUDIENCE (default false): /mcp refuses any token whose `aud` is not exactly
+   *  expectedAudience. Absent means off. */
+  mcpStrictAudience?: boolean;
 }
 
 export function isMultiTenant(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -69,5 +72,6 @@ export function loadMultiTenantEnv(env: NodeJS.ProcessEnv = process.env): MultiT
     expectedAudience: env.EXPECTED_AUDIENCE || `${publicBaseUrl ?? `https://${env.MCP_HOST}`}/mcp`,
     expectedAzp: env.EXPECTED_AZP || 'figma-portal',
     enforceAudience: env.ENFORCE_AUDIENCE?.toLowerCase() === 'true',
+    mcpStrictAudience: env.MCP_STRICT_AUDIENCE?.toLowerCase() === 'true',
   };
 }

@@ -368,13 +368,18 @@ describe('soft mode logs the mismatch and serves the request anyway - the page p
     }
   });
 
-  it('the same signal covers /mcp, where the mismatch is admitted by design', async () => {
+  it('/mcp writes its own line, the one the page names next to MCP_STRICT_AUDIENCE', async () => {
     const { request: needle } = await needlesByOrigin();
-    const s = await boot(true);   // enforcement ON: /mcp is still soft, and still has to say so
+    const note = audienceNote(deployment);
+    expect(note).toMatch(/MCP_STRICT_AUDIENCE/);
+    expect(note, 'the page must name the line /mcp writes').toContain('`mt.mcp_audience_would_reject`');
+    const s = await boot(true);   // ENFORCE_AUDIENCE does not reach /mcp; MCP_STRICT_AUDIENCE is off
     try {
       const before = s.logLines.length;
       expect(await initializeMcp(s.base, await sign({ aud: 'other-client', azp: 'other-client' }))).not.toBe(401);
-      expect(s.logLines.slice(before).join('\n')).toContain(needle);
+      const emitted = s.logLines.slice(before).join('\n');
+      expect(emitted).toContain('mt.mcp_audience_would_reject');
+      expect(emitted, 'the /accounts mismatch line is not written for /mcp').not.toContain(needle);
     } finally {
       await s.close();
     }

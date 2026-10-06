@@ -218,11 +218,15 @@ Honest scope notes before you pick this shape:
   applications, a token minted for any one of them can drive `/accounts` as its own subject.
   Configure the mapper, then set `ENFORCE_AUDIENCE=true`; give framefit its own realm if you cannot.
 
-  `/mcp` is a separate case and stays soft **regardless of this flag**, deliberately: hosts that
-  register as dynamic OAuth clients present a token whose `azp` framefit cannot predict, so a hard
-  check there would break legitimate connectors. A valid same-realm token therefore reaches the
-  tool surface — under that subject's own stored PAT — whichever way you set this. There is no
-  setting in this repo that changes that; realm separation is the control.
+  `/mcp` is a separate case that **this flag does not touch**: hosts that register as dynamic OAuth
+  clients present a token whose `azp` framefit cannot predict, so `azp` is never checked there.
+  `/mcp` has its own switch, `MCP_STRICT_AUDIENCE`, which checks `aud` alone. It defaults to
+  `false`: a valid same-realm token still reaches the tool surface — under that subject's own
+  stored PAT — and each request strict mode would refuse logs one `mt.mcp_audience_would_reject`
+  line. Set it to `true` and `/mcp` answers 401 to any token whose `aud` is not exactly
+  `EXPECTED_AUDIENCE` — by default this server's MCP URL, the `resource` its protected-resource
+  metadata advertises. Turn it on only once your authorization server narrows `aud` to the RFC 8707
+  `resource` a client requested; until then legitimate connector tokens are refused too.
 
   The server states which of the two it is doing, at boot, so you are not left inferring it from
   config: under the `full` profile `docker compose logs framefit | grep mt.audience_enforcement_disabled`
@@ -232,8 +236,8 @@ Honest scope notes before you pick this shape:
   Every admitted mismatch is logged too, one line per request:
   `docker compose logs framefit | grep mt.jwt_audience_soft_mismatch` lists the requests that were
   served while carrying someone else's `aud`/`azp`, and names the client they came from — that is
-  how you learn a foreign client is using your `/accounts`, or which connector's tokens `/mcp` is
-  admitting. In soft mode it is the *only* signal there is: nothing is refused, so nothing else
+  how you learn a foreign client is using your `/accounts` (`/mcp` reports through its own line,
+  above). In soft mode it is the *only* signal there is: nothing is refused, so nothing else
   marks it. A matching token logs no line, so a quiet grep is an answer rather than an absence of
   logging.
 

@@ -19,7 +19,7 @@ import { getFigmaSemaphore, getMaterializeGovernor } from './semaphore.js';
 import { FrameHydrationStore, makeFrameHandle } from './frame-hydration-store.js';
 import { TtlCache } from './node-cache.js';
 import { CacheBudget } from './cache-budget.js';
-import { validateJwt, extractBearerToken, assertAzp } from '../multi-tenant/jwt.js';
+import { validateJwt, extractBearerToken, assertAzp, soleAudience } from '../multi-tenant/jwt.js';
 import { createAccountsRouter, type AccountsApiDeps } from '../multi-tenant/accounts-api.js';
 import { validatePat } from '../multi-tenant/validate-pat.js';
 import { getDefaultPat, pingDb as defaultPingDb, getUserSettings, setReadOnly } from '../multi-tenant/db.js';
@@ -656,10 +656,12 @@ async function startMultiTenantHttpServer(
 
   // Path-specific JWT gate. `/accounts` carries portal tokens (azp=<svc>-portal, aud
   // present once Keycloak audience-mappers exist) → hard-enforce is meaningful and
-  // closes the cross-portal threat. `/mcp` carries Claude dynamic-client tokens (azp=UUID,
-  // no per-service aud — Claude omits the `resource` param, so there is no audience to
-  // match against), so it MUST stay soft (log mismatch, never reject) or legitimate connectors break.
-  const makeRequireJwt = (enforce: boolean) =>
+  // closes the cross-portal threat. `/mcp` carries dynamic-client tokens (azp=UUID the server
+  // cannot predict), so azp is never checked there and ENFORCE_AUDIENCE does not apply. `/mcp`
+  // checks `aud` alone: exactly expectedAudience (by default the PRM `resource`, which a client
+  // passes as the RFC 8707 `resource` param) is admitted silently; anything else is refused under
+  // MCP_STRICT_AUDIENCE, and otherwise admitted with one would-reject line.
+  const makeRequireJwt = (enforce: boolean, mcp = false) =>
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       const bearer = extractBearerToken(req.headers.authorization);
       if (!bearer) {
@@ -670,6 +672,20 @@ async function startMultiTenantHttpServer(
         const auth = await validateJwt(bearer, enforce ? env.expectedAudience : undefined);
         if (enforce) {
           assertAzp(auth.payload, env.expectedAzp);
+        } else if (mcp) {
+          if (!soleAudience(auth.payload, env.expectedAudience)) {
+            if (env.mcpStrictAudience) throw new Error('Token audience is not this MCP server');
+            const aud = auth.payload.aud;
+            logger.warn(
+              {
+                azp: auth.payload.azp,
+                audShape: Array.isArray(aud) ? `array:${aud.length}` : typeof aud === 'string' ? 'string' : 'missing',
+                containsExpected: Array.isArray(aud) ? aud.includes(env.expectedAudience) : aud === env.expectedAudience,
+                expectedAudience: env.expectedAudience,
+              },
+              'mt.mcp_audience_would_reject',
+            );
+          }
         } else {
           const aud = auth.payload.aud;
           const audOk = Array.isArray(aud) ? aud.includes(env.expectedAudience) : aud === env.expectedAudience;
@@ -692,7 +708,7 @@ async function startMultiTenantHttpServer(
       }
     };
 
-  // /accounts: hard-enforce gated by ENFORCE_AUDIENCE (rollout flag). /mcp: always soft.
+  // /accounts: hard-enforce gated by ENFORCE_AUDIENCE (rollout flag). /mcp: MCP_STRICT_AUDIENCE.
   if (!env.enforceAudience) {
     logger.warn(
       { enforceAudience: false },
@@ -701,7 +717,7 @@ async function startMultiTenantHttpServer(
     );
   }
   const requireJwtAccounts = makeRequireJwt(env.enforceAudience);
-  const requireJwtMcp = makeRequireJwt(false);
+  const requireJwtMcp = makeRequireJwt(false, true);
 
   // `bind` carries the same meaning as in the single-tenant server (see that handler): the canonical
   // bound address plus the loopback verdict, for the container healthcheck. It rides BOTH branches -
