@@ -3,11 +3,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './get-comments-tool.js';
 import { runTool, textResult } from './shared-error-handler.js';
 import { parseFileKey } from '../../../domain/parse-file-key.js';
-import { normalizeCompoundNodeId, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
+import { normalizeCompoundNodeId, normalizeScopedResponseRoot, COMPOUND_NODE_ID_RE } from '../../../domain/node-id.js';
 import { buildLayoutSpec, budgetFor, collectLeafTexts } from '../../../domain/layout-spec/projector.js';
 import { buildHydrationReceipt, type HydrationReceipt } from '../../../domain/layout-spec/frame-receipt.js';
 import { buildVariableIndex, type VariableIndex } from '../../../domain/variables.js';
-import { collectSubtreeChains, hasBoundPaintColor, buildExactModeEvidence, buildGraphModeEvidence, modeIds } from '../../../domain/mode-resolve.js';
+import { collectSubtreeChains, hasBoundPaintColor, hasExternalBoundPaintColor, buildExactModeEvidence, buildGraphModeEvidence, modeIds, sceneIdEquals } from '../../../domain/mode-resolve.js';
+import { discoverAncestorModesBatch, type AncestorDiscovery, type AncestorDiscoveryReason } from './get-design-context-tool.js';
 import { makeColorTokenResolver, prefetchSnapshotHits, VARIABLES_FETCH_CAP_MS } from './color-token-resolver.js';
 import { FigmaApiError } from '../../../ports/errors.js';
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
@@ -51,7 +52,8 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
     'get_layout_spec',
     {
       description: 'Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, ' +
-      'typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width ' +
+      'typography, fill hex, component identity. A shallow node fetch, plus one cached ancestor lookup when a color is ' +
+      'bound to a variable - use it to pick the target frame width ' +
       'and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor ' +
       '(schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script ' +
       '(extractor_mode:"loader", the default) is returned only when the server has a public base URL to point the ' +
@@ -77,6 +79,10 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         // nodeCache). effectiveMaxDepth == reqDepth unless a deep-fetch abort clamped it (backoff).
         const frameRes = await api.getFrameRaw(parsed.value, ids, reqDepth);
         const res = frameRes.raw;
+        const coreVersion = typeof res.version === 'string' && res.version.length > 0 ? res.version : undefined;
+        // Ancestors are attached to these roots below, so a response root that is not the requested
+        // node is refused here rather than projected under the requested id.
+        const roots = ids.map((id) => normalizeScopedResponseRoot(res.nodes[id]?.document, id));
         const effDepth = frameRes.effectiveMaxDepth;
         const hydration: Array<HydrationReceipt | undefined> = new Array(ids.length);
 
@@ -86,17 +92,16 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
         // (2) the variables fetch is ALWAYS capped (compare caps MT-only): a bounded miss with a
         //     degraded_stages receipt beats a measured ~90s stall, and the caller still has
         //     fillBoundVar + this receipt to tell "not bound" from "bound, fetch degraded";
-        // (3) subtree-only mode evidence, NO whole-file ancestor discovery — so the source is
-        //     honestly 'default' whenever the pin sits above the fetched subtree. The token NAME
-        //     is the portable artifact; for a mode-confirmed VALUE run compare_node_to_dom or
-        //     get_design_context, which do pay for ancestor discovery.
-        const degradedStages: { stage: 'variables'; reason: 'error'; ms: number; detail: string }[] = [];
+        // (3) pins above the fetched subtree come from compare's targeted ancestor projection: one
+        //     batch per call (4 -> 8 -> 16, version-pinned, one deadline), only for nodes whose colour
+        //     a resolver can actually use; an unproven chain stays 'unverifiable' with a receipt.
+        const degradedStages: Array<
+          | { stage: 'variables'; reason: 'error'; ms: number; detail: string }
+          | { stage: 'ancestor_discovery'; reason: AncestorDiscoveryReason; ms: number; node_ids: string[] }
+        > = [];
         let variableIndex: VariableIndex | undefined;
         let snapHits: Map<string, { value: unknown; name?: string }> | undefined;
-        const anyBindsColor = ids.some((id) => {
-          const doc = res.nodes[id]?.document;
-          return doc !== undefined && hasBoundPaintColor(doc);
-        });
+        const anyBindsColor = roots.some((doc) => doc !== undefined && hasBoundPaintColor(doc));
         if (anyBindsColor) {
           await deps.variableGraph?.ensureReady?.();
           const variablesStartedAt = Date.now();
@@ -109,25 +114,56 @@ export function registerGetLayoutSpecTool(server: McpServer, deps: ToolDeps): vo
               detail: (err as Error).message });
           }
           try {
-            snapHits = await prefetchSnapshotHits(deps, variableIndex, ids.map((id) => res.nodes[id]?.document));
+            snapHits = await prefetchSnapshotHits(deps, variableIndex, roots);
           } catch (err) {
             if (err instanceof FigmaApiError && err.kind === 'rate_limited') throw err;
             deps.logger.info({ err: (err as Error).message }, 'layout_spec.snapshot_prefetch_unavailable');
           }
         }
 
+        // Same demand gate as compare: the local index needs any bound colour, the index-less
+        // graph/snapshot fallback can only use an external (published-key) one.
+        const graphOrSnapshotAvailable = deps.variableGraph !== undefined || deps.variableSnapshot !== undefined;
+        const modeIdsNeeded = ids.filter((_, i) => {
+          const doc = roots[i];
+          return doc !== undefined && ((variableIndex !== undefined && hasBoundPaintColor(doc))
+            || (variableIndex === undefined && graphOrSnapshotAvailable && hasExternalBoundPaintColor(doc)));
+        });
+        let ancestry = new Map<string, AncestorDiscovery>();
+        if (modeIdsNeeded.length > 0) {
+          const startedAt = Date.now();
+          const deadlineAt = startedAt + (deps.toolTimeBudgetMs ?? 90_000);
+          ancestry = await discoverAncestorModesBatch(api, parsed.value, modeIdsNeeded, coreVersion, deps.logger,
+            { deadlineAt, makeCappedApi: (capMs) => deps.buildApi(token, capMs, deadlineAt) });
+          const ms = Date.now() - startedAt;
+          const failed = new Map<AncestorDiscoveryReason, string[]>();
+          for (const [id, found] of ancestry) {
+            if (found.coverageComplete || !found.reason) continue;
+            failed.set(found.reason, [...(failed.get(found.reason) ?? []), id]);
+          }
+          for (const [reason, node_ids] of failed) degradedStages.push({ stage: 'ancestor_discovery', reason, ms, node_ids });
+        }
+        const ancestryFor = (id: string): AncestorDiscovery | undefined =>
+          [...ancestry].find(([key]) => sceneIdEquals(key, id))?.[1];
+
         const specs = await Promise.all(ids.map(async (id, index) => {
-          const entry = res.nodes[id];
-          if (!entry?.document) return { node_id: id, error: 'not found' };
+          const found = res.nodes[id];
+          if (!found?.document) return { node_id: id, error: 'not found' };
+          const root = roots[index];
+          if (!root) return { node_id: id, error: 'malformed scoped root' };
+          const entry = { ...found, document: root };
           const setNames = await buildSetNames(api, entry, deps.logger);
           const subtreeChains = collectSubtreeChains(entry.document);
+          const discovered = ancestryFor(id);
+          const ancestorNodes = discovered?.nodesRootToParent ?? [];
+          const fullChainFor = (n: RawSceneNode): RawSceneNode[] => [...ancestorNodes, ...(subtreeChains.get(n.id) ?? [n])];
           const resolveColorToken = makeColorTokenResolver({
             variableIndex, snapHits, variableGraph: deps.variableGraph,
-            stackFor: (n: RawSceneNode) => modeIds(buildExactModeEvidence(subtreeChains.get(n.id) ?? [n], n.id)),
-            graphStackFor: (n: RawSceneNode) => modeIds(buildGraphModeEvidence(subtreeChains.get(n.id) ?? [n], n.id)),
-            exactEvidenceFor: (n: RawSceneNode) => buildExactModeEvidence(subtreeChains.get(n.id) ?? [n], n.id),
-            graphEvidenceFor: (n: RawSceneNode) => buildGraphModeEvidence(subtreeChains.get(n.id) ?? [n], n.id),
-            coverageComplete: false,   // ancestors above the fetched subtree are never observed here
+            stackFor: (n: RawSceneNode) => modeIds(buildExactModeEvidence(fullChainFor(n), n.id)),
+            graphStackFor: (n: RawSceneNode) => modeIds(buildGraphModeEvidence(fullChainFor(n), n.id)),
+            exactEvidenceFor: (n: RawSceneNode) => buildExactModeEvidence(fullChainFor(n), n.id),
+            graphEvidenceFor: (n: RawSceneNode) => buildGraphModeEvidence(fullChainFor(n), n.id),
+            coverageComplete: discovered?.coverageComplete ?? false,
             omitAllModes: true,        // all_modes is compare's confirm payload, not navigation data
           });
           const built = buildLayoutSpec(entry.document, { components: entry.components, setNames, resolveColorToken, styleNames: (sid: string) => entry.styles?.[sid]?.name }, { maxDepth: effDepth });

@@ -2,9 +2,8 @@
 //
 // "One source of truth" is scoped, not absolute, and this file pins the SCOPE, not a slogan:
 //  - parity where both tools can see the pin (same name, same hex, same mode_source);
-//  - the documented asymmetry when the pin sits ABOVE the requested node (same name;
-//    design_context says mode_source:'node', get_layout_spec honestly says 'default' - it
-//    deliberately does not pay for targeted ancestor discovery);
+//  - parity when the pin sits ABOVE the requested node: both tools prove the documentary
+//    chain through the same targeted ancestor projection and report it as 'ancestor_chain';
 //  - the documented NAMING ceiling: a SINGLE-mode variable bound at the PAINT level is named
 //    by the shared resolver (get_layout_spec/compare) and NOT by get_design_context, whose
 //    legacy single-mode name path reads node-level boundVariables only. Adversarial wave
@@ -41,7 +40,7 @@ const rootNode = (pinned: boolean): RawSceneNode => ({
   ...(pinned ? { explicitVariableModes: { 'VC:1': 'm2' } } : {}),
 } as RawSceneNode);
 
-// Documentary projection for design-context ancestor discovery: the pin lives on ANC, ABOVE ROOT.
+// Documentary projection both tools' ancestor discovery reads: the pin lives on ANC, ABOVE ROOT.
 const fullDoc = {
   id: 'DOC', name: 'Document', type: 'DOCUMENT', children: [
     { id: 'PAGE', name: 'Page 1', type: 'CANVAS', children: [
@@ -96,20 +95,20 @@ describe('token parity across get_design_context and get_layout_spec', () => {
     expect(lsTok.effectiveModeSource).toBe('explicit_node');
   });
 
-  it('pin ABOVE the requested node: design_context confirms it while get_layout_spec stays unverifiable', async () => {
+  it('pin ABOVE the requested node: both tools confirm it through the ancestor chain', async () => {
     const h = harness(NUM(rootNode(false)));
     const dcFill = dcFillOf(await h.designContext());
-    const lsTok = fillTokenOf(await h.layoutSpec());
+    const lsOut = await h.layoutSpec();
+    const lsTok = fillTokenOf(lsOut);
     expect(dcFill.token).toBe('bg/level 2');
     expect(lsTok.token).toBe('bg/level 2');
-    // design_context pays for targeted ancestor discovery and confirms the ancestor pin:
     expect(dcFill.value).toBe(HEX_M2);
     expect(dcFill.effective_mode_source).toBe('ancestor_chain');
-    // get_layout_spec folds the fetched subtree only — the pin above is invisible, and the
-    // diagnostic default is retained, but never exposed as the effective rendered value:
+    // Same evidence, same answer: the default stays diagnostic, the ancestor pin decides the value.
     expect(lsTok.defaultHex).toBe(HEX_M1);
-    expect(lsTok.effectiveHex).toBeNull();
-    expect(lsTok.effectiveModeSource).toBe('unverifiable');
+    expect(lsTok.effectiveHex).toBe(HEX_M2);
+    expect(lsTok.effectiveModeSource).toBe('ancestor_chain');
+    expect(lsOut.degraded_stages).toBeUndefined();
   });
 });
 

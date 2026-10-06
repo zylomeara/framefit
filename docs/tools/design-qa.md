@@ -76,8 +76,13 @@ each test run and fails if a key or a value on this page is not in it.
 ### get_layout_spec
 
 Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry,
-typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target
-frame width and build node<->selector pairs before `compare_node_to_dom`.
+typography, fill hex, component identity. A shallow node fetch, plus one cached ancestor lookup when
+a color is bound to a variable - use it to pick the target frame width and build node<->selector
+pairs before `compare_node_to_dom`.
+
+A requested id the file does not contain comes back as `{ node_id, error: "not found" }`; one
+whose response root is a different node comes back as `{ node_id, error: "malformed scoped root" }`
+instead of a spec.
 
 `include_extractor:true` returns the DOM extractor (schema-versioned with the server) as
 `extractor_js`: the loader thunk that fetches the canonical script (`extractor_mode:"loader"`, the
@@ -174,16 +179,25 @@ variable that raw hex is a snapshot in the library's default mode and may legiti
 the app under another mode. When the binding can be resolved, the spec carries a sibling
 `fillToken`/`strokeToken`/`text.colorToken` object: `{ token, defaultHex?, effectiveHex,
 effectiveModes?, effectiveModeSource? }`. `token` is the variable name (the thing to write into
-code); `effectiveHex` is the evidenced rendered value. A multi-mode token with no visible pin has
-`effectiveHex: null` and `effectiveModeSource: "unverifiable"`; `defaultHex` remains diagnostic
-only. This tool deliberately does not pay for ancestor discovery, so a pin above the
-requested node stays unverifiable where `get_design_context` can report `ancestor_chain` with a
-non-null rendered value. When both tools name a binding they name it identically - one
+code); `effectiveHex` is the evidenced rendered value. A multi-mode token whose mode no proven pin
+decides has `effectiveHex: null` and `effectiveModeSource: "unverifiable"`; `defaultHex` remains
+diagnostic only. Pins above the requested node are read the way `compare_node_to_dom` and
+`get_design_context` read them: for the nodes with a variable-bound color, one targeted projection
+of the file per call (at most three requests, at depths 4, 8 and 16, pinned to the file version of
+the node fetch) proves each node's path from the page down. Without the file's own variables the
+lookup runs only for colors bound to a published library variable, and only on a server with the
+library graph or snapshot fallback - otherwise nothing could use the mode. A pin on that path is
+reported as `ancestor_chain`; a proven path with no pin confirms the default mode
+(`confirmed_default`). When the path cannot be proven - for example the time or size budget, a node
+deeper than 16, a changed file version, an ambiguous or malformed path - the value stays
+`unverifiable` and `degraded_stages` carries `{ stage: "ancestor_discovery", reason, ms, node_ids }`.
+On a large file the cold projection can take tens of seconds; a proven projection is cached for the
+same nodes and file version (for `FILE_STRUCTURE_TTL_SEC`, 5 minutes by default), while a degraded
+attempt is not cached and a repeat call pays for it again. When both tools name a binding they name it identically - one
 shared resolver - but today `get_design_context` does not name every binding this tool can: a
 single-mode variable bound at the PAINT level renders there as its raw hex (a legacy naming path
 that predates paint-level reads), and a name recovered from the snapshot-DB tier is likewise
-known here and not there. For a mode-confirmed value use `get_design_context` or
-`compare_node_to_dom`. When the fill is bound but
+known here and not there. When the fill is bound but
 NO resolver can name it (stdio without variables access, non-Enterprise file, unpublished
 variable), the spec keeps the raw `fillBoundVar` alias id and no token object; if the variables
 fetch itself failed or timed out, the response says so in `degraded_stages` (stage `variables`,
