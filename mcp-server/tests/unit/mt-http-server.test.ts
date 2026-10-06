@@ -75,13 +75,17 @@ describe('multi-tenant http server', () => {
     const body = await res.json();
     expect(body.resource).toBe('https://figma.test/mcp');
     expect(body.authorization_servers).toEqual([ISSUER]);
+    // Declared explicitly: without it, clients fall back to the authorization server's whole scope
+    // catalog, which on a shared realm includes other services' scopes.
+    expect(body.scopes_supported).toEqual(['openid', 'offline_access']);
   });
 
   it('401 + WWW-Authenticate without bearer on /mcp and /accounts', async () => {
     for (const path of ['/mcp', '/accounts']) {
       const res = await fetch(`${base}${path}`, { method: path === '/mcp' ? 'POST' : 'GET' });
       expect(res.status).toBe(401);
-      expect(res.headers.get('www-authenticate')).toContain('/.well-known/oauth-protected-resource');
+      expect(res.headers.get('www-authenticate')).toBe(
+        'Bearer resource_metadata="https://figma.test/.well-known/oauth-protected-resource", scope="openid offline_access"');
     }
   });
 
