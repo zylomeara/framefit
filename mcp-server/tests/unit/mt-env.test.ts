@@ -58,3 +58,23 @@ describe('loadMultiTenantEnv audience fields', () => {
     expect(env.enforceAudience).toBe(true);
   });
 });
+
+describe('loadMultiTenantEnv MCP_STRICT_AUDIENCE', () => {
+  it('unset -> off', () => {
+    expect(loadMultiTenantEnv(VALID).mcpStrictAudience).toBe(false);
+  });
+  it('"true" (any case, like the other flags) -> on', () => {
+    expect(loadMultiTenantEnv({ ...VALID, MCP_STRICT_AUDIENCE: 'true' }).mcpStrictAudience).toBe(true);
+    expect(loadMultiTenantEnv({ ...VALID, MCP_STRICT_AUDIENCE: 'TRUE' }).mcpStrictAudience).toBe(true);
+  });
+  it('"false" and anything else -> off', () => {
+    for (const v of ['false', '', '1', 'yes', 'on', 'garbage']) {
+      expect(loadMultiTenantEnv({ ...VALID, MCP_STRICT_AUDIENCE: v }).mcpStrictAudience, v).toBe(false);
+    }
+  });
+  it('is independent of ENFORCE_AUDIENCE', () => {
+    const env = loadMultiTenantEnv({ ...VALID, ENFORCE_AUDIENCE: 'true' });
+    expect(env.enforceAudience).toBe(true);
+    expect(env.mcpStrictAudience).toBe(false);
+  });
+});
