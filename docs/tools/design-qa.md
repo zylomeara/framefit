@@ -191,9 +191,10 @@ reported as `ancestor_chain`; a proven path with no pin confirms the default mod
 (`confirmed_default`). When the path cannot be proven - for example the time or size budget, a node
 deeper than 16, a changed file version, an ambiguous or malformed path - the value stays
 `unverifiable` and `degraded_stages` carries `{ stage: "ancestor_discovery", reason, ms, node_ids }`.
-On a large file the cold projection can take tens of seconds; a proven projection is cached for the
-same nodes and file version (for `FILE_STRUCTURE_TTL_SEC`, 5 minutes by default), while a degraded
-attempt is not cached and a repeat call pays for it again. When both tools name a binding they name it identically - one
+On a large file the cold projection can take tens of seconds. Projection responses that match the
+pinned version are cached per file, version, node set and depth (for `FILE_STRUCTURE_TTL_SEC`, 5
+minutes by default), so a repeat call for the same nodes reuses them; a request that failed or timed
+out is not cached and is paid again. When both tools name a binding they name it identically - one
 shared resolver - but today `get_design_context` does not name every binding this tool can: a
 single-mode variable bound at the PAINT level renders there as its raw hex (a legacy naming path
 that predates paint-level reads), and a name recovered from the snapshot-DB tier is likewise
