@@ -196,6 +196,11 @@ Honest scope notes before you pick this shape:
 
 - **You bring the IdP.** The server validates JWTs against `KEYCLOAK_JWKS_URL`; realm
   setup and client registration in your Keycloak (or other OIDC provider) are up to you.
+- **Connectors request `openid offline_access`.** The protected-resource metadata
+  (`scopes_supported`) and the 401 challenge (`scope=`) both declare exactly these two, so an MCP
+  client that follows them does not ask for the rest of the realm's scope catalog. Your IdP must let
+  dynamically registered clients use both (in Keycloak, the anonymous "Allowed Client Scopes"
+  registration policy); `offline_access` keeps a connector signed in past the SSO session.
 - **The admin portal UI is not in this repo** (it is part of the author's private
   deployment). Team registration and token management are driven through the server's
   `/accounts` HTTP API directly.

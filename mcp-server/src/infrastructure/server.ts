@@ -640,11 +640,17 @@ async function startMultiTenantHttpServer(
   const publicBaseUrl = env.publicBaseUrl ?? `https://${env.mcpHost}`;
 
   const metadataUrl = `${publicBaseUrl}/.well-known/oauth-protected-resource`;
+  // The scopes a client should request. Without them in the metadata and the challenge, connectors
+  // fall back to the authorization server's whole scope catalog - on a shared realm that includes
+  // other services' scopes, and one the registration policy does not allow fails every new
+  // connector. framefit reads only `sub`; offline_access keeps a connector signed in past the SSO
+  // session.
+  const oauthScopes = ['openid', 'offline_access'];
 
   const unauthorized = (res: Response, message: string): void => {
     res
       .status(401)
-      .set('WWW-Authenticate', `Bearer resource_metadata="${metadataUrl}"`)
+      .set('WWW-Authenticate', `Bearer resource_metadata="${metadataUrl}", scope="${oauthScopes.join(' ')}"`)
       .json({ error: message });
   };
 
@@ -714,6 +720,7 @@ async function startMultiTenantHttpServer(
     res.json({
       resource: `${publicBaseUrl}/mcp`,
       authorization_servers: [env.oauthAuthorizationServer],
+      scopes_supported: oauthScopes,
       bearer_methods_supported: ['header'],
     });
   });
