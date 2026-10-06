@@ -3,6 +3,34 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.30.6
+
+In multi-tenant deployments the OAuth metadata now tells MCP clients which scopes to request, so a
+client that follows it no longer asks for every scope in the authorization server's catalog.
+
+**Output compatibility.** Tool requests and descriptions are unchanged; on the framefit side no
+reconnect, re-capture or database migration is required. The IdP's dynamic-registration policy must
+allow `openid` and `offline_access` (see `docs/deployment.md`). The protected-resource metadata gains
+`scopes_supported`, and the `401` challenge on `/mcp` and `/accounts` gains a `scope` parameter. The
+server stores no connector registrations and still accepts tokens issued before this change.
+Single-tenant and stdio deployments serve no OAuth metadata and are unaffected.
+
+### Fixed
+
+- **Declared OAuth scopes.** `/.well-known/oauth-protected-resource` advertises
+  `scopes_supported: ["openid", "offline_access"]`, and the `401` challenge on `/mcp` and
+  `/accounts` carries `scope="openid offline_access"`. Previously clients fell back to the
+  authorization server's own `scopes_supported`, which can include scopes the IdP's
+  dynamic-registration policy rejects, so new connectors could fail to register. The server reads
+  no scope claim and takes the user identity from `sub` only; `offline_access` lets the IdP issue a
+  refresh token that outlives the SSO session.
+
+### Changed
+
+- `docs/deployment.md` documents the declared scopes and what the IdP must allow: dynamically
+  registered clients need both scopes (in Keycloak, the anonymous "Allowed Client Scopes"
+  registration policy).
+
 ## 0.30.5
 
 `get_layout_spec` now resolves color modes pinned above the requested node through the same
