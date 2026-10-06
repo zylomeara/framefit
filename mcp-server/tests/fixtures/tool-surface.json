@@ -203,7 +203,7 @@
     }
   },
   "get_layout_spec": {
-    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. Lightweight (shallow fetch) - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script (extractor_mode:\"loader\", the default) is returned only when the server has a public base URL to point the browser at - otherwise, and whenever extractor_mode:\"inline\" is passed, the full script comes back inline, with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL and snapshot store are available on HTTP deployments and through stdio's loopback browser sidecar; they return an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref for compare_node_to_dom. If the stdio sidecar cannot start, the response fails soft to the inline extractor and inline DOM snapshots, with a machine-readable browser_bridge receipt.",
+    "description": "Diff-ready layout spec of nodes: rect, auto-layout axis/gap/padding, in-flow children geometry, typography, fill hex, component identity. A shallow node fetch, plus one cached ancestor lookup when a color is bound to a variable - use it to pick the target frame width and build node<->selector pairs before compare_node_to_dom. include_extractor:true returns the DOM extractor (schema-versioned with the server) as extractor_js: the loader thunk that fetches the canonical script (extractor_mode:\"loader\", the default) is returned only when the server has a public base URL to point the browser at - otherwise, and whenever extractor_mode:\"inline\" is passed, the full script comes back inline, with extractor_note saying so when the loader was asked for and was unavailable. That same public base URL and snapshot store are available on HTTP deployments and through stdio's loopback browser sidecar; they return an upload_url the extractor can POST snapshots to directly from the browser, yielding a dom_ref for compare_node_to_dom. If the stdio sidecar cannot start, the response fails soft to the inline extractor and inline DOM snapshots, with a machine-readable browser_bridge receipt.",
     "inputSchemaKeys": [
       "extractor_mode",
       "figma_token",
@@ -213,7 +213,7 @@
       "node_ids",
       "text_leaves"
     ],
-    "digest": "723af1aac2cd0a999003cebba32fcc357539999b83eaad7a0d03c434ea8169e0",
+    "digest": "1137fec5a96be978d555a939a554a81d6e03bfcbd5919de73e5da10a70c1c187",
     "annotations": {
       "readOnlyHint": true
     }

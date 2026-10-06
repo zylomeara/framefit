@@ -3,10 +3,9 @@
 // its preconditions — `await deps.variableGraph?.ensureReady?.()` before the first graph read
 // (get-comments-tool.ts ToolDeps contract), and a snapshot prefetch that keeps the
 // snapHits ⊆ graph-misses invariant (prefetchSnapshotHits below) — so the pieces live in one
-// module and a second consumer cannot get half of them right. The two tools feed it DIFFERENT
-// mode stacks (compare discovers ancestors; get_layout_spec folds the fetched subtree only,
-// coverageComplete=false) — same resolver, same name, but effective evidence may honestly differ:
-// that asymmetry is documented at both tools and pinned by a cross-tool fixture.
+// module and a second consumer cannot get half of them right. Both tools feed it the same mode
+// evidence: the fetched subtree plus the ancestor chain proven by the shared targeted projection
+// (discoverAncestorModesBatch); parity with get_design_context is pinned by a cross-tool fixture.
 import type { RawSceneNode } from '../../../domain/figma-raw.js';
 import { colorAliasId } from '../../../domain/figma-raw.js';
 import type { ResolvedColorToken } from '../../../domain/layout-spec/types.js';

@@ -13,6 +13,8 @@ import { FETCH_DEPTH } from '../../src/domain/layout-spec/projector.js';
 import { withFrameRaw } from './helpers/frame-raw.js';
 import { makeFakeMcpServer } from '../helpers/fake-mcp-server.js';
 import { RESULT_BUDGET_BYTES } from '../../src/adapters/driving/tools/response-budget.js';
+import { buildGraph, resolveKeyInMode } from '../../src/domain/variable-graph.js';
+import type { ModeEvidenceStack } from '../../src/domain/mode-resolve.js';
 
 const logger = createLogger({ level: 'silent' });
 // Repo layout: <root>/mcp-server/tests/unit/<this file>.
@@ -639,7 +641,9 @@ describe('get_layout_spec — bound colors resolve to token names (shared resolv
       effectiveModeSource: 'unverifiable',
     });
     expect(spec.fillToken.all_modes).toBeUndefined();           // compare's confirm payload, not navigation data
-    expect(out.degraded_stages).toBeUndefined();
+    // The core response here carries no file version, so no ancestor projection can be pinned to it:
+    // the chain is never fetched and the receipt says why the mode stays unverifiable.
+    expect(out.degraded_stages).toMatchObject([{ stage: 'ancestor_discovery', reason: 'missing_version', node_ids: ['1:1'] }]);
     expect(getVariablesLocal).toHaveBeenCalledTimes(1);
     // The variables fetch goes through a CAPPED api build — always, unlike compare's MT-only cap:
     // a bounded miss with a receipt beats a measured ~90s stall on the navigation hot path.
@@ -696,5 +700,208 @@ describe('get_layout_spec — bound colors resolve to token names (shared resolv
     const { run } = tokenHarness(boundDoc(), { getVariablesLocal: vi.fn(async () => { throw new FigmaApiError('rate_limited', 429, 'slow down', 30); }) });
     const res = await run({ file: 'abc', node_ids: ['1:1'] });
     expect(res.isError).toBe(true);
+  });
+});
+
+// A pin ABOVE the requested subtree reaches get_layout_spec through the same targeted projection
+// compare_node_to_dom and get_design_context use: one batch per call, at most one request per depth
+// (4 -> 8 -> 16), pinned to the core response's file version.
+describe('get_layout_spec — ancestor modes through the targeted projection', () => {
+  const VARS = {
+    meta: {
+      variableCollections: { 'VC:1': { id: 'VC:1', name: 'Theme', defaultModeId: 'm1',
+        modes: [{ modeId: 'm1', name: 'Light' }, { modeId: 'm2', name: 'Dark' }, { modeId: 'm3', name: 'Contrast' }] } },
+      variables: { 'V:1': { id: 'V:1', name: 'surface/base', resolvedType: 'COLOR', variableCollectionId: 'VC:1',
+        valuesByMode: { m1: { r: 0.482, g: 0.380, b: 0.965 }, m2: { r: 0.6, g: 0.5, b: 1 }, m3: { r: 0.0706, g: 0.2039, b: 0.3373 } } } },
+    },
+  };
+  // raw paint #ffffff, default m1 #7b61f6, page pin m2 #9980ff, nearer frame pin m3 #123456 - all distinct.
+  const bound = (id: string, fill: Record<string, unknown> = { type: 'SOLID', color: { r: 1, g: 1, b: 1 },
+    boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'V:1' } } }): RawSceneNode => ({
+    id, name: 'surface', type: 'FRAME', absoluteBoundingBox: { x: 0, y: 0, width: 120, height: 48 }, fills: [fill],
+  } as unknown as RawSceneNode);
+  // Wraps `leaf` in FRAME levels so it sits at absolute document depth `depth` (DOCUMENT 0, CANVAS 1).
+  const nest = (prefix: string, leaf: RawSceneNode, depth: number, topModes?: Record<string, string>): RawSceneNode => {
+    let node = leaf;
+    for (let level = depth - 1; level >= 2; level--) {
+      node = { id: `${prefix}:${level}`, name: `w${level}`, type: 'FRAME', children: [node],
+        ...(level === 2 && topModes ? { explicitVariableModes: topModes } : {}) } as RawSceneNode;
+    }
+    return node;
+  };
+  const docOf = (pageModes: Record<string, string>, ...branches: RawSceneNode[]): RawSceneNode => ({
+    id: '0:0', name: 'Document', type: 'DOCUMENT', children: [
+      { id: '0:1', name: 'Page', type: 'CANVAS', explicitVariableModes: pageModes, children: branches },
+    ],
+  } as RawSceneNode);
+  // A depth-N projection keeps nodes down to absolute depth N, as Figma counts it from DOCUMENT.
+  const prune = (n: RawSceneNode, keep: number): RawSceneNode => {
+    if (!n.children) return n;
+    if (keep <= 0) { const { children: _cut, ...rest } = n; return rest as RawSceneNode; }
+    return { ...n, children: n.children.map((c) => prune(c, keep - 1)) };
+  };
+
+  const ancestorHarness = (opts: {
+    document: RawSceneNode;
+    targets: Record<string, RawSceneNode>;
+    projectionVersion?: string;
+    projection?: (...a: any[]) => Promise<unknown>;
+    variables?: () => Promise<unknown>;
+    deps?: Partial<ToolDeps>;
+  }) => {
+    const getDocumentByIdsRaw = vi.fn(opts.projection ?? (async (_f: string, _ids: string[], depth: number) =>
+      ({ name: 'Synthetic', lastModified: '', version: opts.projectionVersion ?? 'v1', document: prune(opts.document, depth) })));
+    const api = withFrameRaw({
+      getNodesRaw: vi.fn(async (_f: string, ids: string[]) => ({ version: 'v1',
+        nodes: Object.fromEntries(ids.map((id) => [id, opts.targets[id] ? { document: opts.targets[id] } : null])) })),
+      getVariablesLocal: vi.fn(opts.variables ?? (async () => VARS)),
+      getDocumentByIdsRaw,
+    } as unknown as Partial<FigmaApi>);
+    const { server, call } = makeFakeMcpServer();
+    registerGetLayoutSpecTool(server, { buildApi: () => api as FigmaApi, defaultToken: 'figd_x', logger,
+      maxResultChars: 40000, ...opts.deps } as ToolDeps);
+    return { run: (a: any): Promise<any> => call('get_layout_spec', a), getDocumentByIdsRaw };
+  };
+
+  it('pins above the subtree resolve the effective value: one projection per depth for the whole batch, nearest pin wins', async () => {
+    const a = bound('1:1');
+    const b = bound('2:1');
+    const document = docOf({ 'VC:1': 'm2' }, nest('10', a, 12), nest('20', b, 12, { 'VC:1': 'm3' }));
+    const { run, getDocumentByIdsRaw } = ancestorHarness({ document, targets: { '1:1': a, '2:1': b } });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1', '2:1'] })).content[0].text);
+    expect(out.specs[0].spec.fillHex).toBe('#ffffff');
+    expect(out.specs[0].spec.fillToken).toMatchObject({ token: 'surface/base', defaultHex: '#7b61f6',
+      effectiveHex: '#9980ff', effectiveModeSource: 'ancestor_chain' });
+    expect(out.specs[1].spec.fillToken).toMatchObject({ token: 'surface/base', defaultHex: '#7b61f6',
+      effectiveHex: '#123456', effectiveModeSource: 'ancestor_chain' });
+    expect(out.degraded_stages).toBeUndefined();
+    // Both targets sit at depth 12, past the depth-4 and depth-8 rungs: three requests in total,
+    // each carrying both ids and the core response's version.
+    expect(getDocumentByIdsRaw.mock.calls.map((c: any[]) => [c[2], c[3], [...c[1]].sort()])).toEqual([
+      [4, 'v1', ['1:1', '2:1']], [8, 'v1', ['1:1', '2:1']], [16, 'v1', ['1:1', '2:1']],
+    ]);
+  });
+
+  it('a proven chain with no pin anywhere confirms the default mode instead of leaving it unverifiable', async () => {
+    const a = bound('1:1');
+    const { run } = ancestorHarness({ document: docOf({}, nest('10', a, 6)), targets: { '1:1': a } });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    expect(out.specs[0].spec.fillToken).toMatchObject({ defaultHex: '#7b61f6', effectiveHex: '#7b61f6',
+      effectiveModeSource: 'confirmed_default' });
+    expect(out.degraded_stages).toBeUndefined();
+  });
+
+  it('mixed batch: a resolved node leaves the ladder, a node deeper than 16 gets its own depth_cap receipt', async () => {
+    const a = bound('1:1');
+    const b = bound('2:1');
+    const document = docOf({ 'VC:1': 'm2' }, nest('10', a, 6), nest('20', b, 20));
+    const { run, getDocumentByIdsRaw } = ancestorHarness({ document, targets: { '1:1': a, '2:1': b } });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1', '2:1'] })).content[0].text);
+    expect(out.specs[0].spec.fillToken).toMatchObject({ effectiveHex: '#9980ff', effectiveModeSource: 'ancestor_chain' });
+    expect(out.specs[1].spec.fillToken).toMatchObject({ effectiveHex: null, effectiveModeSource: 'unverifiable' });
+    expect(out.degraded_stages).toMatchObject([{ stage: 'ancestor_discovery', reason: 'depth_cap', node_ids: ['2:1'] }]);
+    expect(getDocumentByIdsRaw.mock.calls.map((c: any[]) => [c[2], [...c[1]].sort()])).toEqual([
+      [4, ['1:1', '2:1']], [8, ['1:1', '2:1']], [16, ['2:1']],
+    ]);
+  });
+
+  it('nested instance id: a terminal-id response root is accepted under the requested id and gets its chain', async () => {
+    const nestedId = 'I1:2;3:4';
+    const { run } = ancestorHarness({ document: docOf({ 'VC:1': 'm2' }, nest('10', bound(nestedId), 6)),
+      targets: { [nestedId]: bound('3:4') } });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: [nestedId] })).content[0].text);
+    expect(out.specs[0].node_id).toBe(nestedId);
+    expect(out.specs[0].spec.fillToken).toMatchObject({ effectiveHex: '#9980ff', effectiveModeSource: 'ancestor_chain' });
+  });
+
+  it('text_leaves carry the same ancestor-resolved text colour', async () => {
+    const label = { id: '1:2', name: 'label', type: 'TEXT', characters: 'Label',
+      absoluteBoundingBox: { x: 0, y: 0, width: 80, height: 20 },
+      style: { fontFamily: 'Inter', fontWeight: 400, fontSize: 14, lineHeightPx: 20 },
+      fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, boundVariables: { color: { type: 'VARIABLE_ALIAS', id: 'V:1' } } }],
+    } as unknown as RawSceneNode;
+    const card = { ...bound('1:1', { type: 'SOLID', color: { r: 1, g: 1, b: 1 } }), children: [label] } as RawSceneNode;
+    const { run } = ancestorHarness({ document: docOf({ 'VC:1': 'm2' }, nest('10', card, 6)), targets: { '1:1': card } });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'], text_leaves: true })).content[0].text);
+    expect(out.specs[0].text_leaves[0].typography.colorToken).toMatchObject({ effectiveHex: '#9980ff', effectiveModeSource: 'ancestor_chain' });
+  });
+
+  it('demand gate: only nodes that bind a colour enter the projection', async () => {
+    const plain = bound('1:1', { type: 'SOLID', color: { r: 1, g: 1, b: 1 } });
+    const b = bound('2:1');
+    const document = docOf({ 'VC:1': 'm2' }, nest('10', plain, 3), nest('20', b, 3));
+    const { run, getDocumentByIdsRaw } = ancestorHarness({ document, targets: { '1:1': plain, '2:1': b } });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1', '2:1'] })).content[0].text);
+    expect(out.specs[1].spec.fillToken).toMatchObject({ effectiveHex: '#9980ff', effectiveModeSource: 'ancestor_chain' });
+    expect(getDocumentByIdsRaw.mock.calls.map((c: any[]) => c[1])).toEqual([['2:1']]);
+
+    const none = ancestorHarness({ document: docOf({ 'VC:1': 'm2' }, nest('10', plain, 3)), targets: { '1:1': plain } });
+    const quiet = JSON.parse((await none.run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    expect(none.getDocumentByIdsRaw).not.toHaveBeenCalled();
+    expect(quiet.degraded_stages).toBeUndefined();
+  });
+
+  it('a projection from another file version contributes nothing: unverifiable stays, the receipt names the node, geometry survives', async () => {
+    const a = bound('1:1');
+    const { run } = ancestorHarness({ document: docOf({ 'VC:1': 'm2' }, nest('10', a, 6)), targets: { '1:1': a }, projectionVersion: 'v2' });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    expect(out.specs[0].spec.rect.w).toBe(120);
+    expect(out.specs[0].spec.fillToken).toMatchObject({ defaultHex: '#7b61f6', effectiveHex: null, effectiveModeSource: 'unverifiable' });
+    expect(out.degraded_stages).toMatchObject([{ stage: 'ancestor_discovery', reason: 'version_mismatch', node_ids: ['1:1'] }]);
+    expect(out.degraded_stages[0].ms).toBeTypeOf('number');
+  });
+
+  it('a projection that runs out of time degrades to time_budget, never to a guessed mode', async () => {
+    const a = bound('1:1');
+    const { run } = ancestorHarness({ document: docOf({ 'VC:1': 'm2' }, nest('10', a, 6)), targets: { '1:1': a },
+      projection: async () => { throw new FigmaApiError('network', 0, 'Figma request timed out after 90000ms'); } });
+    const res = await run({ file: 'abc', node_ids: ['1:1'] });
+    expect(res.isError).toBeFalsy();
+    const out = JSON.parse(res.content[0].text);
+    expect(out.specs[0].spec.rect.w).toBe(120);
+    expect(out.specs[0].spec.fillToken).toMatchObject({ effectiveHex: null, effectiveModeSource: 'unverifiable' });
+    expect(out.degraded_stages).toMatchObject([{ stage: 'ancestor_discovery', reason: 'time_budget', node_ids: ['1:1'] }]);
+  });
+
+  it('rate_limited from the projection rethrows (agent must back off)', async () => {
+    const a = bound('1:1');
+    const { run } = ancestorHarness({ document: docOf({ 'VC:1': 'm2' }, nest('10', a, 6)), targets: { '1:1': a },
+      projection: async () => { throw new FigmaApiError('rate_limited', 429, 'slow down', 30); } });
+    expect((await run({ file: 'abc', node_ids: ['1:1'] })).isError).toBe(true);
+  });
+
+  it('a response root that is not the requested node is refused before any ancestor is attached', async () => {
+    const stranger = bound('7:7');
+    const { run, getDocumentByIdsRaw } = ancestorHarness({ document: docOf({ 'VC:1': 'm2' }, nest('10', stranger, 6)),
+      targets: { '1:1': stranger } });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    expect(out.specs[0]).toEqual({ node_id: '1:1', error: 'malformed scoped root' });
+    expect(getDocumentByIdsRaw).not.toHaveBeenCalled();
+  });
+
+  it('index-less with the library graph (variables fetch failed): the graph resolver receives the page pin', async () => {
+    const LIB_KEY = 'f06'.padEnd(40, '0');
+    const g = buildGraph([{
+      fileKey: 'LIB',
+      colls: [{ collection_id: 'C', default_mode: 'default', key: LIB_KEY, name: 'Theme',
+        modes: [{ modeId: 'default', name: 'Default' }, { modeId: 'modeA', name: 'A' }] }],
+      vars: [{ library_key: LIB_KEY, local_id: 'VariableID:1:1', collection_id: 'C', resolved_type: 'COLOR', code_syntax_web: '',
+        name: 'surface/brand',
+        values_by_mode: { default: { r: 1, g: 1, b: 1, a: 1 }, modeA: { r: 0.2, g: 0.4, b: 0.6, a: 1 } } }],
+    }]);
+    // raw paint #ff0000, graph default #ffffff, page pin modeA #336699.
+    const ext = bound('1:1', { type: 'SOLID', color: { r: 1, g: 0, b: 0 },
+      boundVariables: { color: { type: 'VARIABLE_ALIAS', id: `VariableID:${LIB_KEY}/9:9` } } });
+    const document = docOf({ [`VariableCollectionId:${LIB_KEY}/a`]: 'modeA' }, nest('10', ext, 12));
+    const { run, getDocumentByIdsRaw } = ancestorHarness({ document, targets: { '1:1': ext },
+      variables: async () => { throw new FigmaApiError('network', 0, 'Figma request timed out after 20000ms'); },
+      deps: { variableGraph: {
+        resolve: (k: string) => (k === LIB_KEY ? { value: '#ffffff', modesByName: { Default: '#ffffff', A: '#336699' } } : undefined),
+        resolveInMode: (k: string, mbc: Map<string, string>, cc?: boolean, ev?: ModeEvidenceStack) => resolveKeyInMode(g, k, mbc, cc, ev),
+      } } as Partial<ToolDeps> });
+    const out = JSON.parse((await run({ file: 'abc', node_ids: ['1:1'] })).content[0].text);
+    expect(getDocumentByIdsRaw).toHaveBeenCalled();
+    expect(out.specs[0].spec.fillToken).toMatchObject({ effectiveHex: '#336699', effectiveModeSource: 'ancestor_chain' });
+    expect(out.degraded_stages).toMatchObject([{ stage: 'variables' }]);
   });
 });

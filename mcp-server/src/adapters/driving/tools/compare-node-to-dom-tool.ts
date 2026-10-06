@@ -765,8 +765,8 @@ export function registerCompareNodeToDomTool(server: McpServer, deps: ToolDeps):
             modeIds(buildGraphModeEvidence(fullChainFor(n), n.id));
 
           // The shared factory (color-token-resolver.ts): index → graph → snapshot → honest
-          // unknown, both binding forms via colorAliasId. compare feeds it ancestor-discovered
-          // stacks; get_layout_spec feeds subtree-only ones — same resolver by construction.
+          // unknown, both binding forms via colorAliasId. compare and get_layout_spec both feed it
+          // ancestor-discovered stacks — same resolver by construction.
           const resolveColorToken = makeColorTokenResolver({
             variableIndex, snapHits, variableGraph: deps.variableGraph,
             stackFor, graphStackFor,
