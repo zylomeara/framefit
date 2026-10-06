@@ -3,6 +3,51 @@
 This file starts at 0.13.0. Versions are the `framefit` package version, which is also what the MCP
 handshake reports as `serverInfo.version` and what `framefit status` prints in its header.
 
+## 0.30.5
+
+`get_layout_spec` now resolves color modes pinned above the requested node through the same
+version-pinned ancestor projection that `get_design_context` uses and `compare_node_to_dom` falls
+back to. When that projection proves the node's path, a page or frame pin no longer leaves a token
+`unverifiable` in `get_layout_spec`.
+
+**Output compatibility.** Request fields are unchanged. `get_layout_spec` responses can add
+`degraded_stages` entries with `stage` `ancestor_discovery`, one per `reason`, each listing its
+`node_ids` and the `ms` the lookup took. A requested id whose response root has no id or carries
+another node's id now returns `{ node_id, error: "malformed scoped root" }` instead of a spec. For a
+nested instance id whose response root carries only its terminal id, `spec.node.id` now reports the
+requested id. A Figma rate limit hit during the lookup fails the call with the usual rate-limited
+error, as in `compare_node_to_dom`. Reconnect to refresh the `get_layout_spec` description. DOM
+snapshot schema v7 and the extractor are unchanged; no re-capture or database migration is
+required.
+
+### Fixed
+
+- **Ancestor modes in `get_layout_spec`.** The lookup reuses the targeted projection of the other
+  two tools: one batch per call, at most one request per depth (4, 8, 16), pinned to the version of
+  the node response. For a multi-mode variable, a mode pinned on an ancestor along the proven path
+  is reported as `ancestor_chain` (a pin on the node itself stays `explicit_node`), and a proven
+  path with no pin for the collection confirms the default mode (`confirmed_default`). When the path
+  cannot be proven (for example `time_budget`, `byte_budget`, `depth_cap`, `version_mismatch`, or an
+  ambiguous or malformed path), the value stays `unverifiable` and the reason is reported in
+  `degraded_stages`.
+- **Response root identity.** `get_layout_spec` checks each returned root against the requested id
+  before building a spec or attaching ancestors.
+
+### Changed
+
+- The lookup runs only for nodes whose visible solid fill or stroke is bound to a variable, and
+  only where a resolver can use the mode: any such binding when the file's variables loaded,
+  otherwise only bindings to a published library variable on a server with the library graph or
+  snapshot fallback. Other nodes make no extra request; their modes resolve from the subtree as
+  before. `text_leaves` output is covered too, since leaves carry the text color token.
+- A cold lookup makes one targeted file request per depth it needs, at most three; on a large file
+  each can take many seconds. The lookup has its own deadline of the tool time budget (90 seconds by
+  default), counted from the start of the lookup.
+- Projection responses that match the pinned version are cached per file, version, node set and
+  depth for `FILE_STRUCTURE_TTL_SEC` (5 minutes by default), so a repeat call for the same nodes
+  reuses them. Requests that failed or timed out are not cached.
+- The `get_layout_spec` description no longer calls the tool lightweight.
+
 ## 0.30.4
 
 Color mode evidence now reaches nodes nested deeper than the old ancestor-discovery ceiling, and large
