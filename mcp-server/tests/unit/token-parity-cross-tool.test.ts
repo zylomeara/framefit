@@ -6,9 +6,8 @@
 //    chain through the same targeted ancestor projection and report it as 'ancestor_chain';
 //  - the documented NAMING ceiling: a SINGLE-mode variable bound at the PAINT level is named
 //    by the shared resolver (get_layout_spec/compare) and NOT by get_design_context, whose
-//    legacy single-mode name path reads node-level boundVariables only. Adversarial wave
-//    finding, probe-confirmed. Pinned so a future design_context fix flips this test
-//    CONSCIOUSLY instead of the docs drifting.
+//    legacy single-mode name path reads node-level boundVariables only. Pinned so a future
+//    design_context fix flips this test CONSCIOUSLY instead of the docs drifting.
 // A future change that silently widens or narrows any side goes red here.
 import { describe, it, expect, vi } from 'vitest';
 import { registerGetDesignContextTool } from '../../src/adapters/driving/tools/get-design-context-tool.js';
